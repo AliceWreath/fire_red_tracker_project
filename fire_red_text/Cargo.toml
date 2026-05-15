@@ -1,0 +1,12 @@
+[lib]
+crate-type = ["cdylib", "rlib"]   #creates dynamic library
+
+[package]
+name = "fire_red_text"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+libc = "0.2.186"
+fire_red_pokemon_name_buffer = { path = "../fire_red_pokemon_name_buffer/" }
+fire_red_get_values = { path = "../fire_red_get_values/" }

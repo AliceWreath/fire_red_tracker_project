@@ -1,0 +1,18 @@
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[package]
+name = "fire_red_loop"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+fire_red_pokemon_data = { path = "../fire_red_pokemon_data/" }
+fire_red_text = { path = "../fire_red_text/" }
+fire_red_rom_buffer = { path = "../fire_red_rom_buffer/" }
+fire_red_pokemon_name_buffer = { path = "../fire_red_pokemon_name_buffer/" }
+fire_red_get_values = { path = "../fire_red_get_values/" }
+fire_red_scanner = { path = "../fire_red_scanner/" }
+fire_red_retroarch_interfacing = { path = "../fire_red_retroarch_interfacing/" }
+fire_red_party_monitor = { path = "../fire_red_party_monitor/" }
+fire_red_box_monitor = { path = "../fire_red_box_monitor/" }

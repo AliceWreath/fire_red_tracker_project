@@ -1,0 +1,16 @@
+[package]
+name = "fire_red_monitor"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+eframe = "0.34.2"
+egui = "0.34.2"
+image = "0.25"
+bincode = "1"
+serde = { version = "1", features = ["derive"] }
+fire_red_loop = { path = "../fire_red_loop/" }
+fire_red_party_monitor = { path = "../fire_red_party_monitor/" }
+fire_red_image_data = { path = "../fire_red_image_data/" }
+fire_red_rom_buffer = { path = "../fire_red_rom_buffer/" }
+fire_red_pokemon_data = { path = "../fire_red_pokemon_data/" }

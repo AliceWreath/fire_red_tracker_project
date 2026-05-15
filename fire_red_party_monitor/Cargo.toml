@@ -1,0 +1,17 @@
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[package]
+name = "fire_red_party_monitor"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+arc-swap = "1.9.1"
+bincode = "1"
+serde = { version = "1", features = ["derive"] }
+serde-big-array = "0.5"
+fire_red_get_values = { path = "../fire_red_get_values/" }
+fire_red_retroarch_interfacing = { path = "../fire_red_retroarch_interfacing/" }
+fire_red_text = { path = "../fire_red_text/" }
+fire_red_rom_buffer = { path = "../fire_red_rom_buffer/" }
