@@ -1,15 +1,15 @@
-use std::sync::{Mutex, OnceLock};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::os::raw::c_char;
-use std::ffi::{CStr, c_uchar};
-use std::os::raw::c_int;
+use fire_red_get_values::*;
 use fire_red_party_monitor::*;
 use fire_red_retroarch_interfacing::*;
 use fire_red_rom_buffer::*;
-use fire_red_get_values::*;
+use std::ffi::{CStr, c_uchar};
+use std::os::raw::c_char;
+use std::os::raw::c_int;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Mutex, OnceLock};
 
-use fire_red_scanner::find_wild_headers;
 use fire_red_pokemon_data::*;
+use fire_red_scanner::find_wild_headers;
 
 #[repr(C)]
 #[derive(Default, Debug, Eq, PartialEq)]
@@ -22,27 +22,32 @@ const SLEEP_DURATION: u64 = 333;
 
 static STATE: OnceLock<Mutex<FireRedState>> = OnceLock::new();
 static RUNNING: AtomicBool = AtomicBool::new(false);
+static THREAD_HANDLE: Mutex<Option<std::thread::JoinHandle<()>>> = Mutex::new(None);
 
 #[unsafe(no_mangle)]
 pub extern "C" fn c_start_loop(file_path: *const c_char, is_clean: bool) -> c_int {
-        if file_path.is_null() {
-            eprintln!("Must pass a path to the file!");
+    if file_path.is_null() {
+        eprintln!("Must pass a path to the file!");
+        return -1;
+    }
+
+    let c_str = unsafe { CStr::from_ptr(file_path) };
+    let file_path_str = match c_str.to_str() {
+        Ok(s) => s,
+        Err(_) => {
+            eprintln!("Invalid UTF-8 string for file path!");
             return -1;
         }
-    
-        let c_str = unsafe { CStr::from_ptr(file_path) };
-        let file_path_str = match c_str.to_str() {
-            Ok(s) => s,
-            Err(_) => {
-                eprintln!("Invalid UTF-8 string for file path!");
-                return -1;
-            }
-        };
+    };
     start_loop(&file_path_str, is_clean)
 }
 
+pub fn start_loop(file_path: &str, is_clean: bool) -> c_int {
+    // Prevent multiple loops
+    if RUNNING.swap(true, Ordering::SeqCst) {
+        return -4;
+    }
 
-pub fn start_loop(file_path: &str, is_clean: bool) -> c_int {    
     if file_path.is_empty() {
         eprintln!("Must pass a path to the file!");
         return -1;
@@ -59,43 +64,44 @@ pub fn start_loop(file_path: &str, is_clean: bool) -> c_int {
     println!("Scanning for WildMonHeaders...");
     let start_wild_header_offset = find_wild_headers(&get_rom()).unwrap_or_else(|| {
         eprintln!("Could not locate WildMonHeaders\nQuitting");
-        return 0;
+        0
     });
     if start_wild_header_offset == 0 {
         return -3;
     }
-    println!("Found WildMonHeaders at 0x{:08X}!", start_wild_header_offset);
+    println!(
+        "Found WildMonHeaders at 0x{:08X}!",
+        start_wild_header_offset
+    );
 
     fill_static_pokemon_header_list(&get_rom(), start_wild_header_offset);
     fill_static_name_repo(&get_rom(), fire_red_text::POKEMON_NAMES_ADDR as usize);
     initialize_static_party(is_clean);
     fire_red_party_monitor::start_loop();
     fire_red_box_monitor::start_loop();
-    println!("box updated");
-
-    // Prevent multiple loops
-    if RUNNING.swap(true, Ordering::SeqCst) {
-        return -4;
-    }
 
     STATE.get_or_init(|| Mutex::new(FireRedState::default()));
     println!("spawning loop");
 
-    let _handle = std::thread::spawn(move || {
+    let handle = std::thread::spawn(move || {
         while RUNNING.load(Ordering::SeqCst) {
             let data = get_map_info();
             let current_state = get_map_ground_and_id(&data);
             //update_party();
 
-            
-
-            let mut state = STATE.get().unwrap().lock().unwrap();
+            let mut state = STATE
+                .get()
+                .expect("STATE not initialized")
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
             state.map_group_id = current_state.map_group_id;
             state.map_name_id = current_state.map_name_id;
 
             let _ = std::thread::sleep(std::time::Duration::from_millis(SLEEP_DURATION));
         }
     });
+
+    *THREAD_HANDLE.lock().unwrap_or_else(|e| e.into_inner()) = Some(handle);
 
     0
 }
@@ -119,11 +125,8 @@ pub fn get_party_members() -> Vec<Pokemon> {
     }
 }
 
-pub fn get_party_member(pos: usize) -> Pokemon {
-    match get_party() {
-        Some(party) => party.members[pos].clone(),
-        None => Pokemon::default(),
-    }
+pub fn get_party_member(pos: usize) -> Option<Pokemon> {
+    get_party()?.members.get(pos).cloned()
 }
 
 pub fn get_box_list() -> Vec<BoxPokemon> {
@@ -169,13 +172,19 @@ pub extern "C" fn stop_loop() {
     RUNNING.store(false, Ordering::SeqCst);
     fire_red_party_monitor::end_loop();
     fire_red_box_monitor::end_loop();
+    let mut handle_slot = THREAD_HANDLE.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(handle) = handle_slot.take() {
+        if let Err(e) = handle.join() {
+            eprintln!("Error joining thread: {:?}", e);
+        }
+    }
 }
 
 #[unsafe(no_mangle)]
 pub fn get_value() -> FireRedState {
     let state = STATE.get().unwrap().lock().unwrap();
-    FireRedState { 
-        map_group_id: state.map_group_id, 
+    FireRedState {
+        map_group_id: state.map_group_id,
         map_name_id: state.map_name_id,
     }
 }
@@ -185,12 +194,15 @@ fn get_wild_headers() -> &'static Vec<WildPokemonHeaderROM> {
 }
 
 fn get_map_ground_and_id(buffer: &[String]) -> FireRedState {
+    if buffer.len() < 4 {
+        return FireRedState::default();
+    }
     let map_group_id = get_u8(&[buffer[2].as_str()]);
     let map_name_id = get_u8(&[buffer[3].as_str()]);
-    
+
     FireRedState {
         map_group_id,
-        map_name_id
+        map_name_id,
     }
 }
 
@@ -221,42 +233,34 @@ pub struct AreaEncountersStringVectors {
 
 impl std::fmt::Display for AreaEncountersStringVectors {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let mut string = String::new();
-
-        if self.land.len() > 0 {
-            string = string + "grass encounters\n";
+        if !self.land.is_empty() {
+            writeln!(f, "grass encounters")?;
             for s in &self.land {
-                string = string + &s + "\n";
+                writeln!(f, "{}", s)?;
             }
-            string.truncate(string.len() - 1);
         }
-        if self.water.len() > 0 {
-            string = string + "\n\nwater encounters\n";
-
+        if !self.water.is_empty() {
+            writeln!(f, "water encounters")?;
             for s in &self.water {
-                string = string + &s + "\n";
+                writeln!(f, "{}", s)?;
             }
-            string.truncate(string.len() - 1);
         }
 
-        if self.rock.len() > 0 {
-            string = string + "\n\nrock smash encounters\n";
+        if !self.rock.is_empty() {
+            writeln!(f, "rock smash encounters")?;
             for s in &self.rock {
-                string = string + &s + "\n";
+                writeln!(f, "{}", s)?;
             }
-            string.truncate(string.len() - 1);
         }
-        
-        if self.fishing.len() > 0 {
-            string = string + "\n\nfishing encounters\n";
+
+        if !self.fishing.is_empty() {
+            writeln!(f, "fishing encounters")?;
             for s in &self.fishing {
-                string = string + &s + "\n";
+                writeln!(f, "{}", s)?;
             }
-            string.truncate(string.len() - 1);
         }
 
-
-        write!(f, "{}", string)
+        Ok(())
     }
 }
 
@@ -301,7 +305,6 @@ pub unsafe fn convert_area(area: AreaEncountersStringArrays) -> (Vec<String>, Ve
     }
 }*/
 
-
 pub fn get_area_pokemon_id() -> WildPokemonHeader {
     let state = get_value();
     let mut area_header = WildPokemonHeader::default();
@@ -328,7 +331,7 @@ pub fn get_area_pokemon_strings() -> AreaEncountersStringVectors {
                 let mon_name = fire_red_text::get_pokemon_name_by_number(mon.species as usize);
                 match mon_name {
                     Ok(name) => area.land.push(name),
-                    Err(_) => {},
+                    Err(_) => {}
                 };
             }
             let mons = wild_pokemon_header.water_mon_encounters.wild_pokemon_list;
@@ -336,7 +339,7 @@ pub fn get_area_pokemon_strings() -> AreaEncountersStringVectors {
                 let mon_name = fire_red_text::get_pokemon_name_by_number(mon.species as usize);
                 match mon_name {
                     Ok(name) => area.water.push(name),
-                    Err(_) => {},
+                    Err(_) => {}
                 };
             }
             let mons = wild_pokemon_header.rock_smash_encounters.wild_pokemon_list;
@@ -344,7 +347,7 @@ pub fn get_area_pokemon_strings() -> AreaEncountersStringVectors {
                 let mon_name = fire_red_text::get_pokemon_name_by_number(mon.species as usize);
                 match mon_name {
                     Ok(name) => area.rock.push(name),
-                    Err(_) => {},
+                    Err(_) => {}
                 };
             }
             let mons = wild_pokemon_header.fishing_encounters.wild_pokemon_list;
@@ -352,7 +355,7 @@ pub fn get_area_pokemon_strings() -> AreaEncountersStringVectors {
                 let mon_name = fire_red_text::get_pokemon_name_by_number(mon.species as usize);
                 match mon_name {
                     Ok(name) => area.fishing.push(name),
-                    Err(_) => {},
+                    Err(_) => {}
                 };
             }
         }

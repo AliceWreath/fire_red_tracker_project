@@ -367,7 +367,7 @@ impl BoxPokemon {
                 Err(_) => return None,
             };
 
-        let secure = SecureSubstruct::fill_struct(personality, ot_id, buffer, offset);
+        let secure = SecureSubstruct::fill_struct(personality, ot_id, buffer, offset).unwrap_or_default();
         let nickname_string = fire_red_text::gba_string_to_ascii(&nickname, nickname.len(), 0).trim_matches('\0').to_string();
 
         let mut ret = BoxPokemon {
@@ -549,13 +549,17 @@ impl SecureSubstruct {
         secure
     }
 
-    pub fn fill_struct(personality: u32, ot_id: u32, buffer: &[&str], offset: usize) -> Self {
+    pub fn fill_struct(personality: u32, ot_id: u32, buffer: &[&str], offset: usize) -> Result<Self, Box<dyn std::error::Error>> {
         let key = personality ^ ot_id;
         let order_number = personality % 24;
 
         let encrypted_value = get_n_bytes(48, &buffer[offset..offset + 48]);
+        if encrypted_value.is_none() {
+            return Err("failed to parse encrypted value bytes!".into());
+        }
+        let encrypted_value = encrypted_value.unwrap();
         if encrypted_value.len() != 48 {
-            panic!("didn't copy the correct number of bytes!");
+            return Err("didn't copy the correct number of bytes!".into());
         }        
         let mut decrypted_value: Vec<u8> = Vec::new();
 
@@ -590,7 +594,7 @@ impl SecureSubstruct {
             index += 12;
         }
 
-        secure
+        Ok(secure)
     }
     fn fill_substruct_by_char(&mut self, letter: char, buffer: &[u8], index: usize) {
         match letter {

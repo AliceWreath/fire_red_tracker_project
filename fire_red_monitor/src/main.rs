@@ -85,6 +85,9 @@ impl eframe::App for WindowInfo {
             // In the missing vec, use a sentinel that won't be shiny
             // Replace the wild pokemon push:
             for wild_pokemon in encounter_iters {
+                if wild_pokemon.species == 0 || wild_pokemon.species > 386 {
+                    continue; // skip invalid species
+                }
                 let key = format!("pokemon_{}_normal", wild_pokemon.species);
                 if !self.textures.contains_key(&key) {
                     // Load and insert directly, bypassing the shiny logic
@@ -92,7 +95,22 @@ impl eframe::App for WindowInfo {
                         ctx,
                         fire_red_rom_buffer::get_rom(),
                         wild_pokemon.species,
-                    );
+                    )
+                    .unwrap_or_else(|_| {
+                        eprintln!(
+                            "Failed to load texture for species {}. Using placeholder.",
+                            wild_pokemon.species
+                        );
+                        // Create a simple placeholder texture (e.g., a red square)
+                        let size = [PARTY_IMAGE_SIZE.0 as usize, PARTY_IMAGE_SIZE.1 as usize];
+                        let pixels = vec![255u8, 0, 0, 255, (size[0] * size[1]) as u8]; // Red RGBA
+                        let color_image = egui::ColorImage::from_rgba_unmultiplied(size, &pixels);
+                        ctx.load_texture(
+                            format!("pokemon_{}_placeholder", wild_pokemon.species),
+                            color_image,
+                            egui::TextureOptions::NEAREST,
+                        )
+                    });
                     self.textures.insert(key, texture);
                 }
             }
@@ -101,6 +119,9 @@ impl eframe::App for WindowInfo {
             drop(encounter_list);
 
             for (species, personality, ot_id) in missing {
+                if species == 0 || species > 386 {
+                    continue; // skip invalid species
+                }
                 let key = format!(
                     "pokemon_{}_{}",
                     species,
@@ -116,7 +137,22 @@ impl eframe::App for WindowInfo {
                     species,
                     personality,
                     ot_id,
-                );
+                )
+                .unwrap_or_else(|_| {
+                    eprintln!(
+                        "Failed to load texture for species {}. Using placeholder.",
+                        species
+                    );
+                    // Create a simple placeholder texture (e.g., a red square)
+                    let size = [PARTY_IMAGE_SIZE.0 as usize, PARTY_IMAGE_SIZE.1 as usize];
+                    let pixels = vec![255u8, 0, 0, 255, (size[0] * size[1]) as u8]; // Red RGBA
+                    let color_image = egui::ColorImage::from_rgba_unmultiplied(size, &pixels);
+                    ctx.load_texture(
+                        format!("pokemon_{}_placeholder", species),
+                        color_image,
+                        egui::TextureOptions::NEAREST,
+                    )
+                });
                 self.textures.insert(key, texture);
             }
         }
@@ -293,13 +329,13 @@ pub fn load_texture(
     species: u16,
     personality: u32,
     ot_id: u32,
-) -> egui::TextureHandle {
+) -> Result<egui::TextureHandle, Box<dyn std::error::Error>> {
     let shiny = is_shiny(personality, ot_id);
-    let img = fire_red_image_data::get_pokemon_sprite(rom, species, shiny);
+    let img = fire_red_image_data::get_pokemon_sprite(rom, species, shiny)?;
     let size = [img.width() as usize, img.height() as usize];
     let pixels: Vec<u8> = img.into_raw();
     let color_image = egui::ColorImage::from_rgba_unmultiplied(size, &pixels);
-    ctx.load_texture(
+    Ok(ctx.load_texture(
         format!(
             "pokemon_{}_{}",
             species,
@@ -307,7 +343,7 @@ pub fn load_texture(
         ),
         color_image,
         egui::TextureOptions::NEAREST,
-    )
+    ))
 }
 
 fn fill_party_list(thread_party: &Arc<Mutex<Vec<fire_red_party_monitor::Pokemon>>>) {
@@ -323,16 +359,20 @@ pub fn is_shiny(personality: u32, ot_id: u32) -> bool {
     (p1 ^ p2 ^ id1 ^ id2) < 8
 }
 
-pub fn load_texture_normal(ctx: &egui::Context, rom: &[u8], species: u16) -> egui::TextureHandle {
-    let img = fire_red_image_data::get_pokemon_sprite(rom, species, false);
+pub fn load_texture_normal(
+    ctx: &egui::Context,
+    rom: &[u8],
+    species: u16,
+) -> Result<egui::TextureHandle, Box<dyn std::error::Error>> {
+    let img = fire_red_image_data::get_pokemon_sprite(rom, species, false)?;
     let size = [img.width() as usize, img.height() as usize];
     let pixels: Vec<u8> = img.into_raw();
     let color_image = egui::ColorImage::from_rgba_unmultiplied(size, &pixels);
-    ctx.load_texture(
+    Ok(ctx.load_texture(
         format!("pokemon_{}_normal", species),
         color_image,
         egui::TextureOptions::NEAREST,
-    )
+    ))
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]

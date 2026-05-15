@@ -3,9 +3,14 @@
 version = 4
 
 [[package]]
+name = "fire_red_get_values"
+version = "0.1.0"
+
+[[package]]
 name = "fire_red_map_data"
 version = "0.1.0"
 dependencies = [
+ "fire_red_get_values",
  "libc",
 ]
 
