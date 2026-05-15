@@ -8,8 +8,12 @@ const PARTY_WINDOW: (f32, f32) = (400.0, 800.0);
 const PARTY_IMAGE_SIZE: (f32, f32) = (64.0, 64.0);
 const ENCOUNTER_WINDOW: (f32, f32) = (600.0, 400.0);
 const ENCOUNTER_IMAGE_SIZE: (f32, f32) = (64.0, 64.0);
+const MAX_STATE_SIZE: usize = 10 * 1024 * 1024; // 10 MB, should be enough for party + encounters, adjust as needed
 
 static FORCE_PARTY_CHECK_TIME_IN_SECS: u64 = 5;
+static MAIN_THREAD_HANDLE: Mutex<Option<std::thread::JoinHandle<()>>> = Mutex::new(None);
+static CLIENT_THREAD_HANDLE: Mutex<Option<std::thread::JoinHandle<()>>> = Mutex::new(None);
+static SERVER_THREAD_HANDLE: Mutex<Option<std::thread::JoinHandle<()>>> = Mutex::new(None);
 
 struct WindowInfo {
     party_list: Arc<Mutex<Vec<fire_red_party_monitor::Pokemon>>>,
@@ -43,8 +47,11 @@ impl eframe::App for WindowInfo {
 
         // load any missing textures before drawing
         {
-            let list = self.party_list.lock().unwrap();
-            let encounter_list = self.encounter_list.lock().unwrap();
+            let list = self.party_list.lock().unwrap_or_else(|e| e.into_inner()).clone();
+            let encounter_list = self
+                .encounter_list
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
 
             let missing: Vec<(u16, u32, u32)> = list
                 .iter()
@@ -103,7 +110,7 @@ impl eframe::App for WindowInfo {
                         );
                         // Create a simple placeholder texture (e.g., a red square)
                         let size = [PARTY_IMAGE_SIZE.0 as usize, PARTY_IMAGE_SIZE.1 as usize];
-                        let pixels = vec![255u8, 0, 0, 255, (size[0] * size[1]) as u8]; // Red RGBA
+                        let pixels = vec![255u8, 0, 0, 255].repeat(size[0] * size[1]);
                         let color_image = egui::ColorImage::from_rgba_unmultiplied(size, &pixels);
                         ctx.load_texture(
                             format!("pokemon_{}_placeholder", wild_pokemon.species),
@@ -145,7 +152,7 @@ impl eframe::App for WindowInfo {
                     );
                     // Create a simple placeholder texture (e.g., a red square)
                     let size = [PARTY_IMAGE_SIZE.0 as usize, PARTY_IMAGE_SIZE.1 as usize];
-                    let pixels = vec![255u8, 0, 0, 255, (size[0] * size[1]) as u8]; // Red RGBA
+                    let pixels = vec![255u8, 0, 0, 255].repeat(size[0] * size[1]);
                     let color_image = egui::ColorImage::from_rgba_unmultiplied(size, &pixels);
                     ctx.load_texture(
                         format!("pokemon_{}_placeholder", species),
@@ -167,8 +174,7 @@ impl eframe::App for WindowInfo {
             let encounter_list = self.encounter_list.clone();
 
             // Snapshot all encounter textures before the move closure
-            let textures: std::collections::HashMap<String, egui::TextureHandle> =
-                self.textures.clone();
+            let textures: &std::collections::HashMap<String, egui::TextureHandle> = &self.textures;
 
             ctx.show_viewport_immediate(
                 egui::ViewportId::from_hash_of("encounters_window"),
@@ -179,22 +185,8 @@ impl eframe::App for WindowInfo {
                     #[allow(deprecated)]
                     egui::CentralPanel::default().show(ctx, |ui| {
                         egui::ScrollArea::vertical().show(ui, |ui| {
-                            let encounters = encounter_list.lock().unwrap();
-                            for wild_pokemon in
-                                encounters.water_mon_encounters.wild_pokemon_list.iter()
-                            {
-                                let _key = format!("pokemon_{}_normal", wild_pokemon.species);
-                            }
-                            for wild_pokemon in
-                                encounters.fishing_encounters.wild_pokemon_list.iter()
-                            {
-                                let _key = format!("pokemon_{}_normal", wild_pokemon.species);
-                            }
-                            for wild_pokemon in
-                                encounters.rock_smash_encounters.wild_pokemon_list.iter()
-                            {
-                                let _key = format!("pokemon_{}_normal", wild_pokemon.species);
-                            }
+                            let encounters =
+                                encounter_list.lock().unwrap_or_else(|e| e.into_inner());
                             ui.heading("Land Encounters");
                             ui.horizontal(|ui| {
                                 for wild_pokemon in
@@ -253,7 +245,7 @@ impl WindowInfo {
     fn draw_ui(&mut self, ui: &mut egui::Ui, _ctx: &egui::Context) {
         ui.heading("Party");
 
-        let list = self.party_list.lock().unwrap();
+        let list = self.party_list.lock().unwrap_or_else(|e| e.into_inner());
         for (idx, pokemon) in list.iter().enumerate() {
             ui.horizontal(|ui| {
                 let species = pokemon.box_mon.secure.growth.species;
@@ -294,12 +286,10 @@ impl WindowInfo {
                         .show(ui, |ui| {
                             let color = if (pokemon.hp as f32) < (pokemon.max_hp as f32 * 0.3) {
                                 egui::Color32::RED
+                            } else if (pokemon.hp as f32) < (pokemon.max_hp as f32 * 0.8) {
+                                egui::Color32::YELLOW
                             } else {
-                                if (pokemon.hp as f32) < (pokemon.max_hp as f32 * 0.8) {
-                                    egui::Color32::YELLOW
-                                } else {
-                                    egui::Color32::WHITE
-                                }
+                                egui::Color32::WHITE
                             };
                             ui.label(
                                 egui::RichText::new(format!("{}/{}", pokemon.hp, pokemon.max_hp))
@@ -347,7 +337,7 @@ pub fn load_texture(
 }
 
 fn fill_party_list(thread_party: &Arc<Mutex<Vec<fire_red_party_monitor::Pokemon>>>) {
-    let mut list = thread_party.lock().unwrap();
+    let mut list = thread_party.lock().unwrap_or_else(|e| e.into_inner());
     *list = get_party_members();
 }
 
@@ -406,7 +396,12 @@ fn recv_state(stream: &mut TcpStream) -> std::io::Result<GameState> {
     let mut len_buf = [0u8; 4];
     stream.read_exact(&mut len_buf)?;
     let len = u32::from_be_bytes(len_buf) as usize;
-
+    if len > MAX_STATE_SIZE {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "state packet too large",
+        ));
+    }
     let mut buf = vec![0u8; len];
     stream.read_exact(&mut buf)?;
 
@@ -466,13 +461,20 @@ fn main() {
 
     match &mode {
         Mode::Standalone | Mode::Server { .. } => {
-            let rom_path = args[1].clone();
+            let rom_path = match args.get(1) {
+                Some(path) => path.clone(),
+                None => {
+                    eprintln!("Missing ROM path argument");
+                    std::process::exit(1);
+                }
+            };
+
             let is_clean = args.iter().any(|a| a == "--clean");
 
             let thread_party = shared_party.clone();
             let thread_encounters = shared_encounters.clone();
 
-            std::thread::spawn(move || {
+            let main_thread = std::thread::spawn(move || {
                 match start_loop(rom_path.as_str(), is_clean) {
                     0 => eprintln!("DEBUG: start_loop succeeded"),
                     code => {
@@ -499,11 +501,14 @@ fn main() {
                     if current_fire_red_state != state {
                         current_fire_red_state = state;
                         let encounters = get_area_pokemon_id();
-                        let mut enc = thread_encounters.lock().unwrap();
+                        let mut enc = thread_encounters.lock().unwrap_or_else(|e| e.into_inner());
                         *enc = encounters;
                     }
 
-                    if start_refresh_party_timer.elapsed().unwrap().as_secs()
+                    if start_refresh_party_timer
+                        .elapsed()
+                        .unwrap_or(std::time::Duration::ZERO)
+                        .as_secs()
                         >= FORCE_PARTY_CHECK_TIME_IN_SECS
                     {
                         start_refresh_party_timer = std::time::SystemTime::now();
@@ -514,24 +519,39 @@ fn main() {
                 }
             });
 
+            *MAIN_THREAD_HANDLE.lock().unwrap_or_else(|e| e.into_inner()) = Some(main_thread);
             if let Mode::Server { port } = &mode {
                 let port = *port;
                 let server_party = shared_party.clone();
                 let server_encounters = shared_encounters.clone();
 
-                std::thread::spawn(move || {
-                    let listener = TcpListener::bind(format!("0.0.0.0:{}", port))
-                        .expect("Failed to bind server port");
+                let server_thread = std::thread::spawn(move || {
+                    let listener = match TcpListener::bind(format!("0.0.0.0:{}", port)) {
+                        Ok(listen) => listen,
+                        Err(e) => {
+                            eprintln!("Failed to start server on port {}: {}", port, e);
+                            return;
+                        }
+                    };
+
                     println!("Server listening on port {}", port);
 
                     for stream in listener.incoming() {
                         match stream {
                             Ok(mut stream) => {
-                                println!("Client connected: {}", stream.peer_addr().unwrap());
+                                println!(
+                                    "Client connected: {}",
+                                    stream
+                                        .peer_addr()
+                                        .map_or_else(|_| "unknown".to_string(), |a| a.to_string())
+                                );
                                 loop {
                                     let state = {
-                                        let party = server_party.lock().unwrap();
-                                        let encounters = server_encounters.lock().unwrap();
+                                        let party =
+                                            server_party.lock().unwrap_or_else(|e| e.into_inner());
+                                        let encounters = server_encounters
+                                            .lock()
+                                            .unwrap_or_else(|e| e.into_inner());
                                         GameState {
                                             party: party.clone(),
                                             encounters: encounters.clone(),
@@ -550,6 +570,9 @@ fn main() {
                         }
                     }
                 });
+                *SERVER_THREAD_HANDLE
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner()) = Some(server_thread);
             }
         }
 
@@ -564,7 +587,7 @@ fn main() {
             let client_encounters = shared_encounters.clone();
             let addr = format!("{}:{}", host, port);
 
-            std::thread::spawn(move || {
+            let client_thread = std::thread::spawn(move || {
                 loop {
                     println!("Connecting to server at {}...", addr);
                     match TcpStream::connect(&addr) {
@@ -573,8 +596,11 @@ fn main() {
                             loop {
                                 match recv_state(&mut stream) {
                                     Ok(state) => {
-                                        *client_party.lock().unwrap() = state.party;
-                                        *client_encounters.lock().unwrap() = state.encounters;
+                                        *client_party.lock().unwrap_or_else(|e| e.into_inner()) =
+                                            state.party;
+                                        *client_encounters
+                                            .lock()
+                                            .unwrap_or_else(|e| e.into_inner()) = state.encounters;
                                     }
                                     Err(e) => {
                                         eprintln!("Lost connection: {}", e);
@@ -588,6 +614,7 @@ fn main() {
                     std::thread::sleep(std::time::Duration::from_secs(3));
                 }
             });
+            *CLIENT_THREAD_HANDLE.lock().unwrap_or_else(|e| e.into_inner()) = Some(client_thread);
         }
     }
 
@@ -599,12 +626,12 @@ fn main() {
 
     let app_title = match &mode {
         Mode::Standalone => "Tracker".to_string(),
-        Mode::Server { port } => format!("Tracker (Server :{}", port),
+        Mode::Server { port } => format!("Tracker (Server :{})", port),
         Mode::Client {
             host,
             port,
             rom_path: _,
-        } => format!("Tracker (client {}:{}", host, port),
+        } => format!("Tracker (client {}:{})", host, port),
     };
 
     let _ = eframe::run_native(
