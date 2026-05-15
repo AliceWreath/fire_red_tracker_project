@@ -14,3 +14,4 @@ fire_red_party_monitor = { path = "../fire_red_party_monitor/" }
 fire_red_image_data = { path = "../fire_red_image_data/" }
 fire_red_rom_buffer = { path = "../fire_red_rom_buffer/" }
 fire_red_pokemon_data = { path = "../fire_red_pokemon_data/" }
+fire_red_states = { path = "../fire_red_states/" }

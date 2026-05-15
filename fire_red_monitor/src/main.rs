@@ -1,6 +1,6 @@
 use fire_red_loop::*;
 use fire_red_party_monitor::get_is_clean;
-use std::io::{Read, Write};
+use fire_red_states::*;
 use std::net::{TcpListener, TcpStream};
 use std::sync::{Arc, Mutex};
 
@@ -8,7 +8,6 @@ const PARTY_WINDOW: (f32, f32) = (400.0, 800.0);
 const PARTY_IMAGE_SIZE: (f32, f32) = (64.0, 64.0);
 const ENCOUNTER_WINDOW: (f32, f32) = (600.0, 400.0);
 const ENCOUNTER_IMAGE_SIZE: (f32, f32) = (64.0, 64.0);
-const MAX_STATE_SIZE: usize = 10 * 1024 * 1024; // 10 MB, should be enough for party + encounters, adjust as needed
 
 static FORCE_PARTY_CHECK_TIME_IN_SECS: u64 = 5;
 static MAIN_THREAD_HANDLE: Mutex<Option<std::thread::JoinHandle<()>>> = Mutex::new(None);
@@ -365,48 +364,7 @@ pub fn load_texture_normal(
     ))
 }
 
-#[derive(serde::Serialize, serde::Deserialize)]
-struct GameState {
-    party: Vec<fire_red_party_monitor::Pokemon>,
-    encounters: fire_red_pokemon_data::WildPokemonHeader,
-}
 
-enum Mode {
-    Standalone,
-    Server {
-        port: u16,
-    },
-    Client {
-        rom_path: String,
-        host: String,
-        port: u16,
-    },
-}
-
-fn send_state(stream: &mut TcpStream, state: &GameState) -> std::io::Result<()> {
-    let encoded =
-        bincode::serialize(state).map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
-    let len = encoded.len() as u32;
-    stream.write_all(&len.to_be_bytes())?;
-    stream.write_all(&encoded)?;
-    Ok(())
-}
-
-fn recv_state(stream: &mut TcpStream) -> std::io::Result<GameState> {
-    let mut len_buf = [0u8; 4];
-    stream.read_exact(&mut len_buf)?;
-    let len = u32::from_be_bytes(len_buf) as usize;
-    if len > MAX_STATE_SIZE {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            "state packet too large",
-        ));
-    }
-    let mut buf = vec![0u8; len];
-    stream.read_exact(&mut buf)?;
-
-    bincode::deserialize(&buf).map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
-}
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -476,7 +434,7 @@ fn main() {
 
             let main_thread = std::thread::spawn(move || {
                 match start_loop(rom_path.as_str(), is_clean) {
-                    0 => eprintln!("DEBUG: start_loop succeeded"),
+                    0 => println!("DEBUG: start_loop succeeded"),
                     code => {
                         eprintln!("Failed to start monitor loop (exit code: {})", code);
                         std::process::exit(1);
