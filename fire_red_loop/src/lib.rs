@@ -106,15 +106,24 @@ fn fill_static_name_repo(buffer: &[u8], offset: usize) {
 }
 
 pub fn get_party_size() -> u8 {
-    get_party().number_pokemon
+    match get_party() {
+        Some(party) => party.number_pokemon,
+        None => 0,
+    }
 }
 
 pub fn get_party_members() -> Vec<Pokemon> {
-    get_party().members.clone()
+    match get_party() {
+        Some(party) => party.members.clone(),
+        None => Vec::new(),
+    }
 }
 
 pub fn get_party_member(pos: usize) -> Pokemon {
-    get_party().members[pos].clone()
+    match get_party() {
+        Some(party) => party.members[pos].clone(),
+        None => Pokemon::default(),
+    }
 }
 
 pub fn get_box_list() -> Vec<BoxPokemon> {

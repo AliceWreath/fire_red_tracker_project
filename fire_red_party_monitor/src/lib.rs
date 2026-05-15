@@ -40,11 +40,14 @@ pub fn initialize_static_party(is_clean: bool) -> &'static ArcSwap<Party> {
 }
 
 pub fn get_static_party() -> &'static ArcSwap<Party> {
-    PARTY_DATA.get().unwrap()
+    PARTY_DATA.get_or_init(|| {
+        ArcSwap::from_pointee(Party::new(fire_red_rom_buffer::get_rom()))
+    })
 }
 
-pub fn get_party() -> Arc<Party> {
-    PARTY_DATA.get().expect("Something bad happened with the party ArcSwap").load_full()
+pub fn get_party() -> Option<Arc<Party>> {
+    let data = PARTY_DATA.get();
+    data.map(|arc| arc.load_full())
 }
 
 pub fn update_party() {
@@ -92,14 +95,14 @@ impl Party {
     }
     pub fn new(rom_buffer: &[u8]) -> Self {
         let command = generate_command(POKEMON_PARTY_SIZE_ADDR as u32, 1);
-        let ret = fire_red_retroarch_interfacing::get_from_retroarch(command, 3);
+        let ret = fire_red_retroarch_interfacing::get_from_retroarch(command.as_str(), 3);
         
         let number_pokemon = ret[2].parse::<u8>().expect("failed to get number of pokemon in the party");
         let mut members: Vec<Pokemon> = Vec::new();
 
         for i in 0..number_pokemon {
             let command = generate_command((POKEMON_PARTY_ADDR as u32) + (i as usize * POKEMON_SIZE) as u32, POKEMON_SIZE);
-            let ret = fire_red_retroarch_interfacing::get_from_retroarch(command, POKEMON_SIZE + 2);
+            let ret = fire_red_retroarch_interfacing::get_from_retroarch(command.as_str(), POKEMON_SIZE + 2);
             let buffer: Vec<&str> = ret.iter().map(|s| s.as_str()).collect();
             
             members.push(Pokemon::fill_struct(&buffer, 2, &rom_buffer));
@@ -114,14 +117,14 @@ impl Party {
         Self::new(fire_red_rom_buffer::get_rom())
     }
     pub fn get_species_string(&self, position: usize) -> String {
-        if position > self.members.len() {
-            return String::from(" ");
+        if position >= self.members.len() {
+            return String::from("");
         }
         self.members[position].box_mon.secure.growth.species_string.clone()
     }
     pub fn get_nickname(&self, position: usize) -> String {
-        if position > self.members.len() {
-            return String::from(" ");
+        if position >= self.members.len() {
+            return String::from("");
         }
         self.members[position].box_mon.nickname_string.clone()
     }
@@ -359,7 +362,10 @@ impl BoxPokemon {
             .iter()
             .filter_map(|n| u8::from_str_radix(n, 16).ok())
             .collect();
-        let secure_raw: [u8; 48] = secure_raw.try_into().expect("oh dear");
+        let secure_raw: [u8; 48] = match secure_raw.try_into() {
+                Ok(arr) => arr,
+                Err(_) => return None,
+            };
 
         let secure = SecureSubstruct::fill_struct(personality, ot_id, buffer, offset);
         let nickname_string = fire_red_text::gba_string_to_ascii(&nickname, nickname.len(), 0).trim_matches('\0').to_string();
@@ -390,7 +396,7 @@ impl BoxPokemon {
 }
 
 #[repr(C)]
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Default, Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Pokemon {
     pub box_mon: BoxPokemon,
 

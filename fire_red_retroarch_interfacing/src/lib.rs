@@ -22,10 +22,10 @@ pub fn get_socket() -> Arc<UdpSocket> {
 
 pub fn get_map_info() -> Vec<String> {
     let command = generate_command(MAP_GROUP_AND_NAME_ADDR, std::mem::size_of::<u32>());
-    get_from_retroarch(command, std::mem::size_of::<u32>() + 2) // +2 for the READ_CORE_MEOMORY prefix
+    get_from_retroarch(command.as_str(), std::mem::size_of::<u32>() + 2) // +2 for the READ_CORE_MEOMORY prefix
 }
 
-pub fn get_from_retroarch(command: String, expected_len_data: usize) -> Vec<String> {
+pub fn get_from_retroarch(command: &str, expected_len_data: usize) -> Vec<String> {
     let socket = get_socket();
     let _ = socket.send_to(&command.as_bytes(), RETROARCH_ADDR);
     let _ = std::thread::sleep(std::time::Duration::from_millis(50));

@@ -17,20 +17,33 @@ static NUMBER_SLOTS: usize = 30;
 static POKEMON_STORAGE_LIST: OnceLock<Mutex<PokemonStorage>> = OnceLock::new();
 static SLEEP_TIMER_IN_SECS: u64 = 5;
 static RUNNING: AtomicBool = AtomicBool::new(false);
+static THREAD_HANDLE: Mutex<Option<std::thread::JoinHandle<()>>> = Mutex::new(None);
 
 pub fn start_loop() {
-    RUNNING.swap(true, Ordering::SeqCst);
+    RUNNING.store(true, Ordering::SeqCst);
 
-    let _handle = std::thread::spawn(move || {
+    let handle = std::thread::spawn(move || {
         while RUNNING.load(Ordering::SeqCst) {
-            update_box_list();
-            std::thread::sleep(std::time::Duration::from_millis(SLEEP_TIMER_IN_SECS));
+            let result = std::panic::catch_unwind(|| update_box_list());
+            if let Err(_) = result {
+                eprintln!("Panic occurred while updating box list");
+            }
+            std::thread::sleep(std::time::Duration::from_secs(SLEEP_TIMER_IN_SECS));
         }
     });
+
+    *THREAD_HANDLE.lock().unwrap_or_else(|e| e.into_inner()) = Some(handle);
 }
 
 pub fn end_loop() {
     RUNNING.store(false, Ordering::SeqCst);
+
+    let mut handle_slot = THREAD_HANDLE.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(handle) = handle_slot.take() {
+        if let Err(e) = handle.join() {
+            eprintln!("Error joining thread: {:?}", e);
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -50,28 +63,39 @@ impl PokemonStorage {
     }
 }
 
-fn get_box_0_ram_location() -> u32 {
+fn get_box_0_ram_location() -> Option<u32> {
+    let max_retries: usize = 20;
+    let mut retries = 0;
     let command = fire_red_retroarch_interfacing::generate_command((SAVE_BLOCK_3_PTR) as u32, 4);
-    let res = fire_red_retroarch_interfacing::get_from_retroarch(command, 6);
-    let bytes: Vec<u8> = res
-        .iter()
-        .skip(2)
-        .filter_map(|s| u8::from_str_radix(s.trim(), 16).ok())
-        .collect();
-    u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) + BOX_DATA_OFFSET as u32
+    while retries < max_retries {
+        let res = fire_red_retroarch_interfacing::get_from_retroarch(command.as_str(), 6);
+        let bytes: Vec<u8> = res
+            .iter()
+            .skip(2)
+            .filter_map(|s| u8::from_str_radix(s.trim(), 16).ok())
+            .collect();
+        if bytes.len() >= 4 {
+            return Some(
+                u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])
+                    + BOX_DATA_OFFSET as u32,
+            );
+        }
+        retries += 1;
+    }
+    None
 }
 
 pub fn get_storage_entries() -> Vec<BoxPokemon> {
     PokemonStorage::get_storage_list()
         .lock()
-        .unwrap()
+        .unwrap_or_else(|e| e.into_inner())
         .entries
         .clone()
 }
 pub fn get_storage_species_set() -> HashSet<u16> {
     PokemonStorage::get_storage_list()
         .lock()
-        .unwrap()
+        .unwrap_or_else(|e| e.into_inner())
         .species_set
         .clone()
 }
@@ -85,20 +109,14 @@ pub fn get_storage_list() -> &'static Mutex<PokemonStorage> {
     })
 }
 
-pub fn check_for_new_entry(entry: &BoxPokemon) -> Option<&BoxPokemon> {
+pub fn check_for_new_entry(entry: &BoxPokemon) -> Option<()> {
     if entry.secure.growth.species == 0 {
         return None;
     }
 
-    let mut storage = POKEMON_STORAGE_LIST
-        .get_or_init(|| {
-            Mutex::new(PokemonStorage {
-                entries: Vec::new(),
-                species_set: HashSet::new(),
-            })
-        })
+    let mut storage = PokemonStorage::get_storage_list()
         .lock()
-        .unwrap();
+        .unwrap_or_else(|e| e.into_inner());
 
     if storage.species_set.contains(&entry.secure.growth.species) {
         return None;
@@ -106,21 +124,14 @@ pub fn check_for_new_entry(entry: &BoxPokemon) -> Option<&BoxPokemon> {
 
     storage.species_set.insert(entry.secure.growth.species);
     storage.entries.push(entry.clone());
-    Some(entry)
+    Some(())
 }
 
-pub fn sync_storage() -> usize {
-    let mut storage = POKEMON_STORAGE_LIST
-        .get_or_init(|| {
-            Mutex::new(PokemonStorage {
-                entries: Vec::new(),
-                species_set: HashSet::new(),
-            })
-        })
+pub fn sync_storage(list: &[BoxPokemon]) -> isize {
+    let mut storage = PokemonStorage::get_storage_list()
         .lock()
-        .unwrap();
-    let initial_size = storage.species_set.len();
-    let list = get_box_entries_from_ram();
+        .unwrap_or_else(|e| e.into_inner());
+    let initial_size: isize = storage.species_set.len() as isize;
 
     if list.is_empty() {
         storage.entries = Vec::new();
@@ -137,7 +148,7 @@ pub fn sync_storage() -> usize {
             .map(|p| p.secure.growth.species)
             .collect();
     }
-    storage.species_set.len() - initial_size
+    storage.species_set.len() as isize - initial_size
 }
 
 pub fn get_box_entries_from_ram() -> Vec<BoxPokemon> {
@@ -148,14 +159,19 @@ pub fn get_box_entries_from_ram() -> Vec<BoxPokemon> {
     let chunk_size = 5 * NUMBER_SLOTS * SLOT_SIZE;
     let full_size = NUMBER_BOXES * NUMBER_SLOTS * SLOT_SIZE;
 
+    let box_0_location = match get_box_0_ram_location() {
+        Some(loc) => loc,
+        None => {
+            println!("Unable to determine box data location in RAM.");
+            return list; // Return empty list if we can't get the location
+        }
+    };
+
     for chunk_start in (0..full_size).step_by(chunk_size) {
         let this_chunk_bytes = (full_size - chunk_start).min(chunk_size);
 
-        let command = generate_command(
-            get_box_0_ram_location() + chunk_start as u32,
-            this_chunk_bytes,
-        );
-        let ret = get_from_retroarch(command, this_chunk_bytes + 2);
+        let command = generate_command(box_0_location.saturating_add(chunk_start as u32), this_chunk_bytes);
+        let ret = get_from_retroarch(command.as_str(), this_chunk_bytes + 2);
         let data: Vec<&str> = ret.iter().map(|s| s.as_str()).collect();
 
         // guard against malformed responses
@@ -199,13 +215,15 @@ pub fn get_box_entries_from_ram() -> Vec<BoxPokemon> {
 }
 
 pub fn update_box_list() -> bool {
+    let list = get_box_entries_from_ram();
+    sync_storage(&list);
+
     let mut change_occured = false;
     let list = get_box_entries_from_ram();
     for entry in list {
         let result = check_for_new_entry(&entry);
-        if let Some(_) = result { change_occured = true };
+        if result.is_some() { change_occured = true; }
     }
-    sync_storage();
     change_occured
 }
 
@@ -227,7 +245,7 @@ pub fn scan_for_pokemon(known_personality: u32) {
     for offset in (0..ewram_size).step_by(chunk) {
         let addr = ewram_start + offset as u32;
         let command = generate_command(addr, chunk);
-        let ret = get_from_retroarch(command, chunk + 2);
+        let ret = get_from_retroarch(command.as_str(), chunk + 2);
         let data: Vec<&str> = ret.iter().map(|s| s.as_str()).collect();
         let bytes: Vec<u8> = data
             .iter()
@@ -235,9 +253,9 @@ pub fn scan_for_pokemon(known_personality: u32) {
             .filter_map(|s| u8::from_str_radix(s.trim(), 16).ok())
             .collect();
 
-        for i in 0..bytes.len().saturating_sub(4) {
-            if bytes[i..i + 4] == target {
-                println!("HIT at absolute 0x{:08X}", addr + i as u32);
+        for (i, window) in bytes.windows(4).enumerate() {
+            if window == target {
+                println!("HIT at absolute 0x{:08X}", addr.saturating_add(i as u32));
             }
         }
     }
