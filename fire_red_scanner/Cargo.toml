@@ -1,0 +1,10 @@
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[package]
+name = "fire_red_scanner"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+fire_red_get_values = { path = "../fire_red_get_values/" }
