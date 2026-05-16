@@ -5,7 +5,7 @@ use std::time::Duration;
 
 pub struct MonitorSlot {
     pub label: String,
-    pub addr: String,
+    pub _addr: String,
     pub state: Arc<Mutex<Option<GameState>>>,
 }
 
@@ -13,7 +13,7 @@ impl MonitorSlot {
     pub fn new(index: usize, addr: String) -> Self {
         Self {
             label: format!("Player {}", index + 1),
-            addr,
+            _addr: addr,
             state: Arc::new(Mutex::new(None)),
         }
     }
