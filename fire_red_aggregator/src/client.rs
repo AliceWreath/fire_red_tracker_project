@@ -12,7 +12,7 @@ pub struct MonitorSlot {
 impl MonitorSlot {
     pub fn new(index: usize, addr: String) -> Self {
         Self {
-            label: format!("Player {} ({})", index + 1, addr),
+            label: format!("Player {}", index + 1),
             addr,
             state: Arc::new(Mutex::new(None)),
         }

@@ -76,6 +76,7 @@ impl AggregatorApp {
         label: &str,
         state: &Option<GameState>,
         textures: &HashMap<String, egui::TextureHandle>,
+        all_states: &[(String, Option<GameState>)],
     ) {
         ui.heading(label);
         ui.separator();
@@ -102,8 +103,14 @@ impl AggregatorApp {
         }
 
         for (idx, pokemon) in gs.party.iter().enumerate() {
-            Self::draw_party_member(ui, idx, pokemon, textures);
-            ui.separator();
+            let other_states: Vec<(String, Option<GameState>)> = all_states
+            .iter()
+            .filter(|(l, _)| l != label)
+            .cloned()
+            .collect();
+
+        Self::draw_party_member(ui, idx, pokemon, textures, &other_states);
+        ui.separator();
         }
 
         ui.add_space(8.0);
@@ -112,8 +119,8 @@ impl AggregatorApp {
         egui::CollapsingHeader::new(egui::RichText::new("Encounters").strong().size(15.0))
             .default_open(true)
             .show(ui, |ui| {
-                Self::draw_encounter_section(ui, "🌿 Grass", &gs.encounters.land_mon_encounters.wild_pokemon_list, textures);
-                Self::draw_encounter_section(ui, "🌊 Water / Fishing", 
+                Self::draw_encounter_section(ui, "Grass", &gs.encounters.land_mon_encounters.wild_pokemon_list, textures);
+                Self::draw_encounter_section(ui, "Water / Fishing", 
                     &gs.encounters.water_mon_encounters.wild_pokemon_list
                         .iter()
                         .chain(gs.encounters.fishing_encounters.wild_pokemon_list.iter())
@@ -130,12 +137,32 @@ impl AggregatorApp {
         _idx: usize,
         pokemon: &Pokemon,
         textures: &HashMap<String, egui::TextureHandle>,
+        other_states: &[(String, Option<GameState>)],
     ) {
         let species = pokemon.box_mon.secure.growth.species;
         let personality = pokemon.box_mon.personality;
+        let met = pokemon.box_mon.secure.misc.met_location;
         let ot_id = pokemon.box_mon.ot_id;
         let shiny = is_shiny(personality, ot_id);
         let key = sprite_key(species, shiny);
+
+        for (other_label, other_state) in other_states {
+            if let Some(gs) = other_state {
+                for other_mon in &gs.party {
+                    if other_mon.box_mon.secure.misc.met_location == met {
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "Soul-link: {} ({})",
+                                other_mon.get_nickname_string(),
+                                other_label,
+                            ))
+                            .color(egui::Color32::from_rgb(180, 140, 255))
+                            .size(13.0),
+                        );
+                    }
+                }
+            }
+        }
 
         ui.horizontal(|ui| {
             if let Some(tex) = textures.get(&key) {
@@ -241,7 +268,7 @@ impl eframe::App for AggregatorApp {
                         egui::ScrollArea::vertical()
                             .id_source(format!("col_scroll_{}", i))
                             .show(&mut cols[col_idx], |ui| {
-                                AggregatorApp::draw_player_column(ui, label, state, textures);
+                                AggregatorApp::draw_player_column(ui, label, state, textures, &states);
                             });
                     }
                 });
