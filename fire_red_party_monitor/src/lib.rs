@@ -94,15 +94,61 @@ impl Party {
         }
     }
     pub fn new(rom_buffer: &[u8]) -> Self {
-        let command = generate_command(POKEMON_PARTY_SIZE_ADDR as u32, 1);
-        let ret = fire_red_retroarch_interfacing::get_from_retroarch(command.as_str(), 3);
-        
-        let number_pokemon = ret[2].parse::<u8>().expect("failed to get number of pokemon in the party");
+        let mut got_return = false;
+        let mut ret: Option<Vec<String>> = None;
+        let mut number_pokemon: u8 = 0;
+
+        while got_return == false {
+            let command = generate_command(POKEMON_PARTY_SIZE_ADDR as u32, 1);
+            ret = fire_red_retroarch_interfacing::get_from_retroarch(command.as_str(), 3);
+            if ret.is_none(){
+                println!("Failed to read party size, retrying...");
+                std::thread::sleep(std::time::Duration::from_millis(100));
+                continue;
+            }
+            if ret.as_ref().unwrap().len() < 3 {
+                println!("Received malformed response for party size, retrying...");
+                std::thread::sleep(std::time::Duration::from_millis(100));
+                continue;
+            }
+            let result = match ret.as_ref().unwrap()[2].parse::<i8>() {
+                Ok(v) => v,
+                Err(_) => {
+                    println!("Failed to parse party size, retrying...");
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                    continue;
+                }
+            };
+            if result < 0 {
+                println!("Received invalid party size {}, retrying...", result);
+                std::thread::sleep(std::time::Duration::from_millis(100));
+                continue;
+            }
+            number_pokemon = result as u8;
+            if number_pokemon > 6 {
+                println!("Received invalid party size {}, retrying...", number_pokemon);
+                std::thread::sleep(std::time::Duration::from_millis(100));
+                continue;
+            }
+            got_return = true;
+        }        
         let mut members: Vec<Pokemon> = Vec::new();
+        let mut ret: Option<Vec<String>>;
 
         for i in 0..number_pokemon {
-            let command = generate_command((POKEMON_PARTY_ADDR as u32) + (i as usize * POKEMON_SIZE) as u32, POKEMON_SIZE);
-            let ret = fire_red_retroarch_interfacing::get_from_retroarch(command.as_str(), POKEMON_SIZE + 2);
+            ret = None;
+            let mut got_return = false;
+            while got_return == false {
+                let command = generate_command((POKEMON_PARTY_ADDR as u32) + (i as usize * POKEMON_SIZE) as u32, POKEMON_SIZE);
+                ret = fire_red_retroarch_interfacing::get_from_retroarch(command.as_str(), POKEMON_SIZE + 2);
+                if ret.is_none() {
+                    println!("Failed to read data for party member {}, retrying...", i);
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                    continue;
+                }
+                got_return = true;
+            }
+            let ret = ret.unwrap();
             let buffer: Vec<&str> = ret.iter().map(|s| s.as_str()).collect();
             
             members.push(Pokemon::fill_struct(&buffer, 2, &rom_buffer));

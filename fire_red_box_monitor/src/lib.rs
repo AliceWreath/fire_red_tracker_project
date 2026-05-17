@@ -68,19 +68,24 @@ fn get_box_0_ram_location() -> Option<u32> {
     let mut retries = 0;
     let command = fire_red_retroarch_interfacing::generate_command((SAVE_BLOCK_3_PTR) as u32, 4);
     while retries < max_retries {
-        let res = fire_red_retroarch_interfacing::get_from_retroarch(command.as_str(), 6);
-        let bytes: Vec<u8> = res
-            .iter()
-            .skip(2)
-            .filter_map(|s| u8::from_str_radix(s.trim(), 16).ok())
-            .collect();
-        if bytes.len() >= 4 {
-            return Some(
-                u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])
-                    + BOX_DATA_OFFSET as u32,
-            );
+        match fire_red_retroarch_interfacing::get_from_retroarch(command.as_str(), 6) {
+            Some(res) => {
+                let bytes: Vec<u8> = res
+                    .iter()
+                    .skip(2)
+                    .filter_map(|s| u8::from_str_radix(s.trim(), 16).ok())
+                    .collect();
+                if bytes.len() >= 4 {
+                    return Some(
+                        u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])
+                            + BOX_DATA_OFFSET as u32,
+                    );
+                }
+            }
+            None => {
+                retries += 1;
+            }
         }
-        retries += 1;
     }
     None
 }
@@ -167,11 +172,28 @@ pub fn get_box_entries_from_ram() -> Vec<BoxPokemon> {
         }
     };
 
+    let mut retries = 0;
     for chunk_start in (0..full_size).step_by(chunk_size) {
         let this_chunk_bytes = (full_size - chunk_start).min(chunk_size);
 
-        let command = generate_command(box_0_location.saturating_add(chunk_start as u32), this_chunk_bytes);
+        let command = generate_command(
+            box_0_location.saturating_add(chunk_start as u32),
+            this_chunk_bytes,
+        );
         let ret = get_from_retroarch(command.as_str(), this_chunk_bytes + 2);
+        if ret.is_none() {
+            println!(
+                "Failed to read box data chunk starting at offset 0x{:X}",
+                chunk_start
+            );
+            retries += 1;
+            if retries >= 5 {
+                println!("Too many consecutive failures reading box data, aborting.");
+                return Vec::new();;
+            }
+            continue;
+        }
+        let ret = ret.unwrap();
         let data: Vec<&str> = ret.iter().map(|s| s.as_str()).collect();
 
         // guard against malformed responses
@@ -222,7 +244,9 @@ pub fn update_box_list() -> bool {
     let list = get_box_entries_from_ram();
     for entry in list {
         let result = check_for_new_entry(&entry);
-        if result.is_some() { change_occured = true; }
+        if result.is_some() {
+            change_occured = true;
+        }
     }
     change_occured
 }
@@ -246,6 +270,11 @@ pub fn scan_for_pokemon(known_personality: u32) {
         let addr = ewram_start + offset as u32;
         let command = generate_command(addr, chunk);
         let ret = get_from_retroarch(command.as_str(), chunk + 2);
+        if ret.is_none() {
+            println!("Failed to read EWRAM chunk starting at offset 0x{:X}", addr);
+            continue;
+        }
+        let ret = ret.unwrap();
         let data: Vec<&str> = ret.iter().map(|s| s.as_str()).collect();
         let bytes: Vec<u8> = data
             .iter()

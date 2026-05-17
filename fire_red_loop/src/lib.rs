@@ -86,8 +86,13 @@ pub fn start_loop(file_path: &str, is_clean: bool) -> c_int {
     let handle = std::thread::spawn(move || {
         while RUNNING.load(Ordering::SeqCst) {
             let data = get_map_info();
+            if data.is_none() {
+                eprintln!("Failed to get map info from RetroArch, retrying...");
+                std::thread::sleep(std::time::Duration::from_millis(500));
+                continue;
+            }
+            let data = data.unwrap();
             let current_state = get_map_ground_and_id(&data);
-            //update_party();
 
             let mut state = STATE
                 .get()

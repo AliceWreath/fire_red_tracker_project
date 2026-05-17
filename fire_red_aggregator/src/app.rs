@@ -156,7 +156,7 @@ impl AggregatorApp {
                                 other_mon.get_nickname_string(),
                                 other_label,
                             ))
-                            .color(egui::Color32::from_rgb(180, 140, 255))
+                            .color(egui::Color32::from_rgb(191, 64, 191))
                             .size(13.0),
                         );
                     }

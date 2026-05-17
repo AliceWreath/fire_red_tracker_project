@@ -2,7 +2,9 @@ use fire_red_loop::*;
 use fire_red_party_monitor::get_is_clean;
 use fire_red_states::*;
 use std::net::{TcpListener, TcpStream};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use colored::Colorize;
 
 const PARTY_WINDOW: (f32, f32) = (400.0, 800.0);
 const PARTY_IMAGE_SIZE: (f32, f32) = (64.0, 64.0);
@@ -13,7 +15,7 @@ static FORCE_PARTY_CHECK_TIME_IN_SECS: u64 = 5;
 static MAIN_THREAD_HANDLE: Mutex<Option<std::thread::JoinHandle<()>>> = Mutex::new(None);
 static CLIENT_THREAD_HANDLE: Mutex<Option<std::thread::JoinHandle<()>>> = Mutex::new(None);
 static SERVER_THREAD_HANDLE: Mutex<Option<std::thread::JoinHandle<()>>> = Mutex::new(None);
-
+static RUNNING: AtomicBool = AtomicBool::new(true);
 struct WindowInfo {
     party_list: Arc<Mutex<Vec<fire_red_party_monitor::Pokemon>>>,
     encounter_list: Arc<Mutex<fire_red_pokemon_data::WildPokemonHeader>>,
@@ -46,7 +48,11 @@ impl eframe::App for WindowInfo {
 
         // load any missing textures before drawing
         {
-            let list = self.party_list.lock().unwrap_or_else(|e| e.into_inner()).clone();
+            let list = self
+                .party_list
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone();
             let encounter_list = self
                 .encounter_list
                 .lock()
@@ -364,8 +370,6 @@ pub fn load_texture_normal(
     ))
 }
 
-
-
 fn main() {
     let args: Vec<String> = std::env::args().collect();
 
@@ -572,8 +576,26 @@ fn main() {
                     std::thread::sleep(std::time::Duration::from_secs(3));
                 }
             });
-            *CLIENT_THREAD_HANDLE.lock().unwrap_or_else(|e| e.into_inner()) = Some(client_thread);
+            *CLIENT_THREAD_HANDLE
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()) = Some(client_thread);
         }
+    }
+
+    if let Mode::Server { .. } = &mode {
+        // No GUI needed just wait for the server thread to finish (which will be never in normal operation)
+        println!("{}", "***** Server mode - no GUI. Press Ctrl-C to exit. *****".green().bold());
+
+        ctrlc::set_handler(|| {
+            RUNNING.store(false, Ordering::SeqCst);
+        })
+        .expect("Error setting Ctrl+C handler");
+
+        while RUNNING.load(Ordering::SeqCst) {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+
+        return;
     }
 
     let options = eframe::NativeOptions {
