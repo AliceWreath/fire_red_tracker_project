@@ -8,12 +8,12 @@ Standalone: ./executable /path/to/rom.gba
 Client: ./executable /path/to/rom.gba --client addr:port
 Server: ./executable /path/to/rom.gba --server port
   
-# Standalone
+## Standalone
   This will create 2 windows one for party data and one for encounter data.
-# Client
+## Client
   This will create 2 windows one for party data and one for encounter data, and get all its
   data from an executable running in server mode
-# Server
+## Server
   This will generate the data but not display it. To view the data, connect with an executable
   in Client Mode or use the Aggregator program
 
