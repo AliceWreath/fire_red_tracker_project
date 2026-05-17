@@ -21,3 +21,6 @@ Server: ./executable /path/to/rom.gba --server port
 This program connects to up to 4 Fire Red Monitor executables in server mode.
 It takes in their data and formats it all into a single window.
 syntax: ./executable /path/to/rom --ip:port --ip:port ...etc
+
+# Dependencies
+bincode, serde, serde-big-array, eframe, egui, rusqlite, image, libc, colored, arc-swap, once_cell,
