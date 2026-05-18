@@ -1,13 +1,12 @@
+use colored::Colorize;
 use fire_red_loop::*;
 use fire_red_party_monitor::get_is_clean;
 use fire_red_states::*;
-use image::codecs::png::CompressionType;
 use std::collections::{HashMap, VecDeque};
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use colored::Colorize;
 
 const PARTY_WINDOW: (f32, f32) = (400.0, 800.0);
 const PARTY_IMAGE_SIZE: (f32, f32) = (64.0, 64.0);
@@ -37,7 +36,8 @@ pub enum ServerMessage {
 #[derive(serde::Serialize, serde::Deserialize, Clone)]
 pub struct SpriteData {
     pub species: u16,
-    pub pixels: Vec<u8>,
+    pub shiny: bool,
+    pub pixels: Vec<u8>, //zlib compressed RGBA
     pub width: u32,
     pub height: u32,
 }
@@ -45,8 +45,8 @@ pub struct SpriteData {
 // Send/receive data helpers
 
 fn send_message<T: serde::Serialize>(stream: &mut TcpStream, msg: &T) -> std::io::Result<()> {
-    let encoded = bincode::serialize(msg)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+    let encoded =
+        bincode::serialize(msg).map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
     let len = encoded.len() as u32;
     stream.write_all(&len.to_be_bytes())?;
     stream.write_all(&encoded)?;
@@ -56,7 +56,7 @@ fn send_message<T: serde::Serialize>(stream: &mut TcpStream, msg: &T) -> std::io
 fn recv_message<T: serde::de::DeserializeOwned>(stream: &mut TcpStream) -> std::io::Result<T> {
     let mut len_buf = [0u8; 4];
     stream.read_exact(&mut len_buf)?;
-    let len = u32::from_be_bytes(len_but) as usize;
+    let len = u32::from_be_bytes(len_buf) as usize;
     if len > MAX_MESSAGE_SIZE {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
@@ -87,18 +87,25 @@ fn decompress_pixels(data: &[u8]) -> Vec<u8> {
 
 // server side sprite cache
 
-fn build_sprite_data(rom: &[u8], species: u16) -> Option<SpriteData> {
-    let img = fire_red_image_data::get_pokemon_sprite(rom, species, false).ok()?;
+fn build_sprite_data(rom: &[u8], species: u16, shiny: bool) -> Option<SpriteData> {
+    let img = fire_red_image_data::get_pokemon_sprite(rom, species, shiny).ok()?;
     let width = img.width();
     let height = img.height();
     let pixels = compress_pixels(&img.into_raw());
-    Some(SpriteData { species, pixels, width, height })
+    Some(SpriteData {
+        species,
+        shiny,
+        pixels,
+        width,
+        height,
+    })
 }
 
 // GUI state
 
 struct PendingTexture {
     species: u16,
+    shiny: bool,
     pixels: Vec<u8>, // decompressed RGBA
     width: u32,
     height: u32,
@@ -148,12 +155,20 @@ impl eframe::App for WindowInfo {
 
         // drain textures received from server in client mode
         {
-            let mut pending = self.pending_textures.lock().unwrap_or_else(|e| e.into_inner());
+            let mut pending = self
+                .pending_textures
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
             for pt in pending.drain(..) {
-                let key = format!("pokemon_{}_normal", pt_species);
+                let key = format!(
+                    "pokemon_{}_{}",
+                    pt.species,
+                    if pt.shiny { "shiny" } else { "normal" }
+                );
                 let color_image = egui::ColorImage::from_rgba_unmultiplied(
                     [pt.width as usize, pt.height as usize],
-                    &pt.pixels);
+                    &pt.pixels,
+                );
                 let handle = ctx.load_texture(&key, color_image, egui::TextureOptions::NEAREST);
                 self.textures.insert(key, handle);
 
@@ -162,9 +177,11 @@ impl eframe::App for WindowInfo {
                 if !self.textures.contains_key(&shiny_key) {
                     let color_image2 = egui::ColorImage::from_rgba_unmultiplied(
                         [pt.width as usize, pt.height as usize],
-                        &pt.pixels);
-                    let handle2 = ctx.load_texture(&shiny_key, color_image2, egui::TextureOptions::NEAREST);
-                        self.textures.insert(shiny_key, handle2);
+                        &pt.pixels,
+                    );
+                    let handle2 =
+                        ctx.load_texture(&shiny_key, color_image2, egui::TextureOptions::NEAREST);
+                    self.textures.insert(shiny_key, handle2);
                 }
             }
         }
@@ -183,27 +200,8 @@ impl eframe::App for WindowInfo {
             let missing: Vec<(u16, u32, u32)> = list
                 .iter()
                 .map(|p| {
-                    (   // see line 203
-                        p.box
-                    )
-                })
-        }
-        // load any missing textures before drawing
-        {
-            let list = self
-                .party_list
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .clone();
-            let encounter_list = self
-                .encounter_list
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
-
-            let missing: Vec<(u16, u32, u32)> = list
-                .iter()
-                .map(|p| {
                     (
+                        // see line 203
                         p.box_mon.secure.growth.species,
                         p.box_mon.personality,
                         p.box_mon.ot_id,
@@ -222,7 +220,6 @@ impl eframe::App for WindowInfo {
                     !self.textures.contains_key(&key)
                 })
                 .collect();
-
             let encounter_iters = encounter_list
                 .land_mon_encounters
                 .wild_pokemon_list
@@ -236,45 +233,42 @@ impl eframe::App for WindowInfo {
                 )
                 .chain(encounter_list.fishing_encounters.wild_pokemon_list.iter());
 
-            // In the missing vec, use a sentinel that won't be shiny
-            // Replace the wild pokemon push:
             for wild_pokemon in encounter_iters {
                 if wild_pokemon.species == 0 || wild_pokemon.species > 386 {
-                    continue; // skip invalid species
+                    continue;
                 }
                 let key = format!("pokemon_{}_normal", wild_pokemon.species);
                 if !self.textures.contains_key(&key) {
-                    // Load and insert directly, bypassing the shiny logic
-                    let texture = load_texture_normal(
-                        ctx,
-                        fire_red_rom_buffer::get_rom(),
-                        wild_pokemon.species,
-                    )
-                    .unwrap_or_else(|_| {
-                        eprintln!(
-                            "Failed to load texture for species {}. Using placeholder.",
-                            wild_pokemon.species
-                        );
-                        // Create a simple placeholder texture (e.g., a red square)
-                        let size = [PARTY_IMAGE_SIZE.0 as usize, PARTY_IMAGE_SIZE.1 as usize];
-                        let pixels = vec![255u8, 0, 0, 255].repeat(size[0] * size[1]);
-                        let color_image = egui::ColorImage::from_rgba_unmultiplied(size, &pixels);
-                        ctx.load_texture(
-                            format!("pokemon_{}_placeholder", wild_pokemon.species),
-                            color_image,
-                            egui::TextureOptions::NEAREST,
+                    if self.texture_request_queue.is_some() {
+                        // requests from server when in client mode
+                        let known = self.known_species.lock().unwrap_or_else(|e| e.into_inner());
+                        if !known.contains(&wild_pokemon.species) {
+                            needed_for_request.push(wild_pokemon.species);
+                        }
+                    } else {
+                        // standalone / server mode so it loads from the rom
+                        let texture = load_texture_normal(
+                            ctx,
+                            fire_red_rom_buffer::get_rom(),
+                            wild_pokemon.species,
                         )
-                    });
-                    self.textures.insert(key, texture);
+                        .unwrap_or_else(|_| {
+                            eprintln!(
+                                "Failed to load textures for species {}. Using placeholder.",
+                                wild_pokemon.species
+                            );
+                            make_placeholder(ctx, wild_pokemon.species)
+                        });
+                        self.textures.insert(key, texture);
+                    }
                 }
             }
 
-            drop(list);
             drop(encounter_list);
 
             for (species, personality, ot_id) in missing {
                 if species == 0 || species > 386 {
-                    continue; // skip invalid species
+                    continue;
                 }
                 let key = format!(
                     "pokemon_{}_{}",
@@ -285,29 +279,40 @@ impl eframe::App for WindowInfo {
                         "normal"
                     }
                 );
-                let texture = load_texture(
-                    ctx,
-                    fire_red_rom_buffer::get_rom(),
-                    species,
-                    personality,
-                    ot_id,
-                )
-                .unwrap_or_else(|_| {
-                    eprintln!(
-                        "Failed to load texture for species {}. Using placeholder.",
-                        species
-                    );
-                    // Create a simple placeholder texture (e.g., a red square)
-                    let size = [PARTY_IMAGE_SIZE.0 as usize, PARTY_IMAGE_SIZE.1 as usize];
-                    let pixels = vec![255u8, 0, 0, 255].repeat(size[0] * size[1]);
-                    let color_image = egui::ColorImage::from_rgba_unmultiplied(size, &pixels);
-                    ctx.load_texture(
-                        format!("pokemon_{}_placeholder", species),
-                        color_image,
-                        egui::TextureOptions::NEAREST,
+                if self.texture_request_queue.is_some() {
+                    let known = self.known_species.lock().unwrap_or_else(|e| e.into_inner());
+                    if !known.contains(&species) {
+                        needed_for_request.push(species);
+                    }
+                } else {
+                    let texture = load_texture(
+                        ctx,
+                        fire_red_rom_buffer::get_rom(),
+                        species,
+                        personality,
+                        ot_id,
                     )
-                });
-                self.textures.insert(key, texture);
+                    .unwrap_or_else(|_| {
+                        eprintln!(
+                            "Failed to load texture for species {}. Using placeholder.",
+                            species
+                        );
+                        make_placeholder(ctx, species)
+                    });
+                    self.textures.insert(key, texture);
+                }
+            }
+
+            // push any new requests into the shared queue
+            if !needed_for_request.is_empty() {
+                needed_for_request.sort();
+                needed_for_request.dedup();
+                if let Some(queue) = &self.texture_request_queue {
+                    queue
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .push_back(needed_for_request);
+                }
             }
         }
 
@@ -460,6 +465,8 @@ impl WindowInfo {
     }
 }
 
+// texture helpers
+
 pub fn load_texture(
     ctx: &egui::Context,
     rom: &[u8],
@@ -483,19 +490,6 @@ pub fn load_texture(
     ))
 }
 
-fn fill_party_list(thread_party: &Arc<Mutex<Vec<fire_red_party_monitor::Pokemon>>>) {
-    let mut list = thread_party.lock().unwrap_or_else(|e| e.into_inner());
-    *list = get_party_members();
-}
-
-pub fn is_shiny(personality: u32, ot_id: u32) -> bool {
-    let p1 = (personality >> 16) as u16;
-    let p2 = (personality & 0xFFFF) as u16;
-    let id1 = (ot_id >> 16) as u16;
-    let id2 = (ot_id & 0xFFFF) as u16;
-    (p1 ^ p2 ^ id1 ^ id2) < 8
-}
-
 pub fn load_texture_normal(
     ctx: &egui::Context,
     rom: &[u8],
@@ -512,25 +506,133 @@ pub fn load_texture_normal(
     ))
 }
 
+fn make_placeholder(ctx: &egui::Context, species: u16) -> egui::TextureHandle {
+    let size = [PARTY_IMAGE_SIZE.0 as usize, PARTY_IMAGE_SIZE.1 as usize];
+    let pixels = vec![255u8, 0, 0, 255].repeat(size[0] * size[1]);
+    let color_image = egui::ColorImage::from_rgba_unmultiplied(size, &pixels);
+    ctx.load_texture(
+        format!("pokemon_{}_placeholder", species),
+        color_image,
+        egui::TextureOptions::NEAREST,
+    )
+}
+
+fn fill_party_list(thread_party: &Arc<Mutex<Vec<fire_red_party_monitor::Pokemon>>>) {
+    let mut list = thread_party.lock().unwrap_or_else(|e| e.into_inner());
+    *list = get_party_members();
+}
+
+pub fn is_shiny(personality: u32, ot_id: u32) -> bool {
+    let p1 = (personality >> 16) as u16;
+    let p2 = (personality & 0xFFFF) as u16;
+    let id1 = (ot_id >> 16) as u16;
+    let id2 = (ot_id & 0xFFFF) as u16;
+    (p1 ^ p2 ^ id1 ^ id2) < 8
+}
+
+// handle connected client bidirectional
+
+fn handle_client(
+    stream: TcpStream,
+    server_party: Arc<Mutex<Vec<fire_red_party_monitor::Pokemon>>>,
+    server_encounters: Arc<Mutex<fire_red_pokemon_data::WildPokemonHeader>>,
+    sprite_cache: Arc<Mutex<HashMap<(u16, bool), SpriteData>>>,
+) {
+    println!(
+        "Client connected: {}",
+        stream
+            .peer_addr()
+            .map_or_else(|_| "unknown".to_string(), |a| a.to_string())
+    );
+
+    let read_stream = match stream.try_clone() {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("Failed to clone stream: {}", e);
+            return;
+        }
+    };
+    let write_stream = Arc::new(Mutex::new(stream));
+
+    // reader thread handles client texture requests
+    let write_stream_for_reader = write_stream.clone();
+    let sprite_cache_for_reader = sprite_cache.clone();
+    std::thread::spawn(move || {
+        let mut read_stream = read_stream;
+        loop {
+            match recv_message::<ClientMessage>(&mut read_stream) {
+                Ok(ClientMessage::RequestTextures(species_list)) => {
+                    let rom = fire_red_rom_buffer::get_rom();
+                    let mut sprites: Vec<SpriteData> = Vec::new();
+
+                    for species in species_list {
+                        if species == 0 || species > 386 {
+                            continue;
+                        }
+
+                        for shiny in [false, true] {
+                            let cache_key = (species, shiny);
+                            let mut cache = sprite_cache_for_reader
+                                .lock()
+                                .unwrap_or_else(|e| e.into_inner());
+                            if !cache.contains_key(&cache_key) {
+                                if let Some(data) = build_sprite_data(rom, species, shiny) {
+                                    cache.insert(cache_key, data.clone());
+                                    sprites.push(data);
+                                }
+                            } else {
+                                sprites.push(cache[&cache_key].clone());
+                            }
+                        }
+                    }
+
+                    if !sprites.is_empty() {
+                        let mut ws = write_stream_for_reader
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner());
+                        if send_message(&mut *ws, &ServerMessage::Textures(sprites)).is_err() {
+                            break;
+                        }
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+    });
+
+    // write lop to push gamestate every 100ms
+    loop {
+        let state = {
+            let party = server_party.lock().unwrap_or_else(|e| e.into_inner());
+            let encounters = server_encounters.lock().unwrap_or_else(|e| e.into_inner());
+            GameState {
+                party: party.clone(),
+                encounters: encounters.clone(),
+            }
+        };
+
+        let mut ws = write_stream.lock().unwrap_or_else(|e| e.into_inner());
+        if send_message(&mut *ws, &ServerMessage::State(state)).is_err() {
+            println!("Client disconnected");
+            break;
+        }
+        drop(ws);
+
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
 
     let mode = match args.get(1).map(|s| s.as_str()) {
         Some("--client") => {
-            let rom_path = args.get(2).cloned().unwrap_or_else(|| {
-                eprintln!("Usage: {} --client firered.gba [host] [port]", args[0]);
-                std::process::exit(1);
-            });
             let host = args
-                .get(3)
+                .get(2)
                 .cloned()
                 .unwrap_or_else(|| "127.0.0.1".to_string());
-            let port = args.get(4).and_then(|p| p.parse().ok()).unwrap_or(7878);
-            Mode::Client {
-                rom_path,
-                host,
-                port,
-            }
+            let port = args.get(3).and_then(|p| p.parse().ok()).unwrap_or(7878);
+            Mode::Client { host, port }
         }
         Some(_) => match args.get(2).map(|s| s.as_str()) {
             Some("--server") => {
@@ -542,15 +644,15 @@ fn main() {
         None => {
             eprintln!("Usage:");
             eprintln!(
-                "  {} firered.gba [--clean]                    (standalone)",
+                "  {} /path/to/rom.gba [--clean]                    (standalone)",
                 args[0]
             );
             eprintln!(
-                "  {} firered.gba --server [port]              (default port 7878)",
+                "  {} /path/to/rom.gba --server [port]              (default port 7878)",
                 args[0]
             );
             eprintln!(
-                "  {} --client firered.gba [host] [port]       (default 127.0.0.1:7878)",
+                "  {} --client [host] [port]                        (default 127.0.0.1:7878)",
                 args[0]
             );
             return;
@@ -562,6 +664,19 @@ fn main() {
     let shared_encounters: Arc<Mutex<fire_red_pokemon_data::WildPokemonHeader>> = Arc::new(
         Mutex::new(fire_red_pokemon_data::WildPokemonHeader::default()),
     );
+
+    // shared sprite cache
+    let sprite_cache: Arc<Mutex<HashMap<(u16, bool), SpriteData>>> =
+        Arc::new(Mutex::new(HashMap::new()));
+
+    // client-mode texture pipeline
+    let pending_textures: Arc<Mutex<Vec<PendingTexture>>> = Arc::new(Mutex::new(Vec::new()));
+    let known_species: Arc<Mutex<std::collections::HashSet<u16>>> =
+        Arc::new(Mutex::new(std::collections::HashSet::new()));
+
+    // shared queue for texture request to survive disconnects
+    let texture_request_queue: Arc<Mutex<VecDeque<Vec<u16>>>> =
+        Arc::new(Mutex::new(VecDeque::new()));
 
     match &mode {
         Mode::Standalone | Mode::Server { .. } => {
@@ -624,10 +739,12 @@ fn main() {
             });
 
             *MAIN_THREAD_HANDLE.lock().unwrap_or_else(|e| e.into_inner()) = Some(main_thread);
+
             if let Mode::Server { port } = &mode {
                 let port = *port;
                 let server_party = shared_party.clone();
                 let server_encounters = shared_encounters.clone();
+                let server_sprite_cache = sprite_cache.clone();
 
                 let server_thread = std::thread::spawn(move || {
                     let listener = match TcpListener::bind(format!("0.0.0.0:{}", port)) {
@@ -641,112 +758,112 @@ fn main() {
                     println!("Server listening on port {}", port);
 
                     for stream in listener.incoming() {
+                        if !RUNNING.load(Ordering::SeqCst) {
+                            break;
+                        }
                         match stream {
-                            Ok(mut stream) => {
-                                println!(
-                                    "Client connected: {}",
-                                    stream
-                                        .peer_addr()
-                                        .map_or_else(|_| "unknown".to_string(), |a| a.to_string())
-                                );
-                                let sprite_cache: HashMap<u16, SpriteData> = HashMap::new();
-                                let sprite_cache = Arc::new(Mutex::new(sprite_cache));
-
-                                //spawn a reader thread for incoming texture requests
-                                let cache_clone = sprite_cache.clone();
-                                let mut read_stream = stream.try_clone().unwrap();
+                            Ok(stream) => {
+                                let party = server_party.clone();
+                                let encounters = server_encounters.clone();
+                                let cache = server_sprite_cache.clone();
                                 std::thread::spawn(move || {
-                                    loop {
-                                        match recv_client_message(&mut read_stream) {
-                                            Ok(ClientMessage::RequestTextures(species_list)) => {
-                                                let rom = fire_red_rom_buffer::get_rom();
-                                                let mut responses = Vec::new();
-
-                                                for species in species_list {
-                                                    let mut cache = cache_clone.lock().unwrap();
-                                                    if !cache.contains_key(&species) {
-                                                        if let Ok(img) = fire_red_image_data::get_pokemon_sprite(rom, species, false) {
-                                                            let pixels = compress(img.into_raw());
-                                                            let data = SpriteData {
-                                                                species,
-                                                                pixels,
-                                                                width: img.width(),
-                                                                height: img.height(),
-                                                            };
-                                                            cache.insert(species, data.clone());
-                                                            responses.push(data);
-                                                        }
-                                                    } else {
-                                                        responses.push(cache[&species].clone());
-                                                    }
-
-                                                    // send back - need to write_stream references here
-                                                }
-                                                Err()) => break,
-                                            }
-                                        }
-                                    }
+                                    handle_client(stream, party, encounters, cache);
                                 });
-                                loop {
-                                    let state = {
-                                        let party =
-                                            server_party.lock().unwrap_or_else(|e| e.into_inner());
-                                        let encounters = server_encounters
-                                            .lock()
-                                            .unwrap_or_else(|e| e.into_inner());
-                                        GameState {
-                                            party: party.clone(),
-                                            encounters: encounters.clone(),
-                                        }
-                                    };                                    
-
-                                    if send_state(&mut stream, &state).is_err() {
-                                        println!("Client disconnected");
-                                        break;
-                                    }
-
-                                    if send_server_message(&mut stream, &ServerMessage::State(state)).is_err() {
-                                        break;
-                                    }
-
-                                    std::thread::sleep(std::time::Duration::from_millis(100));
-                                }
                             }
                             Err(e) => eprintln!("Connection error: {}", e),
                         }
                     }
                 });
+
                 *SERVER_THREAD_HANDLE
                     .lock()
                     .unwrap_or_else(|e| e.into_inner()) = Some(server_thread);
             }
         }
 
-        Mode::Client {
-            rom_path,
-            host,
-            port,
-        } => {
-            fire_red_rom_buffer::init_rom(rom_path).expect("Failed to load ROM");
-
+        Mode::Client { host, port } => {
             let client_party = shared_party.clone();
             let client_encounters = shared_encounters.clone();
+            let client_pending = pending_textures.clone();
+            let client_known = known_species.clone();
+            let client_queue = texture_request_queue.clone();
             let addr = format!("{}:{}", host, port);
 
             let client_thread = std::thread::spawn(move || {
                 loop {
                     println!("Connecting to server at {}...", addr);
                     match TcpStream::connect(&addr) {
-                        Ok(mut stream) => {
+                        Ok(stream) => {
                             println!("Connected!");
+
+                            let mut write_stream = match stream.try_clone() {
+                                Ok(s) => s,
+                                Err(e) => {
+                                    eprintln!("Failed to clone stream: {}", e);
+                                    break;
+                                }
+                            };
+                            let mut read_stream = stream;
+
+                            // flag so the reader can signal to stop
+                            let connected = Arc::new(AtomicBool::new(true));
+                            let connected_writer = connected.clone();
+                            let writer_queue = client_queue.clone();
+
+                            // write thread drains the shared request queue
+                            let writer = std::thread::spawn(move || {
+                                while connected_writer.load(Ordering::SeqCst) {
+                                    let batch = {
+                                        let mut q =
+                                            writer_queue.lock().unwrap_or_else(|e| e.into_inner());
+                                        // flattern pending batches into one message
+                                        let mut all: Vec<u16> = q.drain(..).flatten().collect();
+                                        all.sort();
+                                        all.dedup();
+                                        all
+                                    };
+
+                                    if !batch.is_empty() {
+                                        if send_message(
+                                            &mut write_stream,
+                                            &ClientMessage::RequestTextures(batch),
+                                        )
+                                        .is_err()
+                                        {
+                                            break;
+                                        }
+                                    }
+
+                                    std::thread::sleep(std::time::Duration::from_millis(50));
+                                }
+                            });
+
+                            // reader loop
                             loop {
-                                match recv_state(&mut stream) {
-                                    Ok(state) => {
+                                match recv_message::<ServerMessage>(&mut read_stream) {
+                                    Ok(ServerMessage::State(state)) => {
                                         *client_party.lock().unwrap_or_else(|e| e.into_inner()) =
                                             state.party;
                                         *client_encounters
                                             .lock()
                                             .unwrap_or_else(|e| e.into_inner()) = state.encounters;
+                                    }
+                                    Ok(ServerMessage::Textures(sprites)) => {
+                                        let mut pending = client_pending
+                                            .lock()
+                                            .unwrap_or_else(|e| e.into_inner());
+                                        let mut known =
+                                            client_known.lock().unwrap_or_else(|e| e.into_inner());
+                                        for sprite in sprites {
+                                            known.insert(sprite.species);
+                                            pending.push(PendingTexture {
+                                                species: sprite.species,
+                                                shiny: sprite.shiny,
+                                                pixels: decompress_pixels(&sprite.pixels),
+                                                width: sprite.width,
+                                                height: sprite.height,
+                                            })
+                                        }
                                     }
                                     Err(e) => {
                                         eprintln!("Lost connection: {}", e);
@@ -754,21 +871,32 @@ fn main() {
                                     }
                                 }
                             }
+
+                            // signal writer to stop and wait
+                            connected.store(false, Ordering::SeqCst);
+                            let _ = writer.join();
                         }
                         Err(e) => eprintln!("Failed to connect: {}", e),
                     }
                     std::thread::sleep(std::time::Duration::from_secs(3));
                 }
             });
+
             *CLIENT_THREAD_HANDLE
                 .lock()
                 .unwrap_or_else(|e| e.into_inner()) = Some(client_thread);
         }
     }
 
+    // server mode: headless and wait for Ctrl-C
     if let Mode::Server { .. } = &mode {
         // No GUI needed just wait for the server thread to finish (which will be never in normal operation)
-        println!("{}", "***** Server mode - no GUI. Press Ctrl-C to exit. *****".green().bold());
+        println!(
+            "{}",
+            "***** Server mode - no GUI. Press Ctrl-C to exit. *****"
+                .green()
+                .bold()
+        );
 
         ctrlc::set_handler(|| {
             RUNNING.store(false, Ordering::SeqCst);
@@ -782,6 +910,7 @@ fn main() {
         return;
     }
 
+    // gui for standalone and client
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([PARTY_WINDOW.0, PARTY_WINDOW.1]),
@@ -791,11 +920,13 @@ fn main() {
     let app_title = match &mode {
         Mode::Standalone => "Tracker".to_string(),
         Mode::Server { port } => format!("Tracker (Server :{})", port),
-        Mode::Client {
-            host,
-            port,
-            rom_path: _,
-        } => format!("Tracker (client {}:{})", host, port),
+        Mode::Client { host, port } => format!("Tracker (client {}:{})", host, port),
+    };
+
+    // client mode: pass the queue so the gui can request textures from the network
+    let queue_for_gui = match &mode {
+        Mode::Client { .. } => Some(texture_request_queue),
+        _ => None,
     };
 
     let _ = eframe::run_native(
@@ -806,6 +937,9 @@ fn main() {
                 cc,
                 shared_party,
                 shared_encounters,
+                pending_textures,
+                known_species,
+                queue_for_gui,
             )))
         }),
     );

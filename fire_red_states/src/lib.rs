@@ -35,7 +35,6 @@ pub enum Mode {
         port: u16,
     },
     Client {
-        rom_path: String,
         host: String,
         port: u16,
     },
