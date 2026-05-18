@@ -189,7 +189,7 @@ pub fn get_box_entries_from_ram() -> Vec<BoxPokemon> {
             retries += 1;
             if retries >= 5 {
                 println!("Too many consecutive failures reading box data, aborting.");
-                return Vec::new();;
+                return Vec::new();
             }
             continue;
         }

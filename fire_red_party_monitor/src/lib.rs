@@ -95,7 +95,7 @@ impl Party {
     }
     pub fn new(rom_buffer: &[u8]) -> Self {
         let mut got_return = false;
-        let mut ret: Option<Vec<String>> = None;
+        let mut ret: Option<Vec<String>>;
         let mut number_pokemon: u8 = 0;
 
         while got_return == false {

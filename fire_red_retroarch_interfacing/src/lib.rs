@@ -33,7 +33,7 @@ pub fn get_from_retroarch(command: &str, expected_len_data: usize) -> Option<Vec
     let mut buf = [0u8; BUFFER_SIZE];
 
     match socket.recv_from(&mut buf) {
-        Ok((n, src)) => {
+        Ok((n, _src)) => {
             let resp = String::from_utf8_lossy(&buf[..n]);
             let parts: Vec<&str> = resp.split_whitespace().collect();
     
