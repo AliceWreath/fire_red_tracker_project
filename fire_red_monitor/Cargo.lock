@@ -1316,6 +1316,7 @@ dependencies = [
  "fire_red_pokemon_data",
  "fire_red_rom_buffer",
  "fire_red_states",
+ "flate2",
  "image",
  "serde",
 ]

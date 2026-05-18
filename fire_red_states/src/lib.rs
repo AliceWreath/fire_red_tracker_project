@@ -3,6 +3,25 @@ use std::io::{Read, Write};
 
 const MAX_STATE_SIZE: usize = 10 * 1024 * 1024; // 10 MB, should be enough for party + encounters, adjust as needed
 
+#[derive(serde::Serialize, serde::Deserialize)]
+pub enum ClientMessage {
+    RequestTextures(Vec<u16>), // List of species IDs for which textures are requested
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+pub enum ServerMessage {
+    State(GameState),
+    Textures(Vec<SpriteData>),
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+pub struct SpriteData {
+    pub species: u16,
+    pub pixels: Vec<u8>, // compressed
+    pub width: u32,
+    pub height: u32,
+}
+
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
 pub struct GameState {
     pub party: Vec<fire_red_party_monitor::Pokemon>,

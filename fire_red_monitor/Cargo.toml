@@ -10,6 +10,7 @@ image = "0.25"
 bincode = "1"
 serde = { version = "1", features = ["derive"] }
 ctrlc = "3"
+flate2 = "1"
 fire_red_loop = { path = "../fire_red_loop/" }
 fire_red_party_monitor = { path = "../fire_red_party_monitor/" }
 fire_red_image_data = { path = "../fire_red_image_data/" }
