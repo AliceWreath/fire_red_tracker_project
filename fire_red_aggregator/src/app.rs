@@ -24,48 +24,83 @@ impl AggregatorApp {
         }
     }
 
-    fn ensure_textures(&mut self, ctx: &egui::Context) {
-        let rom = fire_red_rom_buffer::get_rom();
-
+    /// Drain pending textures arriving from each slot's network thread and
+    /// load them into egui. Also enqueue requests for any species we haven't
+    /// seen yet.
+    fn process_textures(&mut self, ctx: &egui::Context) {
         for slot in &self.slots {
-            let state_guard = slot.state.lock().unwrap_or_else(|e| e.into_inner());
-            let gs = match state_guard.as_ref() {
-                Some(gs) => gs,
-                None => continue,
-            };
-
-            // Party sprites (may be shiny)
-            for p in &gs.party {
-                let species = p.box_mon.secure.growth.species;
-                let personality = p.box_mon.personality;
-                let ot_id = p.box_mon.ot_id;
-                if species == 0 || species > 386 {
-                    continue;
-                }
-                let shiny = is_shiny(personality, ot_id);
-                let key = sprite_key(species, shiny);
-                if !self.textures.contains_key(&key) {
-                    if let Ok(tex) = load_texture(ctx, rom, species, personality, ot_id) {
-                        self.textures.insert(key, tex);
-                    }
+            // ── Drain arrived textures ───────────────────────────────────────
+            {
+                let mut pending =
+                    slot.pending_textures.lock().unwrap_or_else(|e| e.into_inner());
+                for pt in pending.drain(..) {
+                    let key = sprite_key(pt.species, pt.shiny);
+                    let color_image = egui::ColorImage::from_rgba_unmultiplied(
+                        [pt.width as usize, pt.height as usize],
+                        &pt.pixels,
+                    );
+                    let handle =
+                        ctx.load_texture(&key, color_image, egui::TextureOptions::NEAREST);
+                    self.textures.insert(key, handle);
                 }
             }
 
-            // Encounter sprites (always normal)
-            let all_encounters = gs.encounters.land_mon_encounters.wild_pokemon_list.iter()
-                .chain(gs.encounters.water_mon_encounters.wild_pokemon_list.iter())
-                .chain(gs.encounters.rock_smash_encounters.wild_pokemon_list.iter())
-                .chain(gs.encounters.fishing_encounters.wild_pokemon_list.iter());
+            // ── Request any species we don't have yet ────────────────────────
+            {
+                let state_guard = slot.state.lock().unwrap_or_else(|e| e.into_inner());
+                let gs = match state_guard.as_ref() {
+                    Some(gs) => gs,
+                    None => continue,
+                };
 
-            for wild in all_encounters {
-                if wild.species == 0 || wild.species > 386 {
-                    continue;
-                }
-                let key = sprite_key(wild.species, false);
-                if !self.textures.contains_key(&key) {
-                    if let Ok(tex) = load_texture_normal(ctx, rom, wild.species) {
-                        self.textures.insert(key, tex);
+                let mut needed: Vec<u16> = Vec::new();
+                let known = slot.known_species.lock().unwrap_or_else(|e| e.into_inner());
+
+                // Party sprites
+                for p in &gs.party {
+                    let species = p.box_mon.secure.growth.species;
+                    if species == 0 || species > 386 {
+                        continue;
                     }
+                    // We request by species; server sends both normal + shiny
+                    if !known.contains(&species) {
+                        needed.push(species);
+                    }
+                }
+
+                // Encounter sprites
+                let all_encounters = gs
+                    .encounters
+                    .land_mon_encounters
+                    .wild_pokemon_list
+                    .iter()
+                    .chain(gs.encounters.water_mon_encounters.wild_pokemon_list.iter())
+                    .chain(
+                        gs.encounters
+                            .rock_smash_encounters
+                            .wild_pokemon_list
+                            .iter(),
+                    )
+                    .chain(gs.encounters.fishing_encounters.wild_pokemon_list.iter());
+
+                for wild in all_encounters {
+                    if wild.species == 0 || wild.species > 386 {
+                        continue;
+                    }
+                    if !known.contains(&wild.species) {
+                        needed.push(wild.species);
+                    }
+                }
+
+                drop(known);
+
+                if !needed.is_empty() {
+                    needed.sort();
+                    needed.dedup();
+                    slot.texture_request_queue
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .push_back(needed);
                 }
             }
         }
@@ -104,13 +139,13 @@ impl AggregatorApp {
 
         for (idx, pokemon) in gs.party.iter().enumerate() {
             let other_states: Vec<(String, Option<GameState>)> = all_states
-            .iter()
-            .filter(|(l, _)| l != label)
-            .cloned()
-            .collect();
+                .iter()
+                .filter(|(l, _)| l != label)
+                .cloned()
+                .collect();
 
-        Self::draw_party_member(ui, idx, pokemon, textures, &other_states);
-        ui.separator();
+            Self::draw_party_member(ui, idx, pokemon, textures, &other_states);
+            ui.separator();
         }
 
         ui.add_space(8.0);
@@ -119,16 +154,30 @@ impl AggregatorApp {
         egui::CollapsingHeader::new(egui::RichText::new("Encounters").strong().size(15.0))
             .default_open(true)
             .show(ui, |ui| {
-                Self::draw_encounter_section(ui, "Grass", &gs.encounters.land_mon_encounters.wild_pokemon_list, textures);
-                Self::draw_encounter_section(ui, "Water / Fishing", 
-                    &gs.encounters.water_mon_encounters.wild_pokemon_list
+                Self::draw_encounter_section(
+                    ui,
+                    "Grass",
+                    &gs.encounters.land_mon_encounters.wild_pokemon_list,
+                    textures,
+                );
+                Self::draw_encounter_section(
+                    ui,
+                    "Water / Fishing",
+                    &gs.encounters
+                        .water_mon_encounters
+                        .wild_pokemon_list
                         .iter()
                         .chain(gs.encounters.fishing_encounters.wild_pokemon_list.iter())
                         .cloned()
                         .collect::<Vec<_>>(),
                     textures,
                 );
-                Self::draw_encounter_section(ui, "🪨 Rock Smash", &gs.encounters.rock_smash_encounters.wild_pokemon_list, textures);
+                Self::draw_encounter_section(
+                    ui,
+                    "🪨 Rock Smash",
+                    &gs.encounters.rock_smash_encounters.wild_pokemon_list,
+                    textures,
+                );
             });
     }
 
@@ -211,7 +260,10 @@ impl AggregatorApp {
         list: &[fire_red_pokemon_data::WildPokemon],
         textures: &HashMap<String, egui::TextureHandle>,
     ) {
-        let non_empty: Vec<_> = list.iter().filter(|w| w.species > 0 && w.species <= 386).collect();
+        let non_empty: Vec<_> = list
+            .iter()
+            .filter(|w| w.species > 0 && w.species <= 386)
+            .collect();
         if non_empty.is_empty() {
             return;
         }
@@ -222,13 +274,12 @@ impl AggregatorApp {
                 let key = sprite_key(wild.species, false);
                 if let Some(tex) = textures.get(&key) {
                     ui.add(
-                        egui::Image::new(tex)
-                            .fit_to_exact_size(egui::vec2(ENCOUNTER_IMAGE_SIZE.0, ENCOUNTER_IMAGE_SIZE.1)),
+                        egui::Image::new(tex).fit_to_exact_size(egui::vec2(
+                            ENCOUNTER_IMAGE_SIZE.0,
+                            ENCOUNTER_IMAGE_SIZE.1,
+                        )),
                     )
-                    .on_hover_text(format!(
-                        "Lv{}-{}",
-                        wild.min_level, wild.max_level
-                    ));
+                    .on_hover_text(format!("Lv{}-{}", wild.min_level, wild.max_level));
                 }
             }
         });
@@ -239,7 +290,7 @@ impl AggregatorApp {
 impl eframe::App for AggregatorApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         ctx.request_repaint();
-        self.ensure_textures(ctx);
+        self.process_textures(ctx);
 
         let slot_count = self.slots.len();
         let textures = &self.textures;
@@ -257,7 +308,6 @@ impl eframe::App for AggregatorApp {
         egui::CentralPanel::default().show(ctx, |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| {
                 let available = ui.available_width();
-                // Respect a minimum column width so it doesn't get unreadably narrow
                 let columns = slot_count
                     .min((available / MIN_COLUMN_WIDTH).floor().max(1.0) as usize)
                     .max(1);
@@ -268,7 +318,9 @@ impl eframe::App for AggregatorApp {
                         egui::ScrollArea::vertical()
                             .id_source(format!("col_scroll_{}", i))
                             .show(&mut cols[col_idx], |ui| {
-                                AggregatorApp::draw_player_column(ui, label, state, textures, &states);
+                                AggregatorApp::draw_player_column(
+                                    ui, label, state, textures, &states,
+                                );
                             });
                     }
                 });
@@ -277,10 +329,14 @@ impl eframe::App for AggregatorApp {
     }
 }
 
-// --- Helpers (mirrors what monitor has in main.rs) ---
+// --- Helpers ---
 
 pub fn sprite_key(species: u16, shiny: bool) -> String {
-    format!("pokemon_{}_{}", species, if shiny { "shiny" } else { "normal" })
+    format!(
+        "pokemon_{}_{}",
+        species,
+        if shiny { "shiny" } else { "normal" }
+    )
 }
 
 pub fn is_shiny(personality: u32, ot_id: u32) -> bool {
@@ -289,31 +345,4 @@ pub fn is_shiny(personality: u32, ot_id: u32) -> bool {
     let id1 = (ot_id >> 16) as u16;
     let id2 = (ot_id & 0xFFFF) as u16;
     (p1 ^ p2 ^ id1 ^ id2) < 8
-}
-
-pub fn load_texture(
-    ctx: &egui::Context,
-    rom: &[u8],
-    species: u16,
-    personality: u32,
-    ot_id: u32,
-) -> Result<egui::TextureHandle, Box<dyn std::error::Error>> {
-    let shiny = is_shiny(personality, ot_id);
-    let img = fire_red_image_data::get_pokemon_sprite(rom, species, shiny)?;
-    let size = [img.width() as usize, img.height() as usize];
-    let pixels: Vec<u8> = img.into_raw();
-    let color_image = egui::ColorImage::from_rgba_unmultiplied(size, &pixels);
-    Ok(ctx.load_texture(sprite_key(species, shiny), color_image, egui::TextureOptions::NEAREST))
-}
-
-pub fn load_texture_normal(
-    ctx: &egui::Context,
-    rom: &[u8],
-    species: u16,
-) -> Result<egui::TextureHandle, Box<dyn std::error::Error>> {
-    let img = fire_red_image_data::get_pokemon_sprite(rom, species, false)?;
-    let size = [img.width() as usize, img.height() as usize];
-    let pixels: Vec<u8> = img.into_raw();
-    let color_image = egui::ColorImage::from_rgba_unmultiplied(size, &pixels);
-    Ok(ctx.load_texture(sprite_key(species, false), color_image, egui::TextureOptions::NEAREST))
 }

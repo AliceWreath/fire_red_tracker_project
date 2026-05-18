@@ -12,65 +12,12 @@ const PARTY_WINDOW: (f32, f32) = (400.0, 800.0);
 const PARTY_IMAGE_SIZE: (f32, f32) = (64.0, 64.0);
 const ENCOUNTER_WINDOW: (f32, f32) = (600.0, 400.0);
 const ENCOUNTER_IMAGE_SIZE: (f32, f32) = (64.0, 64.0);
-const MAX_MESSAGE_SIZE: usize = 20 * 1024 * 1024; // 20 MB
 
 static FORCE_PARTY_CHECK_TIME_IN_SECS: u64 = 5;
 static MAIN_THREAD_HANDLE: Mutex<Option<std::thread::JoinHandle<()>>> = Mutex::new(None);
 static CLIENT_THREAD_HANDLE: Mutex<Option<std::thread::JoinHandle<()>>> = Mutex::new(None);
 static SERVER_THREAD_HANDLE: Mutex<Option<std::thread::JoinHandle<()>>> = Mutex::new(None);
 static RUNNING: AtomicBool = AtomicBool::new(true);
-
-// ---------------------------------------------------------------------------
-// Message types
-// ---------------------------------------------------------------------------
-
-#[derive(serde::Serialize, serde::Deserialize)]
-pub enum ClientMessage {
-    RequestTextures(Vec<u16>),
-}
-
-#[derive(serde::Serialize, serde::Deserialize)]
-pub enum ServerMessage {
-    State(GameState),
-    Textures(Vec<SpriteData>),
-}
-
-#[derive(serde::Serialize, serde::Deserialize, Clone)]
-pub struct SpriteData {
-    pub species: u16,
-    pub shiny: bool,
-    pub pixels: Vec<u8>, // zlib-compressed RGBA bytes
-    pub width: u32,
-    pub height: u32,
-}
-
-// ---------------------------------------------------------------------------
-// Wire helpers — length-prefixed bincode frames
-// ---------------------------------------------------------------------------
-
-fn send_message<T: serde::Serialize>(stream: &mut TcpStream, msg: &T) -> std::io::Result<()> {
-    let encoded =
-        bincode::serialize(msg).map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
-    let len = encoded.len() as u32;
-    stream.write_all(&len.to_be_bytes())?;
-    stream.write_all(&encoded)?;
-    Ok(())
-}
-
-fn recv_message<T: serde::de::DeserializeOwned>(stream: &mut TcpStream) -> std::io::Result<T> {
-    let mut len_buf = [0u8; 4];
-    stream.read_exact(&mut len_buf)?;
-    let len = u32::from_be_bytes(len_buf) as usize;
-    if len > MAX_MESSAGE_SIZE {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            format!("message too large: {} bytes", len),
-        ));
-    }
-    let mut buf = vec![0u8; len];
-    stream.read_exact(&mut buf)?;
-    bincode::deserialize(&buf).map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
-}
 
 // ---------------------------------------------------------------------------
 // Sprite compression helpers
