@@ -1,12 +1,6 @@
-pub mod get_values;
-use get_values::*;
+use fire_red_get_values::*;
 use libc::size_t;
 use std::os::raw::{c_int, c_short, c_uchar, c_uint, c_ushort};
-//c_uchar = u8
-//c_short = i16
-//c_ushort = u16
-//c_int = i32
-//c_uint = u32
 
 #[derive(Default, Debug, Clone, Copy)]
 #[repr(C)]
@@ -371,8 +365,7 @@ impl MapHeader {
     }
 
     pub fn fill_allow_esc_run_map_name(&mut self, buffer: &[&str]) {
-        let bytes = get_bytes(buffer);
-        let byte = u8::from_le_bytes([bytes[0]]);
+        let byte = get_u8(buffer);
         self.allow_escape = (byte & 4) == 4;
         self.allow_running = (byte & 2) == 2;
         self.show_map_name = (byte & 1) == 1;

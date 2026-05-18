@@ -8,3 +8,4 @@ edition = "2024"
 
 [dependencies]
 libc = "0.2.186"
+fire_red_get_values = { path = "../fire_red_get_values" }

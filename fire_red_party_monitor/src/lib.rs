@@ -40,11 +40,14 @@ pub fn initialize_static_party(is_clean: bool) -> &'static ArcSwap<Party> {
 }
 
 pub fn get_static_party() -> &'static ArcSwap<Party> {
-    PARTY_DATA.get().unwrap()
+    PARTY_DATA.get_or_init(|| {
+        ArcSwap::from_pointee(Party::new(fire_red_rom_buffer::get_rom()))
+    })
 }
 
-pub fn get_party() -> Arc<Party> {
-    PARTY_DATA.get().expect("Something bad happened with the party ArcSwap").load_full()
+pub fn get_party() -> Option<Arc<Party>> {
+    let data = PARTY_DATA.get();
+    data.map(|arc| arc.load_full())
 }
 
 pub fn update_party() {
@@ -91,15 +94,61 @@ impl Party {
         }
     }
     pub fn new(rom_buffer: &[u8]) -> Self {
-        let command = generate_command(POKEMON_PARTY_SIZE_ADDR as u32, 1);
-        let ret = fire_red_retroarch_interfacing::get_from_retroarch(command, 3);
-        
-        let number_pokemon = ret[2].parse::<u8>().expect("failed to get number of pokemon in the party");
+        let mut got_return = false;
+        let mut ret: Option<Vec<String>>;
+        let mut number_pokemon: u8 = 0;
+
+        while got_return == false {
+            let command = generate_command(POKEMON_PARTY_SIZE_ADDR as u32, 1);
+            ret = fire_red_retroarch_interfacing::get_from_retroarch(command.as_str(), 3);
+            if ret.is_none(){
+                println!("Failed to read party size, retrying...");
+                std::thread::sleep(std::time::Duration::from_millis(100));
+                continue;
+            }
+            if ret.as_ref().unwrap().len() < 3 {
+                println!("Received malformed response for party size, retrying...");
+                std::thread::sleep(std::time::Duration::from_millis(100));
+                continue;
+            }
+            let result = match ret.as_ref().unwrap()[2].parse::<i8>() {
+                Ok(v) => v,
+                Err(_) => {
+                    println!("Failed to parse party size, retrying...");
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                    continue;
+                }
+            };
+            if result < 0 {
+                println!("Received invalid party size {}, retrying...", result);
+                std::thread::sleep(std::time::Duration::from_millis(100));
+                continue;
+            }
+            number_pokemon = result as u8;
+            if number_pokemon > 6 {
+                println!("Received invalid party size {}, retrying...", number_pokemon);
+                std::thread::sleep(std::time::Duration::from_millis(100));
+                continue;
+            }
+            got_return = true;
+        }        
         let mut members: Vec<Pokemon> = Vec::new();
+        let mut ret: Option<Vec<String>>;
 
         for i in 0..number_pokemon {
-            let command = generate_command((POKEMON_PARTY_ADDR as u32) + (i as usize * POKEMON_SIZE) as u32, POKEMON_SIZE);
-            let ret = fire_red_retroarch_interfacing::get_from_retroarch(command, POKEMON_SIZE + 2);
+            ret = None;
+            let mut got_return = false;
+            while got_return == false {
+                let command = generate_command((POKEMON_PARTY_ADDR as u32) + (i as usize * POKEMON_SIZE) as u32, POKEMON_SIZE);
+                ret = fire_red_retroarch_interfacing::get_from_retroarch(command.as_str(), POKEMON_SIZE + 2);
+                if ret.is_none() {
+                    println!("Failed to read data for party member {}, retrying...", i);
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                    continue;
+                }
+                got_return = true;
+            }
+            let ret = ret.unwrap();
             let buffer: Vec<&str> = ret.iter().map(|s| s.as_str()).collect();
             
             members.push(Pokemon::fill_struct(&buffer, 2, &rom_buffer));
@@ -114,14 +163,14 @@ impl Party {
         Self::new(fire_red_rom_buffer::get_rom())
     }
     pub fn get_species_string(&self, position: usize) -> String {
-        if position > self.members.len() {
-            return String::from(" ");
+        if position >= self.members.len() {
+            return String::from("");
         }
         self.members[position].box_mon.secure.growth.species_string.clone()
     }
     pub fn get_nickname(&self, position: usize) -> String {
-        if position > self.members.len() {
-            return String::from(" ");
+        if position >= self.members.len() {
+            return String::from("");
         }
         self.members[position].box_mon.nickname_string.clone()
     }
@@ -359,9 +408,12 @@ impl BoxPokemon {
             .iter()
             .filter_map(|n| u8::from_str_radix(n, 16).ok())
             .collect();
-        let secure_raw: [u8; 48] = secure_raw.try_into().expect("oh dear");
+        let secure_raw: [u8; 48] = match secure_raw.try_into() {
+                Ok(arr) => arr,
+                Err(_) => return None,
+            };
 
-        let secure = SecureSubstruct::fill_struct(personality, ot_id, buffer, offset);
+        let secure = SecureSubstruct::fill_struct(personality, ot_id, buffer, offset).unwrap_or_default();
         let nickname_string = fire_red_text::gba_string_to_ascii(&nickname, nickname.len(), 0).trim_matches('\0').to_string();
 
         let mut ret = BoxPokemon {
@@ -390,7 +442,7 @@ impl BoxPokemon {
 }
 
 #[repr(C)]
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Default, Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Pokemon {
     pub box_mon: BoxPokemon,
 
@@ -543,13 +595,17 @@ impl SecureSubstruct {
         secure
     }
 
-    pub fn fill_struct(personality: u32, ot_id: u32, buffer: &[&str], offset: usize) -> Self {
+    pub fn fill_struct(personality: u32, ot_id: u32, buffer: &[&str], offset: usize) -> Result<Self, Box<dyn std::error::Error>> {
         let key = personality ^ ot_id;
         let order_number = personality % 24;
 
         let encrypted_value = get_n_bytes(48, &buffer[offset..offset + 48]);
+        if encrypted_value.is_none() {
+            return Err("failed to parse encrypted value bytes!".into());
+        }
+        let encrypted_value = encrypted_value.unwrap();
         if encrypted_value.len() != 48 {
-            panic!("didn't copy the correct number of bytes!");
+            return Err("didn't copy the correct number of bytes!".into());
         }        
         let mut decrypted_value: Vec<u8> = Vec::new();
 
@@ -584,7 +640,7 @@ impl SecureSubstruct {
             index += 12;
         }
 
-        secure
+        Ok(secure)
     }
     fn fill_substruct_by_char(&mut self, letter: char, buffer: &[u8], index: usize) {
         match letter {

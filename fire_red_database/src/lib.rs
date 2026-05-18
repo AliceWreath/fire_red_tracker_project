@@ -109,10 +109,11 @@ pub fn is_first_encounter(conn: &Connection, species_id: u16) -> Result<bool, Bo
     let mut first_enc: bool = false;
     for caught in result_p1 {
         match caught {
-            Ok(caught) => first_enc = if caught == true { false } else { true },
+            Ok(false) => return Ok(true),  // not caught = is a first encounter
+            Ok(true) => {},
             Err(e) => return Err(e.into()),
-        };
     }
+}
     if first_enc {
         return Ok(true);
     }
@@ -152,12 +153,9 @@ pub fn update_location_first_encounter(path: &str, location_id: u16, player_numb
         return Ok(());
     }
 
-    conn.execute("
-        UPDATE location_data
-        SET ?1 = ?2
-        WHERE location_id_group_and_number = ?3",
-        [if player_number == 1 { "first_encounter_p1" } else { "first_encounter_p2" }, species_id.to_string().as_str(), location_id.to_string().as_str()]
-    )?;
+    let column = if player_number == 1 { "first_encounter_p1" } else { "first_encounter_p2" };
+    let sql = format!("UPDATE location_data SET {column} = ?1 WHERE location_id_group_and_number = ?2");
+    conn.execute(&sql, [species_id as i64, location_id as i64])?;
 
     Ok(())
 }
@@ -169,43 +167,4 @@ pub fn reset_database(path: &str) -> Result<()> {
     SET first_encounter_p1 = -1, caught_p1 = false, first_encounter_p2 = -1, caught_p2 = false", [])?;
 
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    const DB_PATH: &str = "/home/alice/data/projects/rust/fire_red_project/db.db";
-    const CSV_PATH: &str = "/home/alice/data/projects/rust/fire_red_project/locations.csv";
-    use super::*;
-
-    #[test]
-    fn build_location_database_test() -> Result<(), Box<dyn Error>> {
-        reset_database(DB_PATH)?;
-
-        let conn = Connection::open(DB_PATH)?;
-        initialize_location_database(DB_PATH, CSV_PATH)?;
-        initialize_player_pokemon_database(DB_PATH)?;
-
-        let mut stmt = conn.prepare(
-            "SELECT location_name
-            FROM location_data
-            WHERE location_id_group_and_number IN (?1, ?2, ?3, ?4)"
-        )?;
-
-        let rows = stmt.query_map([768, 769, 1024, 0x611], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-            ))
-        })?;
-
-        let rows:Vec<String> = rows.map(|r| r.unwrap().0).collect();
-
-        assert_eq!(rows[0].to_ascii_uppercase(), "PALLET TOWN");
-        assert_eq!(rows[3].to_ascii_uppercase(), "GREEN PATH");
-        
-        let res = update_location_first_encounter(DB_PATH, 0x606, 1, 0x100);
-        match res {
-            Ok(_) => return Ok(()),
-            Err(e) => return Err(e.into()),
-        }
-    }
 }

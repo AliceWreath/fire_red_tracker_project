@@ -1,0 +1,20 @@
+[package]
+name = "fire_red_aggregator"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "fire_red_aggregator"
+path = "src/main.rs"
+
+[dependencies]
+fire_red_states = { path = "../fire_red_states" }
+fire_red_party_monitor = { path = "../fire_red_party_monitor" }
+fire_red_pokemon_data = { path = "../fire_red_pokemon_data" }
+fire_red_rom_buffer = { path = "../fire_red_rom_buffer" }
+fire_red_image_data = { path = "../fire_red_image_data" }
+flate2 = "1"
+bincode = "1"
+serde = { version = "1", features = ["derive"] }
+eframe = "0.27"
+egui = "0.27"
