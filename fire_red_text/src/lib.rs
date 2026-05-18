@@ -3,16 +3,37 @@ use std::os::raw::c_char;
 
 use fire_red_get_values::*;
 
+/// Highest valid Pokemon species ID in Pokemon FireRed.
+/// 
+/// Used when building the internal Pokemon name table from ROM data.
 pub static LAST_POKEMON_ID_NUMBER: size_t = 0x019B;
+
+/// ROM address where the pokemon name table begins in pokemon firered r1.
+/// 
+/// Each name is encoded using the GBA pokemon text encoding and terminated
+/// with 0xFF.
 pub static POKEMON_NAMES_ADDR: u32 = 0x245F5B;
 
-/// # Safety
+/// Converts a single pokemon firered/gba text byte into a Unicode character.
 /// 
-/// This function is considered unsafe because it takes in a c_uchar (u8) from C
-/*pub unsafe extern "C" fn c_char_gba_to_ascii(character: c_uchar) -> c_char {
-    char_gba_to_ascii(character) as c_char
-}*/
-
+/// The FireRed games use a custom text encoding instead of ASCII.
+/// 
+/// # Supported mappings
+/// 
+/// - `0xBB..=0xD4` -> 'A-Z'
+/// - '0xD5..=0xEE' -> 'a-z'
+/// - `0x20` -> space character (0x9794 in Unicode)
+/// - `0x1D` -> apostrophe character (0x9792 in Unicode
+/// - `0xFF` -> null terminator (0x00 in Unicode)
+/// Any unmapped value is converted to a space character.
+/// 
+/// # Examples
+/// 
+/// ```ignore
+/// assert_eq!(char_=gba_to_ascii(0xBB), 'A');
+/// assert_eq!(char_gba_to_ascii(0xD5), 'a');
+/// assert_eq!(char_gba_to_ascii(0xFF), '\0');
+/// ```
 pub fn char_gba_to_ascii(character: u8) -> char {
     if (0xBB..=0xD4).contains(&character) {
         return char::from(0x41 + character - 0xBB);
@@ -28,6 +49,25 @@ pub fn char_gba_to_ascii(character: u8) -> char {
     ' '
 }
 
+/// Retrieves the nmame of a pokemon from the cached name repository by its species ID.
+/// 
+/// Returns an error if the species index is out of bounds.
+/// 
+/// # Arguments
+/// 
+/// * 'species' - Pokemon species ID.
+/// 
+/// # Returns
+/// 
+/// - 'Ok(String)' contains the pokemon name as a String.
+/// - 'Err(String)' contains an error message if the species ID is invalid.
+/// 
+/// # Examples
+/// 
+/// ```ignore
+/// let name = get_pokemon_name_by_number(25).unwrap();
+/// assert_eq!(name, "PIKACHU");
+/// ```
 pub fn get_pokemon_name_by_number(species: usize) -> Result<String, String> {
     if species > fire_red_pokemon_name_buffer::get_name_repo().len() - 1 {
         return Err(String::from(" "));
@@ -35,6 +75,23 @@ pub fn get_pokemon_name_by_number(species: usize) -> Result<String, String> {
     Ok(String::from(fire_red_pokemon_name_buffer::get_name_repo()[species].clone().trim()))
 }
 
+
+/// Converts a FireRed encoded byte slice into a UTF-8 string.
+/// 
+/// This function reads 'len' bytes starting from 'offset' and converts each character
+/// using the ['char_gba_to_ascii'] function.
+/// 
+/// # Arguments
+/// 
+/// * 'buffer' - Raw ROM or memory data buffer.
+/// * 'len' - Number of bytes to decode.
+/// * 'offset' - Starting index in the buffer to read from.
+/// 
+/// # Examples
+/// 
+/// ```ignore
+/// let ascii_string = gba_string_to_ascii(&rom_data, 10, 0x245F5B);
+/// ```
 pub fn gba_string_to_ascii(buffer: &[u8], len: usize, offset: usize) -> String {
     let mut result = String::new();
     for i in 0..len {
@@ -43,6 +100,20 @@ pub fn gba_string_to_ascii(buffer: &[u8], len: usize, offset: usize) -> String {
     result
 }
 
+/// FFI-safe arry of C strings.
+/// 
+/// Intended for interoperability with C or other foreign languages.
+/// 
+/// # Fields
+/// 
+/// * `arr` - Pointer to an array of `char*`
+/// * 'len' - Number of strings stored
+/// * 'capacity' - Total allocated buffer size in bytes.
+/// 
+/// # Safety
+/// 
+/// Memory ownership and deallocation must be handled carefully when passing
+/// this struct across FFI boundaries to avoid leaks or undefined behavior.
 #[repr(C)]
 #[derive(Default)]
 pub struct StringArray {
@@ -51,91 +122,31 @@ pub struct StringArray {
     pub capacity: size_t,       //total allocation size in bytes
 }
 
-/// # Safety
+/// Builds the full pokemon name table from FireRed ROM data.
 /// 
-/// this function is unsafe because it requires that the caller free the memory
-/// by calling c_free_string_array after its done using the created array.
-/*
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn c_build_name_list(
-    buffer: *const c_uchar, 
-    buffer_len: size_t,
-    offset: size_t,
-) -> StringArray {
-    let buffer: &[u8] = if buffer.is_null() { 
-        &[]
-    } else {
-        unsafe { std::slice::from_raw_parts(buffer.add(offset), buffer_len) }
-    };
-
-    let names = build_name_list(buffer, 0);
-    let len = names.len();
-
-    // Total bytes needed for all strings (+1 for null terminator in each)
-    let total_str_bytes: size_t = names
-        .iter()
-        .map(|s| s.len() + 1)
-        .sum();
-
-    // space for pointer array
-    let ptr_array_size = len * std::mem::size_of::<*mut c_char>();
-
-    // total allocaiton size
-    let total_size = ptr_array_size + total_str_bytes;
-
-    let align = std::mem::align_of::<*mut c_char>();
-    let layout = Layout::from_size_align(total_size, align).unwrap();
-
-    let raw = unsafe { alloc(layout) };
-    if raw.is_null() {
-        handle_alloc_error(layout);
-    }
-
-    // pointer array at start
-    let ptr_array = raw as *mut *mut c_char;
-
-    // string data comes after pointer array
-    let mut str_data = unsafe { raw.add(ptr_array_size) };
-
-    for (i, name) in names.into_iter().enumerate() {
-        let cstr = CString::new(name).unwrap();
-        let bytes = cstr.as_bytes_with_nul();
-
-        // copy string bytes into buffer
-        unsafe { 
-            ptr::copy_nonoverlapping(bytes.as_ptr(), str_data, bytes.len()); 
- 
-            // point to this string
-            *ptr_array.add(i) = str_data as *mut c_char;
-
-            // advance pointer
-            str_data = str_data.add(bytes.len());
-        }
-    }
-
-    StringArray {
-        arr: ptr_array,
-        len,
-        capacity: total_size,
-    }
-}
-
-/// # Safety
+/// Names are read sequentially starting at 'offset' until
+/// ['LAST_POKEMON_ID_NUMBER'] entries have been parsed.
 /// 
-/// this is considered unsafe because it takes data from C
-pub unsafe extern "C" fn c_free_string_array(arr: StringArray) {
-    if arr.arr.is_null() {
-        return;
-    }
-
-    let align = std::mem::align_of::<*mut c_char>();
-    let layout = Layout::from_size_align(arr.capacity, align).unwrap();
-
-    unsafe { dealloc(arr.arr as *mut c_uchar, layout); }
-}
-*/
-
-
+/// Each string is terminated by the byte 0xFF.
+/// 
+/// The returned vector always includes an initial placeholder entry "_"
+/// at index 0, so that the species ID can be used directly as an index into the vector.
+/// 
+/// # Arguments
+/// 
+/// * 'buffer' - ROM or emulator memory buffer.
+/// * 'offset' - Starting offset of the pokemon name table.
+/// 
+/// # Returns
+/// 
+/// A vector containing all decoded pokemon names, indexed by species ID. The first entry (index 0) is a placeholder "_".
+/// 
+/// # Examples
+/// 
+/// ```ignore
+/// let names = build_name_list(&rom_data, POKEMON_NAMES_ADDR as usize);
+/// println!("{}", names[25]); // Should print "PIKACHU"
+/// ```
 pub fn build_name_list(buffer: &[u8], offset: usize) -> Vec<String> {
     let mut name: Vec<String> = Vec::new();
     let mut index = 0;    
