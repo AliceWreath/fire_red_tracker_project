@@ -1,19 +1,38 @@
 use std::net::TcpStream;
 use std::io::{Read, Write};
 
+/// Maximum allowed network message size.
+/// 
+/// Used as a safeguard against malformed or malicious packets that could
+/// otherwise allocate excessive memory.
+/// 
+/// Current limit: 20 MB.
 const MAX_MESSAGE_SIZE: usize = 20 * 1024 * 1024; // 20 MB
 
+/// Messages sent from a client to the server.
+/// 
+/// Used for requesting resources or issuing commands.
 #[derive(serde::Serialize, serde::Deserialize)]
 pub enum ClientMessage {
+    /// Request sprite texture fro a list of pokemon species IDs.
+    /// 
+    /// The contained `Vec<u16>` represents the pokemon species IDs.
     RequestTextures(Vec<u16>),
 }
 
+/// Messages sent from the server to connected clients.
 #[derive(serde::Serialize, serde::Deserialize)]
 pub enum ServerMessage {
+    /// Full game state update.
     State(GameState),
+
+    /// Collection of sprite textures requested by client.
     Textures(Vec<SpriteData>),
 }
 
+/// Serialized Pokemon sprite texture data for network transmission.
+/// 
+/// Pixel data is stored as zlib-compressed RGBA bytes.
 #[derive(serde::Serialize, serde::Deserialize, Clone)]
 pub struct SpriteData {
     pub species: u16,
@@ -23,20 +42,36 @@ pub struct SpriteData {
     pub height: u32,
 }
 
+/// Shared game state transmitted between server and clients.
+/// 
+/// Contains both the current player party and wild encounter data.
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
 pub struct GameState {
+    /// Current player party pokemon.
     pub party: Vec<fire_red_party_monitor::Pokemon>,
+
+    /// Wild encounter table/header data.
     pub encounters: fire_red_pokemon_data::WildPokemonHeader,
 }
 
+/// Network operating mode for the program.
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
 pub enum Mode {
+    /// Run entirely locally with no networking
     Standalone,
+
+    /// Run as a TCP server listening on the specified port.
     Server {
+        /// TCP port to bind to.
         port: u16,
     },
+
+    /// Run as a TCP client connecting to a remote server.
     Client {
+        /// Remote host or IP address to connect to.
         host: String,
+
+        /// Remote TCP port to connect to.
         port: u16,
     },
 }
@@ -45,6 +80,27 @@ pub enum Mode {
 // Wire helpers — length-prefixed bincode frames
 // ---------------------------------------------------------------------------
 
+/// Serialilzes and sends a message over a TCP stream.
+/// 
+/// Messages are encoded using 'bincode' and prefixed with a 4-byte
+/// big-endian length header.
+/// 
+/// # Arguments
+/// 
+/// * 'stream' - Connected TCP stream.
+/// * 'msg' - Serializable message to send.
+/// 
+/// # Errors
+/// 
+/// Returns an error if serialization or network I/O fails.
+/// 
+/// # Protocol
+/// 
+/// Packet layout:
+/// 
+/// ```
+/// [4-byte big-endian length][bincode-encoded message bytes]
+/// ```
 pub fn send_message<T: serde::Serialize>(stream: &mut TcpStream, msg: &T) -> std::io::Result<()> {
     let encoded =
         bincode::serialize(msg).map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
@@ -54,6 +110,30 @@ pub fn send_message<T: serde::Serialize>(stream: &mut TcpStream, msg: &T) -> std
     Ok(())
 }
 
+/// Receives and deserializes a message from a TCP stream.
+/// 
+/// Reads a 4-byte big-endian prefix followed by a bincode message of the specified length.
+/// 
+/// # Type Parameters
+/// 
+/// * 'T' - Message type implementing 'DeserializedOwned'.
+/// 
+/// # Arguments
+/// 
+/// * 'stream' - Connected TCP stream.
+/// 
+/// # Errors
+/// 
+/// returns an error if:
+/// 
+/// - The connection closes unexpectedly.
+/// - The packet exceeds ['MAX_MESSAGE_SIZE'].
+/// - Deserialization fails.
+/// 
+/// # Security
+/// 
+/// Incoming packet sizes are validated before allocation to avoid 
+/// excessive memory usage from malformed or malicious packets.
 pub fn recv_message<T: serde::de::DeserializeOwned>(stream: &mut TcpStream) -> std::io::Result<T> {
     let mut len_buf = [0u8; 4];
     stream.read_exact(&mut len_buf)?;
@@ -70,6 +150,9 @@ pub fn recv_message<T: serde::de::DeserializeOwned>(stream: &mut TcpStream) -> s
 }
 
 /*
+/// Sends a serialized [`GameState`] packet over a TCP stream.
+///
+/// Deprecated in favor of the generic [`send_message`] helper.
 pub fn send_state(stream: &mut TcpStream, state: &GameState) -> std::io::Result<()> {
     let encoded =
         bincode::serialize(state).map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
@@ -79,6 +162,9 @@ pub fn send_state(stream: &mut TcpStream, state: &GameState) -> std::io::Result<
     Ok(())
 }
 
+/// Receives a serialized [`GameState`] packet from a TCP stream.
+///
+/// Deprecated in favor of the generic [`recv_message`] helper.
 pub fn recv_state(stream: &mut TcpStream) -> std::io::Result<GameState> {
     let mut len_buf = [0u8; 4];
     stream.read_exact(&mut len_buf)?;
