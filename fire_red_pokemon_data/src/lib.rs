@@ -2,15 +2,23 @@ use std::alloc::{alloc, dealloc, Layout};
 use std::ffi::{c_uchar, c_uint, c_ushort};
 use std::sync::OnceLock;
 use std::marker::PhantomData;
-
 use fire_red_get_values::{read_u16, read_u8, read_u32};
 
-//static WILD_POKEMON_HEADERS: LazyLock<Arc<Mutex<Vec<WildPokemonHeaderROM>>>> = LazyLock::new(|| Arc::new(Mutex::new(Vec::new())));
+/// Global cache of all wild Pokemon encounter headers loaded from the ROM.
+/// 
+/// Initialized once and shared immutably for the lifetime of the program.
 static WILD_POKEMON_HEADERS: OnceLock<Vec<WildPokemonHeaderROM>> = OnceLock::new();
 
-// This library will be used to pull pokemon information off the rom for easy access
-
-/// this structure holds the pointers to the encounters for an area, which area is stored as map_group and map_num
+/// Raw ROM representation of a wild encounter header.
+/// 
+/// This structure stores ROM pointers directly as integer offsets.
+/// 
+/// Each header corresponds to a single map and contains pointers to:
+/// 
+/// - Land encounters
+/// - Water encounters
+/// - Rock Smash encounters
+/// - Fishing encounters
 #[derive(Default, Debug, Clone, Copy)]
 #[repr(C)]
 pub struct WildPokemonHeaderROM {
@@ -23,6 +31,10 @@ pub struct WildPokemonHeaderROM {
     pub fishing_encounters_rom_ptr: c_uint,
 }
 
+/// FFI-safe wild encounter header.
+/// 
+/// Stores pointers to dynamically allocated encounter lists suitable
+/// for use from C-compatible languages.
 #[derive(Default, Debug, Clone)]
 #[repr(C)]
 pub struct WildPokemonHeaderFFI {
@@ -34,6 +46,9 @@ pub struct WildPokemonHeaderFFI {
     pub fishing_encounters: *mut WildPokemonInfoFFI,
 }
 
+/// Safe Rust representation of a wild encounter header.
+/// 
+/// Uses owned Rust collections instead of raw pointers.
 #[derive(Default, Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[repr(C)]
 pub struct WildPokemonHeader {
@@ -45,29 +60,58 @@ pub struct WildPokemonHeader {
     pub fishing_encounters: WildPokemonInfo,
 }
 
+/// Raw ROM representation of a wild encounter table.
+/// 
+/// Contains:
+/// 
+/// - Encounter rate
+/// - Pointer to the encounter list
 #[derive(Default, Debug, Clone, Copy)]
 #[repr(C)]
 pub struct WildPokemonInfoROM {
+    /// Chance of encountering pokemon in this area
     pub encounter_rate: c_uchar,
+    
+    /// Pointer to the encounter list in ROM.
     pub wild_pokemon_list_rom_ptr: c_uint,
 }
 
+/// FFI-safe encounter table structure
+/// 
+/// Uses a flexible array member pattern for storing pokemon data.
 #[derive(Default, Debug, Clone)]
 #[repr(C)]
 pub struct WildPokemonInfoFFI {
+    /// Encounter rate for the area.
     pub encounter_rate: c_uchar,
+
+    /// Number of pokemon entries stored.
     pub pokemon_count: usize,
+
+    /// Flexible array field containing pokemon encounter data.
     pub wild_pokemon_list: __IncompleteArrayField<WildPokemon>,
 }
 
+/// Safe Rust representation of a wild encounter table
 #[derive(Default, Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct WildPokemonInfo {
+    /// Encounter rate for the area.
     pub encounter_rate: u8,
+
+    /// Number of pokemon entries stored
     pub pokemon_count: usize,
+
+    /// list of encounterable pokemon
     pub wild_pokemon_list: Vec<WildPokemon>,
 }
 
-
+/// Single wild pokemon encounter entry.
+/// 
+/// Contains:
+/// 
+/// - Minimum encounter level
+/// - Maximum encounter level
+/// - Pokemon Species ID
 #[derive(Default, Debug, Clone, Copy, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 #[repr(C)]
 pub struct WildPokemon {
@@ -77,6 +121,16 @@ pub struct WildPokemon {
 }
 
 impl WildPokemonHeaderROM {
+    /// Reads a wild encounter header from ROM data.
+    /// 
+    /// # Arguments
+    /// 
+    /// * `buffer` - Full ROM buffer.
+    /// * `offset` - Offsetr into the ROM.
+    /// 
+    /// # Returns
+    /// 
+    /// A populated [`WildPokemonHeaderROM`] structure.
     #[unsafe(no_mangle)]
     pub fn fill_header(buffer: &[u8], offset: usize) -> Self {
         let mut header = WildPokemonHeaderROM::default();
@@ -99,6 +153,12 @@ impl WildPokemonHeaderROM {
 }
 
 impl WildPokemonHeader {
+    /// Builds a safe Rust wild encounter header from ROM data.
+    /// 
+    /// # Arguments
+    /// 
+    /// * `header_rom` - ROM header structure
+    /// * `buffer` - Full ROM buffer.
     pub fn fill_head(header_rom: &WildPokemonHeaderROM, buffer: &[u8]) -> Self {
         let mut header = WildPokemonHeader::default();
 
@@ -127,6 +187,16 @@ impl WildPokemonHeader {
 }
 
 impl WildPokemonHeaderFFI {
+    /// Reads a single wild pokemon encounter entry from ROM data.
+    /// 
+    /// # Arguments
+    /// 
+    /// * `buffer` - Full ROM buffer.
+    /// * `offset` - Offset into the encounter list.
+    /// 
+    /// # Returns
+    /// 
+    /// A populated [`WjildPokemon`] structure
     #[unsafe(no_mangle)]
     pub fn fill_head(header_rom: &WildPokemonHeaderROM, buffer: &[u8]) -> Self {
         let mut header = WildPokemonHeaderFFI::default();
@@ -161,6 +231,14 @@ impl WildPokemonHeaderFFI {
 }
 
 impl WildPokemon {
+    /// Reads a single wild pokemon encounter entry from ROM data.
+    /// 
+    /// # Arguments
+    /// 
+    /// * `buffer` - Full ROM buffer
+    /// * `offset` - Offset into encounter list.
+    /// 
+    /// # Returns A populated[`WildPokemon`] structure.
     pub fn fill_wild_pokemon(buffer: &[u8], offset: usize) -> Self {
         let mut index: usize = offset;
         let mut mon = WildPokemon::default();
@@ -180,7 +258,17 @@ impl WildPokemon {
 }
 
 impl WildPokemonInfoROM {
-    /// buffer is the entire rom data, do not truncate it or the offsets will need to be changed.
+    /// Extracts the encounter list from ROM data.
+    /// 
+    /// Duplicate species entries are automatically filtered out.
+    /// 
+    /// # Arguments
+    /// 
+    /// * `buffer` - Full ROM buffer.
+    /// 
+    /// # Returns
+    /// 
+    /// Vectore containing all unique encounterable pokemon.
     pub fn get_pokemon_list(&self, buffer: &[u8]) -> Vec<WildPokemon> {
         let mut list:Vec<WildPokemon> = Vec::new();
         let mut index: usize = 0;
@@ -201,6 +289,12 @@ impl WildPokemonInfoROM {
         list
     }
 
+    /// Reads encounter table metadata from ROM data.
+    /// 
+    /// # Arguments
+    /// 
+    /// * `buffer` - Full ROM buffer
+    /// * `offset` - Offset into ROM.
     pub fn fill_pokemon_info(buffer: &[u8], offset: usize) -> Self {
         let mut info = WildPokemonInfoROM::default();
         let mut index = offset;
@@ -259,32 +353,56 @@ impl Drop for WildPokemonHeaderFFI {
     }
 }
 
+/// Flexible array member helper used for FFI
+/// 
+/// Mimics incomplete array fields commonly found in C APIs.
 #[derive(Default, Debug, Clone, Copy)]
 #[repr(C)]
 pub struct __IncompleteArrayField<T>(PhantomData<T>);
 
 impl<T> __IncompleteArrayField<T> {
+    /// Creates a new empty incomplete array field
     pub fn new() -> Self {
         __IncompleteArrayField(PhantomData)
     }
 
-    // convert to a raw pointer to access data
+    /// Returns the field as a raw immutable pointer.
+    /// 
+    /// # Safety
+    /// 
+    /// Caller must ensure teh backing memory is valid.
     pub unsafe fn as_ptr(&self) -> *const T {
         unsafe { std::mem::transmute(self) }
     }
 
-    // convert to a mutable raw pointer 
+    /// Returns the field as a raw mutable pointer.
+    /// 
+    /// # Safety
+    /// 
+    /// Caller must ensure the backing memory is valid.
     pub unsafe fn as_mut_ptr(&mut self) -> *mut T {
         unsafe { std::mem::transmute(self) }
     }
 
-    // convert to a slice given a known length
+    /// Converts the field into a slice.
+    /// 
+    /// # Safety
+    /// 
+    /// Caller must ensure:
+    /// 
+    /// - Memory is valud.
+    /// - `len` elements exist
     pub unsafe fn as_slice(&self, len: usize) -> &[T] {
         unsafe { std::slice::from_raw_parts(self.as_ptr(), len) }
     }
 }
 
-// function to create a container with 'n' items
+/// Allocates and fills an FFI encounter list structure.
+/// 
+/// # Safety
+/// 
+/// Caller is responsible for eventually freeing the returned pointer
+/// using [`drop_filled_wild_pokemon_info`].
 unsafe fn new_filled_wild_pokemon_info_ffi(list: Vec<WildPokemon>) -> *mut WildPokemonInfoFFI {
     let n = list.len();
 
@@ -307,6 +425,11 @@ unsafe fn new_filled_wild_pokemon_info_ffi(list: Vec<WildPokemon>) -> *mut WildP
     ptr
 }
 
+/// Converts an FFI encounter list pointer into a Rust vector.
+/// 
+/// # Safety
+/// 
+/// Caller must ensure the pointer is valid.
 pub unsafe fn get_wild_pokemon_vector_from_ptr_ffi(ptr: *mut WildPokemonInfoFFI) -> Vec<WildPokemon> {
     let mut pokemon: Vec<WildPokemon> = Vec::new();
     if ptr.is_null() {
@@ -326,6 +449,14 @@ pub unsafe fn get_wild_pokemon_vector_from_ptr_ffi(ptr: *mut WildPokemonInfoFFI)
     pokemon
 }
 
+/// Frees memory allocated for an FFI encounter list.]
+/// 
+/// # Safety
+/// 
+/// Pointer must: 
+/// - Have been allocated by 
+///     [`new_filled_wild_pokemon_info_ffi`]
+/// - Not already been freed
 unsafe fn drop_filled_wild_pokemon_info(ptr: *mut WildPokemonInfoFFI) {
     if ptr.is_null() {
         return;
@@ -338,7 +469,14 @@ unsafe fn drop_filled_wild_pokemon_info(ptr: *mut WildPokemonInfoFFI) {
     unsafe { dealloc(ptr as *mut c_uchar, layout); }
 }
 
-// #[unsafe(no_mangle)] ---todo! update for FFI
+/// Reads all wild encounter headers from ROM data.
+/// 
+/// Scans until the 0xFFF terminator entry is reached.
+/// 
+/// # Arguments
+/// 
+/// * `buffer` - Full ROM buffer.
+/// * `offset` - Starting offset of the encounter table.
 pub fn get_all_pokemon_headers_from_rom(buffer: &[u8], offset: usize) -> Vec<WildPokemonHeaderROM> {
     let mut wild_header: Vec<WildPokemonHeaderROM> = Vec::new();
     let mut index: usize = 0;
@@ -356,11 +494,22 @@ pub fn get_all_pokemon_headers_from_rom(buffer: &[u8], offset: usize) -> Vec<Wil
     wild_header
 }
 
+/// Initializes the global wild encounter header cache.
+/// 
+/// # Arguments
+/// 
+/// * `buffer` - Full ROM buffer
+/// * `offset` - Starting offset fo the encounter table
 pub fn fill_static_pokemon_header_list(buffer: &[u8], offset: usize) {
     let list = get_all_pokemon_headers_from_rom(buffer, offset);
     WILD_POKEMON_HEADERS.get_or_init(|| list);
 }
 
+/// Returns the cached wild encounter header list.
+/// 
+/// # Panics
+/// 
+/// Panics if the header list has not been initialized.
 pub fn get_pokemon_header_list() -> &'static Vec<WildPokemonHeaderROM> {
     WILD_POKEMON_HEADERS.get().expect("headers not initialized")
 }
