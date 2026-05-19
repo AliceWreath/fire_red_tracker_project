@@ -1,3 +1,25 @@
+//! # Fire Red Party Tracker
+//! 
+//! A real-time Pokemon FireRed party and encounter monitor with an egui GUI.
+//! 
+//! ## Modes
+//! 
+//! The application supports three operating modes selected via command-line arguments:
+//! 
+//! - **Standalone** - reads the ROM and game memory locally, renders the GUI.
+//! - **Server* - like standalone but also accept TCP client connections and
+//!     streams [`GameState`] updates + sprite data to them. Runs Headless.
+//! - **Client** - connects to a server over TCP, receives state and sprites,
+//!     and renders the GUI without needing the ROM locally.
+//! 
+//! ## Usage
+//! 
+//! ```text
+//! tracker /path/to/file.gba [--clean]                     # standalone
+//! tracker /path/to/file.gba --server [port]               # server (default port 7878)
+//! tracker --client [host] [port]                          # client (default 127.0.0.1:7878)
+//! ```
+//! 
 use colored::Colorize;
 use fire_red_loop::*;
 use fire_red_party_monitor::get_is_clean;
@@ -8,21 +30,56 @@ use std::net::{TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
+// ---------------------------------------------------------
+// Window / image size constants
+// ---------------------------------------------------------
+
+/// Holds the default target window size for party, in logical pixels.
 const PARTY_WINDOW: (f32, f32) = (400.0, 800.0);
+
+/// Holds the size for the pokemon images, in logical pixels
 const PARTY_IMAGE_SIZE: (f32, f32) = (64.0, 64.0);
+
+/// Holds the default target window size for encounters, in logical pixels
 const ENCOUNTER_WINDOW: (f32, f32) = (600.0, 400.0);
+
+/// Holds the size for encounter images, in logical pixels
 const ENCOUNTER_IMAGE_SIZE: (f32, f32) = (64.0, 64.0);
 
+// -----------------------------------------------------------
+// Global state
+// -----------------------------------------------------------
+
+/// How often (in seconds) the party list is force-refreshed even when the
+/// party size has not changed, to catch in-place changes.
 static FORCE_PARTY_CHECK_TIME_IN_SECS: u64 = 5;
+
+/// Handle to the main game-polling thread, kept alive for the process lifetime.
 static MAIN_THREAD_HANDLE: Mutex<Option<std::thread::JoinHandle<()>>> = Mutex::new(None);
+
+/// Handle to the client network thread (client mode only)
 static CLIENT_THREAD_HANDLE: Mutex<Option<std::thread::JoinHandle<()>>> = Mutex::new(None);
+
+/// Handle to the TCP listener thread (server mode only)
 static SERVER_THREAD_HANDLE: Mutex<Option<std::thread::JoinHandle<()>>> = Mutex::new(None);
+
+/// Set to 'false' by teh Ctrl-C handler to trigger a clean shutdown in server mode.
 static RUNNING: AtomicBool = AtomicBool::new(true);
 
 // ---------------------------------------------------------------------------
 // Sprite compression helpers
 // ---------------------------------------------------------------------------
 
+/// Compresses raw RGBA pixel data using zlib (fast preset).
+/// 
+/// Sprites can be several KB uncompressed; compression reduces the amount of
+/// data sent over the TCP connection when the server streams sprites to clients.
+/// 
+/// # Arguments
+/// * `data` - Raw RGBA bytes (width * height * 4).
+/// 
+/// # Returns
+/// Zlib-compressed byte vector.
 fn compress_pixels(data: &[u8]) -> Vec<u8> {
     use flate2::{Compression, write::ZlibEncoder};
     let mut encoder = ZlibEncoder::new(Vec::new(), Compression::fast());
@@ -30,6 +87,17 @@ fn compress_pixels(data: &[u8]) -> Vec<u8> {
     encoder.finish().unwrap()
 }
 
+/// Decompresses zlib-compressed pixel data back to raw RGBA bytes.
+/// 
+/// Called on the client after receiving a [`SpriteData`] packet from the server.
+/// On failure an empty 'Vec' is returned so the texture pipeline can still run
+/// without panicking.
+/// 
+/// # Arguments
+/// * `data` - Zlib-compressed bytes as produced by [`compress_pixels`]
+/// 
+/// # Returns
+/// Decompressed RGBA bytes, or an empty 'Vec' on error.
 fn decompress_pixels(data: &[u8]) -> Vec<u8> {
     use flate2::read::ZlibDecoder;
     let mut decoder = ZlibDecoder::new(data);
@@ -42,6 +110,16 @@ fn decompress_pixels(data: &[u8]) -> Vec<u8> {
 // Server-side sprite cache
 // ---------------------------------------------------------------------------
 
+/// Extracts a pokemon sprite from teh ROM, compresses it, and returns a 
+/// [`SpriteData`] ready to send to a client.
+/// 
+/// Returns `None` if the species index is invalid or the sprite cannot be 
+/// decoded from the ROM.
+/// 
+/// # Arguments
+/// * `rom`         - Full ROM byte slice (must already be loaded in memory).
+/// * `species`     - National Pokedex number (1 - 386 for FireRed)
+/// * `shiny`       - `true` to return the alternate shiny palette sprite.
 fn build_sprite_data(rom: &[u8], species: u16, shiny: bool) -> Option<SpriteData> {
     let img = fire_red_image_data::get_pokemon_sprite(rom, species, shiny).ok()?;
     let width = img.width();
@@ -60,28 +138,62 @@ fn build_sprite_data(rom: &[u8], species: u16, shiny: bool) -> Option<SpriteData
 // GUI state
 // ---------------------------------------------------------------------------
 
+/// A sprite that has been received from the server and is waiting to be
+/// uploaded to the GPU as an egui texture.
+/// 
+/// Decompression happens on teh network thread; the GUI thread only needs to 
+/// call [`egui::Context::load_texture`] and store the handle.
 struct PendingTexture {
+    /// National Pokedex Number
     species: u16,
+    /// Whether this is the shiny variant
     shiny: bool,
-    pixels: Vec<u8>, // decompressed RGBA
+    /// Decompressed RGBA pixel data (width * height * 4 bytes).0
+    pixels: Vec<u8>,
+    /// Image width in pixels
     width: u32,
+    /// Image height in pixels
     height: u32,
 }
 
+/// Top-level application state passed to [`eframe`]
+/// 
+/// Holds all shared data needed to drive both the party panel (main window)
+/// and the encounters panel (child viewport), as well as the client-mode
+/// texture pipeline.
 struct WindowInfo {
+    /// Current party pokemon, updated by teh game-polling or network thread.
     party_list: Arc<Mutex<Vec<fire_red_party_monitor::Pokemon>>>,
+    /// Current area wild encounter table, updated by the game-polling or network thread.
     encounter_list: Arc<Mutex<fire_red_pokemon_data::WildPokemonHeader>>,
+    /// Cache of GPU texture handles, keyed by `"pokemon_{species}_{normal|shiny"`.
     textures: HashMap<String, egui::TextureHandle>,
+    /// Whether the encounters child window is currently visible.
     encounters_open: bool,
-    // Client-mode texture pipeline
+    /// Sprites received from teh server that have not yet been uploaded to the GPU.
+    /// Drained at the start of each frame.
     pending_textures: Arc<Mutex<Vec<PendingTexture>>>,
+    /// Set of species IDs for which a texture request has already been sent to 
+    /// the server, preventing duplicate requests.
     known_species: Arc<Mutex<std::collections::HashSet<u16>>>,
-    // Shared queue so the GUI can request textures from the network thread.
-    // None in standalone mode (textures loaded from ROM directly).
+    /// Queue of texture request batches produces by the GUI and consumed by the
+    /// network writer thread. `None` in standalone/server mode (textures are 
+    /// loaded from teh ROM directly without oging through the network).
     texture_request_queue: Option<Arc<Mutex<VecDeque<Vec<u16>>>>>,
 }
 
 impl WindowInfo {
+    /// Creates a new [`WindowInfo`] from the shared arcs produced in `main`.
+    /// 
+    /// # Arguments
+    /// * `_cc`                         - eframe creation context (unused; reserved
+    ///                                     for future font/style initialization).
+    /// * `party_list`                  - Shared party pokemon list.
+    /// * `encounter_list`              - Shared wild encounter table
+    /// * `pending_textures`            - Shared pipeline for textures received from the server.
+    /// * `known_species`               - Set of species already requested / received.
+    /// * `texture_request_queue`       - Queue for outbound texture requests; `None` in
+    ///                                     standalone mode.
     fn new(
         _cc: &eframe::CreationContext<'_>,
         party_list: Arc<Mutex<Vec<fire_red_party_monitor::Pokemon>>>,
@@ -103,11 +215,25 @@ impl WindowInfo {
 }
 
 impl eframe::App for WindowInfo {
+    /// Intentionally empty - all rendering is handled in [`update`]
     fn ui(&mut self, _ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         // intentionally empty - rendering is done in update()
     }
 
+    /// Main per-frame callback called by eframe on every repaint.
+    /// 
+    /// Responsibilities (in order):
+    /// 1. **Drain pending textures** - upload any sprites received from the
+    ///     server since the last frame.
+    /// 2. **Request / load missing textures** - for every species visibile in the
+    ///     party or encounter list that has no cached texture, either load it
+    ///     directly from ROM (standalone/server mode) or enqueue a request
+    ///     to the network thread (client mode).
+    /// 3. **Draw the party panel** in the central panel.
+    /// 4. **Draw the encounters window** as an immediate child viewport.
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Request a repaint on the next frame so the UI stays live even when
+        // no user input occurs (game state changes continuously).
         ctx.request_repaint();
 
         // ── 1. Drain textures received from server (client mode) ────────────
@@ -340,6 +466,17 @@ impl eframe::App for WindowInfo {
 }
 
 impl WindowInfo {
+    /// Draws the party panel into `ui`.
+    /// 
+    /// For each pokemon in the party this renders:
+    /// - Its sprite (shiny variant when applicable)
+    /// - Nickname and level.
+    /// - Current / map HP, color-coded by percentage.
+    ///     - **Red** below 30%
+    ///     - **Yellow** below 80%
+    ///     - **White** otherwise.
+    /// - Met location.
+    /// - Ability (only whne running in "clean" ROM mode, i.e. `--clean` flag).
     fn draw_ui(&mut self, ui: &mut egui::Ui, _ctx: &egui::Context) {
         ui.heading("Party");
 
@@ -415,6 +552,20 @@ impl WindowInfo {
 // Texture helpers
 // ---------------------------------------------------------------------------
 
+/// Loads a pokemon sprite from the ROM and uploads it as an egui texture
+/// 
+/// The shiny flag is derived automatically from `personality` and `ot_id` using
+/// the Gen III shiny formula (see [`is_shiny`])
+/// 
+/// # Arguments
+/// * `ctx`                 - egui context used to allocate the GPU texture.
+/// * `rom`                 - Full ROM byte slice.
+/// * `species`             - National Pokedex number.
+/// * `personality`         - Pokemon's personality value (PID)
+/// * `ot_id`               - Combined original trainer ID (public + secret)
+/// 
+/// # Errors
+/// Returns an error if the sprite cannot be decoded from the ROM.
 pub fn load_texture(
     ctx: &egui::Context,
     rom: &[u8],
@@ -438,6 +589,16 @@ pub fn load_texture(
     ))
 }
 
+/// Loads the non-shiny sprite for a species and uploads it as an egui texture
+/// 
+/// Convenience wrapper around [`load_texture`] used for wild encounter sprites,
+/// which are always shown in their normal palette regardless of hidden shiny
+/// values in the encounter table.
+/// 
+/// # Arguments
+/// * `ctx`                 - egui context used to allocate the GPU texture
+/// * `rom                  - Full ROM byte slice.
+/// * `species`             - National pokedex number.
 pub fn load_texture_normal(
     ctx: &egui::Context,
     rom: &[u8],
@@ -454,6 +615,14 @@ pub fn load_texture_normal(
     ))
 }
 
+/// Creates a solid red placeholder texture for species whose sprites could not be loaded.
+/// 
+/// Prevents a panic when a sprite is unavailable (e.g. invalid species index)
+/// while making missing sprites visually obvious.
+/// 
+/// # Arguments
+/// * `ctx`             - egui context used to allocate the GPU texture.
+/// * `species`         - National pokdex number, used only to key the texture cache.
 fn make_placeholder(ctx: &egui::Context, species: u16) -> egui::TextureHandle {
     let size = [PARTY_IMAGE_SIZE.0 as usize, PARTY_IMAGE_SIZE.1 as usize];
     let pixels = vec![255u8, 0, 0, 255].repeat(size[0] * size[1]);
@@ -465,11 +634,30 @@ fn make_placeholder(ctx: &egui::Context, species: u16) -> egui::TextureHandle {
     )
 }
 
+/// Refreshes the shared party list by reading current party data from the game.
+/// 
+/// Called whenever the party size changes or when the periodic force-refresh
+/// timer fires. Overwrites teh entire list so stale entries are never shown.
+/// 
+/// # Arguments
+/// * `thread_party` - Shared party list shared with the GUI thread.
 fn fill_party_list(thread_party: &Arc<Mutex<Vec<fire_red_party_monitor::Pokemon>>>) {
     let mut list = thread_party.lock().unwrap_or_else(|e| e.into_inner());
     *list = get_party_members();
 }
 
+
+/// Returns `true` if a pokemon with the given `personality` and `ot_id` is shiny.
+/// 
+/// Uses the Gen III shiny determination formula:
+/// `(p_high XOR p_low XOR id_high XOR id_low) < 8`
+/// 
+/// where `p_high`/`p_low` are the upper/lower 16 bits of teh personality value.
+/// and `id_high`/`id_low` are teh upper/lower 16 bits of the combined OT ID.
+/// 
+/// # Arguments
+/// * `personality`     - pokemon's 32-bit personality value (PID).
+/// * `ot_id            - combined 32-bit OT ID (public ID in low 16 bits, secret ID in high 16 bits).
 pub fn is_shiny(personality: u32, ot_id: u32) -> bool {
     let p1 = (personality >> 16) as u16;
     let p2 = (personality & 0xFFFF) as u16;
@@ -482,6 +670,26 @@ pub fn is_shiny(personality: u32, ot_id: u32) -> bool {
 // Server: handle one connected client (bidirectional)
 // ---------------------------------------------------------------------------
 
+/// Manages the full lifecycle of a single TCP client connection in server mode.
+/// 
+/// The function spawns two concurrent activities:
+/// 
+/// * **Reader thread** - listens for [`ClientMessage::RequestTextures`] packets
+///     and responds with [`ServerMessage::Textures`] containing compressed sprite
+///     data for the requested species. Both normal and shiny variants are always 
+///     sent so the client never needs the ROM locally. Results are cached in
+///     `sprite_cache` to avoid re-decoding the ROM for repeated requests.
+/// 
+/// * **Writer loop** (runs on the calling thread) - broadcasts a
+///     [`ServerMessage::State`] snapshot every 100 ms containing the current
+///     party and encounter data. The loop exits on any write error (client disconnect).
+/// 
+/// # Arguments
+/// * `stream`                      - Connected TCP stream.
+/// * `server_party`                - Shared reference to the current party data.
+/// * `server_encounters`           - Shared reference to the current area encounter data.
+/// * `sprite_cache`                - Per-process sprite cache to amortise ROM decoding cost
+///                                     across multiple clients.
 fn handle_client(
     stream: TcpStream,
     server_party: Arc<Mutex<Vec<fire_red_party_monitor::Pokemon>>>,
@@ -579,6 +787,21 @@ fn handle_client(
 // main
 // ---------------------------------------------------------------------------
 
+/// Entry point.
+/// 
+/// Parses command-line arguments to determine the operating [`Mode`], then
+/// sets up the appropriate combination of threads and (optionally) launches
+/// the egui GUI.
+/// 
+/// ## Thread architecture
+/// 
+/// | Mode          | Thread created|
+/// |---------------|---------------|
+/// | Standalone    | game-polling thread + GUI (main thread) |
+/// | Server        | game-polling thread + TCP listener thread (headless) |
+/// | Client        | network thread (connect -> read/write loop) + GUI (main thread) |
+/// 
+/// All inter-thread data is passed via `Arc<Mutex<_>>`
 fn main() {
     let args: Vec<String> = std::env::args().collect();
 
@@ -616,27 +839,37 @@ fn main() {
         }
     };
 
+    // Shared state between the game-polling / network threads and the GUI.
     let shared_party: Arc<Mutex<Vec<fire_red_party_monitor::Pokemon>>> =
         Arc::new(Mutex::new(Vec::new()));
     let shared_encounters: Arc<Mutex<fire_red_pokemon_data::WildPokemonHeader>> = Arc::new(
         Mutex::new(fire_red_pokemon_data::WildPokemonHeader::default()),
     );
 
-    // Shared sprite cache — keyed by (species, shiny), populated on demand
+    // Sprite cache shared across all clients on the server; avoids decoding
+    // the same ROM sprite more than once per process lifetime.
     let sprite_cache: Arc<Mutex<HashMap<(u16, bool), SpriteData>>> =
         Arc::new(Mutex::new(HashMap::new()));
 
     // Client-mode texture pipeline
+    // Spirte arrives from teh server as compressed blobs on the network thread.
+    // They are decompressed threre and placed in `pending_textures`. The GUI
+    // thread drains this vec each from and uploads them to the GPU.
     let pending_textures: Arc<Mutex<Vec<PendingTexture>>> = Arc::new(Mutex::new(Vec::new()));
+
+    // Tracks which species have already been requested so the GUI does not 
+    // flood the server with duplicate requests.
     let known_species: Arc<Mutex<std::collections::HashSet<u16>>> =
         Arc::new(Mutex::new(std::collections::HashSet::new()));
 
-    // Shared queue so the GUI thread can enqueue texture requests that survive
-    // reconnects — the network writer drains it each connection attempt.
+    // The GUI thread pushes batches of species IDs there; the network writer
+    // thread drains and sends them as `ClientMessage::RequestTextures`.
+    // The queue survives reconnects so no request is lost on a dropped connection.
     let texture_request_queue: Arc<Mutex<VecDeque<Vec<u16>>>> =
         Arc::new(Mutex::new(VecDeque::new()));
 
     match &mode {
+        // -- Standalone & Server: load ROM and start the game-polling thread --
         Mode::Standalone | Mode::Server { .. } => {
             let rom_path = match args.get(1) {
                 Some(path) => path.clone(),
@@ -646,12 +879,14 @@ fn main() {
                 }
             };
 
+            // `--clean` enables ability display; only works on unmodified ROMs.
             let is_clean = args.iter().any(|a| a == "--clean");
 
             let thread_party = shared_party.clone();
             let thread_encounters = shared_encounters.clone();
 
             let main_thread = std::thread::spawn(move || {
+                // Initialize the memory-reading backend (mmap / process attach).
                 match start_loop(rom_path.as_str(), is_clean) {
                     0 => println!("DEBUG: start_loop succeeded"),
                     code => {
@@ -669,12 +904,15 @@ fn main() {
                     let state = get_value();
                     let current_party_size = get_party_size();
 
+                    // Refresh party immediately whenever the party size changes
+                    // (Pokemon caught, deposited, etc.)
                     if old_party_size != current_party_size {
                         old_party_size = current_party_size;
                         update_box_list();
                         fill_party_list(&thread_party);
                     }
 
+                    // Refresh encounter table when the player moves to a new map.
                     if current_fire_red_state != state {
                         current_fire_red_state = state;
                         let encounters = get_area_pokemon_id();
@@ -682,6 +920,8 @@ fn main() {
                         *enc = encounters;
                     }
 
+                    // Periodic force-refresh catches changes that would otherwise
+                    // not be detected.
                     if start_refresh_party_timer
                         .elapsed()
                         .unwrap_or(std::time::Duration::ZERO)
@@ -698,6 +938,7 @@ fn main() {
 
             *MAIN_THREAD_HANDLE.lock().unwrap_or_else(|e| e.into_inner()) = Some(main_thread);
 
+            // Server mode: also start the TCP listener.
             if let Mode::Server { port } = &mode {
                 let port = *port;
                 let server_party = shared_party.clone();
@@ -724,6 +965,7 @@ fn main() {
                                 let party = server_party.clone();
                                 let encounters = server_encounters.clone();
                                 let cache = server_sprite_cache.clone();
+                                // Each client gets its own thread; `handle_client` blocks until disconnect.
                                 std::thread::spawn(move || {
                                     handle_client(stream, party, encounters, cache);
                                 });
@@ -739,6 +981,7 @@ fn main() {
             }
         }
 
+        // -- Client: connect to server, receive state + sprites --
         Mode::Client { host, port } => {
             // No ROM needed — all data including sprites comes from the server.
             let client_party = shared_party.clone();
@@ -749,6 +992,7 @@ fn main() {
             let addr = format!("{}:{}", host, port);
 
             let client_thread = std::thread::spawn(move || {
+                // Outer reconnect loop - keeps retrying every 3 seconds on failure.
                 loop {
                     println!("Connecting to server at {}...", addr);
                     match TcpStream::connect(&addr) {
@@ -765,11 +1009,14 @@ fn main() {
                             let mut read_stream = stream;
 
                             // Flag so the reader can signal the writer to stop
+                            // when teh connection drops.
                             let connected = Arc::new(AtomicBool::new(true));
                             let connected_writer = connected.clone();
                             let writer_queue = client_queue.clone();
 
                             // ── Writer thread: drains the shared request queue
+                            // Batches all pending species requests into a single
+                            // `ClientMessage::RequestTextures` per 50ms tick.
                             let writer = std::thread::spawn(move || {
                                 while connected_writer.load(Ordering::SeqCst) {
                                     let batch = {
