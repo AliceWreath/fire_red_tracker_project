@@ -1,4 +1,37 @@
-// Each PC lot is 80 bytes (0x50)
+//! # FireRed Box Monitor
+//! 
+//! Monitors the player's PC box storage and maintains a deduplicated, in-memory
+//! cache of every [`BoxPokemon`] seen across all 14 boxes.
+//! 
+//! ## Memory layout
+//! 
+//! FireRed stores PC box data in a structure called `gPokemonStorage` in WRAM.
+//! Each slot is [`SLOT_SIZE`] (0x50) bytes laid out as:
+//! 
+//! ```text
+//! slot address = box_0_base + (box * NUMBER_SLOTS + slot) * SLOT_SIZE
+//! ```
+//! 
+//! The base address of box 0 is **not** fixed - it is found at runtime by
+//! dereferncing the `SaveBlock3` pointer at [`SAVE_BLOCK_3_PTR`] and adding
+//! [`BOX_DATA_OFFSET`]. This indirection is necessary becasue the storage
+//! address can shift between saves.
+//! 
+//! ## Background thread
+//! 
+//! [`start_loop`] spawns a thread that calls [`update_box_list`] every
+//! [`SLEEP_TIMER_IN_SECS`] seconds. The thread wraps each update in
+//! [`std::panic::catch_unwind`] so a single bad memory read cannot bring down
+//! the whole process. Call [`end_loop`] to stop it.
+//! 
+//! ## Deduplication
+//! 
+//! [`PokemonStorage`] tracks both a `Vec` of entries and a `HashSet` of seen
+//! species IDs. [`check_for_new_entry`] uses the set as a fast guard so that a 
+//! species already observed in the box is not added a second time. This means
+//! the storage list reflects *unique species*, not every individual pokemon.
+
+// Each PC slot is 80 bytes (0x50)
 // there are 14 boxes x 30 slots
 // starting at gPokemonStorage in WRAM
 // slot address = POKEMON_STORAGE_ADDR + ((box * 30 + slot) * 0x50);
@@ -8,17 +41,60 @@ use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 
+/// GBA addresss of the `SaveBlock3` pointer in IWAM
+/// 
+/// Dereferencing this 4-byte little-endian pointer yields the base address of
+/// the `gPokemonStorage` struct in EWRAM. The base address itself can shift
+/// between saves, so this indirection must be followed at runtime.
 static SAVE_BLOCK_3_PTR: usize = 0x03005010;
+
+/// Byte offset from teh `SaveBlock3` base address to the start of box slot data.
+/// 
+/// Added to the dereferenced `SaveBlock3` pointer to get the address of box 0,
+/// slot 0.
 static BOX_DATA_OFFSET: usize = 0x4;
-//static POKEMON_STORAGE_ADDR: u32 = 0x02029338; //0x02029814; <- this is based on memory that can shift and therefore not useful
+
+/// Size of one PC box slot in bytes.
+/// 
+/// Each `BoxPokemon` occupies exactly 80 (0x50) bytes in memory.
 static SLOT_SIZE: usize = 0x50;
+
+/// Total number of PC boxews in FireRed's storage system.
 static NUMBER_BOXES: usize = 14;
+
+/// Number of pokemon slots per PC box.
 static NUMBER_SLOTS: usize = 30;
+
+// ---------------------------------------------------------------------------
+// Global state
+// ---------------------------------------------------------------------------
+
+/// The in-memory cache of all PC box pokemon, populated by the background thread.
+/// Initialized lazily on first access.
 static POKEMON_STORAGE_LIST: OnceLock<Mutex<PokemonStorage>> = OnceLock::new();
+
+/// How often the background thead refreshes the box cache, in seconds.
 static SLEEP_TIMER_IN_SECS: u64 = 5;
+
+/// Set to `true` while the background thread should keep running.
+/// Flipped to `false` by [`end_loop`]
 static RUNNING: AtomicBool = AtomicBool::new(false);
+
+/// Handle to the background polling thread, stored so [`end_loop`] can join it.
 static THREAD_HANDLE: Mutex<Option<std::thread::JoinHandle<()>>> = Mutex::new(None);
 
+// ---------------------------------------------------------------------------
+// Thread lifecycle
+// ---------------------------------------------------------------------------
+
+/// Starts the background box-monitoring thread.
+/// 
+/// The thread calls [`update_box_list`] every [`SLEEP_TIMER_IN_SECS`] seconds.
+/// Each cell is wrapped in [`std::panic::catch_unwind`] so a panicking read
+/// does not propogate and crash the process.
+/// 
+/// Calling this while the loop is already running will spawn a second thread;
+/// callers should ensure it is only called once.
 pub fn start_loop() {
     RUNNING.store(true, Ordering::SeqCst);
 
@@ -35,6 +111,9 @@ pub fn start_loop() {
     *THREAD_HANDLE.lock().unwrap_or_else(|e| e.into_inner()) = Some(handle);
 }
 
+/// Signals the background thread to stop and blocks until it exits.
+/// 
+/// If the thread has already exited or was never started, this is a no-op
 pub fn end_loop() {
     RUNNING.store(false, Ordering::SeqCst);
 
@@ -46,13 +125,29 @@ pub fn end_loop() {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Storage struct
+// ---------------------------------------------------------------------------
+
+/// In-memory cache of PC box pokemon.
+/// 
+/// Maintains two parallel data structures for 0(1) duplicate detections:
+/// - `entries`         - the full list of unique [`BoxPokemon`] records.
+/// - `species_set`     - the set of speciese IDs already present in `entries`
+/// 
+/// Both must be kept in sync; use [`check_for_new_entry`] and [`sync_storage`]
+/// rather than mutating the fields directly.
 #[derive(Debug)]
 pub struct PokemonStorage {
+    /// All unique box pokemon observed since the last full sync
     entries: Vec<BoxPokemon>,
+    /// Species IDs present in `entries`, used as a fast existence check.
     species_set: HashSet<u16>,
 }
 
 impl PokemonStorage {
+    /// Returns a reference to the global [`PokemonStorage`] mutex, initializing
+    /// it with empty collections of first call.
     pub fn get_storage_list() -> &'static Mutex<PokemonStorage> {
         POKEMON_STORAGE_LIST.get_or_init(|| {
             Mutex::new(PokemonStorage {
@@ -63,6 +158,21 @@ impl PokemonStorage {
     }
 }
 
+// ---------------------------------------------------------------------------
+// RAM address resolution
+// ---------------------------------------------------------------------------
+
+/// Resolves the runtime address of box 0, slot 0 in EWRAM.
+/// 
+/// Follows the `SaveBlock3` pointer indirection:
+/// 1. Reads 4 bytes from [`SAVE_BLOCK_3_PTR`] to obtain the `SaveBlock3` base address.
+/// 2. Adds [`BOX_DATA_OFFSET`] to get the first box slot address.
+/// 
+/// Retries up to 20 times on failed RetroArch reads before giving up.
+/// 
+/// # Returns
+/// The GBA address of box 0, slot 0, or `None` if the address could not be 
+/// resolved after all retries.
 fn get_box_0_ram_location() -> Option<u32> {
     let max_retries: usize = 20;
     let mut retries = 0;
@@ -90,6 +200,11 @@ fn get_box_0_ram_location() -> Option<u32> {
     None
 }
 
+// ---------------------------------------------------------------------------
+// Storage accessors
+// ---------------------------------------------------------------------------
+
+/// Returns a cloned snapshot of all unique box pokemon currently in the cache.
 pub fn get_storage_entries() -> Vec<BoxPokemon> {
     PokemonStorage::get_storage_list()
         .lock()
@@ -97,6 +212,8 @@ pub fn get_storage_entries() -> Vec<BoxPokemon> {
         .entries
         .clone()
 }
+
+/// Returns a cloned snapshot of the set of species IDs currently in the cache.
 pub fn get_storage_species_set() -> HashSet<u16> {
     PokemonStorage::get_storage_list()
         .lock()
@@ -105,6 +222,10 @@ pub fn get_storage_species_set() -> HashSet<u16> {
         .clone()
 }
 
+/// Returns a reference to the global [`PokemonStorage`] mutex
+/// 
+/// Equivalent to [`PokemonStorage::get_storage_list`]; provided as a free
+/// function for call-site convenience.
 pub fn get_storage_list() -> &'static Mutex<PokemonStorage> {
     POKEMON_STORAGE_LIST.get_or_init(|| {
         Mutex::new(PokemonStorage {
@@ -114,6 +235,17 @@ pub fn get_storage_list() -> &'static Mutex<PokemonStorage> {
     })
 }
 
+// ---------------------------------------------------------------------------
+// Cache mutation
+// ---------------------------------------------------------------------------
+
+/// Adds `entry` to the storage cache if its species has not been seen before.
+/// 
+/// Species 0 is the empty-slot sentinel and is always ignored. If the species
+/// is already in `species_set`, the entry is silently skipped.
+/// 
+/// # Returns
+/// `Some(())` if the entry was inserted, `None` if it was skipped.
 pub fn check_for_new_entry(entry: &BoxPokemon) -> Option<()> {
     if entry.secure.growth.species == 0 {
         return None;
@@ -132,6 +264,18 @@ pub fn check_for_new_entry(entry: &BoxPokemon) -> Option<()> {
     Some(())
 }
 
+/// Reconciles the in-memory cache against a freshly read list of box pokemon.
+/// 
+/// - If `list` is **empty**, the cache is fully cleared (entires and species set).
+/// - Otherwise, any cached entry whose species is no longer present in `list`
+///     is removed, and `species_set` is rebuilt to match.
+/// 
+/// This handles the case where a pokemon is released or moved out of the box
+/// between refreshes
+/// 
+/// # Returns
+/// The signed difference in cache size after the sync (negative = removals),
+/// positive = additions, zero = no change).
 pub fn sync_storage(list: &[BoxPokemon]) -> isize {
     let mut storage = PokemonStorage::get_storage_list()
         .lock()
@@ -156,6 +300,23 @@ pub fn sync_storage(list: &[BoxPokemon]) -> isize {
     storage.species_set.len() as isize - initial_size
 }
 
+// ---------------------------------------------------------------------------
+// RAM reading
+// ---------------------------------------------------------------------------
+
+/// Reads all box slots from EWRAM and returns a `Vec` of non-empty [`BoxPokemon`]
+/// 
+/// Reads teh full box storage region (`NUMBER_BOXES x NUMBER_SLOTS x SLOT_SIZE`
+/// bytes) in chunks of 5 boxes at a time to stay within RetroArch's practical
+/// response sice limits. Each chunk is parsed slot-by-slot using
+/// [`BoxPokemon::fill_struct_from_bytes`]; slots with zero chucksum (i.e empty
+/// slots) are discarded.
+/// 
+/// ## Error handling
+/// - If the box 0 address cannot be resolved, returns an empty `Vec`.
+/// - Failed chunk reads are retried; after 5 consecutive failures the funtion
+///   aborts early and returns whatever has been collected so far (or empty).
+/// - Malformed or short responses are skipped without counting as a failure.
 pub fn get_box_entries_from_ram() -> Vec<BoxPokemon> {
     use fire_red_retroarch_interfacing::*;
 
@@ -236,6 +397,19 @@ pub fn get_box_entries_from_ram() -> Vec<BoxPokemon> {
     list
 }
 
+/// Performs a full refresh of the box cache.
+/// 
+/// 1. Reads all box slots from RAM with [`get_box_entries_from_ram`]
+/// 2. Reconciles the cache against the live data with [`sync_storage`] to
+///    remove any stale entries.
+/// 3. Reads RAM a second time and calls [`check_for_new_entry`] for each slot
+///    to add any newly discovered species.
+/// 
+/// The double-read guards against race conditions where a pokemon appears
+/// between teh sync and the new-entry check.
+/// 
+/// # Returns
+/// `true` if at least one new species was added to the cache, `false` otherwise
 pub fn update_box_list() -> bool {
     let list = get_box_entries_from_ram();
     sync_storage(&list);
@@ -251,6 +425,22 @@ pub fn update_box_list() -> bool {
     change_occured
 }
 
+// ---------------------------------------------------------------------------
+// Diagnostic / debugging utilities
+// ---------------------------------------------------------------------------
+
+/// Scans all of EWRAM for a pokmeon with the given personality value.
+/// 
+/// Reads EWRAM (0x02000000-0x02040000) in 16 KB chunks and reports the absolute
+/// GBA address of every 4-byte window that matches the little-endian encoding 
+/// of `known_personality`. Useful for debugging when the expected box-slot
+/// address is unknown or the storage layout has changed.
+/// 
+/// Results are printed to stdout; this function is intended as a diagnostic
+/// tool and is not called during normal operations.
+/// 
+/// # Arguments
+/// * `known_personality` - The 32-bit personality value (PID) to search for.
 pub fn scan_for_pokemon(known_personality: u32) {
     use fire_red_retroarch_interfacing::*;
 
