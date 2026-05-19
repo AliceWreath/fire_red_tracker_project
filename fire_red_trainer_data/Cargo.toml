@@ -1,0 +1,8 @@
+[package]
+name = "fire_red_trainer_data"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+fire_red_get_values = { path = "../fire_red_get_values" }
+fire_red_text = { path = "../fire_red_text/" }
