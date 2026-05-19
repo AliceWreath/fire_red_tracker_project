@@ -1,3 +1,6 @@
+//! # FireRed text
+//! 
+//! Converts pokemon/gba text bytes into human-readable text
 use libc::size_t;
 use std::os::raw::c_char;
 
