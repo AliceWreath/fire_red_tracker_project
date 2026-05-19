@@ -1,4 +1,4 @@
-//! # Fire Red Party Tracker
+//! # Fire Red Tracker
 //! 
 //! A real-time Pokemon FireRed party and encounter monitor with an egui GUI.
 //! 
