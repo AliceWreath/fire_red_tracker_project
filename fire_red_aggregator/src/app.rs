@@ -298,11 +298,12 @@ impl AggregatorApp {
         let ot_id = pokemon.box_mon.ot_id;
         let shiny = is_shiny(personality, ot_id);
         let key = sprite_key(species, shiny);
-
+dbg!(&other_states);
         for (other_label, other_state) in other_states {
             if let Some(gs) = other_state {
                 for other_mon in &gs.party {
-                    if other_mon.box_mon.secure.misc.met_location == met {
+                    dbg!(&other_mon, &met);
+                    if other_mon.box_mon.secure.misc.met_location == met {                        
                         ui.label(
                             egui::RichText::new(format!(
                                 "Soul-link: {} ({})",
