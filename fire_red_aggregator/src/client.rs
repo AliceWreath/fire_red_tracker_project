@@ -61,7 +61,7 @@ pub struct PendingTexture {
 /// the background network thread.The GUI reads from these arcs each frame.
 pub struct MonitorSlot {
     /// Display label shown as the column heading (e.g. `"Player 1"`)
-    pub label: String,
+    pub label: Arc<Mutex<String>>,
     /// Server address string (stored for diagnostics; prefixed `_` because the
     /// network thread captures `addr` by value instead of reading this field).
     pub _addr: String,
@@ -91,7 +91,7 @@ impl MonitorSlot {
     /// * `addr`  - TCP address of the tracker server (e.g. "192.168.1.10:7878").
     pub fn new(index: usize, addr: String) -> Self {
         Self {
-            label: format!("Player {}", index + 1),
+            label: Arc::new(Mutex::new(format!("Player {}", index + 1))),
             _addr: addr,
             state: Arc::new(Mutex::new(None)),
             pending_textures: Arc::new(Mutex::new(Vec::new())),
@@ -157,6 +157,7 @@ pub fn spawn_client(
     pending_textures: Arc<Mutex<Vec<PendingTexture>>>,
     known_species: Arc<Mutex<HashSet<u16>>>,
     texture_request_queue: Arc<Mutex<VecDeque<Vec<u16>>>>,
+    label: Arc<Mutex<String>>,
 ) {
     std::thread::spawn(move || loop {
         println!("Connecting to monitor at {}...", addr);
@@ -207,7 +208,8 @@ pub fn spawn_client(
                 loop {
                     match recv_message::<ServerMessage>(&mut read_stream) {
                         Ok(ServerMessage::State(gs)) => {
-                            *state.lock().unwrap_or_else(|e| e.into_inner()) = Some(gs);
+                            *label.lock().unwrap_or_else(|e| e.into_inner()) = gs.player_name.clone();
+                            *state.lock().unwrap_or_else(|e| e.into_inner()) = Some(gs);                            
                         }
                         Ok(ServerMessage::Textures(sprites)) => {
                             let mut pending =

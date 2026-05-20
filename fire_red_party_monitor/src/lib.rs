@@ -133,7 +133,7 @@ pub fn get_is_clean() -> bool {
     IS_CLEAN.load(Ordering::SeqCst)
 }
 
-/// Starts teh background polling loop.
+/// Starts the background polling loop.
 /// 
 /// The loop periodically refreshes the shared [`Party`] state
 /// from emulator memory until [`end_loop`] is called.

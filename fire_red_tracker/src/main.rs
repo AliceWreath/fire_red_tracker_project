@@ -1,25 +1,25 @@
 //! # Fire Red Tracker
-//! 
+//!
 //! A real-time Pokemon FireRed party and encounter monitor with an egui GUI.
-//! 
+//!
 //! ## Modes
-//! 
+//!
 //! The application supports three operating modes selected via command-line arguments:
-//! 
+//!
 //! - **Standalone** - reads the ROM and game memory locally, renders the GUI.
 //! - **Server* - like standalone but also accept TCP client connections and
 //!     streams [`GameState`] updates + sprite data to them. Runs Headless.
 //! - **Client** - connects to a server over TCP, receives state and sprites,
 //!     and renders the GUI without needing the ROM locally.
-//! 
+//!
 //! ## Usage
-//! 
+//!
 //! ```text
 //! tracker /path/to/file.gba [--clean]                     # standalone
 //! tracker /path/to/file.gba --server [port]               # server (default port 7878)
 //! tracker --client [host] [port]                          # client (default 127.0.0.1:7878)
 //! ```
-//! 
+//!
 use colored::Colorize;
 use fire_red_loop::*;
 use fire_red_party_monitor::get_is_clean;
@@ -71,13 +71,13 @@ static RUNNING: AtomicBool = AtomicBool::new(true);
 // ---------------------------------------------------------------------------
 
 /// Compresses raw RGBA pixel data using zlib (fast preset).
-/// 
+///
 /// Sprites can be several KB uncompressed; compression reduces the amount of
 /// data sent over the TCP connection when the server streams sprites to clients.
-/// 
+///
 /// # Arguments
 /// * `data` - Raw RGBA bytes (width * height * 4).
-/// 
+///
 /// # Returns
 /// Zlib-compressed byte vector.
 fn compress_pixels(data: &[u8]) -> Vec<u8> {
@@ -88,14 +88,14 @@ fn compress_pixels(data: &[u8]) -> Vec<u8> {
 }
 
 /// Decompresses zlib-compressed pixel data back to raw RGBA bytes.
-/// 
+///
 /// Called on the client after receiving a [`SpriteData`] packet from the server.
 /// On failure an empty 'Vec' is returned so the texture pipeline can still run
 /// without panicking.
-/// 
+///
 /// # Arguments
 /// * `data` - Zlib-compressed bytes as produced by [`compress_pixels`]
-/// 
+///
 /// # Returns
 /// Decompressed RGBA bytes, or an empty 'Vec' on error.
 fn decompress_pixels(data: &[u8]) -> Vec<u8> {
@@ -110,12 +110,12 @@ fn decompress_pixels(data: &[u8]) -> Vec<u8> {
 // Server-side sprite cache
 // ---------------------------------------------------------------------------
 
-/// Extracts a pokemon sprite from teh ROM, compresses it, and returns a 
+/// Extracts a pokemon sprite from teh ROM, compresses it, and returns a
 /// [`SpriteData`] ready to send to a client.
-/// 
-/// Returns `None` if the species index is invalid or the sprite cannot be 
+///
+/// Returns `None` if the species index is invalid or the sprite cannot be
 /// decoded from the ROM.
-/// 
+///
 /// # Arguments
 /// * `rom`         - Full ROM byte slice (must already be loaded in memory).
 /// * `species`     - National Pokedex number (1 - 386 for FireRed)
@@ -140,8 +140,8 @@ fn build_sprite_data(rom: &[u8], species: u16, shiny: bool) -> Option<SpriteData
 
 /// A sprite that has been received from the server and is waiting to be
 /// uploaded to the GPU as an egui texture.
-/// 
-/// Decompression happens on teh network thread; the GUI thread only needs to 
+///
+/// Decompression happens on teh network thread; the GUI thread only needs to
 /// call [`egui::Context::load_texture`] and store the handle.
 struct PendingTexture {
     /// National Pokedex Number
@@ -157,7 +157,7 @@ struct PendingTexture {
 }
 
 /// Top-level application state passed to [`eframe`]
-/// 
+///
 /// Holds all shared data needed to drive both the party panel (main window)
 /// and the encounters panel (child viewport), as well as the client-mode
 /// texture pipeline.
@@ -173,18 +173,18 @@ struct WindowInfo {
     /// Sprites received from teh server that have not yet been uploaded to the GPU.
     /// Drained at the start of each frame.
     pending_textures: Arc<Mutex<Vec<PendingTexture>>>,
-    /// Set of species IDs for which a texture request has already been sent to 
+    /// Set of species IDs for which a texture request has already been sent to
     /// the server, preventing duplicate requests.
     known_species: Arc<Mutex<std::collections::HashSet<u16>>>,
     /// Queue of texture request batches produces by the GUI and consumed by the
-    /// network writer thread. `None` in standalone/server mode (textures are 
+    /// network writer thread. `None` in standalone/server mode (textures are
     /// loaded from teh ROM directly without oging through the network).
     texture_request_queue: Option<Arc<Mutex<VecDeque<Vec<u16>>>>>,
 }
 
 impl WindowInfo {
     /// Creates a new [`WindowInfo`] from the shared arcs produced in `main`.
-    /// 
+    ///
     /// # Arguments
     /// * `_cc`                         - eframe creation context (unused; reserved
     ///                                     for future font/style initialization).
@@ -221,7 +221,7 @@ impl eframe::App for WindowInfo {
     }
 
     /// Main per-frame callback called by eframe on every repaint.
-    /// 
+    ///
     /// Responsibilities (in order):
     /// 1. **Drain pending textures** - upload any sprites received from the
     ///     server since the last frame.
@@ -467,7 +467,7 @@ impl eframe::App for WindowInfo {
 
 impl WindowInfo {
     /// Draws the party panel into `ui`.
-    /// 
+    ///
     /// For each pokemon in the party this renders:
     /// - Its sprite (shiny variant when applicable)
     /// - Nickname and level.
@@ -553,17 +553,17 @@ impl WindowInfo {
 // ---------------------------------------------------------------------------
 
 /// Loads a pokemon sprite from the ROM and uploads it as an egui texture
-/// 
+///
 /// The shiny flag is derived automatically from `personality` and `ot_id` using
 /// the Gen III shiny formula (see [`is_shiny`])
-/// 
+///
 /// # Arguments
 /// * `ctx`                 - egui context used to allocate the GPU texture.
 /// * `rom`                 - Full ROM byte slice.
 /// * `species`             - National Pokedex number.
 /// * `personality`         - Pokemon's personality value (PID)
 /// * `ot_id`               - Combined original trainer ID (public + secret)
-/// 
+///
 /// # Errors
 /// Returns an error if the sprite cannot be decoded from the ROM.
 pub fn load_texture(
@@ -590,11 +590,11 @@ pub fn load_texture(
 }
 
 /// Loads the non-shiny sprite for a species and uploads it as an egui texture
-/// 
+///
 /// Convenience wrapper around [`load_texture`] used for wild encounter sprites,
 /// which are always shown in their normal palette regardless of hidden shiny
 /// values in the encounter table.
-/// 
+///
 /// # Arguments
 /// * `ctx`                 - egui context used to allocate the GPU texture
 /// * `rom                  - Full ROM byte slice.
@@ -616,10 +616,10 @@ pub fn load_texture_normal(
 }
 
 /// Creates a solid red placeholder texture for species whose sprites could not be loaded.
-/// 
+///
 /// Prevents a panic when a sprite is unavailable (e.g. invalid species index)
 /// while making missing sprites visually obvious.
-/// 
+///
 /// # Arguments
 /// * `ctx`             - egui context used to allocate the GPU texture.
 /// * `species`         - National pokdex number, used only to key the texture cache.
@@ -635,10 +635,10 @@ fn make_placeholder(ctx: &egui::Context, species: u16) -> egui::TextureHandle {
 }
 
 /// Refreshes the shared party list by reading current party data from the game.
-/// 
+///
 /// Called whenever the party size changes or when the periodic force-refresh
 /// timer fires. Overwrites teh entire list so stale entries are never shown.
-/// 
+///
 /// # Arguments
 /// * `thread_party` - Shared party list shared with the GUI thread.
 fn fill_party_list(thread_party: &Arc<Mutex<Vec<fire_red_party_monitor::Pokemon>>>) {
@@ -646,15 +646,14 @@ fn fill_party_list(thread_party: &Arc<Mutex<Vec<fire_red_party_monitor::Pokemon>
     *list = get_party_members();
 }
 
-
 /// Returns `true` if a pokemon with the given `personality` and `ot_id` is shiny.
-/// 
+///
 /// Uses the Gen III shiny determination formula:
 /// `(p_high XOR p_low XOR id_high XOR id_low) < 8`
-/// 
+///
 /// where `p_high`/`p_low` are the upper/lower 16 bits of teh personality value.
 /// and `id_high`/`id_low` are teh upper/lower 16 bits of the combined OT ID.
-/// 
+///
 /// # Arguments
 /// * `personality`     - pokemon's 32-bit personality value (PID).
 /// * `ot_id            - combined 32-bit OT ID (public ID in low 16 bits, secret ID in high 16 bits).
@@ -671,19 +670,19 @@ pub fn is_shiny(personality: u32, ot_id: u32) -> bool {
 // ---------------------------------------------------------------------------
 
 /// Manages the full lifecycle of a single TCP client connection in server mode.
-/// 
+///
 /// The function spawns two concurrent activities:
-/// 
+///
 /// * **Reader thread** - listens for [`ClientMessage::RequestTextures`] packets
 ///     and responds with [`ServerMessage::Textures`] containing compressed sprite
-///     data for the requested species. Both normal and shiny variants are always 
+///     data for the requested species. Both normal and shiny variants are always
 ///     sent so the client never needs the ROM locally. Results are cached in
 ///     `sprite_cache` to avoid re-decoding the ROM for repeated requests.
-/// 
+///
 /// * **Writer loop** (runs on the calling thread) - broadcasts a
 ///     [`ServerMessage::State`] snapshot every 100 ms containing the current
 ///     party and encounter data. The loop exits on any write error (client disconnect).
-/// 
+///
 /// # Arguments
 /// * `stream`                      - Connected TCP stream.
 /// * `server_party`                - Shared reference to the current party data.
@@ -766,9 +765,11 @@ fn handle_client(
         let state = {
             let party = server_party.lock().unwrap_or_else(|e| e.into_inner());
             let encounters = server_encounters.lock().unwrap_or_else(|e| e.into_inner());
+            let trainer_name = fire_red_loop::get_trainer_name();
             GameState {
                 party: party.clone(),
                 encounters: encounters.clone(),
+                player_name: trainer_name,
             }
         };
 
@@ -788,19 +789,19 @@ fn handle_client(
 // ---------------------------------------------------------------------------
 
 /// Entry point.
-/// 
+///
 /// Parses command-line arguments to determine the operating [`Mode`], then
 /// sets up the appropriate combination of threads and (optionally) launches
 /// the egui GUI.
-/// 
+///
 /// ## Thread architecture
-/// 
+///
 /// | Mode          | Thread created|
 /// |---------------|---------------|
 /// | Standalone    | game-polling thread + GUI (main thread) |
 /// | Server        | game-polling thread + TCP listener thread (headless) |
 /// | Client        | network thread (connect -> read/write loop) + GUI (main thread) |
-/// 
+///
 /// All inter-thread data is passed via `Arc<Mutex<_>>`
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -857,7 +858,7 @@ fn main() {
     // thread drains this vec each from and uploads them to the GPU.
     let pending_textures: Arc<Mutex<Vec<PendingTexture>>> = Arc::new(Mutex::new(Vec::new()));
 
-    // Tracks which species have already been requested so the GUI does not 
+    // Tracks which species have already been requested so the GUI does not
     // flood the server with duplicate requests.
     let known_species: Arc<Mutex<std::collections::HashSet<u16>>> =
         Arc::new(Mutex::new(std::collections::HashSet::new()));

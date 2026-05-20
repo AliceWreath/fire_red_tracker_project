@@ -16,3 +16,4 @@ fire_red_scanner = { path = "../fire_red_scanner/" }
 fire_red_retroarch_interfacing = { path = "../fire_red_retroarch_interfacing/" }
 fire_red_party_monitor = { path = "../fire_red_party_monitor/" }
 fire_red_box_monitor = { path = "../fire_red_box_monitor/" }
+fire_red_trainer_data = { path = "../fire_red_trainer_data/" }

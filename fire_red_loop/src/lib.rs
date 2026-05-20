@@ -164,8 +164,10 @@ pub fn start_loop(file_path: &str, is_clean: bool) -> c_int {
     fill_static_pokemon_header_list(&get_rom(), start_wild_header_offset);
     fill_static_name_repo(&get_rom(), fire_red_text::POKEMON_NAMES_ADDR as usize);
     initialize_static_party(is_clean);
+    fire_red_trainer_data::initialize_static_trainer_data();
     fire_red_party_monitor::start_loop();
     fire_red_box_monitor::start_loop();
+    fire_red_trainer_data::start_loop();
 
     STATE.get_or_init(|| Mutex::new(FireRedState::default()));
     println!("spawning loop");
@@ -210,6 +212,7 @@ pub extern "C" fn stop_loop() {
     RUNNING.store(false, Ordering::SeqCst);
     fire_red_party_monitor::end_loop();
     fire_red_box_monitor::end_loop();
+    fire_red_trainer_data::end_loop();
     let mut handle_slot = THREAD_HANDLE.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(handle) = handle_slot.take() {
         if let Err(e) = handle.join() {
@@ -232,6 +235,23 @@ pub fn get_value() -> FireRedState {
         map_group_id: state.map_group_id,
         map_name_id: state.map_name_id,
     }
+}
+
+// ---------------------------------------------------------------------------
+// Trainer data accessors
+// ---------------------------------------------------------------------------
+
+pub fn get_trainer_name() -> String {
+    fire_red_trainer_data::get_static_trainer_data().load().trainer_name_string.clone()
+}
+
+pub fn get_rival_name() -> String {
+    fire_red_trainer_data::get_static_trainer_data().load().rival_name_string.clone()
+}
+
+pub fn get_play_time() -> String {
+    let data = fire_red_trainer_data::get_static_trainer_data().load();
+    format!("{}:{}:{}:{}", data.player_time_hours, data.player_time_minutes, data.player_time_seconds, data.player_time_v_blanks)
 }
 
 // ---------------------------------------------------------------------------

@@ -428,7 +428,8 @@ impl eframe::App for AggregatorApp {
             .iter()
             .map(|slot| {
                 let state = slot.state.lock().unwrap_or_else(|e| e.into_inner()).clone();
-                (slot.label.clone(), state)
+                let label = slot.label.lock().unwrap_or_else(|e| e.into_inner()).clone();
+                (label, state)
             })
             .collect();
 

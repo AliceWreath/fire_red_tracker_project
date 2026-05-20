@@ -67,6 +67,7 @@ fn main() {
                 slot.pending_textures.clone(),
                 slot.known_species.clone(),
                 slot.texture_request_queue.clone(),
+                slot.label.clone(),
             );
             slot
         })

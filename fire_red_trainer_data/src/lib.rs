@@ -1,89 +1,117 @@
 //! FireRed Trainer Data
-//! 
-//! Gets the parts of SaveBlock2 that are needed for the codebase
+//!
+//! Gets trainer information that is needed for the codebase
 
-use fire_red_get_values::*;
+mod trainer_data;
 
-/// Maximum length a player name can be
-const PLAYER_NAME_LENGTH: usize = 7;
+use arc_swap::ArcSwap;
+use fire_red_retroarch_interfacing::{generate_command, get_from_retroarch};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, OnceLock};
+use trainer_data::*;
 
-/// Length of the trainer ot_id
-const TRAINER_ID_LENGTH: usize = 4;
+/// static that holds various player data. Does not completely work yet.
+static PLAYER_DATA: OnceLock<ArcSwap<PlayerData>> = OnceLock::new();
 
-/// RAM Address to SaveBlock2
-pub static PLAYER_DATA_ADDR: u32 = 0x02024284;
+/// is true while the loop should be running, false will end the loop
+static RUNNING: AtomicBool = AtomicBool::new(false);
 
-#[derive(Debug, Default, Clone)]
-pub struct PlayerData {
-    pub trainer_name: [u8; PLAYER_NAME_LENGTH + 1],     // 0x000       7 characters + 0xFF terminator
-    pub rival_name: [u8; PLAYER_NAME_LENGTH + 1],
-    pub trainer_gender: u8,                             // 0x008       0 = male, 1 = female
-    pub special_save_warp_flags: u8,                    // 0x009       bitfield, used by various warp routines
-    pub player_trainer_id: [u8; TRAINER_ID_LENGTH],     // 0x00A       4 bytes: [0-1] public TID, [2-3] SID
-    pub player_time_hours: u16,                         // 0x00E    
-    pub player_time_minutes: u8,                        // 0x010
-    pub player_time_seconds: u8,                        // 0x011
-    pub player_time_v_blanks: u8,                       // 0x012       sub-second counter (ticks at 60Hz)
-    pub trainer_name_string: String,
-    pub rival_name_string: String,
+/// holds how long the monitor loop sleeps in seconds between runs
+const SLEEP_TIMER_IN_SECONDS: u64 = 15;
+
+/// Initializes and/or returns the [`PlayerData`] static
+pub fn initialize_static_trainer_data() -> &'static ArcSwap<PlayerData> {
+    PLAYER_DATA.get_or_init(|| ArcSwap::from_pointee(PlayerData::default()))
 }
 
-impl PlayerData {
-    /// parses the PlayerData out of RAM from a passed data slice
-    pub fn fill_struct(rom: &[u8], mut offset: usize) -> Option<PlayerData> {
-        if offset > rom.len() {
-            return None;
+/// Returns the [`PlayerData`] static
+pub fn get_static_trainer_data() -> &'static ArcSwap<PlayerData> {
+    initialize_static_trainer_data()
+}
+
+/// starts loop for monitoring changes in player data
+pub fn start_loop() {
+    RUNNING.store(true, Ordering::SeqCst);
+    let _handle = std::thread::spawn(move || {
+        while RUNNING.load(Ordering::SeqCst) {
+            update_player_data();
+            std::thread::sleep(std::time::Duration::from_secs(SLEEP_TIMER_IN_SECONDS));
         }
-        if offset < 0x02000000 || offset > 0x02000000 {
-            return None;
+    });
+}
+
+/// Ends the monitoring loop
+pub fn end_loop() {
+    RUNNING.store(false, Ordering::SeqCst);
+}
+
+/// Used to check for changes in the player struct
+fn update_player_data() {
+    let mut got_return: bool = false;
+    let mut ret: Option<Vec<String>> = None;
+    while got_return == false {
+        let command = generate_command(PLAYER_DATA_ADDR, 19);
+        ret = get_from_retroarch(command.as_str(), 21);
+        if ret.is_none() {
+            eprintln!("Failed to read player data, retrying...");
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            continue;
         }
-
-        let mut trainer_name = [0u8; PLAYER_NAME_LENGTH + 1];
-        for i in 0..PLAYER_NAME_LENGTH + 1 {
-            trainer_name[i] = read_u8(&rom, offset);
-            offset += 1;
-        }
-        let trainer_name_string = fire_red_text::gba_string_to_ascii(&trainer_name, PLAYER_NAME_LENGTH, 0);
-
-        let mut rival_name = [0u8; PLAYER_NAME_LENGTH + 1];
-        for i in 0..PLAYER_NAME_LENGTH + 1 {
-            rival_name[i] = read_u8(&rom, offset);
-            offset += 1;
-        }
-        let rival_name_string = fire_red_text::gba_string_to_ascii(&rival_name, PLAYER_NAME_LENGTH, 0);
-
-        let trainer_gender = read_u8(&rom, offset);
-        offset += 1;
-
-        let special_save_warp_flags = read_u8(&rom, offset);
-        offset += 1;
-
-        let mut player_trainer_id = [0u8; 4];
-        for i in 0..4 {
-            player_trainer_id[i] = read_u8(&rom, offset);
-            offset += 1;
-        }
-
-        let player_time_hours = read_u16(&rom, offset);
-        offset += 2;
-        let player_time_minutes = read_u8(&rom, offset);
-        offset += 1;
-        let player_time_seconds = read_u8(&rom, offset);
-        offset += 1;
-        let player_time_v_blanks = read_u8(&rom, offset);
-        
-        Some(PlayerData {
-            trainer_name,
-            rival_name,
-            trainer_gender,
-            special_save_warp_flags,
-            player_trainer_id,
-            player_time_hours,
-            player_time_minutes,
-            player_time_seconds,
-            player_time_v_blanks,
-            trainer_name_string,
-            rival_name_string,
-        })
+        got_return = true
     }
+    let ret = ret.unwrap();
+    let buffer: Vec<&str> = ret.iter().map(|s| s.as_str()).collect();
+    let player = PlayerData::fill_struct(&buffer, 2);
+    if player.is_none() {
+        return;
+    }
+    let player = player.unwrap();
+    let static_player = get_static_trainer_data().load();
+    if player != **static_player {
+        get_static_trainer_data().store(Arc::new(player));
+    }
+}
+
+/// Was used to locate a known player name in RAM
+pub fn find_player_name() -> Option<u32> {
+    // Temporary debug: print bytes at the known player name address
+    let debug_addr: u32 = 0x02024000;
+    let command = generate_command(debug_addr, 16);
+    if let Some(parts) = get_from_retroarch(&command, 18) {
+        let bytes: Vec<u8> = parts[2..]
+            .iter()
+            .filter_map(|s| u8::from_str_radix(s, 16).ok())
+            .collect();
+        println!("Bytes at player name addr: {:02X?}", bytes);
+    }
+    dbg!("Start find_player_name()");
+    let needle: &[u8] = &[0xBB, 0xE0, 0xDD, 0xD7, 0xD9]; // "Alice"
+    let ewram_start: u32 = 0x02000000;
+    let ewram_end: u32 = 0x02040000;
+    let chunk_size: usize = 0x800;
+
+    let mut addr = ewram_start;
+    while addr < ewram_end {
+        let scan = format!("{:08X}", &addr);
+        dbg!(scan);
+        let command = generate_command(addr, chunk_size);
+        let expected = chunk_size + 2;
+        if let Some(parts) = get_from_retroarch(&command, expected) {
+            let bytes: Vec<u8> = parts[2..]
+                .iter()
+                .filter_map(|s| u8::from_str_radix(s, 16).ok())
+                .collect();
+            if let Some(offset) = bytes.windows(1).position(|w| w[0] == 0xBB) {
+                let slice = &bytes[offset..std::cmp::min(offset + 8, bytes.len())];
+                if slice.iter().any(|&b| b == 0xFF) {
+                    println!("Candidate at {:08X}: {:02X?}", addr + offset as u32, slice);
+                }
+            }
+            if let Some(offset) = bytes.windows(needle.len()).position(|w| w == needle) {
+                return Some(addr + offset as u32);
+            }
+        }
+        addr += chunk_size as u32;
+    }
+    None
 }
