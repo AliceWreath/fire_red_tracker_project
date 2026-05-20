@@ -220,14 +220,13 @@ impl AggregatorApp {
         if gs.party.is_empty() {
             ui.label("No party data");
         }
-
+        
         for (idx, pokemon) in gs.party.iter().enumerate() {
             let other_states: Vec<(String, Option<GameState>)> = all_states
                 .iter()
                 .filter(|(l, _)| l != label)
                 .cloned()
                 .collect();
-
             Self::draw_party_member(ui, idx, pokemon, textures, &other_states);
             ui.separator();
         }
@@ -240,7 +239,7 @@ impl AggregatorApp {
             .show(ui, |ui| {
                 Self::draw_encounter_section(
                     ui,
-                    "Grass",
+                    "Land",
                     &gs.encounters.land_mon_encounters.wild_pokemon_list,
                     textures,
                 );
@@ -258,7 +257,7 @@ impl AggregatorApp {
                 );
                 Self::draw_encounter_section(
                     ui,
-                    "🪨 Rock Smash",
+                    "Rock Smash",
                     &gs.encounters.rock_smash_encounters.wild_pokemon_list,
                     textures,
                 );
@@ -298,11 +297,10 @@ impl AggregatorApp {
         let ot_id = pokemon.box_mon.ot_id;
         let shiny = is_shiny(personality, ot_id);
         let key = sprite_key(species, shiny);
-dbg!(&other_states);
+
         for (other_label, other_state) in other_states {
             if let Some(gs) = other_state {
                 for other_mon in &gs.party {
-                    dbg!(&other_mon, &met);
                     if other_mon.box_mon.secure.misc.met_location == met {                        
                         ui.label(
                             egui::RichText::new(format!(

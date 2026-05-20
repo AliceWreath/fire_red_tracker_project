@@ -242,11 +242,13 @@ pub fn get_value() -> FireRedState {
 // ---------------------------------------------------------------------------
 
 pub fn get_trainer_name() -> String {
-    fire_red_trainer_data::get_static_trainer_data().load().trainer_name_string.clone()
+    let trainer_data = fire_red_trainer_data::get_static_trainer_data().load();
+    trainer_data.trainer_name_string.clone()
 }
 
 pub fn get_rival_name() -> String {
-    fire_red_trainer_data::get_static_trainer_data().load().rival_name_string.clone()
+    let trainer_data = fire_red_trainer_data::get_static_trainer_data().load();
+    trainer_data.rival_name_string.clone()
 }
 
 pub fn get_play_time() -> String {
