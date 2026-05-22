@@ -1483,6 +1483,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "fire_red_badge"
+version = "0.1.0"
+dependencies = [
+ "fire_red_get_values",
+ "fire_red_retroarch_interfacing",
+ "serde",
+]
+
+[[package]]
 name = "fire_red_get_values"
 version = "0.1.0"
 
@@ -1536,6 +1545,7 @@ name = "fire_red_states"
 version = "0.1.0"
 dependencies = [
  "bincode",
+ "fire_red_badge",
  "fire_red_party_monitor",
  "fire_red_pokemon_data",
  "serde",

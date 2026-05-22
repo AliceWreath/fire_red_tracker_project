@@ -8,3 +8,4 @@ bincode = "1"
 serde = { version = "1", features = ["derive"] }
 fire_red_party_monitor = { path = "../fire_red_party_monitor/" }
 fire_red_pokemon_data = { path = "../fire_red_pokemon_data/" }
+fire_red_badge = { path = "../fire_red_badge" }

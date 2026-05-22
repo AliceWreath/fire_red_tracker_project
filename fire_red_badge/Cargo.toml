@@ -1,0 +1,9 @@
+[package]
+name = "fire_red_badge"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+fire_red_retroarch_interfacing = { path = "../fire_red_retroarch_interfacing" }
+fire_red_get_values = { path = "../fire_red_get_values" }
+serde = { version = "1", features = ["derive"] }

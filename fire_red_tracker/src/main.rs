@@ -770,6 +770,7 @@ fn handle_client(
                 party: party.clone(),
                 encounters: encounters.clone(),
                 player_name: trainer_name,
+                badge_state: fire_red_badge::read_badge_state(),
             }
         };
 

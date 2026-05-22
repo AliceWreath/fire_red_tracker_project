@@ -237,6 +237,10 @@ pub fn get_value() -> FireRedState {
     }
 }
 
+pub fn get_badge_state() -> Option<fire_red_badge::BadgeState> {
+    fire_red_badge::read_badge_state()
+}
+
 // ---------------------------------------------------------------------------
 // Trainer data accessors
 // ---------------------------------------------------------------------------
