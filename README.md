@@ -1,6 +1,6 @@
 # Fire Red Tracker
 
-A real-time Pokémon FireRed party and encounter monitor built in Rust. It reads live game state from a running RetroArch instance, displays the player's current party and wild encounter table in a native GUI, and supports multi-player Soul Link / Nuzlocke runs through a networked aggregator mode.
+A real-time Pokémon FireRed party and encounter monitor built in Rust. It reads live game state from a running RetroArch instance, using the mGBA core, displays the player's current party and wild encounter table in a native GUI, and supports multi-player Soul Link / Nuzlocke runs through a networked aggregator mode.
 
 ---
 
