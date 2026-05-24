@@ -1,41 +1,77 @@
+//! RetroArch UDP network command interface.
+//!
+//! Provides low-level communication with a running RetroArch instance via its
+//! UDP network command protocol. Supports reading arbitrary ranges of emulated
+//! GBA memory by address and length.
+//!
+//! # Setup
+//!
+//! RetroArch must have "Network Commands" enabled:
+//! Settings → Network → Network Commands → ON
+//! The default port is 55355, which matches [`RETROARCH_ADDR`].
+//!
+//! # Protocol
+//!
+//! Commands are sent as ASCII strings over UDP. RetroArch responds with a
+//! space-separated string of the form:
+//! ```text
+//! READ_CORE_MEMORY <addr> <byte0> <byte1> ...
+//! ```
+//! where each byte is a two-character uppercase hex value.
+//!
+//! # Important: chunk size limit
+//!
+//! RetroArch silently drops responses that exceed its internal send buffer.
+//! In practice this caps useful reads at around 4,096 bytes of GBA memory per
+//! request (~12 KB of ASCII response). Callers should chunk larger reads; see
+//! the `fire_red_memory` crate for an example.
+//!
+//! # Thread safety
+//!
+//! This crate does not use a shared global socket. Instead, [`make_socket`]
+//! creates a fresh bound UDP socket each time it is called. Callers that
+//! perform concurrent reads should call [`make_socket`] once per thread and
+//! pass the resulting socket to [`get_from_retroarch`]. This avoids the
+//! response-stealing problem that arises when multiple threads share a single
+//! UDP socket.
+
 use std::net::UdpSocket;
-use std::sync::{Arc, OnceLock};
 
-/// Global shared UDP socket used for RetroArch communication.
-/// 
-/// The socket is initialized lazily on first use and shared safely.
-/// across threads through [`Arc`].
-static UDP_SOCKET: OnceLock<Arc<UdpSocket>> = OnceLock::new();
-
-/// Default RetroArch UDP command interface address.
-/// 
-/// Used for sending emulator memory read commands.
+/// RetroArch UDP network command interface address.
+///
+/// Must match the port configured in RetroArch under
+/// Settings → Network → Network Commands Port.
 static RETROARCH_ADDR: &str = "127.0.0.1:55355";
 
-/// Memory address containing the current map group and map number.
-/// 
-/// Used to determine the player's current locaiton in FireRed.
+/// GBA memory address holding the current map group and map number.
+///
+/// The value is a packed `u32`: high byte = map group, low byte = map number.
+/// Used to determine the player's current location in FireRed.
 static MAP_GROUP_AND_NAME_ADDR: u32 = 0x02031DBC;
 
-/// Maximum UDP receive buffer size.
-/// 
-/// Large enough to handle RetroArch responses safely.
-const BUFFER_SIZE: usize = 40000;
+/// UDP receive buffer size in bytes.
+///
+/// Sized to comfortably exceed the largest RetroArch response we expect.
+/// At 4,096 bytes of data per chunk, each byte is returned as "XX " (3 chars)
+/// plus a ~30-byte header, giving a maximum response of roughly 12,318 bytes.
+/// 16 KiB provides comfortable headroom.
+const BUFFER_SIZE: usize = 16_384;
 
-/// Generates a RetroArch memory read command string.
-/// 
+/// Generates a RetroArch `READ_CORE_MEMORY` command string.
+///
 /// # Arguments
-/// 
-/// * `ptr` - Target GBA memory address
-/// * `len` - Number of bytes to read
-/// 
+///
+/// * `ptr` - GBA memory address to read from.
+/// * `len` - Number of bytes to read. Must not exceed ~4,096 or RetroArch
+///   will silently drop the response without returning an error.
+///
 /// # Returns
-/// 
-/// A formatted RetroArch command string.
-/// 
+///
+/// A formatted command string ready to be sent to [`get_from_retroarch`].
+///
 /// # Example
-/// 
-/// ```ignore
+///
+/// ```
 /// let cmd = generate_command(0x02024284, 4);
 /// assert_eq!(cmd, "READ_CORE_MEMORY 0x02024284 4");
 /// ```
@@ -43,91 +79,117 @@ pub fn generate_command(ptr: u32, len: usize) -> String {
     format!("READ_CORE_MEMORY 0x{:08X} {}", ptr, len)
 }
 
-/// Returns the global shared UDP socket
-/// 
-/// The socket is lazily intialized the first time this function is called.
-/// 
-/// # Socket Configuration
-/// 
-/// - binds `0.0.0.0:0` to allow the OS to assign an available port
-/// - Uses a 500ms read timeout to prevent blocking indefinitely when waiting for RetroArch responses.
-/// 
+/// Creates a new UDP socket bound to the loopback interface for RetroArch
+/// communication.
+///
+/// Each socket is bound to `127.0.0.1:0` (OS-assigned ephemeral port) with a
+/// 500 ms read timeout.
+///
+/// # Why one socket per thread?
+///
+/// UDP is connectionless — when two threads share one socket and both call
+/// `recv_from`, either thread can receive the other's response. By giving each
+/// thread its own socket on its own port, RetroArch's reply is guaranteed to
+/// arrive at the correct socket.
+///
+/// # Why not `connect()`?
+///
+/// Calling `connect()` on a UDP socket in Linux causes the kernel to filter
+/// incoming datagrams to only those from the connected address. In testing,
+/// this caused all `recv` calls to time out even though RetroArch was replying
+/// correctly. Using `send_to`/`recv_from` on an unconnected socket avoids
+/// this issue.
+///
 /// # Panics
-/// 
-/// Panics if the UDP socket cannot be created.
-pub fn get_socket() -> Arc<UdpSocket> {
-    UDP_SOCKET 
-        .get_or_init(|| {
-            let socket = UdpSocket::bind("0.0.0.0:0").expect("Failed to bind udpsocket.");
-            socket.set_read_timeout(Some(std::time::Duration::from_millis(500))).ok();
-            Arc::new(socket)
-        })
-        .clone()
+///
+/// Panics if the socket cannot be bound or the timeout cannot be set.
+pub fn make_socket() -> UdpSocket {
+    let socket = UdpSocket::bind("127.0.0.1:0")
+        .expect("Failed to bind UDP socket.");
+    socket
+        .set_read_timeout(Some(std::time::Duration::from_millis(500)))
+        .expect("Failed to set socket read timeout.");
+    socket
 }
 
 /// Retrieves the current map group and map number from RetroArch.
-/// 
-/// Internally sends a memory read request to the emulator.
-/// 
+///
+/// Reads a `u32` from [`MAP_GROUP_AND_NAME_ADDR`] in GBA memory via the
+/// UDP network command interface.
+///
+/// Creates its own socket internally. If you are making many calls in a loop,
+/// prefer creating a socket with [`make_socket`] and calling
+/// [`get_from_retroarch`] directly to avoid the overhead of binding a new
+/// socket on every call.
+///
 /// # Returns
-/// 
-/// - `Some(Vec<String>)` containing the parsed response fields
-/// - `None` if communication failes or the response is invalid.
-/// 
-/// # Notes
-/// 
-/// The returned vector contains whitespace-separated response tokens
-/// from RetroArch.
+///
+/// - `Some(Vec<String>)` — whitespace-separated response tokens. Index 0 is
+///   `"READ_CORE_MEMORY"`, index 1 is the address, indices 2+ are byte values
+///   as uppercase hex strings.
+/// - `None` if communication fails or the response is malformed.
 pub fn get_map_info() -> Option<Vec<String>> {
+    let socket = make_socket();
     let command = generate_command(MAP_GROUP_AND_NAME_ADDR, std::mem::size_of::<u32>());
-    get_from_retroarch(command.as_str(), std::mem::size_of::<u32>() + 2) // +2 for the READ_CORE_MEOMORY prefix
+    // +2 accounts for the "READ_CORE_MEMORY <addr>" prefix tokens in the response.
+    get_from_retroarch(&socket, command.as_str(), std::mem::size_of::<u32>() + 2)
 }
 
-/// Sends a command to RetroArch and waits for a response.
-/// 
+/// Sends a command to RetroArch over UDP and waits for a response.
+///
 /// # Arguments
-/// 
-/// * `command` - The command string.
-/// * `expected_len_data` - Minimum expected number of response tokens (used for basic validation).
-/// 
+///
+/// * `socket` - A bound UDP socket to use for this request. Create one with
+///   [`make_socket`]. Each concurrent caller must use its own socket.
+/// * `command` - The command string to send (e.g. from [`generate_command`]).
+/// * `expected_token_count` - Minimum number of whitespace-separated tokens
+///   expected in the response. Responses with fewer tokens are treated as
+///   malformed and `None` is returned.
+///
 /// # Returns
-/// 
-/// - `Some(Vec<String>)` contianing parsed response tokens
-/// - `None` if the request times out, fails, or returns invalid data.
-/// 
+///
+/// - `Some(Vec<String>)` — the full parsed response as whitespace-separated
+///   tokens, including the `READ_CORE_MEMORY` and address prefix tokens.
+/// - `None` if the send fails, the socket times out, or the response has
+///   fewer than `expected_token_count` tokens.
+///
 /// # Errors
-/// 
-/// Timeout and socket errors are logged to stderr, but do not cause a panic. Instead, `None` is returned to indicate failure.
-/// 
-/// # Protocol
-/// 
-/// Commands are sent over UDP to the RetroArch network command interface.
-/// The function waits for a response and parses it into whitespace-separated tokens, 
-/// which are returned as a vector of strings.
-pub fn get_from_retroarch(command: &str, expected_len_data: usize) -> Option<Vec<String>> {
-    let socket = get_socket();
-    let _ = socket.send_to(&command.as_bytes(), RETROARCH_ADDR);
-    let _ = std::thread::sleep(std::time::Duration::from_millis(50));
-    let mut buf = [0u8; BUFFER_SIZE];
+///
+/// All errors are logged to stderr. The caller is expected to handle `None`
+/// as a retryable failure — no panics occur here.
+pub fn get_from_retroarch(
+    socket: &UdpSocket,
+    command: &str,
+    expected_token_count: usize,
+) -> Option<Vec<String>> {
+    if let Err(e) = socket.send_to(command.as_bytes(), RETROARCH_ADDR) {
+        eprintln!("Failed to send command to RetroArch: {}", e);
+        return None;
+    }
 
+    let mut buf = vec![0u8; BUFFER_SIZE];
     match socket.recv_from(&mut buf) {
         Ok((n, _src)) => {
-            let resp = String::from_utf8_lossy(&buf[..n]);
-            let parts: Vec<&str> = resp.split_whitespace().collect();
-    
-            let parts: Vec<String> = parts.iter().map(|s| s.to_string()).collect();
-            if parts.len() < expected_len_data {
+            let parts: Vec<String> = String::from_utf8_lossy(&buf[..n])
+                .split_whitespace()
+                .map(|s| s.to_string())
+                .collect();
+
+            if parts.len() < expected_token_count {
                 return None;
             }
-            return Some(parts);
+            Some(parts)
         }
-        Err(e)  if e.kind() == std::io::ErrorKind::TimedOut || e.kind() == std::io::ErrorKind::WouldBlock => {
-            eprintln!("Timeout while waiting for response from RetroArch: {}", e);
-            return None;
+        Err(e)
+            if e.kind() == std::io::ErrorKind::TimedOut
+                || e.kind() == std::io::ErrorKind::WouldBlock =>
+        {
+            eprintln!("Timeout waiting for RetroArch response: {}", e);
+            None
         }
         Err(e) => {
-            eprintln!("Unexpected error while receiving from RetroArch: {}", e);
-            return None;
+            eprintln!("Unexpected socket error: {}", e);
+            None
         }
     }
 }

@@ -1,89 +1,118 @@
 //! Trainer Data
-//! 
-//! This module is hold the [`PlayerData`] structure
-//! used with fire_red_trainer_data lib.
+//!
+//! Holds the [`PlayerData`] structure used by the `fire_red_trainer_data` crate.
+//! Parses directly from raw bytes sliced out of the EWRAM snapshot.
+
 use fire_red_get_values::*;
 
-/// Maximum length a player name can be
+/// Maximum number of characters in a player or rival name.
 pub const PLAYER_NAME_LENGTH: usize = 7;
 
-/// Length of the trainer ot_id
+/// Length in bytes of the packed trainer ID field.
 pub const TRAINER_ID_LENGTH: usize = 4;
 
-/// RAM Address to SaveBlock2
-pub static PLAYER_DATA_ADDR: u32 = 0x02024298;
+/// GBA address of SaveBlock2, which contains trainer/player metadata.
+///
+/// The data read here starts at this address and spans 19 bytes:
+/// - 8 bytes: trainer name (7 chars + 0xFF terminator)
+/// - 1 byte:  trainer gender
+/// - 1 byte:  special save warp flags
+/// - 4 bytes: trainer ID (2 public TID + 2 SID)
+/// - 2 bytes: play time hours
+/// - 1 byte:  play time minutes
+/// - 1 byte:  play time seconds
+/// - 1 byte:  play time V-blank counter
+pub const PLAYER_DATA_ADDR: u32 = 0x02024298;
 
-/// struct that mimics a portion of the trainer data structure of 
-/// pokemon FireRed
+/// Number of raw bytes that make up the [`PlayerData`] block in memory.
+pub const PLAYER_DATA_SIZE: usize = 19;
+
+/// Trainer and play-time metadata read from SaveBlock2.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct PlayerData {
-    pub trainer_name: [u8; PLAYER_NAME_LENGTH + 1], // 0x000       7 characters + 0xFF terminator
+    /// Raw trainer name bytes (7 chars + 0xFF terminator).
+    pub trainer_name: [u8; PLAYER_NAME_LENGTH + 1],
+
+    /// Raw rival name bytes (7 chars + 0xFF terminator).
+    ///
+    /// Not yet implemented — always zero.
     pub rival_name: [u8; PLAYER_NAME_LENGTH + 1],
-    pub trainer_gender: u8,          // 0x008       0 = male, 1 = female
-    pub special_save_warp_flags: u8, // 0x009       bitfield, used by various warp routines
-    pub player_trainer_id: [u8; TRAINER_ID_LENGTH], // 0x00A       4 bytes: [0-1] public TID, [2-3] SID
-    pub player_time_hours: u16,                     // 0x00E
-    pub player_time_minutes: u8,                    // 0x010
-    pub player_time_seconds: u8,                    // 0x011
-    pub player_time_v_blanks: u8, // 0x012       sub-second counter (ticks at 60Hz)
+
+    /// Trainer gender: 0 = male, 1 = female.
+    pub trainer_gender: u8,
+
+    /// Bitfield used by various save/warp routines.
+    pub special_save_warp_flags: u8,
+
+    /// Packed trainer ID: bytes 0–1 are the public TID, bytes 2–3 are the SID.
+    pub player_trainer_id: [u8; TRAINER_ID_LENGTH],
+
+    /// Play time: hours component.
+    pub player_time_hours: u16,
+
+    /// Play time: minutes component (0–59).
+    pub player_time_minutes: u8,
+
+    /// Play time: seconds component (0–59).
+    pub player_time_seconds: u8,
+
+    /// Play time: sub-second V-blank counter (increments at 60 Hz).
+    pub player_time_v_blanks: u8,
+
+    /// Decoded trainer name as a Rust `String`.
     pub trainer_name_string: String,
+
+    /// Decoded rival name as a Rust `String`.
+    ///
+    /// Not yet implemented.
     pub rival_name_string: String,
 }
 
 impl PlayerData {
-    /// parses the PlayerData out of RAM from a passed data slice
-    pub fn fill_struct(rom: &[&str], mut offset: usize) -> Option<PlayerData> {
-        if offset > rom.len() {
+    /// Parses a [`PlayerData`] from a raw byte slice.
+    ///
+    /// `buffer` must be at least [`PLAYER_DATA_SIZE`] bytes long, starting
+    /// at the byte corresponding to [`PLAYER_DATA_ADDR`] within the EWRAM
+    /// snapshot. Returns `None` if the buffer is too short.
+    pub fn from_bytes(buffer: &[u8]) -> Option<Self> {
+        if buffer.len() < PLAYER_DATA_SIZE {
             return None;
         }
-        //if offset < 0x02000000 || offset > 0x02000000 {
-        //    return None;
-        //}
+
+        let mut offset = 0;
 
         let mut trainer_name = [0u8; PLAYER_NAME_LENGTH + 1];
-        for i in 0..PLAYER_NAME_LENGTH + 1 {
-            trainer_name[i] = get_u8(&[rom[offset]]);
-            offset += 1;
-        }
+        trainer_name.copy_from_slice(&buffer[offset..offset + PLAYER_NAME_LENGTH + 1]);
+        offset += PLAYER_NAME_LENGTH + 1;
 
-        let trainer_name_string =
-            fire_red_text::gba_string_to_ascii(&trainer_name, PLAYER_NAME_LENGTH, 0);
-        let trainer_name_string = trainer_name_string
-            .trim_matches('\0')
-            .trim_ascii()
-            .to_string();
+        let trainer_name_string = fire_red_text::gba_string_to_ascii(
+            &trainer_name,
+            PLAYER_NAME_LENGTH,
+            0,
+        )
+        .trim_matches('\0')
+        .trim_ascii()
+        .to_string();
 
-        /*let mut rival_name = [0u8; PLAYER_NAME_LENGTH + 1];
-        for i in 0..PLAYER_NAME_LENGTH + 1 {
-            rival_name[i] = get_u8(&[rom[offset]]);
-            offset += 1;
-        }
-        dbg!(&rival_name);
-        let rival_name_string = fire_red_text::gba_string_to_ascii(&rival_name, PLAYER_NAME_LENGTH, 0);
-        dbg!(&rival_name_string);*/
-        let trainer_gender = get_u8(&[rom[offset]]);
-        offset += 1;
+        // Rival name is not yet located in SaveBlock2 — placeholder for now.
+        let rival_name = [0u8; PLAYER_NAME_LENGTH + 1];
+        let rival_name_string = String::from("not implemented yet");
 
-        let special_save_warp_flags = get_u8(&[rom[offset]]);
-        offset += 1;
+        let trainer_gender          = read_u8(buffer, offset); offset += 1;
+        let special_save_warp_flags = read_u8(buffer, offset); offset += 1;
 
-        let mut player_trainer_id = [0u8; 4];
-        for i in 0..4 {
-            player_trainer_id[i] = get_u8(&[rom[offset]]);
-            offset += 1;
-        }
+        let mut player_trainer_id = [0u8; TRAINER_ID_LENGTH];
+        player_trainer_id.copy_from_slice(&buffer[offset..offset + TRAINER_ID_LENGTH]);
+        offset += TRAINER_ID_LENGTH;
 
-        let player_time_hours = get_u16(&rom[offset..offset + 2]);
-        offset += 2;
-        let player_time_minutes = get_u8(&[rom[offset]]);
-        offset += 1;
-        let player_time_seconds = get_u8(&[rom[offset]]);
-        offset += 1;
-        let player_time_v_blanks = get_u8(&[rom[offset]]);
+        let player_time_hours    = read_u16(buffer, offset); offset += 2;
+        let player_time_minutes  = read_u8(buffer, offset);  offset += 1;
+        let player_time_seconds  = read_u8(buffer, offset);  offset += 1;
+        let player_time_v_blanks = read_u8(buffer, offset);
 
         Some(PlayerData {
             trainer_name,
-            rival_name: [0u8; 8],
+            rival_name,
             trainer_gender,
             special_save_warp_flags,
             player_trainer_id,
@@ -92,7 +121,7 @@ impl PlayerData {
             player_time_seconds,
             player_time_v_blanks,
             trainer_name_string,
-            rival_name_string: String::from("not implemented yet"),
+            rival_name_string,
         })
     }
 }
