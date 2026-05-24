@@ -1,14 +1,16 @@
 # Fire Red Tracker
 
-A real-time Pokémon FireRed party and encounter monitor built in Rust. It reads live game state from a running RetroArch instance, using the mGBA core, displays the player's current party and wild encounter table in a native GUI, and supports multi-player Soul Link / Nuzlocke runs through a networked aggregator mode.
+A real-time Pokémon FireRed party and encounter monitor built in Rust. It reads live game state from a running RetroArch instance using the mGBA core, displays the player's current party and wild encounter table in a native GUI, and supports multi-player Soul Link / Nuzlocke runs through a networked aggregator mode.
 
 ---
 
 ## What it does
 
-- **Party panel** — shows each Pokémon's sprite (shiny-aware), nickname, level, HP (colour-coded), experience, and caught location in real time.
-- **Encounters panel** — shows the wild Pokémon available in the current area, split by type: grass, water/fishing, and Rock Smash.
-- **Soul Link detection** — in aggregator mode, Pokémon caught in the same location across two or more players' games are automatically linked and labelled.
+- **Party panel** — shows each Pokémon's sprite (shiny-aware), nickname, level, HP (colour-coded), experience, caught location, and badge progress in real time.
+- **Encounters panel** — shows the wild Pokémon available in the current area, split by type: grass, water/fishing, and Rock Smash. Updates automatically when the player moves to a new map.
+- **Badge tracker** — displays obtained badges as coloured dots and shows the next gym leader's name, city, and highest Pokémon level.
+- **Reset detection** — clears stale party, encounter, and badge data when a soft reset or title screen is detected, so the display always reflects the current session.
+- **Soul Link detection** — in aggregator mode, Pokémon caught in the same location across two or more players' games are automatically linked and labelled in purple.
 - **Clean ROM mode** — pass `--clean` to also display ability data (only reliable on unmodified ROMs).
 
 ---
@@ -24,32 +26,34 @@ tracker firered.gba --clean
 ```
 
 ### Server
-Like standalone but also listens for remote client connections over TCP. Runs headless (no GUI). Streams party state and sprite data to any connected clients.
+Like standalone but also listens for remote client connections over TCP. Runs headless (no GUI). Streams party state, badge data, and sprite data to any connected clients.
 
 ```
-tracker firered.gba --server
-tracker firered.gba --server 7878
+tracker firered.gba server
+tracker firered.gba server --port 7878
 ```
 
 ### Client
 Connects to a running server. Does not need the ROM — all data including sprites is received over the network. Displays the GUI.
 
 ```
-tracker --client
-tracker --client 192.168.1.10 7878
+tracker client
+tracker client --host 192.168.1.10 --port 7878
 ```
 
 Default host is `127.0.0.1`, default port is `7878`.
 
 ### Aggregator
-A separate binary for Soul Link / co-op runs. Connects to multiple tracker servers simultaneously and renders each player's data in a side-by-side column layout.
+A separate binary for Soul Link / co-op runs. Connects to multiple tracker servers simultaneously and renders each player's data in a side-by-side column layout, including badge state per player.
 
 ```
 aggregator localhost:7878 localhost:7879
 aggregator 192.168.1.10:7878 192.168.1.11:7878
 ```
 
-The window width scales with the number of players. Soul Link matches (Pokémon sharing the same caught location across players) are highlighted in purple automatically.
+The window width scales with the number of players. Soul Link matches (Pokémon sharing the same caught location across players) are highlighted automatically.
+
+> **ROM paths with spaces** can be quoted: `tracker "My ROMs/fire red.gba"`
 
 ---
 
@@ -69,14 +73,17 @@ A **Soul Link** is a Nuzlocke variant played with a partner: each player's catch
 
 | Crate | Role |
 |---|---|
-| `fire_red_loop` | Central coordinator. Owns the main map-polling loop, starts party/box monitors, and exposes the public API used by the GUI and network layers. |
-| `fire_red_party_monitor` | Reads and decrypts the player's party from RetroArch memory. Owns `Party`, `Pokemon`, `BoxPokemon`, and all encrypted substructure types. Runs its own background poll loop. |
-| `fire_red_box_monitor` | Reads all 14 PC boxes (420 slots) from EWRAM on a slow cycle. Maintains a deduplicated species cache and detects newly caught Pokémon. |
+| `fire_red_loop` | Central coordinator. Owns the main map-polling loop, starts party/box/trainer monitors, and exposes the public API used by the GUI and network layers. |
+| `fire_red_memory` | Maintains full EWRAM and IWRAM snapshots by reading from RetroArch in parallel chunks every 500 ms. All other crates read from these snapshots rather than issuing individual UDP requests. |
+| `fire_red_party_monitor` | Reads and decrypts the player's party from the EWRAM snapshot. Owns `Party`, `Pokemon`, `BoxPokemon`, and all encrypted substructure types. Runs its own background poll loop. |
+| `fire_red_box_monitor` | Reads all 14 PC boxes (420 slots) from the EWRAM snapshot on a slow cycle. Maintains a deduplicated species cache and detects newly caught Pokémon. |
+| `fire_red_badge` | Reads badge flags from SaveBlock1 via the EWRAM/IWRAM snapshots. Exposes `BadgeState`, next-gym info, and a C-ABI FFI surface. |
+| `fire_red_trainer_data` | Reads trainer name, rival name, gender, trainer ID, and play time from SaveBlock2 via the EWRAM snapshot. |
 | `fire_red_image_data` | Extracts and decodes Pokémon front sprites from the ROM: pointer resolution → LZ77 decompression → 4bpp tile decode → BGR555 palette → RGBA image. |
 | `fire_red_pokemon_data` | Wild encounter table types (`WildPokemonHeader`, `WildPokemonInfo`, `WildPokemon`). Parses encounter data from ROM and provides both safe Rust and FFI-compatible representations. |
 | `fire_red_get_values` | Low-level byte parsing utilities. Three families: `get_*` for RetroArch hex-token buffers (LE), `read_*` for raw byte slices (LE), `read_*_raw` for raw byte slices (BE). |
 | `fire_red_states` | Shared types and length-prefixed bincode TCP message protocol: `GameState`, `ServerMessage`, `ClientMessage`, `SpriteData`, `Mode`. Used by both server and client sides. |
-| `fire_red_retroarch_interfacing` | Sends `READ_CORE_MEMORY` commands to RetroArch over UDP and parses the whitespace-tokenised responses. Owns the global shared `UdpSocket`. |
+| `fire_red_retroarch_interfacing` | Sends `READ_CORE_MEMORY` commands to RetroArch over UDP and parses the whitespace-tokenised responses. Uses an unconnected socket with `send_to`/`recv_from` per request. |
 | `fire_red_rom_buffer` | Global ROM buffer. Loaded once from disk via `fill_rom` and shared as a `&'static [u8]` across all crates for the process lifetime. |
 | `fire_red_scanner` | Scans the ROM binary with heuristic validation to locate the `WildMonHeader` table offset, which varies between ROM revisions. |
 | `fire_red_text` | Decodes FireRed's custom GBA text encoding into UTF-8. Builds and caches the full Pokémon name table from ROM at startup. |
@@ -86,14 +93,28 @@ A **Soul Link** is a Nuzlocke variant played with a partner: each player's catch
 
 | Binary | Description |
 |---|---|
-| `tracker` | Standalone / server / client — all three modes in one binary, selected by CLI flags. |
+| `tracker` | Standalone / server / client — all three modes in one binary, selected by CLI subcommands. |
 | `aggregator` | Multi-player Soul Link viewer. Connects to N tracker servers and renders one column per player. |
+
+### Tracker source layout
+
+The `tracker` binary is split across several modules in `src/`:
+
+| Module | Responsibility |
+|---|---|
+| `main.rs` | Entry point, thread spawning, mode dispatch |
+| `cli.rs` | `Cli` and `Command` structs (clap definitions) |
+| `game.rs` | `is_shiny`, `fill_party_list`, `map_state_from_ewram`, `game_is_loaded` |
+| `textures.rs` | `PendingTexture`, sprite compression/decompression, `load_texture`, `make_placeholder` |
+| `gui.rs` | `WindowInfo`, `eframe::App` impl, party panel, encounters viewport |
+| `server.rs` | Per-client TCP handler (`handle_client`) |
 
 ### Key external dependencies
 
 | Crate | Purpose |
 |---|---|
 | `eframe` / `egui` | Native GUI framework and immediate-mode UI rendering |
+| `clap` | CLI argument parsing with derive macros |
 | `image` | `ImageBuffer<Rgba<u8>>` used for decoded sprite data |
 | `flate2` | zlib compression/decompression for sprite data sent over TCP |
 | `bincode` | Binary serialisation of `GameState`, `SpriteData`, and message enums |
@@ -105,6 +126,31 @@ A **Soul Link** is a Nuzlocke variant played with a partner: each player's catch
 
 ---
 
+### Memory access model
+
+All live game data is read from two in-memory snapshots maintained by `fire_red_memory`:
+
+- **EWRAM snapshot** (256 KiB) — refreshed every 500 ms by reading from RetroArch in parallel 4 KiB chunks over UDP, then assembled in address order.
+- **IWRAM snapshot** (32 KiB) — refreshed on the same cycle.
+
+Every other crate reads from these snapshots rather than issuing its own UDP requests. This eliminates hundreds of individual network round-trips per second and makes the read pattern predictable regardless of how many subsystems are running.
+
+The map state is read directly from the EWRAM snapshot (at `0x02031DBC`) rather than through the `STATE` mutex in `fire_red_loop`. This avoids the cumulative lag of two polling intervals (~833 ms) and the race condition where `STATE` contains `(0, 0)` before the map thread has ticked for the first time.
+
+---
+
+### Reset detection
+
+The tracker detects soft resets and title screens by checking three signals on every poll tick:
+
+1. The SaveBlock1 pointer at `0x03005008` in IWRAM points into valid EWRAM.
+2. The party size byte at `0x02024029` is in the range 0–6.
+3. The map group/name bytes at `0x02031DBC` are non-zero.
+
+If any check fails, the shared party, encounter, and badge data are cleared immediately. The display goes blank until the game is fully loaded again, preventing stale data from the previous session from being shown.
+
+---
+
 ### Thread model
 
 #### Standalone / Server
@@ -112,9 +158,11 @@ A **Soul Link** is a Nuzlocke variant played with a partner: each player's catch
 ```
 main thread  (GUI or headless park)
 │
-├── game-polling thread       poll RetroArch every 333 ms, update FireRedState
-├── party-monitor thread      read party on size-change + force-refresh every 1 s
+├── memory thread             refresh EWRAM + IWRAM snapshots every 500 ms
+├── game-polling thread       read map/party/encounters from snapshots every 100 ms
+├── party-monitor thread      read party on size-change + force-refresh every 5 s
 ├── box-monitor thread        read all 14 PC boxes every 5 s
+├── trainer-data thread       read trainer name / play time every 15 s
 │
 └── [server mode] TCP listener thread
         └── per-client thread  (one spawned per accepted connection)
@@ -153,6 +201,25 @@ Shiny detection uses the Gen III formula: `(p_high XOR p_low XOR id_high XOR id_
 
 ---
 
+### Badge data
+
+Badge flags are stored as individual bits in the flags array inside SaveBlock1. The SaveBlock1 base address is resolved at runtime by dereferencing the pointer at `0x03005008` in IWRAM.
+
+| Flag index | Badge | Leader | City | Max level |
+|---|---|---|---|---|
+| `0x820` | Boulder Badge | Brock | Pewter City | 14 |
+| `0x821` | Cascade Badge | Misty | Cerulean City | 21 |
+| `0x822` | Thunder Badge | Lt. Surge | Vermilion City | 24 |
+| `0x823` | Rainbow Badge | Erika | Celadon City | 29 |
+| `0x824` | Soul Badge | Koga | Fuchsia City | 43 |
+| `0x825` | Marsh Badge | Sabrina | Saffron City | 50 |
+| `0x826` | Volcano Badge | Blaine | Cinnabar Island | 54 |
+| `0x827` | Earth Badge | Giovanni | Viridian City | 55 |
+
+A C-ABI FFI surface is provided via `fire_red_badge` for integrating badge data into external tools. See `fire_red_badge/src/lib.rs` for the full API and usage example.
+
+---
+
 ### Sprite pipeline
 
 Sprites are decoded on first use and cached for the process lifetime:
@@ -177,13 +244,15 @@ RetroArch memory reads use the `READ_CORE_MEMORY` UDP command (default port 5535
 | Party size | `0x02024029` | 1 byte, valid range 0–6 |
 | Party data | `0x02024284` | Up to 6 × 100-byte `Pokemon` structs |
 | PC box storage | `*0x03005010 + 0x4` | `SaveBlock3` pointer + offset; 14 × 30 × 80 bytes |
-| Current map | `0x02031DBC` | 4 bytes: map group at +2, map name at +3 |
+| Current map | `0x02031DBC` | 2 bytes: map group, map name |
+| SaveBlock1 ptr | `0x03005008` | 4-byte IWRAM pointer; dereference for badge flag offset |
+| SaveBlock2 (trainer) | `0x02024298` | 19 bytes: trainer name, gender, ID, play time |
 | WildMonHeaders | scanned at startup | Offset varies; `fire_red_scanner` locates it via heuristic validation |
 | Ability names | `0x24FCB0` | 13 bytes per entry |
 | Base stats | `0x2547F4` | 28 bytes per entry; ability slots at +`0x16` / +`0x17` |
 | Pokémon names | `0x245F5B` | GBA-encoded, `0xFF`-terminated, up to species `0x019B` |
 
-The PC box base address is not fixed — it is resolved at runtime by reading the `SaveBlock3` pointer at `0x03005010` and adding `0x4`. This indirection is necessary because the storage address can shift between saves.
+The PC box base address is not fixed — it is resolved at runtime by reading the `SaveBlock3` pointer at `0x03005010` and adding `0x4`. Similarly, the badge flag array is located by dereferencing the `SaveBlock1` pointer at `0x03005008` and adding `0x0EE0`.
 
 ---
 
@@ -199,7 +268,7 @@ Messages are defined in `fire_red_states`:
 
 | Direction | Message | Contents |
 |---|---|---|
-| Server → Client | `ServerMessage::State` | Full `GameState` (party + encounter table), sent every 100 ms |
+| Server → Client | `ServerMessage::State` | Full `GameState` (party + encounters + badges + trainer name), sent every 100 ms |
 | Server → Client | `ServerMessage::Textures` | `Vec<SpriteData>` (zlib-compressed RGBA + metadata) |
 | Client → Server | `ClientMessage::RequestTextures` | `Vec<u16>` of species IDs to fetch |
 
@@ -246,12 +315,12 @@ Both binaries (`tracker` and `aggregator`) are produced in `target/release/`.
 
 **Player 1 (host machine):**
 ```
-./tracker firered.gba --server 7878
+./tracker firered.gba server --port 7878
 ```
 
 **Player 2 (host machine):**
 ```
-./tracker firered.gba --server 7879
+./tracker firered.gba server --port 7879
 ```
 
 **Aggregator (run on either machine or a third):**
@@ -259,7 +328,7 @@ Both binaries (`tracker` and `aggregator`) are produced in `target/release/`.
 ./aggregator player1-ip:7878 player2-ip:7879
 ```
 
-Each player can also run a local `--client` instance alongside the server if they want their own GUI view in addition to the shared aggregator.
+Each player can also run a local `client` instance alongside the server if they want their own GUI view in addition to the shared aggregator.
 
 ---
 
@@ -269,4 +338,4 @@ Personal project built for Nuzlocke and Soul Link runs. The codebase is function
 
 - ROM scanning and all hardcoded addresses are calibrated for **FireRed USA (Rev 1)**. Other regional releases or ROM hacks will likely require address adjustments.
 - The `--clean` ability feature reads from ROM base-stat tables and is only reliable on unmodified ROMs.
-- The `WildPokemonHeaderFFI` and `AreaEncountersStringArrays` FFI types are partially implemented; the C-callable interface helpers are commented out pending a stable API design.
+- The `WildPokemonHeaderFFI` and `AreaEncountersStringArrays` FFI types are partially implemented; the C-callable interface helpers are in progress pending a stable API design.
