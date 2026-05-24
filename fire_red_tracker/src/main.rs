@@ -13,10 +13,13 @@
 //! # Usage
 //!
 //! ```text
-//! tracker /path/to/file.gba [--clean]              # standalone
-//! tracker /path/to/file.gba --server [port]        # server (default port 7878)
-//! tracker --client [host] [port]                   # client (default 127.0.0.1:7878)
+//! tracker <ROM>                                    # standalone
+//! tracker <ROM> --clean                            # standalone, ability names enabled
+//! tracker <ROM> --server [--port <PORT>]           # server (default port 7878)
+//! tracker --client [--host <HOST>] [--port <PORT>] # client (default 127.0.0.1:7878)
 //! ```
+//!
+//! ROM paths containing spaces can be quoted: `tracker "My ROMs/firered.gba"`
 //!
 //! # Architecture notes
 //!
@@ -26,6 +29,7 @@
 //! ~333ms) and eliminates the race condition where `STATE` contains `(0,0)`
 //! before the map thread has ticked for the first time.
 
+use clap::{Parser, Subcommand};
 use colored::Colorize;
 use fire_red_loop::*;
 use fire_red_party_monitor::get_is_clean;
@@ -35,6 +39,46 @@ use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+
+// ---------------------------------------------------------------------------
+// CLI definition
+// ---------------------------------------------------------------------------
+
+/// Real-time Pokémon FireRed party and encounter tracker.
+#[derive(Parser, Debug)]
+#[command(author, version, about, long_about = None)]
+struct Cli {
+    /// Path to the FireRed ROM file. Wrap in quotes for paths containing spaces.
+    /// Not required in client mode.
+    #[arg(value_name = "ROM")]
+    rom: Option<String>,
+
+    /// Enable ability name display. Only reliable on unmodified ("clean") ROMs.
+    #[arg(long, default_value_t = false)]
+    clean: bool,
+
+    #[command(subcommand)]
+    command: Option<Command>,
+}
+
+#[derive(Subcommand, Debug)]
+enum Command {
+    /// Run as a headless TCP server, streaming game state to connected clients.
+    Server {
+        /// Port to listen on.
+        #[arg(long, default_value_t = 7878)]
+        port: u16,
+    },
+    /// Connect to a tracker server and display its game state.
+    Client {
+        /// Server hostname or IP address.
+        #[arg(long, default_value = "127.0.0.1")]
+        host: String,
+        /// Server port.
+        #[arg(long, default_value_t = 7878)]
+        port: u16,
+    },
+}
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -613,28 +657,30 @@ fn handle_client(
 // ---------------------------------------------------------------------------
 
 fn main() {
-    let args: Vec<String> = std::env::args().collect();
+    let cli = Cli::parse();
 
-    let mode = match args.get(1).map(|s| s.as_str()) {
-        Some("--client") => {
-            let host = args.get(2).cloned().unwrap_or_else(|| "127.0.0.1".to_string());
-            let port = args.get(3).and_then(|p| p.parse().ok()).unwrap_or(7878);
-            Mode::Client { host, port }
-        }
-        Some(_) => match args.get(2).map(|s| s.as_str()) {
-            Some("--server") => {
-                let port = args.get(3).and_then(|p| p.parse().ok()).unwrap_or(7878);
-                Mode::Server { port }
+    // Derive the operating mode from the subcommand, falling back to standalone.
+    let mode = match cli.command {
+        Some(Command::Server { port })        => Mode::Server { port },
+        Some(Command::Client { host, port })  => Mode::Client { host, port },
+        None                                  => Mode::Standalone,
+    };
+
+    let is_clean = cli.clean;
+
+    // ROM is required in standalone and server modes.
+    let rom_path = match &mode {
+        Mode::Client { .. } => String::new(),
+        _ => match cli.rom {
+            Some(path) => path,
+            None => {
+                eprintln!("Error: a ROM path is required in standalone and server modes.");
+                eprintln!("Usage: tracker <ROM> [--clean]");
+                eprintln!("       tracker <ROM> server [--port <PORT>]");
+                eprintln!("       tracker client [--host <HOST>] [--port <PORT>]");
+                std::process::exit(1);
             }
-            _ => Mode::Standalone,
         },
-        None => {
-            eprintln!("Usage:");
-            eprintln!("  {} firered.gba [--clean]               (standalone)", args[0]);
-            eprintln!("  {} firered.gba --server [port]         (default port 7878)", args[0]);
-            eprintln!("  {} --client [host] [port]              (default 127.0.0.1:7878)", args[0]);
-            return;
-        }
     };
 
     // Shared state between the game-polling / network threads and the GUI.
@@ -656,12 +702,6 @@ fn main() {
 
     match &mode {
         Mode::Standalone | Mode::Server { .. } => {
-            let rom_path = match args.get(1) {
-                Some(p) => p.clone(),
-                None    => { eprintln!("Missing ROM path."); std::process::exit(1); }
-            };
-            let is_clean = args.iter().any(|a| a == "--clean");
-
             let thread_party      = shared_party.clone();
             let thread_encounters = shared_encounters.clone();
 

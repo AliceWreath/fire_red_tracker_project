@@ -20,3 +20,4 @@ fire_red_states = { path = "../fire_red_states/" }
 fire_red_badge = { path = "../fire_red_badge" }
 fire_red_memory = { path = "../fire_red_memory" }
 colored = "3.1.1"
+clap = { version = "4.0", features = ["derive"] }

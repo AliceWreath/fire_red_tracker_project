@@ -1,62 +1,65 @@
 //! # FireRed Aggregator
-//! 
+//!
 //! Entry point for the multi-player aggregator binary.
-//! 
-//! Accepts one or more `host:port` addresses as command-line arguments, each
-//! pointing to a running tracker server instance. For each address it creates
-//! a [`MonitorSlot`] and spawns a background client thread via [`spawn_client`],
-//! then opens an [`AggregatorApp`] window that renders all players side-by-side.
-//! 
-//! ## Usage
-//! 
+//!
+//! Accepts one or more `host:port` addresses as arguments, each pointing to a
+//! running tracker server instance. For each address it creates a [`MonitorSlot`]
+//! and spawns a background client thread via [`spawn_client`], then opens an
+//! [`AggregatorApp`] window that renders all players side-by-side.
+//!
+//! # Usage
+//!
 //! ```text
-//! aggregator <host:post> [host:port ...]
-//! 
-//! # Example -  two local servers on different ports:
+//! aggregator <HOST:PORT> [HOST:PORT ...]
+//!
+//! # Two local servers on different ports:
 //! aggregator localhost:7878 localhost:7979
 //! ```
-//! 
-//! ## Window sizing
-//! 
-//! The inital window width is `320 x max(slot_count, 2)` pixels, giving each
-//! player column roughly 320 logical pixels. The window is resizable after
+//!
+//! # Window sizing
+//!
+//! The initial window width is `320 × max(slot_count, 2)` logical pixels,
+//! giving each player column roughly 320 pixels. The window is resizable after
 //! launch and the column layout reflows automatically.
 
 mod app;
 mod client;
 
 use app::AggregatorApp;
+use clap::Parser;
 use client::{MonitorSlot, spawn_client};
 
-/// Prints usage instructions to stderr.
-/// 
-/// # Arguments
-/// * `name` - The executable name taken from `args[0]`, shown verbtim in the
-///            usage string so it reflects whatever the binary was invoked as.
-fn print_usage(name: &str) {
-    eprintln!("Usage: {} <host:port> [host:port ...]", name);
-    eprintln!("  Example: {} localhost:7878 localhost:7879", name);
+// ---------------------------------------------------------------------------
+// CLI definition
+// ---------------------------------------------------------------------------
+
+/// Multi-player FireRed tracker aggregator.
+///
+/// Connect to one or more tracker server instances and display all players
+/// side-by-side in a single window.
+#[derive(Parser, Debug)]
+#[command(author, version, about, long_about = None)]
+struct Cli {
+    /// One or more tracker server addresses in `host:port` format.
+    ///
+    /// Example: `localhost:7878 localhost:7979`
+    #[arg(required = true, value_name = "HOST:PORT")]
+    addrs: Vec<String>,
 }
 
-/// Parses server addresses from command-line arguments, creates one
-/// [`MonitorSlot`] and one background client thread per address, then launches
-/// the egui window.
-/// 
-/// Exits with code `1` if no addressess are provided.
+// ---------------------------------------------------------------------------
+// main
+// ---------------------------------------------------------------------------
+
+/// Parses server addresses, creates one [`MonitorSlot`] and one background
+/// client thread per address, then launches the egui window.
 fn main() {
-    let args: Vec<String> = std::env::args().collect();
-
-    if args.len() < 2 {
-        print_usage(&args[0]);
-        std::process::exit(1);
-    }
-
-    let addrs: Vec<String> = args[1..].to_vec();
+    let cli = Cli::parse();
 
     // For each address: create a MonitorSlot, then hand clones of its shared
-    // arcs to spawn_client so the network thread and the GUI share the same
-    // state without the slot giving up ownership of the arcs.
-    let slots: Vec<MonitorSlot> = addrs
+    // Arcs to spawn_client so the network thread and the GUI share the same
+    // state without the slot giving up ownership of the Arcs.
+    let slots: Vec<MonitorSlot> = cli.addrs
         .into_iter()
         .enumerate()
         .map(|(i, addr)| {
@@ -73,13 +76,14 @@ fn main() {
         })
         .collect();
 
-    // Initial window width scales with the number of slots (min 2 columns worth
-    // of space) so the layout isn't cramped when launched with many players.
+    // Scale the initial window width with the number of slots (minimum 2
+    // columns) so the layout isn't cramped when launched with many players.
+    let slot_count = slots.len();
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("Fire Red Aggregator")
             .with_inner_size([
-                (320 * slots.len().max(2)) as f32,
+                (320 * slot_count.max(2)) as f32,
                 1000.0,
             ]),
         ..Default::default()
