@@ -1,3 +1,6 @@
+[lib]
+crate-type = ["cdylib", "rlib"]
+
 [package]
 name = "fire_red_badge"
 version = "0.1.0"
