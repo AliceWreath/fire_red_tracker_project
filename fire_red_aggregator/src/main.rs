@@ -59,7 +59,8 @@ fn main() {
     // For each address: create a MonitorSlot, then hand clones of its shared
     // Arcs to spawn_client so the network thread and the GUI share the same
     // state without the slot giving up ownership of the Arcs.
-    let slots: Vec<MonitorSlot> = cli.addrs
+    let slots: Vec<MonitorSlot> = cli
+        .addrs
         .into_iter()
         .enumerate()
         .map(|(i, addr)| {
@@ -82,10 +83,7 @@ fn main() {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("Fire Red Aggregator")
-            .with_inner_size([
-                (320 * slot_count.max(2)) as f32,
-                1000.0,
-            ]),
+            .with_inner_size([(320 * slot_count.max(2)) as f32, 1000.0]),
         ..Default::default()
     };
 

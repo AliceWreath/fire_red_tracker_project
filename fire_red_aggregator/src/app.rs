@@ -72,7 +72,10 @@ impl AggregatorApp {
     /// * `_cc`   — eframe creation context (unused; reserved for future font setup).
     /// * `slots` — One [`MonitorSlot`] per server the aggregator is connected to.
     pub fn new(_cc: &eframe::CreationContext<'_>, slots: Vec<MonitorSlot>) -> Self {
-        Self { slots, textures: HashMap::new() }
+        Self {
+            slots,
+            textures: HashMap::new(),
+        }
     }
 
     /// Drains pending textures from each slot's network thread, uploads them to
@@ -95,7 +98,10 @@ impl AggregatorApp {
         for slot in &self.slots {
             // ── Drain arrived textures ───────────────────────────────────────
             {
-                let mut pending = slot.pending_textures.lock().unwrap_or_else(|e| e.into_inner());
+                let mut pending = slot
+                    .pending_textures
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
                 for pt in pending.drain(..) {
                     let key = sprite_key(pt.species, pt.shiny);
                     let image = egui::ColorImage::from_rgba_unmultiplied(
@@ -125,7 +131,11 @@ impl AggregatorApp {
                     }
                 }
 
-                let all_encounters = gs.encounters.land_mon_encounters.wild_pokemon_list.iter()
+                let all_encounters = gs
+                    .encounters
+                    .land_mon_encounters
+                    .wild_pokemon_list
+                    .iter()
                     .chain(gs.encounters.water_mon_encounters.wild_pokemon_list.iter())
                     .chain(gs.encounters.rock_smash_encounters.wild_pokemon_list.iter())
                     .chain(gs.encounters.fishing_encounters.wild_pokemon_list.iter());
@@ -201,10 +211,8 @@ impl AggregatorApp {
                     } else {
                         egui::Color32::from_rgb(80, 80, 80)
                     };
-                    let (rect, _) = ui.allocate_exact_size(
-                        egui::vec2(14.0, 14.0),
-                        egui::Sense::hover(),
-                    );
+                    let (rect, _) =
+                        ui.allocate_exact_size(egui::vec2(14.0, 14.0), egui::Sense::hover());
                     ui.painter().circle_filled(rect.center(), 5.0, color);
                 }
             });
@@ -260,7 +268,9 @@ impl AggregatorApp {
                 Self::draw_encounter_section(
                     ui,
                     "Water / Fishing",
-                    &gs.encounters.water_mon_encounters.wild_pokemon_list
+                    &gs.encounters
+                        .water_mon_encounters
+                        .wild_pokemon_list
                         .iter()
                         .chain(gs.encounters.fishing_encounters.wild_pokemon_list.iter())
                         .cloned()
@@ -305,12 +315,12 @@ impl AggregatorApp {
         textures: &HashMap<String, egui::TextureHandle>,
         other_states: &[(String, Option<GameState>)],
     ) {
-        let species     = pokemon.box_mon.secure.growth.species;
+        let species = pokemon.box_mon.secure.growth.species;
         let personality = pokemon.box_mon.personality;
-        let ot_id       = pokemon.box_mon.ot_id;
-        let met         = pokemon.box_mon.secure.misc.met_location;
-        let shiny       = is_shiny(personality, ot_id);
-        let key         = sprite_key(species, shiny);
+        let ot_id = pokemon.box_mon.ot_id;
+        let met = pokemon.box_mon.secure.misc.met_location;
+        let shiny = is_shiny(personality, ot_id);
+        let key = sprite_key(species, shiny);
 
         // Soul Link detection.
         for (other_label, other_state) in other_states {
@@ -391,7 +401,10 @@ impl AggregatorApp {
         list: &[fire_red_pokemon_data::WildPokemon],
         textures: &HashMap<String, egui::TextureHandle>,
     ) {
-        let valid: Vec<_> = list.iter().filter(|w| w.species > 0 && w.species <= 386).collect();
+        let valid: Vec<_> = list
+            .iter()
+            .filter(|w| w.species > 0 && w.species <= 386)
+            .collect();
         if valid.is_empty() {
             return;
         }
@@ -401,11 +414,10 @@ impl AggregatorApp {
             for wild in &valid {
                 let key = sprite_key(wild.species, false);
                 if let Some(tex) = textures.get(&key) {
-                    ui.add(
-                        egui::Image::new(tex).fit_to_exact_size(
-                            egui::vec2(ENCOUNTER_IMAGE_SIZE.0, ENCOUNTER_IMAGE_SIZE.1),
-                        ),
-                    )
+                    ui.add(egui::Image::new(tex).fit_to_exact_size(egui::vec2(
+                        ENCOUNTER_IMAGE_SIZE.0,
+                        ENCOUNTER_IMAGE_SIZE.1,
+                    )))
                     .on_hover_text(format!("Lv{}-{}", wild.min_level, wild.max_level));
                 }
             }
@@ -438,10 +450,12 @@ impl eframe::App for AggregatorApp {
         self.process_textures(ctx);
 
         let slot_count = self.slots.len();
-        let textures   = &self.textures;
+        let textures = &self.textures;
 
         // Snapshot all states to avoid holding locks while drawing.
-        let states: Vec<(String, Option<GameState>)> = self.slots.iter()
+        let states: Vec<(String, Option<GameState>)> = self
+            .slots
+            .iter()
             .map(|slot| {
                 let state = slot.state.lock().unwrap_or_else(|e| e.into_inner()).clone();
                 let label = slot.label.lock().unwrap_or_else(|e| e.into_inner()).clone();
@@ -497,9 +511,9 @@ pub fn sprite_key(species: u16, shiny: bool) -> String {
 /// This is a local copy of the same function in the main tracker crate, duplicated
 /// here so this module has no dependency on the tracker binary.
 pub fn is_shiny(personality: u32, ot_id: u32) -> bool {
-    let p_high  = (personality >> 16) as u16;
-    let p_low   = (personality & 0xFFFF) as u16;
+    let p_high = (personality >> 16) as u16;
+    let p_low = (personality & 0xFFFF) as u16;
     let id_high = (ot_id >> 16) as u16;
-    let id_low  = (ot_id & 0xFFFF) as u16;
+    let id_low = (ot_id & 0xFFFF) as u16;
     (p_high ^ p_low ^ id_high ^ id_low) < 8
 }

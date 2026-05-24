@@ -154,16 +154,10 @@ fn decompress_pixels(data: &[u8]) -> Vec<u8> {
 /// decoded.
 fn build_sprite_data(rom: &[u8], species: u16, shiny: bool) -> Option<SpriteData> {
     let img = fire_red_image_data::get_pokemon_sprite(rom, species, shiny).ok()?;
-    let width = img.width();
+    let width  = img.width();
     let height = img.height();
     let pixels = compress_pixels(&img.into_raw());
-    Some(SpriteData {
-        species,
-        shiny,
-        pixels,
-        width,
-        height,
-    })
+    Some(SpriteData { species, shiny, pixels, width, height })
 }
 
 // ---------------------------------------------------------------------------
@@ -176,11 +170,11 @@ fn build_sprite_data(rom: &[u8], species: u16, shiny: bool) -> Option<SpriteData
 /// [`egui::Context::load_texture`] and stores the handle.
 struct PendingTexture {
     species: u16,
-    shiny: bool,
+    shiny:   bool,
     /// Decompressed RGBA bytes (width × height × 4).
-    pixels: Vec<u8>,
-    width: u32,
-    height: u32,
+    pixels:  Vec<u8>,
+    width:   u32,
+    height:  u32,
 }
 
 /// Top-level application state passed to [`eframe`].
@@ -244,10 +238,7 @@ impl eframe::App for WindowInfo {
 
         // ── 1. Upload textures received from the server ───────────────────────
         {
-            let mut pending = self
-                .pending_textures
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
+            let mut pending = self.pending_textures.lock().unwrap_or_else(|e| e.into_inner());
             for pt in pending.drain(..) {
                 let key = format!(
                     "pokemon_{}_{}",
@@ -265,29 +256,14 @@ impl eframe::App for WindowInfo {
 
         // ── 2. Load / request missing textures ───────────────────────────────
         {
-            let list = self
-                .party_list
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .clone();
-            let encounter_list = self
-                .encounter_list
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
+            let list           = self.party_list.lock().unwrap_or_else(|e| e.into_inner()).clone();
+            let encounter_list = self.encounter_list.lock().unwrap_or_else(|e| e.into_inner());
             let mut needed: Vec<u16> = Vec::new();
 
             // Encounter sprites are always the normal (non-shiny) palette.
-            let all_encounter_mons = encounter_list
-                .land_mon_encounters
-                .wild_pokemon_list
-                .iter()
+            let all_encounter_mons = encounter_list.land_mon_encounters.wild_pokemon_list.iter()
                 .chain(encounter_list.water_mon_encounters.wild_pokemon_list.iter())
-                .chain(
-                    encounter_list
-                        .rock_smash_encounters
-                        .wild_pokemon_list
-                        .iter(),
-                )
+                .chain(encounter_list.rock_smash_encounters.wild_pokemon_list.iter())
                 .chain(encounter_list.fishing_encounters.wild_pokemon_list.iter());
 
             for mon in all_encounter_mons {
@@ -304,9 +280,8 @@ impl eframe::App for WindowInfo {
                         needed.push(mon.species);
                     }
                 } else {
-                    let texture =
-                        load_texture_normal(ctx, fire_red_rom_buffer::get_rom(), mon.species)
-                            .unwrap_or_else(|_| make_placeholder(ctx, mon.species));
+                    let texture = load_texture_normal(ctx, fire_red_rom_buffer::get_rom(), mon.species)
+                        .unwrap_or_else(|_| make_placeholder(ctx, mon.species));
                     self.textures.insert(key, texture);
                 }
             }
@@ -316,22 +291,12 @@ impl eframe::App for WindowInfo {
             // Party sprites use the shiny variant when applicable.
             let missing_party: Vec<(u16, u32, u32)> = list
                 .iter()
-                .map(|p| {
-                    (
-                        p.box_mon.secure.growth.species,
-                        p.box_mon.personality,
-                        p.box_mon.ot_id,
-                    )
-                })
+                .map(|p| (p.box_mon.secure.growth.species, p.box_mon.personality, p.box_mon.ot_id))
                 .filter(|(species, personality, ot_id)| {
                     let key = format!(
                         "pokemon_{}_{}",
                         species,
-                        if is_shiny(*personality, *ot_id) {
-                            "shiny"
-                        } else {
-                            "normal"
-                        },
+                        if is_shiny(*personality, *ot_id) { "shiny" } else { "normal" },
                     );
                     !self.textures.contains_key(&key)
                 })
@@ -344,11 +309,7 @@ impl eframe::App for WindowInfo {
                 let key = format!(
                     "pokemon_{}_{}",
                     species,
-                    if is_shiny(personality, ot_id) {
-                        "shiny"
-                    } else {
-                        "normal"
-                    },
+                    if is_shiny(personality, ot_id) { "shiny" } else { "normal" },
                 );
                 if self.texture_request_queue.is_some() {
                     let known = self.known_species.lock().unwrap_or_else(|e| e.into_inner());
@@ -356,14 +317,8 @@ impl eframe::App for WindowInfo {
                         needed.push(species);
                     }
                 } else {
-                    let texture = load_texture(
-                        ctx,
-                        fire_red_rom_buffer::get_rom(),
-                        species,
-                        personality,
-                        ot_id,
-                    )
-                    .unwrap_or_else(|_| make_placeholder(ctx, species));
+                    let texture = load_texture(ctx, fire_red_rom_buffer::get_rom(), species, personality, ot_id)
+                        .unwrap_or_else(|_| make_placeholder(ctx, species));
                     self.textures.insert(key, texture);
                 }
             }
@@ -372,10 +327,7 @@ impl eframe::App for WindowInfo {
                 needed.sort();
                 needed.dedup();
                 if let Some(queue) = &self.texture_request_queue {
-                    queue
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner())
-                        .push_back(needed);
+                    queue.lock().unwrap_or_else(|e| e.into_inner()).push_back(needed);
                 }
             }
         }
@@ -389,7 +341,7 @@ impl eframe::App for WindowInfo {
         // ── 4. Encounters child viewport ──────────────────────────────────────
         if self.encounters_open {
             let encounter_list = self.encounter_list.clone();
-            let textures = &self.textures;
+            let textures       = &self.textures;
 
             ctx.show_viewport_immediate(
                 egui::ViewportId::from_hash_of("encounters_window"),
@@ -408,10 +360,7 @@ impl eframe::App for WindowInfo {
                                     let key = format!("pokemon_{}_normal", mon.species);
                                     if let Some(tex) = textures.get(&key) {
                                         ui.add(egui::Image::new(tex).fit_to_exact_size(
-                                            egui::vec2(
-                                                ENCOUNTER_IMAGE_SIZE.0,
-                                                ENCOUNTER_IMAGE_SIZE.1,
-                                            ),
+                                            egui::vec2(ENCOUNTER_IMAGE_SIZE.0, ENCOUNTER_IMAGE_SIZE.1),
                                         ));
                                     }
                                 }
@@ -420,19 +369,13 @@ impl eframe::App for WindowInfo {
                             ui.separator();
                             ui.heading("Water Encounters");
                             ui.horizontal(|ui| {
-                                for mon in enc
-                                    .water_mon_encounters
-                                    .wild_pokemon_list
-                                    .iter()
+                                for mon in enc.water_mon_encounters.wild_pokemon_list.iter()
                                     .chain(enc.fishing_encounters.wild_pokemon_list.iter())
                                 {
                                     let key = format!("pokemon_{}_normal", mon.species);
                                     if let Some(tex) = textures.get(&key) {
                                         ui.add(egui::Image::new(tex).fit_to_exact_size(
-                                            egui::vec2(
-                                                ENCOUNTER_IMAGE_SIZE.0,
-                                                ENCOUNTER_IMAGE_SIZE.1,
-                                            ),
+                                            egui::vec2(ENCOUNTER_IMAGE_SIZE.0, ENCOUNTER_IMAGE_SIZE.1),
                                         ));
                                     }
                                 }
@@ -453,58 +396,16 @@ impl WindowInfo {
     fn draw_party(&mut self, ui: &mut egui::Ui) {
         ui.heading("Party");
 
-        // Badge summary and next gym info.
-        if let Some(badge_state) = get_badge_state() {
-            ui.horizontal(|ui| {
-                ui.label(format!("Badges: {}/8", badge_state.count()));
-
-                // Show each badge as a colored dot — green if obtained, grey if not.
-                for obtained in &badge_state.badges {
-                    let color = if *obtained {
-                        egui::Color32::from_rgb(80, 200, 80)
-                    } else {
-                        egui::Color32::from_rgb(80, 80, 80)
-                    };
-                    let (rect, _) =
-                        ui.allocate_exact_size(egui::vec2(12.0, 12.0), egui::Sense::hover());
-                    ui.painter().circle_filled(rect.center(), 5.0, color);
-                }
-            });
-
-            if let Some(gym) = &badge_state.next_gym {
-                ui.horizontal(|ui| {
-                    ui.label(
-                        egui::RichText::new(format!(
-                            "Next: {} ({}) — Lv.{}",
-                            gym.leader, gym.city, gym.max_level
-                        ))
-                        .color(egui::Color32::from_rgb(255, 200, 50)),
-                    );
-                });
-            } else {
-                ui.label(
-                    egui::RichText::new("All badges obtained!")
-                        .color(egui::Color32::from_rgb(80, 200, 80)),
-                );
-            }
-
-            ui.separator();
-        }
-
         let list = self.party_list.lock().unwrap_or_else(|e| e.into_inner());
         for (idx, pokemon) in list.iter().enumerate() {
             ui.horizontal(|ui| {
-                let species = pokemon.box_mon.secure.growth.species;
+                let species     = pokemon.box_mon.secure.growth.species;
                 let personality = pokemon.box_mon.personality;
-                let ot_id = pokemon.box_mon.ot_id;
+                let ot_id       = pokemon.box_mon.ot_id;
                 let key = format!(
                     "pokemon_{}_{}",
                     species,
-                    if is_shiny(personality, ot_id) {
-                        "shiny"
-                    } else {
-                        "normal"
-                    },
+                    if is_shiny(personality, ot_id) { "shiny" } else { "normal" },
                 );
 
                 if let Some(tex) = self.textures.get(&key) {
@@ -576,15 +477,11 @@ pub fn load_texture(
     ot_id: u32,
 ) -> Result<egui::TextureHandle, Box<dyn std::error::Error>> {
     let shiny = is_shiny(personality, ot_id);
-    let img = fire_red_image_data::get_pokemon_sprite(rom, species, shiny)?;
-    let size = [img.width() as usize, img.height() as usize];
+    let img   = fire_red_image_data::get_pokemon_sprite(rom, species, shiny)?;
+    let size  = [img.width() as usize, img.height() as usize];
     let image = egui::ColorImage::from_rgba_unmultiplied(size, &img.into_raw());
     Ok(ctx.load_texture(
-        format!(
-            "pokemon_{}_{}",
-            species,
-            if shiny { "shiny" } else { "normal" }
-        ),
+        format!("pokemon_{}_{}", species, if shiny { "shiny" } else { "normal" }),
         image,
         egui::TextureOptions::NEAREST,
     ))
@@ -598,7 +495,7 @@ pub fn load_texture_normal(
     rom: &[u8],
     species: u16,
 ) -> Result<egui::TextureHandle, Box<dyn std::error::Error>> {
-    let img = fire_red_image_data::get_pokemon_sprite(rom, species, false)?;
+    let img  = fire_red_image_data::get_pokemon_sprite(rom, species, false)?;
     let size = [img.width() as usize, img.height() as usize];
     let image = egui::ColorImage::from_rgba_unmultiplied(size, &img.into_raw());
     Ok(ctx.load_texture(
@@ -614,7 +511,7 @@ fn make_placeholder(ctx: &egui::Context, species: u16) -> egui::TextureHandle {
     let w = PARTY_IMAGE_SIZE.0 as usize;
     let h = PARTY_IMAGE_SIZE.1 as usize;
     let pixels = vec![255u8, 0, 0, 255].repeat(w * h);
-    let image = egui::ColorImage::from_rgba_unmultiplied([w, h], &pixels);
+    let image  = egui::ColorImage::from_rgba_unmultiplied([w, h], &pixels);
     ctx.load_texture(
         format!("pokemon_{}_placeholder", species),
         image,
@@ -635,10 +532,10 @@ fn fill_party_list(thread_party: &Arc<Mutex<Vec<fire_red_party_monitor::Pokemon>
 ///
 /// Uses the Gen III formula: `(p_high ^ p_low ^ id_high ^ id_low) < 8`.
 pub fn is_shiny(personality: u32, ot_id: u32) -> bool {
-    let p_high = (personality >> 16) as u16;
-    let p_low = (personality & 0xFFFF) as u16;
+    let p_high  = (personality >> 16) as u16;
+    let p_low   = (personality & 0xFFFF) as u16;
     let id_high = (ot_id >> 16) as u16;
-    let id_low = (ot_id & 0xFFFF) as u16;
+    let id_low  = (ot_id & 0xFFFF) as u16;
     (p_high ^ p_low ^ id_high ^ id_low) < 8
 }
 
@@ -651,20 +548,65 @@ pub fn is_shiny(personality: u32, ot_id: u32) -> bool {
 /// to ~833ms (500ms EWRAM snapshot interval + 333ms map thread interval) and
 /// may contain `(0,0)` before the map thread has ticked for the first time.
 fn map_state_from_ewram() -> Option<FireRedState> {
-    let ewram = fire_red_memory::get_ewram();
+    let ewram  = fire_red_memory::get_ewram();
     let offset = MAP_GROUP_AND_NAME_ADDR - EWRAM_BASE;
     if ewram.len() < offset + 2 {
         return None;
     }
     let group = ewram[offset];
-    let name = ewram[offset + 1];
+    let name  = ewram[offset + 1];
     if group == 0 && name == 0 {
         return None;
     }
-    Some(FireRedState {
-        map_group_id: group,
-        map_name_id: name,
-    })
+    Some(FireRedState { map_group_id: group, map_name_id: name })
+}
+
+/// Returns `true` if FireRed appears to be fully loaded with a valid save.
+///
+/// Checks three signals in order of reliability:
+/// 1. The SaveBlock1 pointer at `0x03005008` in IWRAM points into valid EWRAM.
+/// 2. The party size byte is in the range 0–6.
+/// 3. The map group/name bytes are non-zero.
+///
+/// All three failing together strongly indicates a reset or title screen.
+/// Used to gate badge reads and clear stale state after a soft reset.
+fn game_is_loaded() -> bool {
+    let iwram = fire_red_memory::get_iwram();
+    let ewram = fire_red_memory::get_ewram();
+
+    // The SaveBlock1 pointer lives in IWRAM at 0x03005008.
+    let ptr_offset = 0x03005008 - 0x03000000;
+    if iwram.len() < ptr_offset + 4 {
+        return false;
+    }
+    let save_block_ptr = u32::from_le_bytes([
+        iwram[ptr_offset],
+        iwram[ptr_offset + 1],
+        iwram[ptr_offset + 2],
+        iwram[ptr_offset + 3],
+    ]) as usize;
+
+    // Pointer must fall within EWRAM.
+    if save_block_ptr < 0x02000000 || save_block_ptr >= 0x02000000 + ewram.len() {
+        return false;
+    }
+
+    // Party size must be 0–6.
+    let party_size_offset = 0x02024029 - 0x02000000;
+    if ewram.len() <= party_size_offset || ewram[party_size_offset] > 6 {
+        return false;
+    }
+
+    // Map state should be non-zero — the title screen sits at (0, 0).
+    let map_offset = 0x02031DBC - 0x02000000;
+    if ewram.len() < map_offset + 2 {
+        return false;
+    }
+    if ewram[map_offset] == 0 && ewram[map_offset + 1] == 0 {
+        return false;
+    }
+
+    true
 }
 
 // ---------------------------------------------------------------------------
@@ -684,26 +626,22 @@ fn handle_client(
     server_party: Arc<Mutex<Vec<fire_red_party_monitor::Pokemon>>>,
     server_encounters: Arc<Mutex<fire_red_pokemon_data::WildPokemonHeader>>,
     sprite_cache: Arc<Mutex<HashMap<(u16, bool), SpriteData>>>,
+    game_loaded: Arc<AtomicBool>,
 ) {
     println!(
         "Client connected: {}",
-        stream
-            .peer_addr()
-            .map_or_else(|_| "unknown".to_string(), |a| a.to_string()),
+        stream.peer_addr().map_or_else(|_| "unknown".to_string(), |a| a.to_string()),
     );
 
     let read_stream = match stream.try_clone() {
         Ok(s) => s,
-        Err(e) => {
-            eprintln!("Failed to clone stream: {}", e);
-            return;
-        }
+        Err(e) => { eprintln!("Failed to clone stream: {}", e); return; }
     };
     let write_stream = Arc::new(Mutex::new(stream));
 
     // Reader thread: responds to texture requests.
     let write_stream_clone = write_stream.clone();
-    let cache_clone = sprite_cache.clone();
+    let cache_clone        = sprite_cache.clone();
     std::thread::spawn(move || {
         let mut read_stream = read_stream;
         loop {
@@ -713,9 +651,7 @@ fn handle_client(
                     let mut sprites: Vec<SpriteData> = Vec::new();
 
                     for species in species_list {
-                        if species == 0 || species > 386 {
-                            continue;
-                        }
+                        if species == 0 || species > 386 { continue; }
                         // Always send both variants so the client never needs the ROM.
                         for shiny in [false, true] {
                             let key = (species, shiny);
@@ -744,13 +680,21 @@ fn handle_client(
     // Writer loop: pushes GameState every 100 ms.
     loop {
         let state = {
-            let party = server_party.lock().unwrap_or_else(|e| e.into_inner());
+            let party      = server_party.lock().unwrap_or_else(|e| e.into_inner());
             let encounters = server_encounters.lock().unwrap_or_else(|e| e.into_inner());
             GameState {
-                party: party.clone(),
-                encounters: encounters.clone(),
+                party:       party.clone(),
+                encounters:  encounters.clone(),
                 player_name: fire_red_loop::get_trainer_name(),
-                badge_state: fire_red_badge::read_badge_state(),
+                // Only read badge state when the game is fully loaded.
+                // During a reset or title screen this returns None so
+                // clients clear their badge display rather than showing
+                // stale data from the previous session.
+                badge_state: if game_loaded.load(Ordering::SeqCst) {
+                    fire_red_badge::read_badge_state()
+                } else {
+                    None
+                },
             }
         };
 
@@ -774,9 +718,9 @@ fn main() {
 
     // Derive the operating mode from the subcommand, falling back to standalone.
     let mode = match cli.command {
-        Some(Command::Server { port }) => Mode::Server { port },
-        Some(Command::Client { host, port }) => Mode::Client { host, port },
-        None => Mode::Standalone,
+        Some(Command::Server { port })        => Mode::Server { port },
+        Some(Command::Client { host, port })  => Mode::Client { host, port },
+        None                                  => Mode::Standalone,
     };
 
     let is_clean = cli.clean;
@@ -796,12 +740,15 @@ fn main() {
         },
     };
 
+    // Tracks whether the game is fully loaded (past title screen).
+    // Shared between the game-polling thread (writer) and handle_client (reader).
+    let game_loaded: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
+
     // Shared state between the game-polling / network threads and the GUI.
     let shared_party: Arc<Mutex<Vec<fire_red_party_monitor::Pokemon>>> =
         Arc::new(Mutex::new(Vec::new()));
-    let shared_encounters: Arc<Mutex<fire_red_pokemon_data::WildPokemonHeader>> = Arc::new(
-        Mutex::new(fire_red_pokemon_data::WildPokemonHeader::default()),
-    );
+    let shared_encounters: Arc<Mutex<fire_red_pokemon_data::WildPokemonHeader>> =
+        Arc::new(Mutex::new(fire_red_pokemon_data::WildPokemonHeader::default()));
 
     // Sprite cache shared across all server clients to avoid re-decoding the ROM.
     let sprite_cache: Arc<Mutex<HashMap<(u16, bool), SpriteData>>> =
@@ -816,12 +763,13 @@ fn main() {
 
     match &mode {
         Mode::Standalone | Mode::Server { .. } => {
-            let thread_party = shared_party.clone();
+            let thread_party      = shared_party.clone();
             let thread_encounters = shared_encounters.clone();
+            let thread_game_loaded = game_loaded.clone();
 
             let main_thread = std::thread::spawn(move || {
                 match start_loop(rom_path.as_str(), is_clean) {
-                    0 => println!("Monitor loop started."),
+                    0    => println!("Monitor loop started."),
                     code => {
                         eprintln!("Failed to start monitor loop (code {}).", code);
                         std::process::exit(1);
@@ -833,9 +781,7 @@ fn main() {
                 println!("Waiting for initial map state...");
                 let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
                 loop {
-                    if map_state_from_ewram().is_some() {
-                        break;
-                    }
+                    if map_state_from_ewram().is_some() { break; }
                     if std::time::Instant::now() > deadline {
                         eprintln!("Warning: map state did not populate within 5 seconds.");
                         break;
@@ -845,10 +791,8 @@ fn main() {
 
                 // Load initial encounters directly from EWRAM, bypassing STATE which
                 // may not have been written by the map-polling thread yet.
-                let initial_state = map_state_from_ewram().unwrap_or(FireRedState {
-                    map_group_id: 0,
-                    map_name_id: 0,
-                });
+                let initial_state = map_state_from_ewram()
+                    .unwrap_or(FireRedState { map_group_id: 0, map_name_id: 0 });
 
                 println!(
                     "Map state ready: group={} name={}",
@@ -858,24 +802,40 @@ fn main() {
                 *thread_encounters.lock().unwrap_or_else(|e| e.into_inner()) =
                     get_area_pokemon_id_for_state(&initial_state);
 
-                let mut current_state = initial_state;
-                let mut old_party_size = get_party_size();
+                let mut current_state      = initial_state;
+                let mut old_party_size     = get_party_size();
                 let mut last_party_refresh = std::time::Instant::now();
                 // Tracks whether STATE has returned a real non-zero value yet.
                 // Until it has, we read from EWRAM directly to avoid the (0,0) default
                 // overwriting the encounters we just loaded.
-                let mut state_initialized = false;
+                let mut state_initialized  = false;
 
                 fill_party_list(&thread_party);
 
                 loop {
+                    // Check whether the game is fully loaded before doing anything else.
+                    // On reset or title screen, clear stale state and wait.
+                    if !game_is_loaded() {
+                        thread_game_loaded.store(false, Ordering::SeqCst);
+                        *thread_encounters.lock().unwrap_or_else(|e| e.into_inner()) =
+                            fire_red_pokemon_data::WildPokemonHeader::default();
+                        *thread_party.lock().unwrap_or_else(|e| e.into_inner()) = Vec::new();
+                        state_initialized = false;
+                        current_state = FireRedState { map_group_id: 0xFF, map_name_id: 0xFF };
+                        std::thread::sleep(std::time::Duration::from_millis(500));
+                        continue;
+                    }
+                    thread_game_loaded.store(true, Ordering::SeqCst);
+
                     // Read map state directly from EWRAM — faster and more reliable than
                     // get_value() which lags by up to ~833ms through two polling intervals.
-                    let state = map_state_from_ewram().unwrap_or(current_state);
+                    let state      = map_state_from_ewram().unwrap_or(current_state);
                     let party_size = get_party_size();
 
                     // Mark as initialized once we see a real non-zero state.
-                    if !state_initialized && (state.map_group_id != 0 || state.map_name_id != 0) {
+                    if !state_initialized
+                        && (state.map_group_id != 0 || state.map_name_id != 0)
+                    {
                         state_initialized = true;
                         current_state = state;
                     }
@@ -906,52 +866,44 @@ fn main() {
             *MAIN_THREAD_HANDLE.lock().unwrap_or_else(|e| e.into_inner()) = Some(main_thread);
 
             if let Mode::Server { port } = &mode {
-                let port = *port;
-                let server_party = shared_party.clone();
+                let port              = *port;
+                let server_party      = shared_party.clone();
                 let server_encounters = shared_encounters.clone();
-                let server_cache = sprite_cache.clone();
+                let server_cache      = sprite_cache.clone();
 
                 let server_thread = std::thread::spawn(move || {
                     let listener = match TcpListener::bind(format!("0.0.0.0:{}", port)) {
-                        Ok(l) => l,
-                        Err(e) => {
-                            eprintln!("Failed to bind port {}: {}", port, e);
-                            return;
-                        }
+                        Ok(l)  => l,
+                        Err(e) => { eprintln!("Failed to bind port {}: {}", port, e); return; }
                     };
                     println!("Server listening on port {}.", port);
 
                     for stream in listener.incoming() {
-                        if !RUNNING.load(Ordering::SeqCst) {
-                            break;
-                        }
+                        if !RUNNING.load(Ordering::SeqCst) { break; }
                         match stream {
                             Ok(s) => {
-                                let party = server_party.clone();
+                                let party      = server_party.clone();
                                 let encounters = server_encounters.clone();
-                                let cache = server_cache.clone();
-                                std::thread::spawn(move || {
-                                    handle_client(s, party, encounters, cache)
-                                });
+                                let cache      = server_cache.clone();
+                                let loaded     = game_loaded.clone();
+                                std::thread::spawn(move || handle_client(s, party, encounters, cache, loaded));
                             }
                             Err(e) => eprintln!("Connection error: {}", e),
                         }
                     }
                 });
 
-                *SERVER_THREAD_HANDLE
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner()) = Some(server_thread);
+                *SERVER_THREAD_HANDLE.lock().unwrap_or_else(|e| e.into_inner()) = Some(server_thread);
             }
         }
 
         Mode::Client { host, port } => {
-            let addr = format!("{}:{}", host, port);
-            let client_party = shared_party.clone();
+            let addr              = format!("{}:{}", host, port);
+            let client_party      = shared_party.clone();
             let client_encounters = shared_encounters.clone();
-            let client_pending = pending_textures.clone();
-            let client_known = known_species.clone();
-            let client_queue = texture_request_queue.clone();
+            let client_pending    = pending_textures.clone();
+            let client_known      = known_species.clone();
+            let client_queue      = texture_request_queue.clone();
 
             let client_thread = std::thread::spawn(move || {
                 loop {
@@ -961,23 +913,19 @@ fn main() {
                             println!("Connected to server.");
 
                             let mut write_stream = match stream.try_clone() {
-                                Ok(s) => s,
-                                Err(e) => {
-                                    eprintln!("Failed to clone stream: {}", e);
-                                    break;
-                                }
+                                Ok(s)  => s,
+                                Err(e) => { eprintln!("Failed to clone stream: {}", e); break; }
                             };
-                            let mut read_stream = stream;
-                            let connected = Arc::new(AtomicBool::new(true));
+                            let mut read_stream  = stream;
+                            let connected        = Arc::new(AtomicBool::new(true));
                             let connected_writer = connected.clone();
-                            let writer_queue = client_queue.clone();
+                            let writer_queue     = client_queue.clone();
 
                             // Writer thread: batches and sends texture requests every 50ms.
                             let writer = std::thread::spawn(move || {
                                 while connected_writer.load(Ordering::SeqCst) {
                                     let batch = {
-                                        let mut q =
-                                            writer_queue.lock().unwrap_or_else(|e| e.into_inner());
+                                        let mut q = writer_queue.lock().unwrap_or_else(|e| e.into_inner());
                                         let mut all: Vec<u16> = q.drain(..).flatten().collect();
                                         all.sort();
                                         all.dedup();
@@ -987,11 +935,7 @@ fn main() {
                                         if send_message(
                                             &mut write_stream,
                                             &ClientMessage::RequestTextures(batch),
-                                        )
-                                        .is_err()
-                                        {
-                                            break;
-                                        }
+                                        ).is_err() { break; }
                                     }
                                     std::thread::sleep(std::time::Duration::from_millis(50));
                                 }
@@ -1003,31 +947,24 @@ fn main() {
                                     Ok(ServerMessage::State(state)) => {
                                         *client_party.lock().unwrap_or_else(|e| e.into_inner()) =
                                             state.party;
-                                        *client_encounters
-                                            .lock()
-                                            .unwrap_or_else(|e| e.into_inner()) = state.encounters;
+                                        *client_encounters.lock().unwrap_or_else(|e| e.into_inner()) =
+                                            state.encounters;
                                     }
                                     Ok(ServerMessage::Textures(sprites)) => {
-                                        let mut pending = client_pending
-                                            .lock()
-                                            .unwrap_or_else(|e| e.into_inner());
-                                        let mut known =
-                                            client_known.lock().unwrap_or_else(|e| e.into_inner());
+                                        let mut pending = client_pending.lock().unwrap_or_else(|e| e.into_inner());
+                                        let mut known   = client_known.lock().unwrap_or_else(|e| e.into_inner());
                                         for sprite in sprites {
                                             known.insert(sprite.species);
                                             pending.push(PendingTexture {
                                                 species: sprite.species,
-                                                shiny: sprite.shiny,
-                                                pixels: decompress_pixels(&sprite.pixels),
-                                                width: sprite.width,
-                                                height: sprite.height,
+                                                shiny:   sprite.shiny,
+                                                pixels:  decompress_pixels(&sprite.pixels),
+                                                width:   sprite.width,
+                                                height:  sprite.height,
                                             });
                                         }
                                     }
-                                    Err(e) => {
-                                        eprintln!("Lost connection: {}", e);
-                                        break;
-                                    }
+                                    Err(e) => { eprintln!("Lost connection: {}", e); break; }
                                 }
                             }
 
@@ -1040,26 +977,18 @@ fn main() {
                 }
             });
 
-            *CLIENT_THREAD_HANDLE
-                .lock()
-                .unwrap_or_else(|e| e.into_inner()) = Some(client_thread);
+            *CLIENT_THREAD_HANDLE.lock().unwrap_or_else(|e| e.into_inner()) = Some(client_thread);
         }
     }
 
     // ── Server mode: headless, park until Ctrl-C ─────────────────────────────
     if let Mode::Server { .. } = &mode {
-        println!(
-            "{}",
-            "***** Server mode — no GUI. Press Ctrl-C to exit. *****"
-                .green()
-                .bold()
-        );
+        println!("{}", "***** Server mode — no GUI. Press Ctrl-C to exit. *****".green().bold());
         ctrlc::set_handler(|| {
             RUNNING.store(false, Ordering::SeqCst);
             println!("\nShutting down...");
             std::process::exit(0);
-        })
-        .expect("Error setting Ctrl-C handler.");
+        }).expect("Error setting Ctrl-C handler.");
         while RUNNING.load(Ordering::SeqCst) {
             std::thread::sleep(std::time::Duration::from_millis(100));
         }
@@ -1068,14 +997,14 @@ fn main() {
 
     // ── GUI (Standalone + Client) ─────────────────────────────────────────────
     let app_title = match &mode {
-        Mode::Standalone => "Tracker".to_string(),
-        Mode::Server { port } => format!("Tracker (Server :{})", port),
+        Mode::Standalone            => "Tracker".to_string(),
+        Mode::Server { port }       => format!("Tracker (Server :{})", port),
         Mode::Client { host, port } => format!("Tracker (Client {}:{})", host, port),
     };
 
     let queue_for_gui = match &mode {
         Mode::Client { .. } => Some(texture_request_queue),
-        _ => None,
+        _                   => None,
     };
 
     let _ = eframe::run_native(
