@@ -75,7 +75,7 @@ const POKEMON_NAME_LENGTH: usize = 10;
 const PLAYER_NAME_LENGTH: usize = 7;
 
 /// Delay between automatic party refreshes.
-const SLEEP_TIMER: std::time::Duration = std::time::Duration::from_millis(1000);
+const SLEEP_TIMER: std::time::Duration = std::time::Duration::from_millis(250);
 
 // ---------------------------------------------------------------------------
 // Substructure ordering
