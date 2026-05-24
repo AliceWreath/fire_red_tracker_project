@@ -534,3 +534,352 @@ pub unsafe extern "C" fn badge_free_string(ptr: *mut c_char) {
     }
     drop(unsafe { CString::from_raw(ptr) });
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+ 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::ffi::CStr;
+ 
+    // ── Helpers ──────────────────────────────────────────────────────────────
+ 
+    /// Constructs a heap-allocated [`BadgeStateFFI`] with the given badge
+    /// flags and optional next-gym info, bypassing `fire_red_memory` so the
+    /// FFI layer can be tested without a live RetroArch connection.
+    fn make_ffi_state(
+        badge_flags: [bool; NUM_BADGES],
+        next_gym: Option<(&str, &str, &str, u8)>,
+    ) -> *mut BadgeStateFFI {
+        let count = badge_flags.iter().filter(|&&b| b).count();
+ 
+        let mut badges = [0u8; NUM_BADGES];
+        for (i, &b) in badge_flags.iter().enumerate() {
+            badges[i] = b as u8;
+        }
+ 
+        let (has_next_gym, next_leader, next_city, next_badge, next_max_level) =
+            match next_gym {
+                Some((leader, city, badge, level)) => (
+                    1,
+                    to_c_string(leader),
+                    to_c_string(city),
+                    to_c_string(badge),
+                    level,
+                ),
+                None => (0, std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut(), 0),
+            };
+ 
+        Box::into_raw(Box::new(BadgeStateFFI {
+            badges,
+            badge_count: count as i32,
+            has_next_gym,
+            next_leader,
+            next_city,
+            next_badge,
+            next_max_level,
+        }))
+    }
+ 
+    /// Reads a `*const c_char` as a `&str`. Panics if null or invalid UTF-8.
+    unsafe fn cstr(ptr: *const c_char) -> &'static str {
+        unsafe { CStr::from_ptr(ptr) }.to_str().expect("invalid UTF-8")
+    }
+ 
+    // ── badge_state_count ─────────────────────────────────────────────────────
+ 
+    #[test]
+    fn test_count_zero_badges() {
+        let ptr = make_ffi_state([false; 8], Some(("Brock", "Pewter City", "Boulder Badge", 14)));
+        assert_eq!(unsafe { badge_state_count(ptr) }, 0);
+        unsafe { badge_state_free(ptr) };
+    }
+ 
+    #[test]
+    fn test_count_three_badges() {
+        let flags = [true, true, true, false, false, false, false, false];
+        let ptr = make_ffi_state(flags, Some(("Erika", "Celadon City", "Rainbow Badge", 29)));
+        assert_eq!(unsafe { badge_state_count(ptr) }, 3);
+        unsafe { badge_state_free(ptr) };
+    }
+ 
+    #[test]
+    fn test_count_all_badges() {
+        let ptr = make_ffi_state([true; 8], None);
+        assert_eq!(unsafe { badge_state_count(ptr) }, 8);
+        unsafe { badge_state_free(ptr) };
+    }
+ 
+    #[test]
+    fn test_count_null_returns_zero() {
+        assert_eq!(unsafe { badge_state_count(std::ptr::null()) }, 0);
+    }
+ 
+    // ── badge_state_get ───────────────────────────────────────────────────────
+ 
+    #[test]
+    fn test_get_individual_badges() {
+        // Only badges 0, 2, 4 obtained.
+        let flags = [true, false, true, false, true, false, false, false];
+        let ptr = make_ffi_state(flags, Some(("Misty", "Cerulean City", "Cascade Badge", 21)));
+ 
+        assert_eq!(unsafe { badge_state_get(ptr, 0) }, 1, "badge 0 should be obtained");
+        assert_eq!(unsafe { badge_state_get(ptr, 1) }, 0, "badge 1 should not be obtained");
+        assert_eq!(unsafe { badge_state_get(ptr, 2) }, 1, "badge 2 should be obtained");
+        assert_eq!(unsafe { badge_state_get(ptr, 3) }, 0, "badge 3 should not be obtained");
+        assert_eq!(unsafe { badge_state_get(ptr, 4) }, 1, "badge 4 should be obtained");
+        assert_eq!(unsafe { badge_state_get(ptr, 5) }, 0, "badge 5 should not be obtained");
+ 
+        unsafe { badge_state_free(ptr) };
+    }
+ 
+    #[test]
+    fn test_get_out_of_range_returns_zero() {
+        let ptr = make_ffi_state([true; 8], None);
+        assert_eq!(unsafe { badge_state_get(ptr, 8) }, 0);
+        assert_eq!(unsafe { badge_state_get(ptr, 999) }, 0);
+        unsafe { badge_state_free(ptr) };
+    }
+ 
+    #[test]
+    fn test_get_null_returns_zero() {
+        assert_eq!(unsafe { badge_state_get(std::ptr::null(), 0) }, 0);
+    }
+ 
+    // ── badge_state_all_obtained ──────────────────────────────────────────────
+ 
+    #[test]
+    fn test_all_obtained_true_when_full() {
+        let ptr = make_ffi_state([true; 8], None);
+        assert_eq!(unsafe { badge_state_all_obtained(ptr) }, 1);
+        unsafe { badge_state_free(ptr) };
+    }
+ 
+    #[test]
+    fn test_all_obtained_false_when_partial() {
+        let flags = [true, true, true, true, true, true, true, false];
+        let ptr = make_ffi_state(flags, Some(("Giovanni", "Viridian City", "Earth Badge", 55)));
+        assert_eq!(unsafe { badge_state_all_obtained(ptr) }, 0);
+        unsafe { badge_state_free(ptr) };
+    }
+ 
+    #[test]
+    fn test_all_obtained_null_returns_zero() {
+        assert_eq!(unsafe { badge_state_all_obtained(std::ptr::null()) }, 0);
+    }
+ 
+    // ── badge_get_name ────────────────────────────────────────────────────────
+ 
+    #[test]
+    fn test_badge_names_all_indices() {
+        let expected = [
+            "Boulder Badge",
+            "Cascade Badge",
+            "Thunder Badge",
+            "Rainbow Badge",
+            "Soul Badge",
+            "Marsh Badge",
+            "Volcano Badge",
+            "Earth Badge",
+        ];
+        for (i, &name) in expected.iter().enumerate() {
+            let ptr = badge_get_name(i);
+            assert!(!ptr.is_null(), "badge_get_name({}) returned null", i);
+            assert_eq!(unsafe { cstr(ptr) }, name, "badge name mismatch at index {}", i);
+            // Static strings must NOT be freed — we just verify the pointer is valid.
+        }
+    }
+ 
+    #[test]
+    fn test_badge_name_out_of_range() {
+        let ptr = badge_get_name(8);
+        assert!(!ptr.is_null());
+        assert_eq!(unsafe { cstr(ptr) }, "Unknown");
+ 
+        let ptr = badge_get_name(usize::MAX);
+        assert!(!ptr.is_null());
+        assert_eq!(unsafe { cstr(ptr) }, "Unknown");
+    }
+ 
+    // ── badge_gym_leader / badge_gym_city ─────────────────────────────────────
+ 
+    #[test]
+    fn test_gym_leader_and_city_with_next_gym() {
+        let ptr = make_ffi_state(
+            [false; 8],
+            Some(("Brock", "Pewter City", "Boulder Badge", 14)),
+        );
+ 
+        let leader = unsafe { badge_gym_leader(ptr) };
+        assert!(!leader.is_null());
+        assert_eq!(unsafe { CStr::from_ptr(leader).to_str().unwrap() }, "Brock");
+        unsafe { badge_free_string(leader) };
+ 
+        let city = unsafe { badge_gym_city(ptr) };
+        assert!(!city.is_null());
+        assert_eq!(unsafe { CStr::from_ptr(city).to_str().unwrap() }, "Pewter City");
+        unsafe { badge_free_string(city) };
+ 
+        unsafe { badge_state_free(ptr) };
+    }
+ 
+    #[test]
+    fn test_gym_leader_null_when_all_badges_obtained() {
+        let ptr = make_ffi_state([true; 8], None);
+        assert!(unsafe { badge_gym_leader(ptr) }.is_null());
+        assert!(unsafe { badge_gym_city(ptr) }.is_null());
+        unsafe { badge_state_free(ptr) };
+    }
+ 
+    #[test]
+    fn test_gym_leader_null_on_null_ptr() {
+        assert!(unsafe { badge_gym_leader(std::ptr::null()) }.is_null());
+        assert!(unsafe { badge_gym_city(std::ptr::null()) }.is_null());
+    }
+ 
+    /// Verify that `badge_gym_leader` returns an independent copy — mutating
+    /// the returned string does not affect the struct's internal pointer.
+    #[test]
+    fn test_gym_leader_returns_independent_copy() {
+        let ptr = make_ffi_state(
+            [false; 8],
+            Some(("Brock", "Pewter City", "Boulder Badge", 14)),
+        );
+ 
+        let copy1 = unsafe { badge_gym_leader(ptr) };
+        let copy2 = unsafe { badge_gym_leader(ptr) };
+ 
+        assert!(!copy1.is_null());
+        assert!(!copy2.is_null());
+        // Two separate heap allocations — different pointers.
+        assert_ne!(copy1, copy2, "expected independent copies, got same pointer");
+ 
+        unsafe { badge_free_string(copy1) };
+        unsafe { badge_free_string(copy2) };
+        unsafe { badge_state_free(ptr) };
+    }
+ 
+    // ── badge_gym_max_level ───────────────────────────────────────────────────
+ 
+    #[test]
+    fn test_max_level_with_next_gym() {
+        let ptr = make_ffi_state(
+            [false; 8],
+            Some(("Brock", "Pewter City", "Boulder Badge", 14)),
+        );
+        assert_eq!(unsafe { badge_gym_max_level(ptr) }, 14);
+        unsafe { badge_state_free(ptr) };
+    }
+ 
+    #[test]
+    fn test_max_level_zero_when_all_obtained() {
+        let ptr = make_ffi_state([true; 8], None);
+        assert_eq!(unsafe { badge_gym_max_level(ptr) }, 0);
+        unsafe { badge_state_free(ptr) };
+    }
+ 
+    #[test]
+    fn test_max_level_null_returns_zero() {
+        assert_eq!(unsafe { badge_gym_max_level(std::ptr::null()) }, 0);
+    }
+ 
+    // ── badge_free_string ─────────────────────────────────────────────────────
+ 
+    #[test]
+    fn test_free_string_null_is_noop() {
+        // Should not panic or crash.
+        unsafe { badge_free_string(std::ptr::null_mut()) };
+    }
+ 
+    #[test]
+    fn test_free_string_valid_pointer() {
+        let ptr = to_c_string("test string");
+        assert!(!ptr.is_null());
+        unsafe { badge_free_string(ptr) };
+        // If we reach here without SIGABRT/SIGSEGV, the free was clean.
+    }
+ 
+    // ── badge_state_free ──────────────────────────────────────────────────────
+ 
+    #[test]
+    fn test_state_free_null_is_noop() {
+        // Should not panic or crash.
+        unsafe { badge_state_free(std::ptr::null_mut()) };
+    }
+ 
+    #[test]
+    fn test_state_free_with_gym_info() {
+        // Ensures all string fields are freed without leaking or double-freeing.
+        let ptr = make_ffi_state(
+            [true, true, false, false, false, false, false, false],
+            Some(("Lt. Surge", "Vermilion City", "Thunder Badge", 24)),
+        );
+        unsafe { badge_state_free(ptr) };
+        // Reaching here without AddressSanitizer complaints means the free was clean.
+    }
+ 
+    #[test]
+    fn test_state_free_no_gym_info() {
+        let ptr = make_ffi_state([true; 8], None);
+        unsafe { badge_state_free(ptr) };
+    }
+ 
+    // ── BadgeState Rust API ───────────────────────────────────────────────────
+ 
+    #[test]
+    fn test_badge_state_count_method() {
+        let state = BadgeState {
+            badges: [true, true, false, false, false, false, false, false],
+            next_gym: None,
+        };
+        assert_eq!(state.count(), 2);
+    }
+ 
+    #[test]
+    fn test_badge_state_all_obtained_method() {
+        let full = BadgeState { badges: [true; 8], next_gym: None };
+        assert!(full.all_obtained());
+ 
+        let partial = BadgeState {
+            badges: [true, true, true, true, true, true, true, false],
+            next_gym: None,
+        };
+        assert!(!partial.all_obtained());
+    }
+ 
+    #[test]
+    fn test_badge_state_default_is_empty() {
+        let state = BadgeState::default();
+        assert_eq!(state.count(), 0);
+        assert!(!state.all_obtained());
+        assert!(state.next_gym.is_none());
+    }
+ 
+    // ── Gym leader table correctness ──────────────────────────────────────────
+ 
+    #[test]
+    fn test_gym_leader_table_order_and_levels() {
+        let leaders = gym_leaders();
+        let expected = [
+            ("Brock",     14u8),
+            ("Misty",     21),
+            ("Lt. Surge", 24),
+            ("Erika",     29),
+            ("Koga",      43),
+            ("Sabrina",   50),
+            ("Blaine",    54),
+            ("Giovanni",  55),
+        ];
+        for (i, (name, level)) in expected.iter().enumerate() {
+            assert_eq!(leaders[i].leader, *name,  "leader mismatch at index {}", i);
+            assert_eq!(leaders[i].max_level, *level, "level mismatch at index {}", i);
+        }
+    }
+ 
+    #[test]
+    fn test_gym_table_has_eight_entries() {
+        assert_eq!(gym_leaders().len(), NUM_BADGES);
+    }
+}
