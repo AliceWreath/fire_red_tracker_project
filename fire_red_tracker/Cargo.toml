@@ -1,5 +1,5 @@
 [package]
-name = "fire_red_monitor"
+name = "fire_red_tracker"
 version = "0.1.0"
 edition = "2024"
 
@@ -17,4 +17,7 @@ fire_red_image_data = { path = "../fire_red_image_data/" }
 fire_red_rom_buffer = { path = "../fire_red_rom_buffer/" }
 fire_red_pokemon_data = { path = "../fire_red_pokemon_data/" }
 fire_red_states = { path = "../fire_red_states/" }
+fire_red_badge = { path = "../fire_red_badge" }
+fire_red_memory = { path = "../fire_red_memory" }
 colored = "3.1.1"
+clap = { version = "4.0", features = ["derive"] }

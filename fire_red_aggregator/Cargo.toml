@@ -18,3 +18,4 @@ bincode = "1"
 serde = { version = "1", features = ["derive"] }
 eframe = "0.27"
 egui = "0.27"
+clap = { version = "4.0", features = ["derive"] }

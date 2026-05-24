@@ -52,6 +52,12 @@ pub struct GameState {
 
     /// Wild encounter table/header data.
     pub encounters: fire_red_pokemon_data::WildPokemonHeader,
+
+    /// Trainer name
+    pub player_name: String,
+
+    /// Current collected badges
+    pub badge_state: Option<fire_red_badge::BadgeState>,
 }
 
 /// Network operating mode for the program.
