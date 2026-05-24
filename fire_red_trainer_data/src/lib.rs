@@ -1,117 +1,160 @@
 //! FireRed Trainer Data
 //!
-//! Gets trainer information that is needed for the codebase
+//! Reads and monitors trainer/player metadata from Pokémon FireRed running in
+//! RetroArch, using the EWRAM snapshot maintained by `fire_red_memory`.
+//!
+//! # Architecture
+//!
+//! Rather than issuing individual UDP reads, this crate slices the relevant
+//! bytes directly out of the EWRAM snapshot. [`update_player_data`] calls
+//! [`fire_red_memory::get_ewram`] to obtain the latest snapshot and parses
+//! [`PlayerData`] from the bytes at [`PLAYER_DATA_ADDR`] — no network I/O.
+//!
+//! The background loop re-reads on a longer interval than the party loop
+//! because trainer data (name, gender, ID, play time) changes infrequently.
 
 mod trainer_data;
 
 use arc_swap::ArcSwap;
-use fire_red_retroarch_interfacing::{generate_command, get_from_retroarch};
+use fire_red_memory;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
-use trainer_data::*;
 
-/// static that holds various player data. Does not completely work yet.
+pub use trainer_data::{PlayerData, PLAYER_DATA_ADDR, PLAYER_DATA_SIZE};
+
+// ---------------------------------------------------------------------------
+// Statics and constants
+// ---------------------------------------------------------------------------
+
+/// Global shared player data state.
+///
+/// Uses [`ArcSwap`] for lock-free reads while the background thread updates.
 static PLAYER_DATA: OnceLock<ArcSwap<PlayerData>> = OnceLock::new();
 
-/// is true while the loop should be running, false will end the loop
+/// Controls the background polling loop.
 static RUNNING: AtomicBool = AtomicBool::new(false);
 
-/// holds how long the monitor loop sleeps in seconds between runs
-const SLEEP_TIMER_IN_SECONDS: u64 = 15;
+/// How long the background thread sleeps between checks.
+///
+/// Trainer data (name, gender, ID, play time) changes infrequently, so a
+/// longer interval is appropriate here than for party or RAM data.
+const SLEEP_TIMER: std::time::Duration = std::time::Duration::from_secs(15);
 
-/// Initializes and/or returns the [`PlayerData`] static
+/// Base address of EWRAM in the GBA address space.
+const EWRAM_BASE: usize = 0x02000000;
+
+// ---------------------------------------------------------------------------
+// Public API
+// ---------------------------------------------------------------------------
+
+/// Initializes and returns the global [`PlayerData`] static.
+///
+/// The initial value is parsed from the current EWRAM snapshot. If the
+/// snapshot is not yet populated, a default (zeroed) [`PlayerData`] is used.
 pub fn initialize_static_trainer_data() -> &'static ArcSwap<PlayerData> {
-    PLAYER_DATA.get_or_init(|| ArcSwap::from_pointee(PlayerData::default()))
+    PLAYER_DATA.get_or_init(|| {
+        let data = read_player_data_from_ewram().unwrap_or_default();
+        ArcSwap::from_pointee(data)
+    })
 }
 
-/// Returns the [`PlayerData`] static
+/// Returns the global [`PlayerData`] static, initializing it if necessary.
 pub fn get_static_trainer_data() -> &'static ArcSwap<PlayerData> {
     initialize_static_trainer_data()
 }
 
-/// starts loop for monitoring changes in player data
+/// Returns the current player data snapshot.
+///
+/// Returns `None` if the static has not yet been initialized.
+pub fn get_player_data() -> Option<Arc<PlayerData>> {
+    PLAYER_DATA.get().map(|arc| arc.load_full())
+}
+
+/// Starts the background trainer data polling loop.
+///
+/// Spawns a thread that checks for changes in [`PlayerData`] every
+/// [`SLEEP_TIMER`]. The store is only updated when the parsed data differs
+/// from the current snapshot, avoiding unnecessary Arc allocations.
+///
+/// Ensure `fire_red_memory::start_loop()` is running before calling this so
+/// the EWRAM snapshot is being kept up to date.
 pub fn start_loop() {
     RUNNING.store(true, Ordering::SeqCst);
-    let _handle = std::thread::spawn(move || {
+    std::thread::spawn(|| {
         while RUNNING.load(Ordering::SeqCst) {
             update_player_data();
-            std::thread::sleep(std::time::Duration::from_secs(SLEEP_TIMER_IN_SECONDS));
+            std::thread::sleep(SLEEP_TIMER);
         }
     });
 }
 
-/// Ends the monitoring loop
+/// Stops the background polling loop.
 pub fn end_loop() {
     RUNNING.store(false, Ordering::SeqCst);
 }
 
-/// Used to check for changes in the player struct
+// ---------------------------------------------------------------------------
+// Internal helpers
+// ---------------------------------------------------------------------------
+
+/// Converts an absolute GBA EWRAM address to a byte offset within the
+/// EWRAM snapshot buffer.
+#[inline]
+fn ewram_offset(addr: usize) -> usize {
+    debug_assert!(addr >= EWRAM_BASE, "address 0x{:08X} is below EWRAM_BASE", addr);
+    addr - EWRAM_BASE
+}
+
+/// Reads and parses [`PlayerData`] from the current EWRAM snapshot.
+///
+/// Returns `None` if the snapshot is too small or the data cannot be parsed.
+fn read_player_data_from_ewram() -> Option<PlayerData> {
+    let ewram = fire_red_memory::get_ewram();
+    let offset = ewram_offset(PLAYER_DATA_ADDR as usize);
+
+    let end = offset + PLAYER_DATA_SIZE;
+    if ewram.len() < end {
+        return None;
+    }
+
+    PlayerData::from_bytes(&ewram[offset..end])
+}
+
+/// Reads the latest [`PlayerData`] from the EWRAM snapshot and stores it if
+/// it differs from the current value.
+///
+/// Skips the store entirely when the data is unchanged to avoid unnecessary
+/// Arc allocations on every poll cycle.
 fn update_player_data() {
-    let mut got_return: bool = false;
-    let mut ret: Option<Vec<String>> = None;
-    while got_return == false {
-        let command = generate_command(PLAYER_DATA_ADDR, 19);
-        ret = get_from_retroarch(command.as_str(), 21);
-        if ret.is_none() {
-            eprintln!("Failed to read player data, retrying...");
-            std::thread::sleep(std::time::Duration::from_millis(100));
-            continue;
-        }
-        got_return = true
-    }
-    let ret = ret.unwrap();
-    let buffer: Vec<&str> = ret.iter().map(|s| s.as_str()).collect();
-    let player = PlayerData::fill_struct(&buffer, 2);
-    if player.is_none() {
+    let Some(player) = read_player_data_from_ewram() else {
+        eprintln!("Failed to parse player data from EWRAM snapshot.");
         return;
-    }
-    let player = player.unwrap();
-    let static_player = get_static_trainer_data().load();
-    if player != **static_player {
+    };
+
+    let current = get_static_trainer_data().load();
+    if player != **current {
         get_static_trainer_data().store(Arc::new(player));
     }
 }
 
-/// Was used to locate a known player name in RAM
-pub fn find_player_name() -> Option<u32> {
-    // Temporary debug: print bytes at the known player name address
-    let debug_addr: u32 = 0x02024000;
-    let command = generate_command(debug_addr, 16);
-    if let Some(parts) = get_from_retroarch(&command, 18) {
-        let bytes: Vec<u8> = parts[2..]
-            .iter()
-            .filter_map(|s| u8::from_str_radix(s, 16).ok())
-            .collect();
-        println!("Bytes at player name addr: {:02X?}", bytes);
-    }
-    dbg!("Start find_player_name()");
-    let needle: &[u8] = &[0xBB, 0xE0, 0xDD, 0xD7, 0xD9]; // "Alice"
-    let ewram_start: u32 = 0x02000000;
-    let ewram_end: u32 = 0x02040000;
-    let chunk_size: usize = 0x800;
+/// Searches the EWRAM snapshot for a known player name byte sequence.
+///
+/// Useful during development to locate the correct address for a player name
+/// when the layout is uncertain. Searches the full EWRAM snapshot in memory
+/// rather than issuing UDP reads.
+///
+/// # Parameters
+///
+/// * `needle` — Raw GBA-encoded bytes of the name to search for.
+///
+/// # Returns
+///
+/// The absolute GBA address of the first match, or `None` if not found.
+pub fn find_player_name(needle: &[u8]) -> Option<u32> {
+    let ewram = fire_red_memory::get_ewram();
 
-    let mut addr = ewram_start;
-    while addr < ewram_end {
-        let scan = format!("{:08X}", &addr);
-        dbg!(scan);
-        let command = generate_command(addr, chunk_size);
-        let expected = chunk_size + 2;
-        if let Some(parts) = get_from_retroarch(&command, expected) {
-            let bytes: Vec<u8> = parts[2..]
-                .iter()
-                .filter_map(|s| u8::from_str_radix(s, 16).ok())
-                .collect();
-            if let Some(offset) = bytes.windows(1).position(|w| w[0] == 0xBB) {
-                let slice = &bytes[offset..std::cmp::min(offset + 8, bytes.len())];
-                if slice.iter().any(|&b| b == 0xFF) {
-                    println!("Candidate at {:08X}: {:02X?}", addr + offset as u32, slice);
-                }
-            }
-            if let Some(offset) = bytes.windows(needle.len()).position(|w| w == needle) {
-                return Some(addr + offset as u32);
-            }
-        }
-        addr += chunk_size as u32;
-    }
-    None
+    ewram
+        .windows(needle.len())
+        .position(|w| w == needle)
+        .map(|offset| EWRAM_BASE as u32 + offset as u32)
 }

@@ -1,0 +1,8 @@
+[package]
+name = "fire_red_memory"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+arc-swap = "1.9.1"
+fire_red_retroarch_interfacing = { path = "../fire_red_retroarch_interfacing" }

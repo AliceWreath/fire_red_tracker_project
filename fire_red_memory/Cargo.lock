@@ -12,10 +12,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "fire_red_get_values"
-version = "0.1.0"
-
-[[package]]
 name = "fire_red_memory"
 version = "0.1.0"
 dependencies = [
@@ -24,40 +20,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "fire_red_pokemon_name_buffer"
-version = "0.1.0"
-
-[[package]]
 name = "fire_red_retroarch_interfacing"
 version = "0.1.0"
 dependencies = [
  "once_cell",
 ]
-
-[[package]]
-name = "fire_red_text"
-version = "0.1.0"
-dependencies = [
- "fire_red_get_values",
- "fire_red_pokemon_name_buffer",
- "libc",
-]
-
-[[package]]
-name = "fire_red_trainer_data"
-version = "0.1.0"
-dependencies = [
- "arc-swap",
- "fire_red_get_values",
- "fire_red_memory",
- "fire_red_text",
-]
-
-[[package]]
-name = "libc"
-version = "0.2.186"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "68ab91017fe16c622486840e4c83c9a37afeff978bd239b5293d61ece587de66"
 
 [[package]]
 name = "once_cell"

@@ -15,3 +15,4 @@ fire_red_get_values = { path = "../fire_red_get_values/" }
 fire_red_retroarch_interfacing = { path = "../fire_red_retroarch_interfacing/" }
 fire_red_text = { path = "../fire_red_text/" }
 fire_red_rom_buffer = { path = "../fire_red_rom_buffer/" }
+fire_red_memory = { path = "../fire_red_memory" }

@@ -1,110 +1,131 @@
 //! # FireRed Box Monitor
-//! 
+//!
 //! Monitors the player's PC box storage and maintains a deduplicated, in-memory
 //! cache of every [`BoxPokemon`] seen across all 14 boxes.
-//! 
-//! ## Memory layout
-//! 
-//! FireRed stores PC box data in a structure called `gPokemonStorage` in WRAM.
-//! Each slot is [`SLOT_SIZE`] (0x50) bytes laid out as:
-//! 
+//!
+//! # Memory layout
+//!
+//! FireRed stores PC box data in `gPokemonStorage` in EWRAM. The base address
+//! is not fixed — it must be resolved at runtime by dereferencing the
+//! `SaveBlock3` pointer stored in IWRAM at [`SAVE_BLOCK_3_PTR`] and adding
+//! [`BOX_DATA_OFFSET`].
+//!
+//! Each slot is [`SLOT_SIZE`] (0x50) bytes:
+//!
 //! ```text
 //! slot address = box_0_base + (box * NUMBER_SLOTS + slot) * SLOT_SIZE
 //! ```
-//! 
-//! The base address of box 0 is **not** fixed - it is found at runtime by
-//! dereferncing the `SaveBlock3` pointer at [`SAVE_BLOCK_3_PTR`] and adding
-//! [`BOX_DATA_OFFSET`]. This indirection is necessary becasue the storage
-//! address can shift between saves.
-//! 
-//! ## Background thread
-//! 
+//!
+//! # Background thread
+//!
 //! [`start_loop`] spawns a thread that calls [`update_box_list`] every
-//! [`SLEEP_TIMER_IN_SECS`] seconds. The thread wraps each update in
-//! [`std::panic::catch_unwind`] so a single bad memory read cannot bring down
-//! the whole process. Call [`end_loop`] to stop it.
-//! 
-//! ## Deduplication
-//! 
+//! [`SLEEP_TIMER`] seconds. Each call is wrapped in
+//! [`std::panic::catch_unwind`] so a single bad read cannot crash the process.
+//! Call [`end_loop`] to stop it.
+//!
+//! # Deduplication
+//!
 //! [`PokemonStorage`] tracks both a `Vec` of entries and a `HashSet` of seen
-//! species IDs. [`check_for_new_entry`] uses the set as a fast guard so that a 
-//! species already observed in the box is not added a second time. This means
-//! the storage list reflects *unique species*, not every individual pokemon.
-
-// Each PC slot is 80 bytes (0x50)
-// there are 14 boxes x 30 slots
-// starting at gPokemonStorage in WRAM
-// slot address = POKEMON_STORAGE_ADDR + ((box * 30 + slot) * 0x50);
+//! species IDs. [`check_for_new_entry`] uses the set as a fast guard so a
+//! species already in the cache is never added twice. The cache therefore
+//! reflects *unique species*, not every individual pokemon.
 
 use fire_red_party_monitor::BoxPokemon;
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 
-/// GBA addresss of the `SaveBlock3` pointer in IWAM
-/// 
-/// Dereferencing this 4-byte little-endian pointer yields the base address of
-/// the `gPokemonStorage` struct in EWRAM. The base address itself can shift
-/// between saves, so this indirection must be followed at runtime.
-static SAVE_BLOCK_3_PTR: usize = 0x03005010;
+// ---------------------------------------------------------------------------
+// Address constants
+// ---------------------------------------------------------------------------
 
-/// Byte offset from teh `SaveBlock3` base address to the start of box slot data.
-/// 
-/// Added to the dereferenced `SaveBlock3` pointer to get the address of box 0,
-/// slot 0.
-static BOX_DATA_OFFSET: usize = 0x4;
+/// Base address of IWRAM in the GBA address space.
+const IWRAM_BASE: usize = 0x03000000;
 
-/// Size of one PC box slot in bytes.
-/// 
-/// Each `BoxPokemon` occupies exactly 80 (0x50) bytes in memory.
-static SLOT_SIZE: usize = 0x50;
+/// Base address of EWRAM in the GBA address space.
+const EWRAM_BASE: usize = 0x02000000;
 
-/// Total number of PC boxews in FireRed's storage system.
-static NUMBER_BOXES: usize = 14;
+/// IWRAM address of the `SaveBlock3` pointer.
+///
+/// Dereferencing this 4-byte little-endian value yields the runtime base
+/// address of `gPokemonStorage` in EWRAM.
+const SAVE_BLOCK_3_PTR: usize = 0x03005010;
 
-/// Number of pokemon slots per PC box.
-static NUMBER_SLOTS: usize = 30;
+/// Byte offset from the `SaveBlock3` base to box 0, slot 0.
+const BOX_DATA_OFFSET: usize = 0x4;
+
+/// Size in bytes of one PC box slot (`BoxPokemon` on-disk format).
+const SLOT_SIZE: usize = 0x50;
+
+/// Total number of PC boxes in FireRed.
+const NUMBER_BOXES: usize = 14;
+
+/// Number of pokemon slots per box.
+const NUMBER_SLOTS: usize = 30;
+
+/// Total number of slots across all boxes.
+const TOTAL_SLOTS: usize = NUMBER_BOXES * NUMBER_SLOTS;
+
+/// Total bytes occupied by all box slot data.
+const TOTAL_BOX_BYTES: usize = TOTAL_SLOTS * SLOT_SIZE;
 
 // ---------------------------------------------------------------------------
 // Global state
 // ---------------------------------------------------------------------------
 
-/// The in-memory cache of all PC box pokemon, populated by the background thread.
-/// Initialized lazily on first access.
+/// In-memory cache of all PC box pokemon, populated by the background thread.
 static POKEMON_STORAGE_LIST: OnceLock<Mutex<PokemonStorage>> = OnceLock::new();
 
-/// How often the background thead refreshes the box cache, in seconds.
-static SLEEP_TIMER_IN_SECS: u64 = 5;
+/// How often the background thread refreshes the box cache.
+const SLEEP_TIMER: std::time::Duration = std::time::Duration::from_secs(5);
 
-/// Set to `true` while the background thread should keep running.
-/// Flipped to `false` by [`end_loop`]
+/// `true` while the background thread should keep running.
 static RUNNING: AtomicBool = AtomicBool::new(false);
 
-/// Handle to the background polling thread, stored so [`end_loop`] can join it.
+/// Handle to the background polling thread so [`end_loop`] can join it.
 static THREAD_HANDLE: Mutex<Option<std::thread::JoinHandle<()>>> = Mutex::new(None);
+
+// ---------------------------------------------------------------------------
+// Offset helpers
+// ---------------------------------------------------------------------------
+
+/// Converts an absolute GBA IWRAM address to a byte offset within the IWRAM
+/// snapshot buffer.
+#[inline]
+fn iwram_offset(addr: usize) -> usize {
+    debug_assert!(addr >= IWRAM_BASE, "address 0x{:08X} is below IWRAM_BASE", addr);
+    addr - IWRAM_BASE
+}
+
+/// Converts an absolute GBA EWRAM address to a byte offset within the EWRAM
+/// snapshot buffer.
+#[inline]
+fn ewram_offset(addr: usize) -> usize {
+    debug_assert!(addr >= EWRAM_BASE, "address 0x{:08X} is below EWRAM_BASE", addr);
+    addr - EWRAM_BASE
+}
 
 // ---------------------------------------------------------------------------
 // Thread lifecycle
 // ---------------------------------------------------------------------------
 
 /// Starts the background box-monitoring thread.
-/// 
-/// The thread calls [`update_box_list`] every [`SLEEP_TIMER_IN_SECS`] seconds.
-/// Each cell is wrapped in [`std::panic::catch_unwind`] so a panicking read
-/// does not propogate and crash the process.
-/// 
-/// Calling this while the loop is already running will spawn a second thread;
-/// callers should ensure it is only called once.
+///
+/// The thread calls [`update_box_list`] every [`SLEEP_TIMER`]. Each call is
+/// wrapped in [`std::panic::catch_unwind`] so a panicking read does not
+/// propagate and crash the process.
+///
+/// Calling this while a loop is already running will spawn a second thread;
+/// ensure it is only called once.
 pub fn start_loop() {
     RUNNING.store(true, Ordering::SeqCst);
 
     let handle = std::thread::spawn(move || {
         while RUNNING.load(Ordering::SeqCst) {
-            let result = std::panic::catch_unwind(|| update_box_list());
-            if let Err(_) = result {
-                eprintln!("Panic occurred while updating box list");
+            if let Err(_) = std::panic::catch_unwind(|| update_box_list()) {
+                eprintln!("Panic occurred while updating box list.");
             }
-            std::thread::sleep(std::time::Duration::from_secs(SLEEP_TIMER_IN_SECS));
+            std::thread::sleep(SLEEP_TIMER);
         }
     });
 
@@ -112,15 +133,14 @@ pub fn start_loop() {
 }
 
 /// Signals the background thread to stop and blocks until it exits.
-/// 
-/// If the thread has already exited or was never started, this is a no-op
+///
+/// If the thread has already exited or was never started, this is a no-op.
 pub fn end_loop() {
     RUNNING.store(false, Ordering::SeqCst);
-
     let mut handle_slot = THREAD_HANDLE.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(handle) = handle_slot.take() {
         if let Err(e) = handle.join() {
-            eprintln!("Error joining thread: {:?}", e);
+            eprintln!("Error joining box monitor thread: {:?}", e);
         }
     }
 }
@@ -130,24 +150,23 @@ pub fn end_loop() {
 // ---------------------------------------------------------------------------
 
 /// In-memory cache of PC box pokemon.
-/// 
-/// Maintains two parallel data structures for 0(1) duplicate detections:
-/// - `entries`         - the full list of unique [`BoxPokemon`] records.
-/// - `species_set`     - the set of speciese IDs already present in `entries`
-/// 
-/// Both must be kept in sync; use [`check_for_new_entry`] and [`sync_storage`]
-/// rather than mutating the fields directly.
+///
+/// Maintains two parallel structures for O(1) duplicate detection:
+/// - `entries`     — the full list of unique [`BoxPokemon`] records.
+/// - `species_set` — species IDs already present in `entries`.
+///
+/// Mutate only via [`check_for_new_entry`] and [`sync_storage`].
 #[derive(Debug)]
 pub struct PokemonStorage {
-    /// All unique box pokemon observed since the last full sync
-    entries: Vec<BoxPokemon>,
+    /// All unique box pokemon observed since the last full sync.
+    pub entries: Vec<BoxPokemon>,
     /// Species IDs present in `entries`, used as a fast existence check.
-    species_set: HashSet<u16>,
+    pub species_set: HashSet<u16>,
 }
 
 impl PokemonStorage {
     /// Returns a reference to the global [`PokemonStorage`] mutex, initializing
-    /// it with empty collections of first call.
+    /// it with empty collections on first call.
     pub fn get_storage_list() -> &'static Mutex<PokemonStorage> {
         POKEMON_STORAGE_LIST.get_or_init(|| {
             Mutex::new(PokemonStorage {
@@ -159,50 +178,58 @@ impl PokemonStorage {
 }
 
 // ---------------------------------------------------------------------------
-// RAM address resolution
+// Address resolution
 // ---------------------------------------------------------------------------
 
-/// Resolves the runtime address of box 0, slot 0 in EWRAM.
-/// 
-/// Follows the `SaveBlock3` pointer indirection:
-/// 1. Reads 4 bytes from [`SAVE_BLOCK_3_PTR`] to obtain the `SaveBlock3` base address.
-/// 2. Adds [`BOX_DATA_OFFSET`] to get the first box slot address.
-/// 
-/// Retries up to 20 times on failed RetroArch reads before giving up.
-/// 
+/// Resolves the EWRAM byte offset of box 0, slot 0 from the current snapshots.
+///
+/// Reads the `SaveBlock3` pointer from the IWRAM snapshot, validates that it
+/// points into EWRAM, and returns the corresponding EWRAM byte offset after
+/// adding [`BOX_DATA_OFFSET`].
+///
 /// # Returns
-/// The GBA address of box 0, slot 0, or `None` if the address could not be 
-/// resolved after all retries.
-fn get_box_0_ram_location() -> Option<u32> {
-    let max_retries: usize = 20;
-    let mut retries = 0;
-    let command = fire_red_retroarch_interfacing::generate_command((SAVE_BLOCK_3_PTR) as u32, 4);
-    while retries < max_retries {
-        match fire_red_retroarch_interfacing::get_from_retroarch(command.as_str(), 6) {
-            Some(res) => {
-                let bytes: Vec<u8> = res
-                    .iter()
-                    .skip(2)
-                    .filter_map(|s| u8::from_str_radix(s.trim(), 16).ok())
-                    .collect();
-                if bytes.len() >= 4 {
-                    return Some(
-                        u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])
-                            + BOX_DATA_OFFSET as u32,
-                    );
-                }
-            }
-            None => {
-                retries += 1;
-            }
-        }
+///
+/// `None` if the IWRAM snapshot is too small, the pointer is zero, or the
+/// resolved address falls outside EWRAM.
+fn get_box_0_ewram_offset() -> Option<usize> {
+    let iwram = fire_red_memory::get_iwram();
+    let ptr_offset = iwram_offset(SAVE_BLOCK_3_PTR);
+
+    if iwram.len() < ptr_offset + 4 {
+        return None;
     }
-    None
+
+    let save_block_3_base = u32::from_le_bytes([
+        iwram[ptr_offset],
+        iwram[ptr_offset + 1],
+        iwram[ptr_offset + 2],
+        iwram[ptr_offset + 3],
+    ]) as usize;
+
+    if save_block_3_base < EWRAM_BASE {
+        eprintln!(
+            "SaveBlock3 pointer 0x{:08X} is outside EWRAM — snapshot may not be ready.",
+            save_block_3_base
+        );
+        return None;
+    }
+
+    let box_0_addr = save_block_3_base + BOX_DATA_OFFSET;
+    if box_0_addr < EWRAM_BASE {
+        return None;
+    }
+
+    Some(ewram_offset(box_0_addr))
 }
 
 // ---------------------------------------------------------------------------
 // Storage accessors
 // ---------------------------------------------------------------------------
+
+/// Returns a reference to the global [`PokemonStorage`] mutex.
+pub fn get_storage_list() -> &'static Mutex<PokemonStorage> {
+    PokemonStorage::get_storage_list()
+}
 
 /// Returns a cloned snapshot of all unique box pokemon currently in the cache.
 pub fn get_storage_entries() -> Vec<BoxPokemon> {
@@ -213,7 +240,7 @@ pub fn get_storage_entries() -> Vec<BoxPokemon> {
         .clone()
 }
 
-/// Returns a cloned snapshot of the set of species IDs currently in the cache.
+/// Returns a cloned snapshot of the species ID set currently in the cache.
 pub fn get_storage_species_set() -> HashSet<u16> {
     PokemonStorage::get_storage_list()
         .lock()
@@ -222,35 +249,18 @@ pub fn get_storage_species_set() -> HashSet<u16> {
         .clone()
 }
 
-/// Returns a reference to the global [`PokemonStorage`] mutex
-/// 
-/// Equivalent to [`PokemonStorage::get_storage_list`]; provided as a free
-/// function for call-site convenience.
-pub fn get_storage_list() -> &'static Mutex<PokemonStorage> {
-    POKEMON_STORAGE_LIST.get_or_init(|| {
-        Mutex::new(PokemonStorage {
-            entries: Vec::new(),
-            species_set: HashSet::new(),
-        })
-    })
-}
-
 // ---------------------------------------------------------------------------
 // Cache mutation
 // ---------------------------------------------------------------------------
 
-/// Adds `entry` to the storage cache if its species has not been seen before.
-/// 
-/// Species 0 is the empty-slot sentinel and is always ignored. If the species
-/// is already in `species_set`, the entry is silently skipped.
-/// 
-/// # Returns
-/// `Some(())` if the entry was inserted, `None` if it was skipped.
+/// Adds `entry` to the cache if its species has not been seen before.
+///
+/// Species 0 is the empty-slot sentinel and is always ignored. Returns
+/// `Some(())` if inserted, `None` if skipped.
 pub fn check_for_new_entry(entry: &BoxPokemon) -> Option<()> {
     if entry.secure.growth.species == 0 {
         return None;
     }
-
     let mut storage = PokemonStorage::get_storage_list()
         .lock()
         .unwrap_or_else(|e| e.into_inner());
@@ -265,29 +275,27 @@ pub fn check_for_new_entry(entry: &BoxPokemon) -> Option<()> {
 }
 
 /// Reconciles the in-memory cache against a freshly read list of box pokemon.
-/// 
-/// - If `list` is **empty**, the cache is fully cleared (entires and species set).
-/// - Otherwise, any cached entry whose species is no longer present in `list`
-///     is removed, and `species_set` is rebuilt to match.
-/// 
-/// This handles the case where a pokemon is released or moved out of the box
-/// between refreshes
-/// 
+///
+/// - If `list` is **empty**, the cache is fully cleared.
+/// - Otherwise, entries whose species no longer appear in `list` are removed
+///   and `species_set` is rebuilt to match.
+///
 /// # Returns
-/// The signed difference in cache size after the sync (negative = removals),
+///
+/// The signed difference in cache size after the sync (negative = removals,
 /// positive = additions, zero = no change).
 pub fn sync_storage(list: &[BoxPokemon]) -> isize {
     let mut storage = PokemonStorage::get_storage_list()
         .lock()
         .unwrap_or_else(|e| e.into_inner());
-    let initial_size: isize = storage.species_set.len() as isize;
+    let initial_size = storage.species_set.len() as isize;
 
     if list.is_empty() {
-        storage.entries = Vec::new();
-        storage.species_set = HashSet::new();
+        storage.entries.clear();
+        storage.species_set.clear();
     } else {
-        let current_species: HashSet<u16> = list.iter().map(|i| i.secure.growth.species).collect();
-
+        let current_species: HashSet<u16> =
+            list.iter().map(|p| p.secure.growth.species).collect();
         storage
             .entries
             .retain(|p| current_species.contains(&p.secure.growth.species));
@@ -297,186 +305,119 @@ pub fn sync_storage(list: &[BoxPokemon]) -> isize {
             .map(|p| p.secure.growth.species)
             .collect();
     }
+
     storage.species_set.len() as isize - initial_size
 }
 
 // ---------------------------------------------------------------------------
-// RAM reading
+// Snapshot reading
 // ---------------------------------------------------------------------------
 
-/// Reads all box slots from EWRAM and returns a `Vec` of non-empty [`BoxPokemon`]
-/// 
-/// Reads teh full box storage region (`NUMBER_BOXES x NUMBER_SLOTS x SLOT_SIZE`
-/// bytes) in chunks of 5 boxes at a time to stay within RetroArch's practical
-/// response sice limits. Each chunk is parsed slot-by-slot using
-/// [`BoxPokemon::fill_struct_from_bytes`]; slots with zero chucksum (i.e empty
-/// slots) are discarded.
-/// 
-/// ## Error handling
-/// - If the box 0 address cannot be resolved, returns an empty `Vec`.
-/// - Failed chunk reads are retried; after 5 consecutive failures the funtion
-///   aborts early and returns whatever has been collected so far (or empty).
-/// - Malformed or short responses are skipped without counting as a failure.
+/// Reads all box slots from the current EWRAM snapshot and returns a `Vec` of
+/// non-empty [`BoxPokemon`].
+///
+/// Resolves the box 0 offset from the IWRAM snapshot, then slices the full
+/// `TOTAL_BOX_BYTES` region from the EWRAM snapshot and parses each
+/// [`SLOT_SIZE`]-byte slot. Slots whose checksum is zero (empty slots) or
+/// whose `get_bytes` returns `None` (bad checksum) are discarded.
+///
+/// Returns an empty `Vec` if the box address cannot be resolved or the EWRAM
+/// snapshot is too small to contain the full storage region.
 pub fn get_box_entries_from_ram() -> Vec<BoxPokemon> {
-    use fire_red_retroarch_interfacing::*;
+    let ewram = fire_red_memory::get_ewram();
+    let rom = fire_red_rom_buffer::get_rom();
 
-    let mut list: Vec<BoxPokemon> = Vec::new();
-
-    let chunk_size = 5 * NUMBER_SLOTS * SLOT_SIZE;
-    let full_size = NUMBER_BOXES * NUMBER_SLOTS * SLOT_SIZE;
-
-    let box_0_location = match get_box_0_ram_location() {
-        Some(loc) => loc,
+    let box_0_offset = match get_box_0_ewram_offset() {
+        Some(offset) => offset,
         None => {
-            println!("Unable to determine box data location in RAM.");
-            return list; // Return empty list if we can't get the location
+            eprintln!("Unable to determine box data location in EWRAM snapshot.");
+            return Vec::new();
         }
     };
 
-    let mut retries = 0;
-    for chunk_start in (0..full_size).step_by(chunk_size) {
-        let this_chunk_bytes = (full_size - chunk_start).min(chunk_size);
-
-        let command = generate_command(
-            box_0_location.saturating_add(chunk_start as u32),
-            this_chunk_bytes,
+    let end_offset = box_0_offset + TOTAL_BOX_BYTES;
+    if ewram.len() < end_offset {
+        eprintln!(
+            "EWRAM snapshot too small for full box data: have {} bytes, need {} at offset 0x{:X}.",
+            ewram.len(),
+            TOTAL_BOX_BYTES,
+            box_0_offset,
         );
-        let ret = get_from_retroarch(command.as_str(), this_chunk_bytes + 2);
-        if ret.is_none() {
-            println!(
-                "Failed to read box data chunk starting at offset 0x{:X}",
-                chunk_start
-            );
-            retries += 1;
-            if retries >= 5 {
-                println!("Too many consecutive failures reading box data, aborting.");
-                return Vec::new();
+        return Vec::new();
+    }
+
+    let box_data = &ewram[box_0_offset..end_offset];
+    let mut list = Vec::new();
+
+    for slot in 0..TOTAL_SLOTS {
+        let slot_offset = slot * SLOT_SIZE;
+        let slot_bytes = &box_data[slot_offset..slot_offset + SLOT_SIZE];
+
+        if let Some(mon) = BoxPokemon::from_bytes(slot_bytes, rom) {
+            if mon.checksum != 0 {
+                list.push(mon);
             }
-            continue;
-        }
-        let ret = ret.unwrap();
-        let data: Vec<&str> = ret.iter().map(|s| s.as_str()).collect();
-
-        // guard against malformed responses
-        if data.len() < 3 {
-            continue;
-        }
-
-        let bytes: Vec<u8> = data
-            .iter()
-            .skip(2)
-            .filter_map(|s| u8::from_str_radix(s.trim(), 16).ok())
-            .collect();
-
-        // guard against incomplete chunks
-        if bytes.len() < SLOT_SIZE {
-            continue;
-        }
-
-        for current_offset in (0..bytes.len()).step_by(SLOT_SIZE) {
-            if current_offset + SLOT_SIZE > bytes.len() {
-                break; // use break instead of panic
-            }
-
-            let res = BoxPokemon::fill_struct_from_bytes(
-                &bytes,
-                current_offset,
-                fire_red_rom_buffer::get_rom(),
-            );
-            match res {
-                Some(mon) => {
-                    if mon.checksum != 0 {
-                        list.push(mon);
-                    }
-                }
-                None => continue,
-            };
         }
     }
 
     list
 }
 
-/// Performs a full refresh of the box cache.
-/// 
-/// 1. Reads all box slots from RAM with [`get_box_entries_from_ram`]
-/// 2. Reconciles the cache against the live data with [`sync_storage`] to
-///    remove any stale entries.
-/// 3. Reads RAM a second time and calls [`check_for_new_entry`] for each slot
-///    to add any newly discovered species.
-/// 
-/// The double-read guards against race conditions where a pokemon appears
-/// between teh sync and the new-entry check.
-/// 
+/// Performs a full refresh of the box cache from the current EWRAM snapshot.
+///
+/// 1. Reads all box slots from the snapshot with [`get_box_entries_from_ram`].
+/// 2. Reconciles the cache with [`sync_storage`] to remove stale entries.
+/// 3. Reads the snapshot a second time and calls [`check_for_new_entry`] for
+///    each slot to add any newly discovered species.
+///
+/// The double-read guards against races where a pokemon appears in the snapshot
+/// between the sync and the new-entry check.
+///
 /// # Returns
-/// `true` if at least one new species was added to the cache, `false` otherwise
+///
+/// `true` if at least one new species was added to the cache.
 pub fn update_box_list() -> bool {
     let list = get_box_entries_from_ram();
     sync_storage(&list);
 
-    let mut change_occured = false;
     let list = get_box_entries_from_ram();
+    let mut changed = false;
     for entry in list {
-        let result = check_for_new_entry(&entry);
-        if result.is_some() {
-            change_occured = true;
+        if check_for_new_entry(&entry).is_some() {
+            changed = true;
         }
     }
-    change_occured
+    changed
 }
 
 // ---------------------------------------------------------------------------
-// Diagnostic / debugging utilities
+// Diagnostic utilities
 // ---------------------------------------------------------------------------
 
-/// Scans all of EWRAM for a pokmeon with the given personality value.
-/// 
-/// Reads EWRAM (0x02000000-0x02040000) in 16 KB chunks and reports the absolute
-/// GBA address of every 4-byte window that matches the little-endian encoding 
-/// of `known_personality`. Useful for debugging when the expected box-slot
-/// address is unknown or the storage layout has changed.
-/// 
-/// Results are printed to stdout; this function is intended as a diagnostic
-/// tool and is not called during normal operations.
-/// 
+/// Scans the EWRAM snapshot for a pokemon with the given personality value.
+///
+/// Reports the absolute GBA address of every 4-byte window that matches the
+/// little-endian encoding of `known_personality`. Useful for locating a
+/// pokemon when the expected box-slot address is unknown or the storage layout
+/// has changed.
+///
+/// Results are printed to stdout. This function is intended as a diagnostic
+/// tool and is not called during normal operation.
+///
 /// # Arguments
-/// * `known_personality` - The 32-bit personality value (PID) to search for.
+///
+/// * `known_personality` — The 32-bit personality value (PID) to search for.
 pub fn scan_for_pokemon(known_personality: u32) {
-    use fire_red_retroarch_interfacing::*;
-
-    // Scan all of EWRAM: 0x02000000 to 0x02040000
-    // Do it in 16KB chunks to avoid huge requests
-    let ewram_start = 0x02000000u32;
-    let ewram_size = 0x00040000usize;
-    let chunk = 0x4000usize;
-
-    println!(
-        "Scanning EWRAM for personality {:08X}...",
-        known_personality
-    );
+    let ewram = fire_red_memory::get_ewram();
     let target = known_personality.to_le_bytes();
 
-    for offset in (0..ewram_size).step_by(chunk) {
-        let addr = ewram_start + offset as u32;
-        let command = generate_command(addr, chunk);
-        let ret = get_from_retroarch(command.as_str(), chunk + 2);
-        if ret.is_none() {
-            println!("Failed to read EWRAM chunk starting at offset 0x{:X}", addr);
-            continue;
-        }
-        let ret = ret.unwrap();
-        let data: Vec<&str> = ret.iter().map(|s| s.as_str()).collect();
-        let bytes: Vec<u8> = data
-            .iter()
-            .skip(2)
-            .filter_map(|s| u8::from_str_radix(s.trim(), 16).ok())
-            .collect();
+    println!("Scanning EWRAM snapshot for personality 0x{:08X}...", known_personality);
 
-        for (i, window) in bytes.windows(4).enumerate() {
-            if window == target {
-                println!("HIT at absolute 0x{:08X}", addr.saturating_add(i as u32));
-            }
+    for (offset, window) in ewram.windows(4).enumerate() {
+        if window == target {
+            println!("HIT at 0x{:08X}", EWRAM_BASE + offset);
         }
     }
+
     println!("Scan complete.");
 }

@@ -25,8 +25,8 @@ name = "fire_red_box_monitor"
 version = "0.1.0"
 dependencies = [
  "fire_red_get_values",
+ "fire_red_memory",
  "fire_red_party_monitor",
- "fire_red_retroarch_interfacing",
  "fire_red_rom_buffer",
  "fire_red_text",
 ]
@@ -36,12 +36,21 @@ name = "fire_red_get_values"
 version = "0.1.0"
 
 [[package]]
+name = "fire_red_memory"
+version = "0.1.0"
+dependencies = [
+ "arc-swap",
+ "fire_red_retroarch_interfacing",
+]
+
+[[package]]
 name = "fire_red_party_monitor"
 version = "0.1.0"
 dependencies = [
  "arc-swap",
  "bincode",
  "fire_red_get_values",
+ "fire_red_memory",
  "fire_red_retroarch_interfacing",
  "fire_red_rom_buffer",
  "fire_red_text",
