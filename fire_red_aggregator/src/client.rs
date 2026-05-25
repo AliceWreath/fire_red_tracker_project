@@ -190,8 +190,8 @@ pub fn spawn_client(
                                 all
                             };
 
-                            if !batch.is_empty() {
-                                if send_message(
+                            if !batch.is_empty()
+                                && send_message(
                                     &mut write_stream,
                                     &ClientMessage::RequestTextures(batch),
                                 )
@@ -199,7 +199,6 @@ pub fn spawn_client(
                                 {
                                     break;
                                 }
-                            }
 
                             std::thread::sleep(Duration::from_millis(50));
                         }
