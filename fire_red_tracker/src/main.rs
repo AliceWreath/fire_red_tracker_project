@@ -42,7 +42,7 @@ use cli::{Cli, Command};
 use colored::Colorize;
 use fire_red_loop::*;
 use fire_red_states::*;
-use game::{fill_party_list, game_is_loaded, map_state_from_ewram};
+use game::{check_for_dead_pokemon, check_for_new_pokemon, fill_party_list, game_is_loaded, map_state_from_ewram};
 use gui::{WindowInfo, PARTY_WINDOW};
 use server::handle_client;
 use textures::{PendingTexture, decompress_pixels};
@@ -82,6 +82,51 @@ fn main() {
         Some(Command::Client { host, port }) => Mode::Client { host, port },
         None                                 => Mode::Standalone,
     };
+
+    fire_red_database::initialize(&cli.db);
+
+    // --list-runs: print stored runs and exit without starting the tracker.
+    if cli.list_runs {
+        let runs = fire_red_database::list_runs();
+        if runs.is_empty() {
+            println!("No runs found.");
+        } else {
+            let active = fire_red_database::active_run_id();
+            println!("{:<5} {:<12} {:<26} {}", "ID", "Player", "Started", "Deaths");
+            println!("{}", "-".repeat(60));
+            for (id, name, started_at, dead_count) in &runs {
+                let marker = if active == Some(*id) { " <active>" } else { "" };
+                println!(
+                    "{:<5} {:<12} {:<26} {}{}",
+                    id, name,
+                    fire_red_database::format_timestamp(*started_at),
+                    dead_count,
+                    marker,
+                );
+            }
+        }
+        return;
+    }
+
+    // Initialize the nuzlocke run before the game thread starts so that
+    // is_dead() / mark_dead() always have a valid active run ID.
+    match (cli.run_id, cli.new_run) {
+        (Some(id), _) => {
+            if !fire_red_database::resume_run(id) {
+                eprintln!("Error: run #{} not found. Use --list-runs to see available runs.", id);
+                std::process::exit(1);
+            }
+            println!("Resuming run #{}.", id);
+        }
+        (None, true) => {
+            let id = fire_red_database::new_run("Unknown");
+            println!("Started new run #{}.", id);
+        }
+        (None, false) => {
+            let id = fire_red_database::get_or_create_run("Unknown");
+            println!("Using run #{}.", id);
+        }
+    }
 
     let is_clean = cli.clean;
 
@@ -166,8 +211,11 @@ fn main() {
                 let mut old_party_size     = get_party_size();
                 let mut last_party_refresh = std::time::Instant::now();
                 let mut state_initialized  = false;
+                let mut player_name_set    = false;
 
                 fill_party_list(&thread_party);
+                check_for_new_pokemon(&thread_party);
+                check_for_dead_pokemon(&thread_party);
 
                 loop {
                     // Check whether the game is fully loaded before doing anything else.
@@ -178,27 +226,40 @@ fn main() {
                             fire_red_pokemon_data::WildPokemonHeader::default();
                         *thread_party.lock().unwrap_or_else(|e| e.into_inner()) = Vec::new();
                         state_initialized = false;
+                        player_name_set   = false;
                         current_state = FireRedState { map_group_id: 0xFF, map_name_id: 0xFF };
                         std::thread::sleep(std::time::Duration::from_millis(500));
                         continue;
                     }
                     thread_game_loaded.store(true, Ordering::SeqCst);
 
+                    // Capture the player name once the game is confirmed loaded.
+                    if !player_name_set {
+                        let name = get_trainer_name();
+                        if !name.trim().is_empty() {
+                            fire_red_database::set_player_name(&name);
+                            player_name_set = true;
+                        }
+                    }
+
                     // Read map state directly from EWRAM — faster and more reliable than
                     // get_value() which lags by up to ~833ms through two polling intervals.
                     let state      = map_state_from_ewram().unwrap_or(current_state);
                     let party_size = get_party_size();
 
-                    // Mark as initialized once we see a real non-zero state.
+                    // Mark as initialized once we see a real non-zero state, and
+                    // immediately populate encounters for the current map so the
+                    // window is not empty on first load or after a reconnect.
                     if !state_initialized
                         && (state.map_group_id != 0 || state.map_name_id != 0)
                     {
                         state_initialized = true;
                         current_state = state;
+                        *thread_encounters.lock().unwrap_or_else(|e| e.into_inner()) =
+                            get_area_pokemon_id_for_state(&current_state);
                     }
 
-                    // Update encounters when the map changes, but only after the state
-                    // is reliably populated to avoid acting on the (0,0) default.
+                    // Update encounters when the map changes.
                     if state_initialized && current_state != state {
                         current_state = state;
                         *thread_encounters.lock().unwrap_or_else(|e| e.into_inner()) =
@@ -209,11 +270,13 @@ fn main() {
                         old_party_size = party_size;
                         update_box_list();
                         fill_party_list(&thread_party);
+                        check_for_dead_pokemon(&thread_party);
                     }
 
                     if last_party_refresh.elapsed().as_secs() >= FORCE_PARTY_CHECK_INTERVAL {
                         last_party_refresh = std::time::Instant::now();
                         fill_party_list(&thread_party);
+                        check_for_dead_pokemon(&thread_party);
                     }
 
                     std::thread::sleep(std::time::Duration::from_millis(100));

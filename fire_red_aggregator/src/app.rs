@@ -12,24 +12,18 @@
 //!
 //! Within each column the available rect is manually split:
 //! - The **bottom portion** is reserved for encounters via `allocate_ui_at_rect`.
-//! - The **top portion** gets a scrollable party region via `allocate_ui_at_rect`.
-//!
-//! This is the only reliable approach in egui for per-column bottom-pinning —
-//! `TopBottomPanel` is window-global and `ui.columns()` sizes to content.
+//! - The **top portion** gets a scrollable region via `allocate_ui_at_rect`
+//!   containing the party and the caught log.
 //!
 //! # Soul Link detection
 //!
-//! [`draw_party_member`] compares each pokemon's `met_location` against every
-//! other player's party. Matches are highlighted in purple.
-//!
-//! # Texture pipeline
-//!
-//! The network thread for each [`MonitorSlot`] delivers decompressed sprites
-//! via `pending_textures`. [`process_textures`] uploads them to the GPU each
-//! frame and enqueues requests for any missing species.
+//! Each caught entry is cross-referenced against the other players' caught
+//! lists by `met_location`. A match means both players caught their
+//! Nuzlocke mon on the same route — their soul link pair.
 
 use crate::client::MonitorSlot;
 use egui::Ui;
+use fire_red_database::CaughtPokemon;
 use fire_red_party_monitor::Pokemon;
 use fire_red_states::GameState;
 use std::collections::HashMap;
@@ -133,27 +127,25 @@ impl AggregatorApp {
         }
     }
 
-    /// Draws one complete player column (party + encounters) into the given rect.
-    ///
-    /// The rect is split manually:
-    /// - Bottom `ENCOUNTER_PANEL_HEIGHT` pixels → encounters (always visible).
-    /// - Remaining top pixels → scrollable party region.
+    /// Draws one complete player column (party + caught log + encounters).
     fn draw_column(
         ui: &mut Ui,
         label: &str,
         state: &Option<GameState>,
+        db: Option<&fire_red_database::DbReader>,
         textures: &HashMap<String, egui::TextureHandle>,
         all_states: &[(String, Option<GameState>)],
+        all_caught: &[(String, Vec<CaughtPokemon>)],
     ) {
         let full_rect = ui.max_rect();
         let enc_height = ENCOUNTER_PANEL_HEIGHT;
         let party_height = (full_rect.height() - enc_height).max(50.0);
 
-        // ── Party region (top) ────────────────────────────────────────────────
+        // ── Party + caught log region (top, scrollable) ───────────────────────
         let party_rect =
             egui::Rect::from_min_size(full_rect.min, egui::vec2(full_rect.width(), party_height));
         ui.allocate_ui_at_rect(party_rect, |ui| {
-            Self::draw_party_region(ui, label, state, textures, all_states);
+            Self::draw_party_region(ui, label, state, db, textures, all_states, all_caught);
         });
 
         // ── Encounter region (bottom, pinned) ─────────────────────────────────
@@ -165,13 +157,15 @@ impl AggregatorApp {
         });
     }
 
-    /// Draws the scrollable party region (heading, badge summary, party members).
+    /// Draws the scrollable party + caught log region.
     fn draw_party_region(
         ui: &mut Ui,
         label: &str,
         state: &Option<GameState>,
+        db: Option<&fire_red_database::DbReader>,
         textures: &HashMap<String, egui::TextureHandle>,
         all_states: &[(String, Option<GameState>)],
+        all_caught: &[(String, Vec<CaughtPokemon>)],
     ) {
         ui.heading(label);
         ui.separator();
@@ -237,10 +231,112 @@ impl AggregatorApp {
                         .filter(|(l, _)| l != label)
                         .cloned()
                         .collect();
-                    Self::draw_party_member(ui, idx, pokemon, textures, &others);
+                    let dead = db.map(|d| d.is_dead(pokemon.box_mon.personality)).unwrap_or(false);
+                    Self::draw_party_member(ui, idx, pokemon, dead, textures, &others);
                     ui.separator();
                 }
+
+                // ── Caught log ────────────────────────────────────────────────
+                if let Some(db) = db {
+                    let caught = db.list_caught();
+                    if !caught.is_empty() {
+                        ui.add_space(6.0);
+                        ui.label(
+                            egui::RichText::new(format!("Caught ({})", caught.len()))
+                                .strong()
+                                .size(15.0),
+                        );
+                        ui.add_space(2.0);
+
+                        // Other players' caught lists keyed by met_location for soul link lookup.
+                        // Build a map: met_location -> Vec<(label, CaughtPokemon)>
+                        let mut others_by_loc: HashMap<u8, Vec<(&str, &CaughtPokemon)>> =
+                            HashMap::new();
+                        for (other_label, other_list) in all_caught {
+                            if other_label == label { continue; }
+                            for cp in other_list {
+                                others_by_loc
+                                    .entry(cp.met_location)
+                                    .or_default()
+                                    .push((other_label, cp));
+                            }
+                        }
+
+                        for cp in &caught {
+                            let dead = db.is_dead(cp.personality);
+                            Self::draw_caught_entry(ui, cp, dead, &others_by_loc);
+                        }
+                    }
+                }
             });
+    }
+
+    /// Draws one entry in the caught log.
+    fn draw_caught_entry(
+        ui: &mut Ui,
+        cp: &CaughtPokemon,
+        dead: bool,
+        others_by_loc: &HashMap<u8, Vec<(&str, &CaughtPokemon)>>,
+    ) {
+        let name_color = if dead {
+            egui::Color32::from_rgb(150, 50, 50)
+        } else {
+            egui::Color32::WHITE
+        };
+
+        ui.horizontal(|ui| {
+            ui.label(
+                egui::RichText::new(format!("Loc.{:<3}", cp.met_location))
+                    .color(egui::Color32::from_rgb(160, 160, 160))
+                    .size(12.0),
+            );
+            ui.label(
+                egui::RichText::new(&cp.nickname)
+                    .strong()
+                    .color(name_color)
+                    .size(13.0),
+            );
+            ui.label(
+                egui::RichText::new(format!("Lv.{}", cp.level))
+                    .color(egui::Color32::from_rgb(180, 180, 180))
+                    .size(12.0),
+            );
+            ui.label(
+                egui::RichText::new(&cp.nature)
+                    .color(egui::Color32::from_rgb(180, 180, 180))
+                    .size(12.0),
+            );
+            if cp.is_shiny {
+                ui.label(egui::RichText::new("★").color(egui::Color32::YELLOW).size(12.0));
+            }
+            if dead {
+                ui.label(
+                    egui::RichText::new("DEAD")
+                        .strong()
+                        .color(egui::Color32::RED)
+                        .size(12.0),
+                );
+            }
+        });
+
+        // Soul link annotation for other players' catches on the same route.
+        if let Some(linked) = others_by_loc.get(&cp.met_location) {
+            for (other_label, other_cp) in linked {
+                ui.horizontal(|ui| {
+                    ui.add_space(16.0);
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "↳ {}: {}{}",
+                            other_label,
+                            other_cp.nickname,
+                            if other_cp.is_shiny { " ★" } else { "" },
+                        ))
+                        .color(egui::Color32::from_rgb(191, 64, 191))
+                        .size(12.0),
+                    );
+                });
+            }
+        }
     }
 
     /// Draws the encounter section (always visible at the bottom of the column).
@@ -282,11 +378,12 @@ impl AggregatorApp {
         );
     }
 
-    /// Draws a single party member row with Soul Link detection.
+    /// Draws a single party member row with Soul Link detection and dead marking.
     fn draw_party_member(
         ui: &mut Ui,
         _idx: usize,
         pokemon: &Pokemon,
+        dead: bool,
         textures: &HashMap<String, egui::TextureHandle>,
         other_states: &[(String, Option<GameState>)],
     ) {
@@ -315,40 +412,63 @@ impl AggregatorApp {
             }
         }
 
+        let sprite_tint = if dead {
+            egui::Color32::from_rgba_unmultiplied(80, 80, 80, 180)
+        } else {
+            egui::Color32::WHITE
+        };
+
         ui.horizontal(|ui| {
             if let Some(tex) = textures.get(&key) {
                 ui.add(
                     egui::Image::new(tex)
-                        .fit_to_exact_size(egui::vec2(PARTY_IMAGE_SIZE.0, PARTY_IMAGE_SIZE.1)),
+                        .fit_to_exact_size(egui::vec2(PARTY_IMAGE_SIZE.0, PARTY_IMAGE_SIZE.1))
+                        .tint(sprite_tint),
                 );
             }
             ui.vertical(|ui| {
                 ui.horizontal(|ui| {
+                    let name_color = if dead {
+                        egui::Color32::from_rgb(150, 50, 50)
+                    } else {
+                        egui::Color32::WHITE
+                    };
                     ui.label(
                         egui::RichText::new(pokemon.get_nickname_string())
                             .strong()
                             .size(16.0)
-                            .color(egui::Color32::WHITE),
+                            .color(name_color),
                     );
                     if shiny {
                         ui.label(egui::RichText::new("✨").size(14.0));
                     }
-                    ui.label(format!("Lv{}", pokemon.level));
+                    if dead {
+                        ui.label(
+                            egui::RichText::new("DEAD")
+                                .strong()
+                                .size(14.0)
+                                .color(egui::Color32::RED),
+                        );
+                    } else {
+                        ui.label(format!("Lv{}", pokemon.level));
+                    }
                 });
-                let hp_ratio = pokemon.hp as f32 / pokemon.max_hp as f32;
-                let hp_color = if hp_ratio < 0.3 {
-                    egui::Color32::RED
-                } else if hp_ratio < 0.8 {
-                    egui::Color32::YELLOW
-                } else {
-                    egui::Color32::WHITE
-                };
-                ui.label(
-                    egui::RichText::new(format!("{}/{}", pokemon.hp, pokemon.max_hp))
-                        .color(hp_color)
-                        .size(14.0),
-                );
-                ui.label(format!("Exp: {}", pokemon.box_mon.secure.growth.experience));
+                if !dead {
+                    let hp_ratio = pokemon.hp as f32 / pokemon.max_hp as f32;
+                    let hp_color = if hp_ratio < 0.3 {
+                        egui::Color32::RED
+                    } else if hp_ratio < 0.8 {
+                        egui::Color32::YELLOW
+                    } else {
+                        egui::Color32::WHITE
+                    };
+                    ui.label(
+                        egui::RichText::new(format!("{}/{}", pokemon.hp, pokemon.max_hp))
+                            .color(hp_color)
+                            .size(14.0),
+                    );
+                    ui.label(format!("Exp: {}", pokemon.box_mon.secure.growth.experience));
+                }
             });
         });
     }
@@ -391,11 +511,6 @@ impl AggregatorApp {
 
 impl eframe::App for AggregatorApp {
     /// Main per-frame callback.
-    ///
-    /// Registers one `SidePanel::left` per player (except the last), then fills
-    /// the `CentralPanel` with the last player. Each panel calls [`draw_column`]
-    /// which manually splits the panel rect into party (top, scrollable) and
-    /// encounters (bottom, fixed height) regions using `allocate_ui_at_rect`.
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         ctx.request_repaint();
         self.process_textures(ctx);
@@ -412,15 +527,41 @@ impl eframe::App for AggregatorApp {
             })
             .collect();
 
+        // Keep each DbReader pointed at the correct run for this player.
+        // sync_player re-queries only when the name changes, so this is cheap.
+        for (slot, (label, _)) in self.slots.iter().zip(states.iter()) {
+            if let Some(db) = &slot.db {
+                db.sync_player(label);
+            }
+        }
+
+        // Read each player's caught list from their DB (empty if no DB configured).
+        let all_caught: Vec<(String, Vec<CaughtPokemon>)> = self
+            .slots
+            .iter()
+            .map(|slot| {
+                let label = slot.label.lock().unwrap_or_else(|e| e.into_inner()).clone();
+                let caught = slot
+                    .db
+                    .as_ref()
+                    .map(|db| db.list_caught())
+                    .unwrap_or_default();
+                (label, caught)
+            })
+            .collect();
+
         // Register a SidePanel for every player.
-        for i in 0..states.len() {
+        for i in 0..self.slots.len() {
             let (label, state) = &states[i];
+            let db = self.slots[i].db.as_ref();
             let panel_id = egui::Id::new(format!("player_col_{}", i));
             egui::SidePanel::left(panel_id)
                 .exact_width(COLUMN_WIDTH)
                 .resizable(false)
                 .show(ctx, |ui| {
-                    AggregatorApp::draw_column(ui, label, state, textures, &states);
+                    AggregatorApp::draw_column(
+                        ui, label, state, db, textures, &states, &all_caught,
+                    );
                 });
         }
 

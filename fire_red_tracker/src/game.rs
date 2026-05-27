@@ -34,6 +34,87 @@ pub fn fill_party_list(thread_party: &Arc<Mutex<Vec<Pokemon>>>) {
         fire_red_loop::get_party_members();
 }
 
+/// Checks the current party for any Pokemon with zero HP and marks them dead.
+///
+/// Skips Pokemon that are already recorded to avoid double-entries.
+pub fn check_for_dead_pokemon(thread_party: &Arc<Mutex<Vec<Pokemon>>>) {
+    let party = thread_party.lock().unwrap_or_else(|e| e.into_inner());
+    for pokemon in party.iter() {
+        if pokemon.hp != 0 { continue; }
+        if fire_red_database::is_dead(pokemon.box_mon.personality) { continue; }
+
+        let personality = pokemon.box_mon.personality;
+        let ot_id       = pokemon.box_mon.ot_id;
+        let growth      = &pokemon.box_mon.secure.growth;
+        let atk         = &pokemon.box_mon.secure.attack;
+        let ev          = &pokemon.box_mon.secure.ev_condition;
+        let iv          = &pokemon.box_mon.secure.misc.iv_egg_ability;
+        let misc        = &pokemon.box_mon.secure.misc;
+
+        let ot_name = fire_red_text::gba_string_to_ascii(
+            &pokemon.box_mon.ot_name,
+            pokemon.box_mon.ot_name.len(),
+            0,
+        )
+        .trim_matches('\0')
+        .trim()
+        .to_string();
+
+        let died_at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+
+        fire_red_database::mark_dead(fire_red_database::DeadPokemon {
+            personality,
+            ot_id,
+            ot_name,
+            nickname:      pokemon.box_mon.nickname_string.clone(),
+            species:       growth.species,
+            species_name:  growth.species_string.clone(),
+            is_shiny:      is_shiny(personality, ot_id),
+            nature:        fire_red_database::nature_name(personality).to_string(),
+
+            level:      pokemon.level,
+            experience: growth.experience,
+            max_hp:     pokemon.max_hp,
+            attack:     pokemon.attack,
+            defense:    pokemon.defense,
+            speed:      pokemon.speed,
+            sp_attack:  pokemon.sp_attack,
+            sp_defense: pokemon.sp_defense,
+
+            moves: atk.moves,
+            pp:    atk.pp,
+
+            ivs: fire_red_database::IVs {
+                hp:        iv.hp_iv,
+                attack:    iv.attack_iv,
+                defense:   iv.defense_iv,
+                speed:     iv.speed_iv,
+                sp_attack: iv.sp_attack_iv,
+                sp_defense: iv.sp_def_iv,
+            },
+            evs: fire_red_database::EVs {
+                hp:        ev.hp_ev,
+                attack:    ev.attack_ev,
+                defense:   ev.defense_ev,
+                speed:     ev.speed_ev,
+                sp_attack: ev.sp_attack_ev,
+                sp_defense: ev.sp_defense_ev,
+            },
+
+            held_item:    growth.held_item,
+            ability:      pokemon.box_mon.ability,
+            ability_name: pokemon.box_mon.ability_string.clone(),
+            friendship:   growth.friendship,
+            met_location: misc.met_location,
+
+            died_at,
+        });
+    }
+}
+
 /// Reads the current map state directly from the EWRAM snapshot.
 ///
 /// Returns `None` if the snapshot is not yet populated or the bytes are `(0,0)`
@@ -54,6 +135,51 @@ pub fn map_state_from_ewram() -> Option<FireRedState> {
         return None;
     }
     Some(FireRedState { map_group_id: group, map_name_id: name })
+}
+
+/// Scans the current party for any Pokemon not yet in the caught log and records them.
+///
+/// Called alongside `check_for_dead_pokemon` on every party refresh so that
+/// newly obtained mons (caught, gifted, or traded) are captured immediately.
+pub fn check_for_new_pokemon(thread_party: &Arc<Mutex<Vec<Pokemon>>>) {
+    let party = thread_party.lock().unwrap_or_else(|e| e.into_inner());
+    for pokemon in party.iter() {
+        let species = pokemon.box_mon.secure.growth.species;
+        if species == 0 || species > 386 { continue; }
+        let personality = pokemon.box_mon.personality;
+        if fire_red_database::is_caught(personality) { continue; }
+
+        let ot_id    = pokemon.box_mon.ot_id;
+        let growth   = &pokemon.box_mon.secure.growth;
+        let misc     = &pokemon.box_mon.secure.misc;
+        let iv       = &misc.iv_egg_ability;
+
+        let caught_at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+
+        fire_red_database::mark_caught(fire_red_database::CaughtPokemon {
+            personality,
+            ot_id,
+            nickname:     pokemon.box_mon.nickname_string.clone(),
+            species,
+            species_name: growth.species_string.clone(),
+            is_shiny:     is_shiny(personality, ot_id),
+            nature:       fire_red_database::nature_name(personality).to_string(),
+            level:        pokemon.level,
+            met_location: misc.met_location,
+            ivs: fire_red_database::IVs {
+                hp:         iv.hp_iv,
+                attack:     iv.attack_iv,
+                defense:    iv.defense_iv,
+                speed:      iv.speed_iv,
+                sp_attack:  iv.sp_attack_iv,
+                sp_defense: iv.sp_def_iv,
+            },
+            caught_at,
+        });
+    }
 }
 
 /// Returns `true` if FireRed appears to be fully loaded with a valid save.

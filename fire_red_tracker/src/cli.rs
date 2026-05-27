@@ -19,6 +19,24 @@ pub struct Cli {
     #[arg(long, default_value_t = false)]
     pub clean: bool,
 
+    /// Start a brand-new run instead of resuming the most recent one.
+    #[arg(long, default_value_t = false)]
+    pub new_run: bool,
+
+    /// Resume a specific run by its numeric ID (overrides --new-run).
+    #[arg(long)]
+    pub run_id: Option<u32>,
+
+    /// Print all stored runs and exit without launching the tracker.
+    #[arg(long, default_value_t = false)]
+    pub list_runs: bool,
+
+    /// PostgreSQL connection string.
+    /// Example: postgresql://user:password@host/dbname
+    /// The database must already exist on the server.
+    #[arg(long, default_value = "postgresql://localhost/nuzlocke")]
+    pub db: String,
+
     #[command(subcommand)]
     pub command: Option<Command>,
 }

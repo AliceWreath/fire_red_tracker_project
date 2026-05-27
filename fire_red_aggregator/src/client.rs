@@ -58,7 +58,7 @@ pub struct PendingTexture {
 ///
 /// A [`MonitorSlot`] is created for each server address before the GUI starts.
 /// [`spawn_client`] is then called with clones of the inner `Arc`s to wire up
-/// the background network thread.The GUI reads from these arcs each frame.
+/// the background network thread. The GUI reads from these arcs each frame.
 pub struct MonitorSlot {
     /// Display label shown as the column heading (e.g. `"Player 1"`)
     pub label: Arc<Mutex<String>>,
@@ -72,24 +72,31 @@ pub struct MonitorSlot {
     /// Drained by the GUI thread at the start of each frame.
     pub pending_textures: Arc<Mutex<Vec<PendingTexture>>>,
     /// Set of species IDs for which a texture request has already been sent,
-    /// preventing dulicate requests across reconnects.
+    /// preventing duplicate requests across reconnects.
     pub known_species: Arc<Mutex<HashSet<u16>>>,
     /// Outbound texture request batches produced by the GUI and consumed by the
     /// network writer thread every 50 ms.
     pub texture_request_queue: Arc<Mutex<VecDeque<Vec<u16>>>>,
+    /// Connection string used to open `db` (kept for diagnostics).
+    pub _db_path: Option<String>,
+    /// Read-only handle to this player's nuzlocke database.
+    /// Opened lazily on first successful access; `None` if no path was given or
+    /// the file does not yet exist.
+    pub db: Option<fire_red_database::DbReader>,
 }
 
 impl MonitorSlot {
-    /// Creates a new [`MonitorSlot`] for the server at `addr`
+    /// Creates a new [`MonitorSlot`] for the server at `addr`.
     ///
     /// All shared state is initialized to empty / `None`. Call [`spawn_client`]
     /// with clones of the inner arcs to start the background network thread.
     ///
     /// # Arguments
-    /// * `index` - Zero-based slot index; used to generate the display label
-    ///             (`"Player 1"`, `"Player 2"`, ...).
-    /// * `addr`  - TCP address of the tracker server (e.g. "192.168.1.10:7878").
-    pub fn new(index: usize, addr: String) -> Self {
+    /// * `index`   - Zero-based slot index; used to generate the display label.
+    /// * `addr`    - TCP address of the tracker server.
+    /// * `db_path` - Optional path to this player's SQLite nuzlocke database.
+    pub fn new(index: usize, addr: String, db_path: Option<String>) -> Self {
+        let db = db_path.as_deref().and_then(|s| fire_red_database::DbReader::open(s));
         Self {
             label: Arc::new(Mutex::new(format!("Player {}", index + 1))),
             _addr: addr,
@@ -97,6 +104,8 @@ impl MonitorSlot {
             pending_textures: Arc::new(Mutex::new(Vec::new())),
             known_species: Arc::new(Mutex::new(HashSet::new())),
             texture_request_queue: Arc::new(Mutex::new(VecDeque::new())),
+            _db_path: db_path,
+            db,
         }
     }
 }
