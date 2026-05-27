@@ -1,0 +1,24 @@
+[workspace]
+members = [
+    "fire_red_aggregator",
+    "fire_red_badge",
+    "fire_red_box_monitor", 
+    "fire_red_database",
+    "fire_red_get_values",
+    "fire_red_image_data",
+    "fire_red_loop",
+    "fire_red_map_data",
+    "fire_red_memory",
+    "fire_red_party_monitor",
+    "fire_red_pokemon_data",
+    "fire_red_pokemon_name_buffer",
+    "fire_red_retroarch_interfacing",
+    "fire_red_rom_buffer",
+    "fire_red_scanner",
+    "fire_red_states",
+    "fire_red_text",
+    "fire_red_tracker",
+    "fire_red_trainer_data",
+]
+
+resolver = "3"
