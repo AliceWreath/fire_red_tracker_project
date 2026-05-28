@@ -46,14 +46,11 @@ struct Cli {
     #[arg(required = true, value_name = "HOST:PORT")]
     addrs: Vec<String>,
 
-    /// PostgreSQL connection string for each player's nuzlocke database, in
-    /// the same order as the server addresses.  May be specified fewer times
-    /// than there are addresses; unmatched slots will show no catch/death
-    /// history.
+    /// PostgreSQL connection string shared by all player slots.
     ///
-    /// Example: `--db postgresql://localhost/nuzlocke --db postgresql://192.168.1.2/nuzlocke`
+    /// Example: `--db postgresql://localhost/nuzlocke`
     #[arg(long = "db", value_name = "CONN")]
-    dbs: Vec<String>,
+    db: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -68,14 +65,13 @@ fn main() {
     // For each address: create a MonitorSlot, then hand clones of its shared
     // Arcs to spawn_client so the network thread and the GUI share the same
     // state without the slot giving up ownership of the Arcs.
-    let dbs = cli.dbs;
+    let db = cli.db;
     let slots: Vec<MonitorSlot> = cli
         .addrs
         .into_iter()
         .enumerate()
         .map(|(i, addr)| {
-            let db_path = dbs.get(i).cloned();
-            let slot = MonitorSlot::new(i, addr.clone(), db_path);
+            let slot = MonitorSlot::new(i, addr.clone(), db.clone());
             spawn_client(
                 addr,
                 slot.state.clone(),

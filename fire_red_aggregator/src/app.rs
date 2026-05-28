@@ -15,18 +15,19 @@
 //! - The **top portion** gets a scrollable region via `allocate_ui_at_rect`
 //!   containing the party and the caught log.
 //!
-//! # Soul Link detection
+//! # Soul Link detection and propagation
 //!
-//! Each caught entry is cross-referenced against the other players' caught
-//! lists by `met_location`. A match means both players caught their
-//! Nuzlocke mon on the same route — their soul link pair.
+//! Caught entries are cross-referenced by `met_location` for display. In
+//! addition, whenever a pokemon in any player's dead table has a partner in
+//! another player's caught table at the same location, `mark_soul_link_dead`
+//! is called automatically so both partners are shown as dead.
 
 use crate::client::MonitorSlot;
 use egui::Ui;
-use fire_red_database::CaughtPokemon;
+use fire_red_database::{CaughtPokemon, DeadPokemon};
 use fire_red_party_monitor::Pokemon;
 use fire_red_states::GameState;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 // ---------------------------------------------------------------------------
 // Layout constants
@@ -50,20 +51,52 @@ const ENCOUNTER_ROW_HEIGHT: f32 = 20.0 + 48.0 + 12.0;
 const ENCOUNTER_PANEL_HEIGHT: f32 = 32.0 + 3.0 * ENCOUNTER_ROW_HEIGHT;
 
 // ---------------------------------------------------------------------------
+// DB cache
+// ---------------------------------------------------------------------------
+
+/// Per-slot snapshot of the caught list, refreshed at most once per second.
+/// Dead records are NOT cached here — they are queried fresh every frame so
+/// there is never a stale-cache delay when a pokemon dies or the run_id is
+/// first resolved.
+struct SlotDbCache {
+    caught:       Vec<CaughtPokemon>,
+    last_refresh: std::time::Instant,
+}
+
+impl SlotDbCache {
+    fn new() -> Self {
+        Self {
+            caught:       Vec::new(),
+            // Initialise far in the past so the very first frame triggers a refresh.
+            last_refresh: std::time::Instant::now()
+                - std::time::Duration::from_secs(60),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // App struct
 // ---------------------------------------------------------------------------
 
 /// The top-level eframe application for the multi-player aggregator view.
 pub struct AggregatorApp {
-    slots: Vec<MonitorSlot>,
-    textures: HashMap<String, egui::TextureHandle>,
+    slots:                Vec<MonitorSlot>,
+    textures:             HashMap<String, egui::TextureHandle>,
+    db_caches:            Vec<SlotDbCache>,
+    /// Tracks (slot_index, personality) pairs that have already had their
+    /// soul-link death written to the database, so we don't re-insert every
+    /// frame.
+    soul_link_propagated: HashSet<(usize, u32)>,
 }
 
 impl AggregatorApp {
     pub fn new(_cc: &eframe::CreationContext<'_>, slots: Vec<MonitorSlot>) -> Self {
+        let n = slots.len();
         Self {
             slots,
-            textures: HashMap::new(),
+            textures:              HashMap::new(),
+            db_caches:             (0..n).map(|_| SlotDbCache::new()).collect(),
+            soul_link_propagated:  HashSet::new(),
         }
     }
 
@@ -132,10 +165,11 @@ impl AggregatorApp {
         ui: &mut Ui,
         label: &str,
         state: &Option<GameState>,
-        db: Option<&fire_red_database::DbReader>,
+        dead_records: &HashMap<u32, DeadPokemon>,
+        soul_link_dead: &HashSet<u32>,
+        db_connected: bool,
         textures: &HashMap<String, egui::TextureHandle>,
         all_states: &[(String, Option<GameState>)],
-        all_caught: &[(String, Vec<CaughtPokemon>)],
     ) {
         let full_rect = ui.max_rect();
         let enc_height = ENCOUNTER_PANEL_HEIGHT;
@@ -145,7 +179,9 @@ impl AggregatorApp {
         let party_rect =
             egui::Rect::from_min_size(full_rect.min, egui::vec2(full_rect.width(), party_height));
         ui.allocate_ui_at_rect(party_rect, |ui| {
-            Self::draw_party_region(ui, label, state, db, textures, all_states, all_caught);
+            Self::draw_party_region(
+                ui, label, state, dead_records, soul_link_dead, db_connected, textures, all_states,
+            );
         });
 
         // ── Encounter region (bottom, pinned) ─────────────────────────────────
@@ -162,12 +198,22 @@ impl AggregatorApp {
         ui: &mut Ui,
         label: &str,
         state: &Option<GameState>,
-        db: Option<&fire_red_database::DbReader>,
+        dead_records: &HashMap<u32, DeadPokemon>,
+        soul_link_dead: &HashSet<u32>,
+        db_connected: bool,
         textures: &HashMap<String, egui::TextureHandle>,
         all_states: &[(String, Option<GameState>)],
-        all_caught: &[(String, Vec<CaughtPokemon>)],
     ) {
-        ui.heading(label);
+        ui.horizontal(|ui| {
+            ui.heading(label);
+            if db_connected {
+                ui.label(
+                    egui::RichText::new("● DB")
+                        .color(egui::Color32::from_rgb(80, 200, 80))
+                        .size(11.0),
+                );
+            }
+        });
         ui.separator();
 
         let gs = match state {
@@ -231,112 +277,13 @@ impl AggregatorApp {
                         .filter(|(l, _)| l != label)
                         .cloned()
                         .collect();
-                    let dead = db.map(|d| d.is_dead(pokemon.box_mon.personality)).unwrap_or(false);
-                    Self::draw_party_member(ui, idx, pokemon, dead, textures, &others);
+                    let dead_record = dead_records.get(&pokemon.box_mon.personality);
+                    let is_soul_link_dead = soul_link_dead.contains(&pokemon.box_mon.personality);
+                    Self::draw_party_member(ui, idx, pokemon, dead_record, is_soul_link_dead, textures, &others);
                     ui.separator();
                 }
 
-                // ── Caught log ────────────────────────────────────────────────
-                if let Some(db) = db {
-                    let caught = db.list_caught();
-                    if !caught.is_empty() {
-                        ui.add_space(6.0);
-                        ui.label(
-                            egui::RichText::new(format!("Caught ({})", caught.len()))
-                                .strong()
-                                .size(15.0),
-                        );
-                        ui.add_space(2.0);
-
-                        // Other players' caught lists keyed by met_location for soul link lookup.
-                        // Build a map: met_location -> Vec<(label, CaughtPokemon)>
-                        let mut others_by_loc: HashMap<u8, Vec<(&str, &CaughtPokemon)>> =
-                            HashMap::new();
-                        for (other_label, other_list) in all_caught {
-                            if other_label == label { continue; }
-                            for cp in other_list {
-                                others_by_loc
-                                    .entry(cp.met_location)
-                                    .or_default()
-                                    .push((other_label, cp));
-                            }
-                        }
-
-                        for cp in &caught {
-                            let dead = db.is_dead(cp.personality);
-                            Self::draw_caught_entry(ui, cp, dead, &others_by_loc);
-                        }
-                    }
-                }
             });
-    }
-
-    /// Draws one entry in the caught log.
-    fn draw_caught_entry(
-        ui: &mut Ui,
-        cp: &CaughtPokemon,
-        dead: bool,
-        others_by_loc: &HashMap<u8, Vec<(&str, &CaughtPokemon)>>,
-    ) {
-        let name_color = if dead {
-            egui::Color32::from_rgb(150, 50, 50)
-        } else {
-            egui::Color32::WHITE
-        };
-
-        ui.horizontal(|ui| {
-            ui.label(
-                egui::RichText::new(format!("Loc.{:<3}", cp.met_location))
-                    .color(egui::Color32::from_rgb(160, 160, 160))
-                    .size(12.0),
-            );
-            ui.label(
-                egui::RichText::new(&cp.nickname)
-                    .strong()
-                    .color(name_color)
-                    .size(13.0),
-            );
-            ui.label(
-                egui::RichText::new(format!("Lv.{}", cp.level))
-                    .color(egui::Color32::from_rgb(180, 180, 180))
-                    .size(12.0),
-            );
-            ui.label(
-                egui::RichText::new(&cp.nature)
-                    .color(egui::Color32::from_rgb(180, 180, 180))
-                    .size(12.0),
-            );
-            if cp.is_shiny {
-                ui.label(egui::RichText::new("★").color(egui::Color32::YELLOW).size(12.0));
-            }
-            if dead {
-                ui.label(
-                    egui::RichText::new("DEAD")
-                        .strong()
-                        .color(egui::Color32::RED)
-                        .size(12.0),
-                );
-            }
-        });
-
-        // Soul link annotation for other players' catches on the same route.
-        if let Some(linked) = others_by_loc.get(&cp.met_location) {
-            for (other_label, other_cp) in linked {
-                ui.horizontal(|ui| {
-                    ui.add_space(16.0);
-                    ui.label(
-                        egui::RichText::new(format!(
-                            "↳ {}: {}{}",
-                            other_label,
-                            other_cp.nickname,
-                            if other_cp.is_shiny { " ★" } else { "" },
-                        ))
-                        .color(egui::Color32::from_rgb(191, 64, 191))
-                        .size(12.0),
-                    );
-                });
-            }
-        }
     }
 
     /// Draws the encounter section (always visible at the bottom of the column).
@@ -378,12 +325,13 @@ impl AggregatorApp {
         );
     }
 
-    /// Draws a single party member row with Soul Link detection and dead marking.
+    /// Draws a single party member row with soul link annotation and full dead record.
     fn draw_party_member(
         ui: &mut Ui,
         _idx: usize,
         pokemon: &Pokemon,
-        dead: bool,
+        dead_record: Option<&DeadPokemon>,
+        soul_link_dead: bool,
         textures: &HashMap<String, egui::TextureHandle>,
         other_states: &[(String, Option<GameState>)],
     ) {
@@ -393,7 +341,9 @@ impl AggregatorApp {
         let met = pokemon.box_mon.secure.misc.met_location;
         let shiny = is_shiny(personality, ot_id);
         let key = sprite_key(species, shiny);
+        let dead = dead_record.is_some() || pokemon.hp == 0 || soul_link_dead;
 
+        // Soul-link annotation based on live party state.
         for (other_label, other_state) in other_states {
             if let Some(gs) = other_state {
                 for other_mon in &gs.party {
@@ -427,12 +377,12 @@ impl AggregatorApp {
                 );
             }
             ui.vertical(|ui| {
+                let name_color = if dead {
+                    egui::Color32::from_rgb(150, 50, 50)
+                } else {
+                    egui::Color32::WHITE
+                };
                 ui.horizontal(|ui| {
-                    let name_color = if dead {
-                        egui::Color32::from_rgb(150, 50, 50)
-                    } else {
-                        egui::Color32::WHITE
-                    };
                     ui.label(
                         egui::RichText::new(pokemon.get_nickname_string())
                             .strong()
@@ -453,8 +403,70 @@ impl AggregatorApp {
                         ui.label(format!("Lv{}", pokemon.level));
                     }
                 });
-                if !dead {
-                    let hp_ratio = pokemon.hp as f32 / pokemon.max_hp as f32;
+
+                if let Some(r) = dead_record {
+                    let dim = egui::Color32::from_rgb(140, 140, 140);
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "Lv.{} {} — {}{}",
+                            r.level,
+                            r.species_name,
+                            r.nature,
+                            if r.is_shiny { " ★" } else { "" },
+                        ))
+                        .color(dim),
+                    );
+                    if r.max_hp > 0 {
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "HP {} | Atk {} | Def {} | Spe {} | SpA {} | SpD {}",
+                                r.max_hp, r.attack, r.defense, r.speed,
+                                r.sp_attack, r.sp_defense,
+                            ))
+                            .color(dim)
+                            .size(11.0),
+                        );
+                    } else {
+                        ui.label(
+                            egui::RichText::new("Soul Link").color(dim).size(11.0),
+                        );
+                    }
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "Died: {}",
+                            fire_red_database::format_timestamp(r.died_at),
+                        ))
+                        .color(dim)
+                        .size(11.0),
+                    );
+                } else if pokemon.hp == 0 || soul_link_dead {
+                    let dim = egui::Color32::from_rgb(140, 140, 140);
+                    let nature = fire_red_database::nature_name(personality);
+                    let species_name = &pokemon.box_mon.secure.growth.species_string;
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "Lv.{} {} — {}{}",
+                            pokemon.level,
+                            species_name,
+                            nature,
+                            if shiny { " ★" } else { "" },
+                        ))
+                        .color(dim),
+                    );
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "HP {} | Atk {} | Def {} | Spe {} | SpA {} | SpD {}",
+                            pokemon.max_hp, pokemon.attack, pokemon.defense,
+                            pokemon.speed, pokemon.sp_attack, pokemon.sp_defense,
+                        ))
+                        .color(dim)
+                        .size(11.0),
+                    );
+                    if soul_link_dead {
+                        ui.label(egui::RichText::new("Soul Link").color(dim).size(11.0));
+                    }
+                } else {
+                    let hp_ratio = pokemon.hp as f32 / pokemon.max_hp.max(1) as f32;
                     let hp_color = if hp_ratio < 0.3 {
                         egui::Color32::RED
                     } else if hp_ratio < 0.8 {
@@ -515,8 +527,7 @@ impl eframe::App for AggregatorApp {
         ctx.request_repaint();
         self.process_textures(ctx);
 
-        let textures = &self.textures;
-
+        // ── Collect live states ───────────────────────────────────────────────
         let states: Vec<(String, Option<GameState>)> = self
             .slots
             .iter()
@@ -527,40 +538,128 @@ impl eframe::App for AggregatorApp {
             })
             .collect();
 
-        // Keep each DbReader pointed at the correct run for this player.
-        // sync_player re-queries only when the name changes, so this is cheap.
-        for (slot, (label, _)) in self.slots.iter().zip(states.iter()) {
+        // ── Sync each DbReader to the correct run for the current player ──────
+        // sync_player returns true when the run_id was just resolved (first
+        // success or name change). We use that to trigger an immediate refresh
+        // of the caught cache rather than waiting up to a second.
+        let mut run_id_changed: Vec<bool> = vec![false; self.slots.len()];
+        for (i, slot) in self.slots.iter().enumerate() {
             if let Some(db) = &slot.db {
-                db.sync_player(label);
+                run_id_changed[i] = db.sync_player(&states[i].0);
             }
         }
 
-        // Read each player's caught list from their DB (empty if no DB configured).
-        let all_caught: Vec<(String, Vec<CaughtPokemon>)> = self
+        // ── Refresh caught cache: immediately on run_id change, else every second
+        let now = std::time::Instant::now();
+        for i in 0..self.slots.len() {
+            let should_refresh = run_id_changed[i]
+                || now.duration_since(self.db_caches[i].last_refresh)
+                    >= std::time::Duration::from_secs(1);
+            if should_refresh {
+                if let Some(db) = &self.slots[i].db {
+                    self.db_caches[i].caught = db.list_caught();
+                    self.db_caches[i].last_refresh = now;
+                }
+            }
+        }
+
+        // ── Dead records: queried fresh every frame ───────────────────────────
+        // One query per slot (not per party member) is cheaper than the old
+        // per-member is_dead() approach, and eliminates any cache-staleness delay.
+        let all_dead: Vec<HashMap<u32, DeadPokemon>> = self
             .slots
             .iter()
             .map(|slot| {
-                let label = slot.label.lock().unwrap_or_else(|e| e.into_inner()).clone();
-                let caught = slot
-                    .db
+                slot.db
                     .as_ref()
-                    .map(|db| db.list_caught())
-                    .unwrap_or_default();
-                (label, caught)
+                    .map(|db| db.list_dead_with_records())
+                    .unwrap_or_default()
             })
             .collect();
 
-        // Register a SidePanel for every player.
+        // ── Soul link death propagation ───────────────────────────────────────
+        // For every dead pokemon in slot i, find its met_location via the
+        // caught cache, then check all other slots for a catch at the same
+        // location. If found and not already dead, insert a soul-link death.
+        let n = self.slots.len();
+        for i in 0..n {
+            let dead_personalities: Vec<u32> = all_dead[i].keys().copied().collect();
+
+            for dead_p in dead_personalities {
+                let met_loc = self.db_caches[i].caught
+                    .iter()
+                    .find(|c| c.personality == dead_p)
+                    .map(|c| c.met_location)
+                    .unwrap_or(0);
+                if met_loc == 0 { continue; }
+
+                for j in 0..n {
+                    if j == i { continue; }
+
+                    let partner = self.db_caches[j].caught
+                        .iter()
+                        .find(|c| c.met_location == met_loc)
+                        .cloned();
+
+                    if let Some(p) = partner {
+                        let key = (j, p.personality);
+                        let partner_already_dead = all_dead[j].contains_key(&p.personality);
+                        let already_propagated   = self.soul_link_propagated.contains(&key);
+
+                        if !partner_already_dead && !already_propagated {
+                            let wrote = self.slots[j].db.as_ref()
+                                .map(|db| db.mark_soul_link_dead(&p))
+                                .unwrap_or(false);
+                            if wrote {
+                                self.soul_link_propagated.insert(key);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // ── Live soul link dead detection ─────────────────────────────────────
+        // For each slot, collect personalities whose soul link partner already
+        // has hp == 0 in another slot's live game state. This makes the partner
+        // show as dead instantly without waiting for the DB write (which can lag
+        // up to 5 seconds due to the tracker's FORCE_PARTY_CHECK_INTERVAL).
+        let mut live_soul_link_dead: Vec<HashSet<u32>> = vec![HashSet::new(); n];
+        for i in 0..n {
+            let Some(gs_i) = &states[i].1 else { continue };
+            for pokemon_i in &gs_i.party {
+                if pokemon_i.hp != 0 { continue; }
+                let met_i = pokemon_i.box_mon.secure.misc.met_location;
+                if met_i == 0 { continue; }
+                for j in 0..n {
+                    if j == i { continue; }
+                    let Some(gs_j) = &states[j].1 else { continue };
+                    for pokemon_j in &gs_j.party {
+                        if pokemon_j.box_mon.secure.misc.met_location == met_i {
+                            live_soul_link_dead[j].insert(pokemon_j.box_mon.personality);
+                        }
+                    }
+                }
+            }
+        }
+
+        // ── Draw player columns ───────────────────────────────────────────────
+        let textures = &self.textures;
+
         for i in 0..self.slots.len() {
             let (label, state) = &states[i];
-            let db = self.slots[i].db.as_ref();
+            let dead_records        = &all_dead[i];
+            let db_connected        = self.slots[i].db.is_some();
+            let slot_soul_link_dead = &live_soul_link_dead[i];
+
             let panel_id = egui::Id::new(format!("player_col_{}", i));
             egui::SidePanel::left(panel_id)
                 .exact_width(COLUMN_WIDTH)
                 .resizable(false)
                 .show(ctx, |ui| {
                     AggregatorApp::draw_column(
-                        ui, label, state, db, textures, &states, &all_caught,
+                        ui, label, state, dead_records, slot_soul_link_dead,
+                        db_connected, textures, &states,
                     );
                 });
         }

@@ -1,4 +1,5 @@
 use postgres::{Client, NoTls};
+use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 
 const NATURES: [&str; 25] = [
@@ -320,6 +321,63 @@ fn query_is_dead(client: &mut Client, run_id: u32, personality: u32) -> bool {
         .unwrap_or(false)
 }
 
+/// Converts a dead_pokemon SELECT row (columns in the order used by all queries
+/// in this file) into a [`DeadPokemon`].
+fn row_to_dead_pokemon(row: &postgres::Row) -> DeadPokemon {
+    DeadPokemon {
+        personality:  row.get::<_, i64>(0) as u32,
+        ot_id:        row.get::<_, i64>(1) as u32,
+        ot_name:      row.get(2),
+        nickname:     row.get(3),
+        species:      row.get::<_, i32>(4) as u16,
+        species_name: row.get(5),
+        is_shiny:     row.get(6),
+        nature:       row.get(7),
+        level:        row.get::<_, i32>(8) as u8,
+        experience:   row.get::<_, i64>(9) as u32,
+        max_hp:       row.get::<_, i32>(10) as u16,
+        attack:       row.get::<_, i32>(11) as u16,
+        defense:      row.get::<_, i32>(12) as u16,
+        speed:        row.get::<_, i32>(13) as u16,
+        sp_attack:    row.get::<_, i32>(14) as u16,
+        sp_defense:   row.get::<_, i32>(15) as u16,
+        moves: [
+            row.get::<_, i32>(16) as u16,
+            row.get::<_, i32>(17) as u16,
+            row.get::<_, i32>(18) as u16,
+            row.get::<_, i32>(19) as u16,
+        ],
+        pp: [
+            row.get::<_, i32>(20) as u8,
+            row.get::<_, i32>(21) as u8,
+            row.get::<_, i32>(22) as u8,
+            row.get::<_, i32>(23) as u8,
+        ],
+        ivs: IVs {
+            hp:         row.get::<_, i32>(24) as u8,
+            attack:     row.get::<_, i32>(25) as u8,
+            defense:    row.get::<_, i32>(26) as u8,
+            speed:      row.get::<_, i32>(27) as u8,
+            sp_attack:  row.get::<_, i32>(28) as u8,
+            sp_defense: row.get::<_, i32>(29) as u8,
+        },
+        evs: EVs {
+            hp:         row.get::<_, i32>(30) as u8,
+            attack:     row.get::<_, i32>(31) as u8,
+            defense:    row.get::<_, i32>(32) as u8,
+            speed:      row.get::<_, i32>(33) as u8,
+            sp_attack:  row.get::<_, i32>(34) as u8,
+            sp_defense: row.get::<_, i32>(35) as u8,
+        },
+        held_item:    row.get::<_, i32>(36) as u16,
+        ability:      row.get::<_, i32>(37) as u8,
+        ability_name: row.get(38),
+        friendship:   row.get::<_, i32>(39) as u8,
+        met_location: row.get::<_, i32>(40) as u8,
+        died_at:      row.get::<_, i64>(41) as u64,
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Public API — run management
 // ---------------------------------------------------------------------------
@@ -542,58 +600,7 @@ pub fn get_dead_pokemon(personality: u32) -> Option<DeadPokemon> {
         )
         .ok()??;
 
-    Some(DeadPokemon {
-        personality:  row.get::<_, i64>(0) as u32,
-        ot_id:        row.get::<_, i64>(1) as u32,
-        ot_name:      row.get(2),
-        nickname:     row.get(3),
-        species:      row.get::<_, i32>(4) as u16,
-        species_name: row.get(5),
-        is_shiny:     row.get(6),
-        nature:       row.get(7),
-        level:        row.get::<_, i32>(8) as u8,
-        experience:   row.get::<_, i64>(9) as u32,
-        max_hp:       row.get::<_, i32>(10) as u16,
-        attack:       row.get::<_, i32>(11) as u16,
-        defense:      row.get::<_, i32>(12) as u16,
-        speed:        row.get::<_, i32>(13) as u16,
-        sp_attack:    row.get::<_, i32>(14) as u16,
-        sp_defense:   row.get::<_, i32>(15) as u16,
-        moves: [
-            row.get::<_, i32>(16) as u16,
-            row.get::<_, i32>(17) as u16,
-            row.get::<_, i32>(18) as u16,
-            row.get::<_, i32>(19) as u16,
-        ],
-        pp: [
-            row.get::<_, i32>(20) as u8,
-            row.get::<_, i32>(21) as u8,
-            row.get::<_, i32>(22) as u8,
-            row.get::<_, i32>(23) as u8,
-        ],
-        ivs: IVs {
-            hp:         row.get::<_, i32>(24) as u8,
-            attack:     row.get::<_, i32>(25) as u8,
-            defense:    row.get::<_, i32>(26) as u8,
-            speed:      row.get::<_, i32>(27) as u8,
-            sp_attack:  row.get::<_, i32>(28) as u8,
-            sp_defense: row.get::<_, i32>(29) as u8,
-        },
-        evs: EVs {
-            hp:         row.get::<_, i32>(30) as u8,
-            attack:     row.get::<_, i32>(31) as u8,
-            defense:    row.get::<_, i32>(32) as u8,
-            speed:      row.get::<_, i32>(33) as u8,
-            sp_attack:  row.get::<_, i32>(34) as u8,
-            sp_defense: row.get::<_, i32>(35) as u8,
-        },
-        held_item:    row.get::<_, i32>(36) as u16,
-        ability:      row.get::<_, i32>(37) as u8,
-        ability_name: row.get(38),
-        friendship:   row.get::<_, i32>(39) as u8,
-        met_location: row.get::<_, i32>(40) as u8,
-        died_at:      row.get::<_, i64>(41) as u64,
-    })
+    Some(row_to_dead_pokemon(&row))
 }
 
 // ---------------------------------------------------------------------------
@@ -686,7 +693,14 @@ impl DbReader {
     ///
     /// Returns `None` if the server is unreachable.
     pub fn open(connection_string: &str) -> Option<Self> {
-        let client = Client::connect(connection_string, NoTls).ok()?;
+        let client = match Client::connect(connection_string, NoTls) {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("DB connection failed ({}): {}", connection_string, e);
+                return None;
+            }
+        };
+        eprintln!("DB connected: {}", connection_string);
         Some(Self {
             client:      Mutex::new(client),
             run_id:      Mutex::new(None),
@@ -696,13 +710,14 @@ impl DbReader {
 
     /// Updates the cached run ID to the most recent run for `player_name`.
     ///
-    /// Safe to call every frame — re-queries only when the name changes.
-    /// Call this in the aggregator's update loop with the label received
-    /// from the live game state so the correct run is shown per player.
-    pub fn sync_player(&self, player_name: &str) {
+    /// Returns `true` if the run ID actually changed (including the first time
+    /// a run is successfully resolved). Safe to call every frame — re-queries
+    /// only when the name changes OR when the previous query returned no match
+    /// (so the caller retries until the tracker has written the player name).
+    pub fn sync_player(&self, player_name: &str) -> bool {
         {
             let last = self.last_player.lock().unwrap_or_else(|e| e.into_inner());
-            if *last == player_name { return; }
+            if *last == player_name { return false; }
         }
         let new_id = self.client
             .lock()
@@ -715,8 +730,14 @@ impl DbReader {
             .flatten()
             .map(|row| row.get::<_, i32>(0) as u32);
 
+        let old_id = *self.run_id.lock().unwrap_or_else(|e| e.into_inner());
         *self.run_id.lock().unwrap_or_else(|e| e.into_inner()) = new_id;
-        *self.last_player.lock().unwrap_or_else(|e| e.into_inner()) = player_name.to_string();
+        // Only cache the name on success so that a failed lookup retries every
+        // frame (the tracker may not have written the player name yet).
+        if new_id.is_some() {
+            *self.last_player.lock().unwrap_or_else(|e| e.into_inner()) = player_name.to_string();
+        }
+        new_id != old_id
     }
 
     /// Returns all caught Pokemon for the active run, ordered by catch time.
@@ -735,5 +756,93 @@ impl DbReader {
             None => return false,
         };
         query_is_dead(&mut *self.client.lock().unwrap_or_else(|e| e.into_inner()), run_id, personality)
+    }
+
+    /// Returns all dead Pokemon for the active run, keyed by personality.
+    pub fn list_dead_with_records(&self) -> HashMap<u32, DeadPokemon> {
+        let run_id = match *self.run_id.lock().unwrap_or_else(|e| e.into_inner()) {
+            Some(id) => id,
+            None => return HashMap::new(),
+        };
+        self.client
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .query(
+                "SELECT
+                    personality, ot_id, ot_name, nickname, species, species_name, is_shiny, nature,
+                    level, experience, max_hp, attack, defense, speed, sp_attack, sp_defense,
+                    move1, move2, move3, move4, pp1, pp2, pp3, pp4,
+                    iv_hp, iv_attack, iv_defense, iv_speed, iv_sp_attack, iv_sp_defense,
+                    ev_hp, ev_attack, ev_defense, ev_speed, ev_sp_attack, ev_sp_defense,
+                    held_item, ability, ability_name, friendship, met_location, died_at
+                 FROM dead_pokemon WHERE run_id = $1",
+                &[&(run_id as i32)],
+            )
+            .unwrap_or_default()
+            .iter()
+            .map(|row| {
+                let dp = row_to_dead_pokemon(row);
+                (dp.personality, dp)
+            })
+            .collect()
+    }
+
+    /// Inserts a soul-link death record for `caught` in this player's active run.
+    ///
+    /// Battle stats (HP, Attack, etc.) are stored as 0 to signal a soul-link
+    /// kill rather than a direct in-game death. Safe to call if the record
+    /// already exists — the insert is a no-op in that case.
+    /// Returns `true` if the insert was attempted (run_id was known), `false` if
+    /// the run has not been identified yet (caller should retry next frame).
+    pub fn mark_soul_link_dead(&self, caught: &CaughtPokemon) -> bool {
+        let run_id = match *self.run_id.lock().unwrap_or_else(|e| e.into_inner()) {
+            Some(id) => id,
+            None => return false,
+        };
+        let now = unix_now();
+        self.client
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .execute(
+                "INSERT INTO dead_pokemon (
+                    run_id, personality, ot_id, ot_name, nickname,
+                    species, species_name, is_shiny, nature,
+                    level, experience, max_hp, attack, defense, speed, sp_attack, sp_defense,
+                    move1, move2, move3, move4,
+                    pp1, pp2, pp3, pp4,
+                    iv_hp, iv_attack, iv_defense, iv_speed, iv_sp_attack, iv_sp_defense,
+                    ev_hp, ev_attack, ev_defense, ev_speed, ev_sp_attack, ev_sp_defense,
+                    held_item, ability, ability_name, friendship, met_location, died_at
+                ) VALUES (
+                    $1, $2, $3, '', $4, $5, $6, $7, $8, $9,
+                    0, 0, 0, 0, 0, 0, 0,
+                    0, 0, 0, 0,
+                    0, 0, 0, 0,
+                    $10, $11, $12, $13, $14, $15,
+                    0, 0, 0, 0, 0, 0,
+                    0, 0, '', 0, $16, $17
+                ) ON CONFLICT (run_id, personality) DO NOTHING",
+                &[
+                    &(run_id as i32),
+                    &(caught.personality as i64),
+                    &(caught.ot_id as i64),
+                    &caught.nickname,
+                    &(caught.species as i32),
+                    &caught.species_name,
+                    &caught.is_shiny,
+                    &caught.nature,
+                    &(caught.level as i32),
+                    &(caught.ivs.hp as i32),
+                    &(caught.ivs.attack as i32),
+                    &(caught.ivs.defense as i32),
+                    &(caught.ivs.speed as i32),
+                    &(caught.ivs.sp_attack as i32),
+                    &(caught.ivs.sp_defense as i32),
+                    &(caught.met_location as i32),
+                    &(now as i64),
+                ],
+            )
+            .ok();
+        true
     }
 }

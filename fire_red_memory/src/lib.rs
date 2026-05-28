@@ -95,7 +95,7 @@ const EWRAM_START: u32 = 0x02000000;
 const EWRAM_END:   u32 = 0x0203FFFF;
 
 /// How long the background thread sleeps between full memory reads.
-const SLEEP_DURATION: std::time::Duration = std::time::Duration::from_millis(250);
+const SLEEP_DURATION: std::time::Duration = std::time::Duration::from_millis(100);
 
 /// How many consecutive UDP failures to tolerate before aborting a chunk read.
 const MAX_RETRIES: u32 = 5;

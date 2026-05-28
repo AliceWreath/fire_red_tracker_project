@@ -77,7 +77,7 @@ const TOTAL_BOX_BYTES: usize = TOTAL_SLOTS * SLOT_SIZE;
 static POKEMON_STORAGE_LIST: OnceLock<Mutex<PokemonStorage>> = OnceLock::new();
 
 /// How often the background thread refreshes the box cache.
-const SLEEP_TIMER: std::time::Duration = std::time::Duration::from_secs(5);
+const SLEEP_TIMER: std::time::Duration = std::time::Duration::from_millis(250);
 
 /// `true` while the background thread should keep running.
 static RUNNING: AtomicBool = AtomicBool::new(false);
