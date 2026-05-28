@@ -24,6 +24,7 @@
 
 mod app;
 mod client;
+mod web;
 
 use app::AggregatorApp;
 use clap::Parser;
@@ -51,6 +52,14 @@ struct Cli {
     /// Example: `--db postgresql://localhost/nuzlocke`
     #[arg(long = "db", value_name = "CONN")]
     db: Option<String>,
+
+    /// Run as a headless WebSocket overlay server instead of opening a window.
+    /// OBS connects to the served URL as a Browser Source.
+    ///
+    /// Example: `--ws-port 9090`
+    #[arg(long = "ws-port", value_name = "PORT")]
+    ws_port: Option<u16>,
+
 }
 
 // ---------------------------------------------------------------------------
@@ -79,24 +88,28 @@ fn main() {
                 slot.known_species.clone(),
                 slot.texture_request_queue.clone(),
                 slot.label.clone(),
+                slot.sprite_cache.clone(),
             );
             slot
         })
         .collect();
 
-    // Scale the initial window width with the number of slots (minimum 2
-    // columns) so the layout isn't cramped when launched with many players.
-    let slot_count = slots.len();
-    let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_title("Fire Red Aggregator")
-            .with_inner_size([(320 * slot_count.max(2)) as f32, 1000.0]),
-        ..Default::default()
-    };
-
-    let _ = eframe::run_native(
-        "Fire Red Aggregator",
-        options,
-        Box::new(move |cc| Box::new(AggregatorApp::new(cc, slots))),
-    );
+    if let Some(port) = cli.ws_port {
+        // Headless WebSocket overlay mode — no window opened.
+        web::run(slots, port);
+    } else {
+        // Normal egui window mode.
+        let slot_count = slots.len();
+        let options = eframe::NativeOptions {
+            viewport: egui::ViewportBuilder::default()
+                .with_title("Fire Red Aggregator")
+                .with_inner_size([(320 * slot_count.max(2)) as f32, 1000.0]),
+            ..Default::default()
+        };
+        let _ = eframe::run_native(
+            "Fire Red Aggregator",
+            options,
+            Box::new(move |cc| Box::new(AggregatorApp::new(cc, slots))),
+        );
+    }
 }

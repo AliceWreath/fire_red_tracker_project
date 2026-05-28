@@ -448,12 +448,16 @@ pub fn get_or_create_run(player_name: &str) -> u32 {
 }
 
 /// Updates the player name on the active run once it is known from the game.
+///
+/// Only writes if the run name is still 'Unknown' — this prevents a second
+/// tracker process (soul-link partner) from overwriting the first player's name
+/// and breaking the aggregator's run lookup.
 pub fn set_player_name(name: &str) {
     let mut state = db().lock().unwrap_or_else(|e| e.into_inner());
     if let Some(id) = state.run_id {
         state.client
             .execute(
-                "UPDATE runs SET player_name = $1 WHERE id = $2 AND player_name != $1",
+                "UPDATE runs SET player_name = $1 WHERE id = $2 AND player_name = 'Unknown'",
                 &[&name, &(id as i32)],
             )
             .expect("Failed to update player name");
@@ -708,12 +712,15 @@ impl DbReader {
         })
     }
 
-    /// Updates the cached run ID to the most recent run for `player_name`.
+    /// Updates the cached run ID to the most recent run in the database.
+    ///
+    /// `player_name` is used only to avoid re-querying every frame — the lookup
+    /// itself picks the most recent run regardless of name. This allows both
+    /// players in a soul-link run to resolve to the same shared run even though
+    /// only one player's name is stored on the run row.
     ///
     /// Returns `true` if the run ID actually changed (including the first time
-    /// a run is successfully resolved). Safe to call every frame — re-queries
-    /// only when the name changes OR when the previous query returned no match
-    /// (so the caller retries until the tracker has written the player name).
+    /// a run is successfully resolved). Safe to call every frame.
     pub fn sync_player(&self, player_name: &str) -> bool {
         {
             let last = self.last_player.lock().unwrap_or_else(|e| e.into_inner());
@@ -723,8 +730,8 @@ impl DbReader {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .query_opt(
-                "SELECT id FROM runs WHERE player_name = $1 ORDER BY id DESC LIMIT 1",
-                &[&player_name],
+                "SELECT id FROM runs ORDER BY id DESC LIMIT 1",
+                &[],
             )
             .ok()
             .flatten()

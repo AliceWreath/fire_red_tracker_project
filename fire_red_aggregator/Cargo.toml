@@ -17,6 +17,10 @@ fire_red_image_data = { path = "../fire_red_image_data" }
 flate2 = "1"
 bincode = "1"
 serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 eframe = "0.27"
 egui = "0.27"
 clap = { version = "4.0", features = ["derive"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+axum = { version = "0.7", features = ["ws"] }
+image = "0.25"

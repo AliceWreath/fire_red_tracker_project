@@ -598,7 +598,7 @@ impl eframe::App for AggregatorApp {
 
                     let partner = self.db_caches[j].caught
                         .iter()
-                        .find(|c| c.met_location == met_loc)
+                        .find(|c| c.met_location == met_loc && c.personality != dead_p)
                         .cloned();
 
                     if let Some(p) = partner {

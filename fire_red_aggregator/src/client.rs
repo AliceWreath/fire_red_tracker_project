@@ -22,11 +22,33 @@
 //! self-contained here so the aggregator has no dependency on that crate.
 
 use fire_red_states::{ClientMessage, GameState, ServerMessage, recv_message, send_message};
-use std::collections::{HashSet, VecDeque};
+use image::ImageEncoder;
+use image::codecs::png::PngEncoder;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::TcpStream;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+
+// ---------------------------------------------------------------------------
+// Sprite cache
+// ---------------------------------------------------------------------------
+
+/// PNG-encoded sprite cache shared between the TCP reader thread and the HTTP
+/// sprite endpoint. Keyed by `(species, is_shiny)`.
+pub type SpriteCache = Arc<Mutex<HashMap<(u16, bool), Vec<u8>>>>;
+
+/// Encodes raw RGBA pixels directly to PNG bytes using the PNG codec.
+pub fn encode_png(pixels: &[u8], width: u32, height: u32) -> Option<Vec<u8>> {
+    if pixels.len() < (width as usize) * (height as usize) * 4 {
+        return None;
+    }
+    let mut buf = Vec::new();
+    PngEncoder::new(&mut buf)
+        .write_image(pixels, width, height, image::ExtendedColorType::Rgba8)
+        .ok()?;
+    Some(buf)
+}
 
 // ---------------------------------------------------------------------------
 // Pending texture
@@ -83,6 +105,10 @@ pub struct MonitorSlot {
     /// Opened lazily on first successful access; `None` if no path was given or
     /// the file does not yet exist.
     pub db: Option<fire_red_database::DbReader>,
+    /// Optional sprite cache set by web mode. When populated, the `spawn_client`
+    /// reader thread encodes received sprites directly into this cache so the
+    /// HTTP sprite endpoint can serve them without a separate drain step.
+    pub sprite_cache: Arc<Mutex<Option<SpriteCache>>>,
 }
 
 impl MonitorSlot {
@@ -106,6 +132,7 @@ impl MonitorSlot {
             texture_request_queue: Arc::new(Mutex::new(VecDeque::new())),
             _db_path: db_path,
             db,
+            sprite_cache: Arc::new(Mutex::new(None)),
         }
     }
 }
@@ -167,6 +194,7 @@ pub fn spawn_client(
     known_species: Arc<Mutex<HashSet<u16>>>,
     texture_request_queue: Arc<Mutex<VecDeque<Vec<u16>>>>,
     label: Arc<Mutex<String>>,
+    sprite_cache: Arc<Mutex<Option<SpriteCache>>>,
 ) {
     std::thread::spawn(move || {
         loop {
@@ -222,16 +250,42 @@ pub fn spawn_client(
                                 *state.lock().unwrap_or_else(|e| e.into_inner()) = Some(gs);
                             }
                             Ok(ServerMessage::Textures(sprites)) => {
+                                // Snapshot the sprite cache Arc so we don't
+                                // hold the outer lock while encoding.
+                                let maybe_cache: Option<SpriteCache> = sprite_cache
+                                    .lock()
+                                    .unwrap_or_else(|e| e.into_inner())
+                                    .clone();
+
                                 let mut pending =
                                     pending_textures.lock().unwrap_or_else(|e| e.into_inner());
                                 let mut known =
                                     known_species.lock().unwrap_or_else(|e| e.into_inner());
                                 for sprite in sprites {
                                     known.insert(sprite.species);
+                                    let pixels = decompress_pixels(&sprite.pixels);
+
+                                    // Encode PNG directly into cache (web mode).
+                                    if let Some(ref cache) = maybe_cache {
+                                        let key = (sprite.species, sprite.shiny);
+                                        let mut c = cache
+                                            .lock()
+                                            .unwrap_or_else(|e| e.into_inner());
+                                        if !c.contains_key(&key) {
+                                            if let Some(png) = encode_png(
+                                                &pixels,
+                                                sprite.width,
+                                                sprite.height,
+                                            ) {
+                                                c.insert(key, png);
+                                            }
+                                        }
+                                    }
+
                                     pending.push(PendingTexture {
                                         species: sprite.species,
                                         shiny: sprite.shiny,
-                                        pixels: decompress_pixels(&sprite.pixels),
+                                        pixels,
                                         width: sprite.width,
                                         height: sprite.height,
                                     });
