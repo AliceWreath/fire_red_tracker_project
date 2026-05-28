@@ -53,6 +53,49 @@ aggregator 192.168.1.10:7878 192.168.1.11:7878
 
 The window width scales with the number of players. Soul Link matches (Pokémon sharing the same caught location across players) are highlighted automatically.
 
+#### Database integration
+
+Pass a PostgreSQL connection string with `--db` to enable persistent Nuzlocke tracking. Both players share a single run so all caught and dead Pokémon end up in one place, with each player's records identified by their OT ID.
+
+```
+aggregator --db postgresql://user:pass@host/nuzlocke player1-ip:7878 player2-ip:7879
+```
+
+When a database is connected the aggregator:
+
+- Records every caught Pokémon (species, nickname, IVs, met location, timestamp).
+- Records every death (full stats snapshot, cause, timestamp).
+- Automatically propagates Soul Link deaths — when one partner faints, the other is immediately marked dead in the database and shown as dead in the UI without waiting for the tracker's next poll cycle.
+- Shows a green **● DB** indicator in each player column when connected.
+
+The database must already exist (`CREATE DATABASE nuzlocke;`). The schema is created automatically on first run.
+
+#### WebSocket overlay mode
+
+Pass `--ws-port PORT` to run the aggregator as a headless HTTP + WebSocket server instead of opening a window. This is designed for OBS Browser Source overlays.
+
+```
+aggregator --db postgresql://... --ws-port 9090 player1-ip:7878 player2-ip:7879
+```
+
+In OBS, add a **Browser Source** pointing to `http://localhost:9090`. The overlay updates in real time over WebSocket (up to 10 times per second when state changes, zero bandwidth when idle).
+
+The following pages are available:
+
+| URL | Content |
+|---|---|
+| `http://localhost:PORT/` | Full overlay — all players side by side |
+| `http://localhost:PORT/0/party` | Player 1's party only |
+| `http://localhost:PORT/0/encounters` | Player 1's current area encounters only |
+| `http://localhost:PORT/0/dead` | Player 1's dead Pokémon log (requires `--db`) |
+| `http://localhost:PORT/0/caught` | Player 1's caught Pokémon log (requires `--db`) |
+| `http://localhost:PORT/1/party` | Player 2's party only |
+| `http://localhost:PORT/1/encounters` | Player 2's current area encounters only |
+| `http://localhost:PORT/1/dead` | Player 2's dead Pokémon log (requires `--db`) |
+| `http://localhost:PORT/1/caught` | Player 2's caught Pokémon log (requires `--db`) |
+
+The full overlay and per-player pages can all be added as separate Browser Sources in OBS and positioned independently.
+
 > **ROM paths with spaces** can be quoted: `tracker "My ROMs/fire red.gba"`
 
 ---
@@ -61,7 +104,13 @@ The window width scales with the number of players. Soul Link matches (Pokémon 
 
 In a **Nuzlocke** run, the player may only catch the first Pokémon encountered in each new area, and any Pokémon that faints is considered dead and must be released. The encounter panel makes it easy to see at a glance which Pokémon are available before stepping into grass.
 
-A **Soul Link** is a Nuzlocke variant played with a partner: each player's catches are paired with their partner's catch from the same route. If one linked Pokémon faints, both must be released. The aggregator's Soul Link detection automates the pairing by comparing `met_location` values across all connected players' parties, removing the need to manually track which Pokémon are linked.
+A **Soul Link** is a Nuzlocke variant played with a partner: each player's catches are paired with their partner's catch from the same route. If one linked Pokémon faints, both must be released. The aggregator automates this in two layers:
+
+1. **Instant visual detection** — compares `met_location` across all connected players' live party data every 100 ms. The moment a Pokémon's HP reaches zero, its partner is shown as dead immediately, before the tracker has written anything to the database. The partner's card is labelled "Soul Link" and tinted accordingly.
+
+2. **Database propagation** (requires `--db`) — once the tracker writes a death record, the aggregator cross-references it against the caught table and writes a corresponding soul-link death record for the partner. This persists across sessions so the dead state survives restarts.
+
+Both players share a single database run. Caught and dead records from both trainers are stored together and separated by OT ID for per-player views.
 
 > **Limitation:** Soul Link matching uses `met_location` as the pairing key. This is reliable on standard FireRed but may produce false positives on heavily modified ROMs where multiple areas share a location ID.
 
@@ -94,7 +143,7 @@ A **Soul Link** is a Nuzlocke variant played with a partner: each player's catch
 | Binary | Description |
 |---|---|
 | `tracker` | Standalone / server / client — all three modes in one binary, selected by CLI subcommands. |
-| `aggregator` | Multi-player Soul Link viewer. Connects to N tracker servers and renders one column per player. |
+| `aggregator` | Multi-player Soul Link viewer. Connects to N tracker servers and renders one column per player. Optional `--db` flag enables PostgreSQL-backed death/catch tracking and Soul Link propagation. Optional `--ws-port` flag switches to a headless WebSocket overlay server for OBS. |
 
 ### Tracker source layout
 
@@ -123,6 +172,10 @@ The `tracker` binary is split across several modules in `src/`:
 | `colored` | Terminal colour output for the server-mode startup banner |
 | `ctrlc` | Ctrl-C signal handler for clean server shutdown |
 | `libc` | `size_t`, `c_uchar`, `c_uint`, etc. for `#[repr(C)]` FFI structs |
+| `postgres` | Synchronous PostgreSQL client used by the aggregator for Nuzlocke run / death / catch persistence |
+| `axum` | HTTP + WebSocket server for the aggregator's OBS overlay mode (`--ws-port`) |
+| `tokio` | Async runtime backing the axum WebSocket server |
+| `serde_json` | JSON serialisation of game state pushed to WebSocket clients |
 
 ---
 
@@ -323,12 +376,23 @@ Both binaries (`tracker` and `aggregator`) are produced in `target/release/`.
 ./tracker firered.gba server --port 7879
 ```
 
-**Aggregator (run on either machine or a third):**
+**Aggregator — GUI window:**
 ```
-./aggregator player1-ip:7878 player2-ip:7879
+./aggregator --db postgresql://localhost/nuzlocke player1-ip:7878 player2-ip:7879
 ```
 
+**Aggregator — OBS WebSocket overlay (headless):**
+```
+./aggregator --db postgresql://localhost/nuzlocke --ws-port 9090 player1-ip:7878 player2-ip:7879
+```
+
+Then in OBS add Browser Sources for whichever pages you need, e.g.:
+- `http://localhost:9090/` — full side-by-side overlay
+- `http://localhost:9090/0/party` and `http://localhost:9090/1/party` — per-player party panels
+
 Each player can also run a local `client` instance alongside the server if they want their own GUI view in addition to the shared aggregator.
+
+> **Database setup:** create the database once before first use: `psql -c 'CREATE DATABASE nuzlocke;'`. The schema (tables for runs, caught Pokémon, dead Pokémon) is created automatically on aggregator startup.
 
 ---
 
