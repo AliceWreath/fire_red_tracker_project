@@ -501,9 +501,14 @@ impl BroadcastLoop {
 // ---------------------------------------------------------------------------
 
 const OVERLAY_HTML: &str = include_str!("overlay.html");
+const FOCUSED_HTML: &str = include_str!("focused.html");
 
 async fn serve_html() -> Html<&'static str> {
     Html(OVERLAY_HTML)
+}
+
+async fn serve_focused() -> Html<&'static str> {
+    Html(FOCUSED_HTML)
 }
 
 async fn ws_handler(
@@ -570,6 +575,8 @@ pub fn run(slots: Vec<MonitorSlot>, port: u16) {
         let app = Router::new()
             .route("/", get(serve_html))
             .route("/ws", get(ws_handler))
+            .route("/:index/party", get(serve_focused))
+            .route("/:index/encounters", get(serve_focused))
             .with_state(tx);
 
         let addr = format!("0.0.0.0:{}", port);
