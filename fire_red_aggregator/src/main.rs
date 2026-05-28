@@ -74,7 +74,13 @@ fn main() {
     // For each address: create a MonitorSlot, then hand clones of its shared
     // Arcs to spawn_client so the network thread and the GUI share the same
     // state without the slot giving up ownership of the Arcs.
-    let db = cli.db;
+    let db = cli.db.map(|s| {
+        if s.starts_with("postgresql://") || s.starts_with("postgres://") {
+            s
+        } else {
+            format!("postgresql://{}", s)
+        }
+    });
     let slots: Vec<MonitorSlot> = cli
         .addrs
         .into_iter()

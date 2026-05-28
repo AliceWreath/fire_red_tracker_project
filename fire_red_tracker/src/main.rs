@@ -83,7 +83,12 @@ fn main() {
         None                                 => Mode::Standalone,
     };
 
-    fire_red_database::initialize(&cli.db);
+    let db_conn = if cli.db.starts_with("postgresql://") || cli.db.starts_with("postgres://") {
+        cli.db.clone()
+    } else {
+        format!("postgresql://{}", cli.db)
+    };
+    fire_red_database::initialize(&db_conn);
 
     // --list-runs: print stored runs and exit without starting the tracker.
     if cli.list_runs {
