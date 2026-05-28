@@ -57,6 +57,56 @@ struct SlotDto {
     next_gym:     Option<GymDto>,
     party:        Vec<MemberDto>,
     encounters:   Vec<EncounterGroupDto>,
+    dead:         Vec<DeadMonDto>,
+    caught:       Vec<CaughtMonDto>,
+}
+
+#[derive(serde::Serialize, Clone)]
+struct DeadMonDto {
+    nickname:      String,
+    species_name:  String,
+    level:         u8,
+    nature:        String,
+    shiny:         bool,
+    soul_link:     bool,
+    died_at:       String,
+    max_hp:        u16,
+    attack:        u16,
+    defense:       u16,
+    speed:         u16,
+    sp_attack:     u16,
+    sp_defense:    u16,
+    iv_hp:         u8,
+    iv_atk:        u8,
+    iv_def:        u8,
+    iv_spe:        u8,
+    iv_spa:        u8,
+    iv_spd:        u8,
+    ev_hp:         u8,
+    ev_atk:        u8,
+    ev_def:        u8,
+    ev_spe:        u8,
+    ev_spa:        u8,
+    ev_spd:        u8,
+    sprite:        Option<String>,
+}
+
+#[derive(serde::Serialize, Clone)]
+struct CaughtMonDto {
+    nickname:      String,
+    species_name:  String,
+    level:         u8,
+    nature:        String,
+    shiny:         bool,
+    caught_at:     String,
+    met_location:  u8,
+    iv_hp:         u8,
+    iv_atk:        u8,
+    iv_def:        u8,
+    iv_spe:        u8,
+    iv_spa:        u8,
+    iv_spd:        u8,
+    sprite:        Option<String>,
 }
 
 #[derive(serde::Serialize, Clone)]
@@ -133,6 +183,9 @@ struct BroadcastLoop {
     soul_link_propagated: HashSet<(usize, u32)>,
     last_json:            String,
     sprites:              SpriteCache,
+    /// OT ID seen from each slot's live party — used to filter caught/dead
+    /// records so each player only sees their own pokemon.
+    player_ot_ids:        Vec<Option<u32>>,
 }
 
 impl BroadcastLoop {
@@ -144,6 +197,7 @@ impl BroadcastLoop {
             soul_link_propagated: HashSet::new(),
             last_json:            String::new(),
             sprites,
+            player_ot_ids:        vec![None; n],
         }
     }
 
@@ -241,6 +295,15 @@ impl BroadcastLoop {
             })
             .collect();
 
+        // Update OT ID cache from live party (persists after disconnect)
+        for i in 0..n {
+            if let Some(gs) = &states[i].1 {
+                if let Some(p) = gs.party.first() {
+                    self.player_ot_ids[i] = Some(p.box_mon.ot_id);
+                }
+            }
+        }
+
         // Sprite pipeline
         self.request_sprites(&states);
         self.drain_sprites();
@@ -275,6 +338,38 @@ impl BroadcastLoop {
                     .unwrap_or_default()
             })
             .collect();
+
+        // Request sprites for dead and caught pokemon not yet in the cache
+        {
+            let cache = self.sprites.lock().unwrap_or_else(|e| e.into_inner());
+            for (i, slot) in self.slots.iter().enumerate() {
+                let mut known = slot.known_species.lock().unwrap_or_else(|e| e.into_inner());
+                let mut needed: Vec<u16> = Vec::new();
+                for dp in all_dead[i].values() {
+                    let s = dp.species;
+                    if s > 0 && s <= 386 && !known.contains(&s) && !cache.contains_key(&(s, dp.is_shiny)) {
+                        needed.push(s);
+                        known.insert(s);
+                    }
+                }
+                for cp in &self.caches[i].caught {
+                    let s = cp.species;
+                    if s > 0 && s <= 386 && !known.contains(&s) && !cache.contains_key(&(s, cp.is_shiny)) {
+                        needed.push(s);
+                        known.insert(s);
+                    }
+                }
+                drop(known);
+                if !needed.is_empty() {
+                    needed.sort();
+                    needed.dedup();
+                    slot.texture_request_queue
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .push_back(needed);
+                }
+            }
+        }
 
         // DB soul-link death propagation
         for i in 0..n {
@@ -483,7 +578,64 @@ impl BroadcastLoop {
                     }
                 };
 
-                SlotDto { label: label.clone(), connected, db_connected, badges, next_gym, party, encounters }
+                // Dead and caught come from the DB regardless of live connection.
+                // Filter by OT ID so each slot only shows its own trainer's pokemon.
+                let ot_id = self.player_ot_ids[i];
+                let mut dead_sorted: Vec<&DeadPokemon> = dead_records
+                    .values()
+                    .filter(|dp| ot_id.map_or(false, |id| dp.ot_id == id))
+                    .collect();
+                dead_sorted.sort_by(|a, b| b.died_at.cmp(&a.died_at));
+                let dead: Vec<DeadMonDto> = dead_sorted.iter().map(|dp| DeadMonDto {
+                    nickname:     dp.nickname.clone(),
+                    species_name: dp.species_name.clone(),
+                    level:        dp.level,
+                    nature:       dp.nature.clone(),
+                    shiny:        dp.is_shiny,
+                    soul_link:    dp.max_hp == 0,
+                    died_at:      fire_red_database::format_timestamp(dp.died_at),
+                    max_hp:       dp.max_hp,
+                    attack:       dp.attack,
+                    defense:      dp.defense,
+                    speed:        dp.speed,
+                    sp_attack:    dp.sp_attack,
+                    sp_defense:   dp.sp_defense,
+                    iv_hp:        dp.ivs.hp,
+                    iv_atk:       dp.ivs.attack,
+                    iv_def:       dp.ivs.defense,
+                    iv_spe:       dp.ivs.speed,
+                    iv_spa:       dp.ivs.sp_attack,
+                    iv_spd:       dp.ivs.sp_defense,
+                    ev_hp:        dp.evs.hp,
+                    ev_atk:       dp.evs.attack,
+                    ev_def:       dp.evs.defense,
+                    ev_spe:       dp.evs.speed,
+                    ev_spa:       dp.evs.sp_attack,
+                    ev_spd:       dp.evs.sp_defense,
+                    sprite:       self.sprite_uri(dp.species, dp.is_shiny),
+                }).collect();
+
+                let caught: Vec<CaughtMonDto> = self.caches[i].caught.iter()
+                    .filter(|cp| ot_id.map_or(false, |id| cp.ot_id == id))
+                    .rev()
+                    .map(|cp| CaughtMonDto {
+                    nickname:     cp.nickname.clone(),
+                    species_name: cp.species_name.clone(),
+                    level:        cp.level,
+                    nature:       cp.nature.clone(),
+                    shiny:        cp.is_shiny,
+                    caught_at:    fire_red_database::format_timestamp(cp.caught_at),
+                    met_location: cp.met_location,
+                    iv_hp:        cp.ivs.hp,
+                    iv_atk:       cp.ivs.attack,
+                    iv_def:       cp.ivs.defense,
+                    iv_spe:       cp.ivs.speed,
+                    iv_spa:       cp.ivs.sp_attack,
+                    iv_spd:       cp.ivs.sp_defense,
+                    sprite:       self.sprite_uri(cp.species, cp.is_shiny),
+                }).collect();
+
+                SlotDto { label: label.clone(), connected, db_connected, badges, next_gym, party, encounters, dead, caught }
             })
             .collect();
 
@@ -577,6 +729,8 @@ pub fn run(slots: Vec<MonitorSlot>, port: u16) {
             .route("/ws", get(ws_handler))
             .route("/:index/party", get(serve_focused))
             .route("/:index/encounters", get(serve_focused))
+            .route("/:index/dead", get(serve_focused))
+            .route("/:index/caught", get(serve_focused))
             .with_state(tx);
 
         let addr = format!("0.0.0.0:{}", port);

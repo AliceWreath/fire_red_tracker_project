@@ -60,6 +60,19 @@ html, body {
 .enc-mon { display: flex; flex-direction: column; align-items: center; gap: 1px; }
 .enc-sprite { width: 40px; height: 40px; image-rendering: pixelated; }
 .enc-lv { font-size: 9px; color: #888; text-align: center; }
+.record {
+    padding: 5px 0;
+    border-bottom: 1px solid rgba(255,255,255,0.07);
+    display: flex;
+    gap: 8px;
+    align-items: flex-start;
+}
+.record-sprite { width: 48px; height: 48px; image-rendering: pixelated; flex-shrink: 0; }
+.record.dead-record .record-sprite { filter: grayscale(100%) brightness(0.5); }
+.record-info { flex: 1; min-width: 0; }
+.record-name { font-weight: bold; font-size: 14px; display: flex; align-items: center; gap: 5px; }
+.record.dead-record .record-name { color: #965050; }
+.section-empty { font-size: 12px; color: #606060; padding: 6px 0; }
 </style>
 </head>
 <body>
@@ -96,6 +109,10 @@ function render(slots) {
         renderParty(root, slot);
     } else if (section === 'encounters') {
         renderEncounters(root, slot);
+    } else if (section === 'dead') {
+        renderDead(root, slot);
+    } else if (section === 'caught') {
+        renderCaught(root, slot);
     }
 }
 
@@ -198,6 +215,98 @@ function renderEncounters(root, slot) {
         }
         sec.appendChild(row);
         root.appendChild(sec);
+    }
+}
+
+function renderDead(root, slot) {
+    if (!slot.dead || slot.dead.length === 0) {
+        root.appendChild(el('div', 'section-empty', 'No deaths recorded'));
+        return;
+    }
+    for (const mon of slot.dead) {
+        const row = el('div', 'record dead-record');
+
+        if (mon.sprite) {
+            const img = document.createElement('img');
+            img.className = 'record-sprite';
+            img.src = mon.sprite;
+            row.appendChild(img);
+        }
+
+        const info = el('div', 'record-info');
+
+        const nr = el('div', 'record-name');
+        nr.appendChild(document.createTextNode(mon.nickname));
+        if (mon.shiny) nr.appendChild(el('span', 'shiny', '✨'));
+        nr.appendChild(el('span', 'dead-badge', 'DEAD'));
+        info.appendChild(nr);
+
+        info.appendChild(el('div', 'mon-sub',
+            'Lv.' + mon.level + ' ' + mon.species_name + ' — ' + mon.nature +
+            (mon.shiny ? ' ★' : '')));
+
+        if (mon.soul_link) {
+            info.appendChild(el('div', 'mon-sub', 'Soul Link'));
+        } else {
+            info.appendChild(el('div', 'mon-sub-sm',
+                'HP '  + mon.max_hp   +
+                ' | Atk ' + mon.attack   +
+                ' | Def ' + mon.defense  +
+                ' | Spe ' + mon.speed    +
+                ' | SpA ' + mon.sp_attack +
+                ' | SpD ' + mon.sp_defense));
+        }
+
+        info.appendChild(el('div', 'mon-sub-sm',
+            'IV: ' + mon.iv_hp + '/' + mon.iv_atk + '/' + mon.iv_def +
+            '/' + mon.iv_spe + '/' + mon.iv_spa + '/' + mon.iv_spd));
+
+        info.appendChild(el('div', 'mon-sub-sm',
+            'EV: ' + mon.ev_hp + '/' + mon.ev_atk + '/' + mon.ev_def +
+            '/' + mon.ev_spe + '/' + mon.ev_spa + '/' + mon.ev_spd));
+
+        info.appendChild(el('div', 'mon-sub-sm', 'Died: ' + mon.died_at));
+
+        row.appendChild(info);
+        root.appendChild(row);
+    }
+}
+
+function renderCaught(root, slot) {
+    if (!slot.caught || slot.caught.length === 0) {
+        root.appendChild(el('div', 'section-empty', 'No pokemon recorded'));
+        return;
+    }
+    for (const mon of slot.caught) {
+        const row = el('div', 'record');
+
+        if (mon.sprite) {
+            const img = document.createElement('img');
+            img.className = 'record-sprite';
+            img.src = mon.sprite;
+            row.appendChild(img);
+        }
+
+        const info = el('div', 'record-info');
+
+        const nr = el('div', 'record-name');
+        nr.appendChild(document.createTextNode(mon.nickname));
+        if (mon.shiny) nr.appendChild(el('span', 'shiny', '✨'));
+        nr.appendChild(el('span', 'lv', 'Lv' + mon.level));
+        info.appendChild(nr);
+
+        info.appendChild(el('div', 'mon-sub',
+            mon.species_name + ' — ' + mon.nature + (mon.shiny ? ' ★' : '')));
+
+        info.appendChild(el('div', 'mon-sub-sm',
+            'IV: ' + mon.iv_hp + '/' + mon.iv_atk + '/' + mon.iv_def +
+            '/' + mon.iv_spe + '/' + mon.iv_spa + '/' + mon.iv_spd));
+
+        info.appendChild(el('div', 'mon-sub-sm', 'Caught: ' + mon.caught_at));
+        info.appendChild(el('div', 'mon-sub-sm', 'Area: map #' + mon.met_location));
+
+        row.appendChild(info);
+        root.appendChild(row);
     }
 }
 
