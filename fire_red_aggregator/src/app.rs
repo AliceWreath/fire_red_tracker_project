@@ -87,6 +87,11 @@ pub struct AggregatorApp {
     /// soul-link death written to the database, so we don't re-insert every
     /// frame.
     soul_link_propagated: HashSet<(usize, u32)>,
+    // Computed each frame in update(), consumed in ui().
+    frame_states:              Vec<(String, Option<GameState>)>,
+    frame_all_dead:            Vec<HashMap<u32, DeadPokemon>>,
+    frame_live_soul_link_dead: Vec<HashSet<u32>>,
+    frame_db_connected:        Vec<bool>,
 }
 
 impl AggregatorApp {
@@ -94,9 +99,13 @@ impl AggregatorApp {
         let n = slots.len();
         Self {
             slots,
-            textures:              HashMap::new(),
-            db_caches:             (0..n).map(|_| SlotDbCache::new()).collect(),
-            soul_link_propagated:  HashSet::new(),
+            textures:                  HashMap::new(),
+            db_caches:                 (0..n).map(|_| SlotDbCache::new()).collect(),
+            soul_link_propagated:      HashSet::new(),
+            frame_states:              Vec::new(),
+            frame_all_dead:            Vec::new(),
+            frame_live_soul_link_dead: Vec::new(),
+            frame_db_connected:        Vec::new(),
         }
     }
 
@@ -178,7 +187,7 @@ impl AggregatorApp {
         // ── Party + caught log region (top, scrollable) ───────────────────────
         let party_rect =
             egui::Rect::from_min_size(full_rect.min, egui::vec2(full_rect.width(), party_height));
-        ui.allocate_ui_at_rect(party_rect, |ui| {
+        ui.scope_builder(egui::UiBuilder::new().max_rect(party_rect), |ui| {
             Self::draw_party_region(
                 ui, label, state, dead_records, soul_link_dead, db_connected, textures, all_states,
             );
@@ -188,7 +197,7 @@ impl AggregatorApp {
         let enc_min = egui::pos2(full_rect.min.x, full_rect.max.y - enc_height);
         let enc_rect =
             egui::Rect::from_min_size(enc_min, egui::vec2(full_rect.width(), enc_height));
-        ui.allocate_ui_at_rect(enc_rect, |ui| {
+        ui.scope_builder(egui::UiBuilder::new().max_rect(enc_rect), |ui| {
             Self::draw_encounter_region(ui, state, textures);
         });
     }
@@ -230,7 +239,7 @@ impl AggregatorApp {
         };
 
         egui::ScrollArea::vertical()
-            .id_source(format!("{}_party_scroll", label))
+            .id_salt(format!("{}_party_scroll", label))
             .show(ui, |ui| {
                 // Badge summary
                 if let Some(badge_state) = &gs.badge_state {
@@ -522,7 +531,34 @@ impl AggregatorApp {
 // ---------------------------------------------------------------------------
 
 impl eframe::App for AggregatorApp {
-    /// Main per-frame callback.
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        let n = self.slots.len();
+        if self.frame_states.len() < n { return; }
+
+        let textures              = &self.textures;
+        let frame_states          = &self.frame_states;
+        let frame_all_dead        = &self.frame_all_dead;
+        let frame_soul_link_dead  = &self.frame_live_soul_link_dead;
+        let db_connected          = &self.frame_db_connected;
+
+        for i in 0..n {
+            let (label, state)   = &frame_states[i];
+            let dead_records     = &frame_all_dead[i];
+            let soul_link_dead   = &frame_soul_link_dead[i];
+
+            let panel_id = egui::Id::new(format!("player_col_{}", i));
+            egui::Panel::left(panel_id)
+                .exact_size(COLUMN_WIDTH)
+                .resizable(false)
+                .show_inside(ui, |ui| {
+                    AggregatorApp::draw_column(
+                        ui, label, state, dead_records, soul_link_dead,
+                        db_connected[i], textures, frame_states,
+                    );
+                });
+        }
+    }
+
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         ctx.request_repaint();
         self.process_textures(ctx);
@@ -643,29 +679,11 @@ impl eframe::App for AggregatorApp {
             }
         }
 
-        // ── Draw player columns ───────────────────────────────────────────────
-        let textures = &self.textures;
-
-        for i in 0..self.slots.len() {
-            let (label, state) = &states[i];
-            let dead_records        = &all_dead[i];
-            let db_connected        = self.slots[i].db.is_some();
-            let slot_soul_link_dead = &live_soul_link_dead[i];
-
-            let panel_id = egui::Id::new(format!("player_col_{}", i));
-            egui::SidePanel::left(panel_id)
-                .exact_width(COLUMN_WIDTH)
-                .resizable(false)
-                .show(ctx, |ui| {
-                    AggregatorApp::draw_column(
-                        ui, label, state, dead_records, slot_soul_link_dead,
-                        db_connected, textures, &states,
-                    );
-                });
-        }
-
-        // Consume remaining space so egui doesn't complain about a missing CentralPanel.
-        egui::CentralPanel::default().show(ctx, |_ui| {});
+        // ── Store frame data for ui() ─────────────────────────────────────────
+        self.frame_db_connected        = self.slots.iter().map(|s| s.db.is_some()).collect();
+        self.frame_states              = states;
+        self.frame_all_dead            = all_dead;
+        self.frame_live_soul_link_dead = live_soul_link_dead;
     }
 }
 

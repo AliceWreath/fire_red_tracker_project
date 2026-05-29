@@ -10,28 +10,38 @@
 //! - **Client** — connects to a server over TCP, receives state and sprites,
 //!   and renders the GUI without needing the ROM locally.
 //!
-//! # Usage
+//! # Configuration
+//!
+//! Settings (ROM path, database, clean mode, default operating mode) are stored
+//! in `~/.config/fire_red_tracker/config.toml`.  On first launch the tracker
+//! prompts for each value and writes the file.  Any value can be overridden for
+//! a single run via CLI flags:
 //!
 //! ```text
-//! tracker <ROM>                                    # standalone
-//! tracker <ROM> --clean                            # standalone, ability names enabled
-//! tracker <ROM> server [--port <PORT>]             # server (default port 7878)
-//! tracker client [--host <HOST>] [--port <PORT>]   # client (default 127.0.0.1:7878)
+//! tracker                                  # use config defaults
+//! tracker [ROM]                            # override ROM path for this run
+//! tracker --clean                          # enable ability names for this run
+//! tracker --db <CONN>                      # override database for this run
+//! tracker server [--port <PORT>]           # force server mode for this run
+//! tracker client [--host <HOST>] [--port]  # force client mode for this run
+//! tracker --new-run                        # start a new nuzlocke run
+//! tracker --list-runs                      # print stored runs and exit
+//! tracker --config <FILE>                  # use an alternate config file
 //! ```
-//!
-//! ROM paths containing spaces can be quoted: `tracker "My ROMs/firered.gba"`
 //!
 //! # Module layout
 //!
 //! | Module        | Responsibility                                         |
 //! |---------------|--------------------------------------------------------|
 //! | [`cli`]       | clap CLI struct and subcommand definitions             |
+//! | [`config`]    | Config file loading, saving, and first-run prompts     |
 //! | [`game`]      | EWRAM/IWRAM helpers, `is_shiny`, `game_is_loaded`      |
 //! | [`textures`]  | Sprite loading, compression, `PendingTexture`          |
 //! | [`gui`]       | `WindowInfo`, egui rendering, party/encounter panels   |
 //! | [`server`]    | Per-client TCP handler for server mode                 |
 
 mod cli;
+mod config;
 mod game;
 mod gui;
 mod server;
@@ -77,16 +87,32 @@ static RUNNING: AtomicBool = AtomicBool::new(true);
 fn main() {
     let cli = Cli::parse();
 
+    // Load config (prompts on first run), then overlay any CLI overrides.
+    let config_path = cli.config.as_deref()
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(config::default_config_path);
+    let cfg = config::load_or_prompt(&config_path);
+
+    // Mode: CLI subcommand wins; otherwise use what the config says.
     let mode = match cli.command {
         Some(Command::Server { port })       => Mode::Server { port },
         Some(Command::Client { host, port }) => Mode::Client { host, port },
-        None                                 => Mode::Standalone,
+        None => match cfg.mode {
+            config::ConfigMode::Standalone => Mode::Standalone,
+            config::ConfigMode::Server     => Mode::Server { port: cfg.server_port },
+            config::ConfigMode::Client     => Mode::Client {
+                host: cfg.client_host.clone(),
+                port: cfg.client_port,
+            },
+        },
     };
 
-    let db_conn = if cli.db.starts_with("postgresql://") || cli.db.starts_with("postgres://") {
-        cli.db.clone()
+    // db: CLI arg overrides config.
+    let db_raw = cli.db.unwrap_or(cfg.db);
+    let db_conn = if db_raw.starts_with("postgresql://") || db_raw.starts_with("postgres://") {
+        db_raw
     } else {
-        format!("postgresql://{}", cli.db)
+        format!("postgresql://{}", db_raw)
     };
     fire_red_database::initialize(&db_conn);
 
@@ -133,21 +159,13 @@ fn main() {
         }
     }
 
-    let is_clean = cli.clean;
+    // clean: CLI flag enables; config value is the baseline.
+    let is_clean = cfg.clean || cli.clean;
 
-    // ROM is required in standalone and server modes.
+    // ROM: CLI arg overrides config; client mode doesn't need one.
     let rom_path = match &mode {
         Mode::Client { .. } => String::new(),
-        _ => match cli.rom {
-            Some(path) => path,
-            None => {
-                eprintln!("Error: a ROM path is required in standalone and server modes.");
-                eprintln!("Usage: tracker <ROM> [--clean]");
-                eprintln!("       tracker <ROM> server [--port <PORT>]");
-                eprintln!("       tracker client [--host <HOST>] [--port <PORT>]");
-                std::process::exit(1);
-            }
-        },
+        _ => cli.rom.unwrap_or(cfg.rom),
     };
 
     // Tracks whether the game is fully loaded (past title screen).

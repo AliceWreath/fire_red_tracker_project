@@ -23,3 +23,5 @@ fire_red_database = { path = "../fire_red_database" }
 fire_red_text = { path = "../fire_red_text" }
 colored = "3.1.1"
 clap = { version = "4.0", features = ["derive"] }
+toml = "0.8"
+rfd = "0.15"

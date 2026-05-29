@@ -24,6 +24,7 @@
 
 mod app;
 mod client;
+mod config;
 mod web;
 
 use app::AggregatorApp;
@@ -36,53 +37,67 @@ use client::{MonitorSlot, spawn_client};
 
 /// Multi-player FireRed tracker aggregator.
 ///
-/// Connect to one or more tracker server instances and display all players
-/// side-by-side in a single window.
+/// Server addresses, database, and WebSocket overlay settings are read from
+/// the config file at first launch and saved for future runs.  Any value can
+/// be overridden for a single run with the corresponding argument below.
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct Cli {
-    /// One or more tracker server addresses in `host:port` format.
-    ///
-    /// Example: `localhost:7878 localhost:7979`
-    #[arg(required = true, value_name = "HOST:PORT")]
+    /// Override: one or more tracker server addresses in `host:port` format.
+    /// Replaces the address list stored in the config file for this run.
+    #[arg(value_name = "HOST:PORT")]
     addrs: Vec<String>,
 
-    /// PostgreSQL connection string shared by all player slots.
-    ///
-    /// Example: `--db postgresql://localhost/nuzlocke`
+    /// Path to the config file (default: ~/.config/fire_red_aggregator/config.toml).
+    #[arg(long, value_name = "FILE")]
+    config: Option<String>,
+
+    /// Override the database connection string stored in the config file.
     #[arg(long = "db", value_name = "CONN")]
     db: Option<String>,
 
-    /// Run as a headless WebSocket overlay server instead of opening a window.
+    /// Override: run headless with a WebSocket overlay server on this port.
     /// OBS connects to the served URL as a Browser Source.
-    ///
-    /// Example: `--ws-port 9090`
     #[arg(long = "ws-port", value_name = "PORT")]
     ws_port: Option<u16>,
-
 }
 
 // ---------------------------------------------------------------------------
 // main
 // ---------------------------------------------------------------------------
 
-/// Parses server addresses, creates one [`MonitorSlot`] and one background
-/// client thread per address, then launches the egui window.
+/// Parses CLI overrides, loads (or prompts for) the config, then creates one
+/// [`MonitorSlot`] and one background client thread per address before
+/// launching the egui window.
 fn main() {
     let cli = Cli::parse();
 
-    // For each address: create a MonitorSlot, then hand clones of its shared
-    // Arcs to spawn_client so the network thread and the GUI share the same
-    // state without the slot giving up ownership of the Arcs.
-    let db = cli.db.map(|s| {
+    // Load config (prompts on first run), then overlay any CLI overrides.
+    let config_path = cli.config.as_deref()
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(config::default_config_path);
+    let cfg = config::load_or_prompt(&config_path);
+
+    // Addresses: CLI positional args replace config list when provided.
+    let addrs = if cli.addrs.is_empty() { cfg.addrs } else { cli.addrs };
+    if addrs.is_empty() {
+        eprintln!("Error: no server addresses provided. Add them to the config file or pass them as arguments.");
+        std::process::exit(1);
+    }
+
+    // db: CLI arg overrides config.
+    let db = cli.db.or(cfg.db).map(|s| {
         if s.starts_with("postgresql://") || s.starts_with("postgres://") {
             s
         } else {
             format!("postgresql://{}", s)
         }
     });
-    let slots: Vec<MonitorSlot> = cli
-        .addrs
+
+    // ws-port: CLI arg overrides config.
+    let ws_port = cli.ws_port.or(cfg.ws_port);
+
+    let slots: Vec<MonitorSlot> = addrs
         .into_iter()
         .enumerate()
         .map(|(i, addr)| {
@@ -100,7 +115,7 @@ fn main() {
         })
         .collect();
 
-    if let Some(port) = cli.ws_port {
+    if let Some(port) = ws_port {
         // Headless WebSocket overlay mode — no window opened.
         web::run(slots, port);
     } else {
@@ -115,7 +130,7 @@ fn main() {
         let _ = eframe::run_native(
             "Fire Red Aggregator",
             options,
-            Box::new(move |cc| Box::new(AggregatorApp::new(cc, slots))),
+            Box::new(move |cc| Ok(Box::new(AggregatorApp::new(cc, slots)))),
         );
     }
 }

@@ -1,23 +1,30 @@
-//! # CLI argument definitions
-//!
-//! Defines the command-line interface for the FireRed Tracker using [`clap`].
-//! The top-level [`Cli`] struct is parsed in `main` and used to derive the
-//! operating [`Mode`] and ROM path.
-
 use clap::{Parser, Subcommand};
 
 /// Real-time Pokémon FireRed party and encounter tracker.
+///
+/// Settings (ROM path, database, clean mode, default operating mode) are read
+/// from the config file at first launch and saved for future runs.  Any value
+/// can be overridden for a single run with the corresponding argument below.
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 pub struct Cli {
-    /// Path to the FireRed ROM file. Wrap in quotes for paths containing spaces.
-    /// Not required in client mode.
+    /// Override the ROM path stored in the config file for this run.
     #[arg(value_name = "ROM")]
     pub rom: Option<String>,
 
-    /// Enable ability name display. Only reliable on unmodified ("clean") ROMs.
+    /// Path to the config file (default: ~/.config/fire_red_tracker/config.toml).
+    #[arg(long, value_name = "FILE")]
+    pub config: Option<String>,
+
+    /// Override: enable ability name display (only reliable on unmodified ROMs).
+    /// Merges with the config value — passing this flag enables clean mode even
+    /// if the config has it set to false.
     #[arg(long, default_value_t = false)]
     pub clean: bool,
+
+    /// Override the database connection string stored in the config file.
+    #[arg(long, value_name = "CONN")]
+    pub db: Option<String>,
 
     /// Start a brand-new run instead of resuming the most recent one.
     #[arg(long, default_value_t = false)]
@@ -31,31 +38,27 @@ pub struct Cli {
     #[arg(long, default_value_t = false)]
     pub list_runs: bool,
 
-    /// PostgreSQL connection string.
-    /// Example: postgresql://user:password@host/dbname
-    /// The database must already exist on the server.
-    #[arg(long, default_value = "postgresql://localhost/nuzlocke")]
-    pub db: String,
-
+    /// Override the operating mode for this run only.
+    /// Omit to use the mode stored in the config file.
     #[command(subcommand)]
     pub command: Option<Command>,
 }
 
-/// Operating mode subcommands.
+/// Mode override subcommands — force a specific operating mode for this run.
 #[derive(Subcommand, Debug)]
 pub enum Command {
-    /// Run as a headless TCP server, streaming game state to connected clients.
+    /// Force server mode: run as a headless TCP server streaming game state to clients.
     Server {
-        /// Port to listen on.
+        /// Port to listen on (overrides config server_port for this run).
         #[arg(long, default_value_t = 7878)]
         port: u16,
     },
-    /// Connect to a tracker server and display its game state.
+    /// Force client mode: connect to a tracker server and display its game state.
     Client {
-        /// Server hostname or IP address.
+        /// Server hostname or IP address (overrides config client_host for this run).
         #[arg(long, default_value = "127.0.0.1")]
         host: String,
-        /// Server port.
+        /// Server port (overrides config client_port for this run).
         #[arg(long, default_value_t = 7878)]
         port: u16,
     },

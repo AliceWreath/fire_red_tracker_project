@@ -1,0 +1,291 @@
+use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
+
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum ConfigMode {
+    Standalone,
+    Server,
+    Client,
+}
+
+impl Default for ConfigMode {
+    fn default() -> Self {
+        ConfigMode::Standalone
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct TrackerConfig {
+    pub rom: String,
+    pub db: String,
+    #[serde(default)]
+    pub clean: bool,
+    #[serde(default)]
+    pub mode: ConfigMode,
+    #[serde(default = "default_server_port")]
+    pub server_port: u16,
+    #[serde(default = "default_client_host")]
+    pub client_host: String,
+    #[serde(default = "default_client_port")]
+    pub client_port: u16,
+}
+
+fn default_server_port() -> u16 { 7878 }
+fn default_client_host() -> String { "127.0.0.1".to_string() }
+fn default_client_port() -> u16 { 7878 }
+
+// ---------------------------------------------------------------------------
+// Config path
+// ---------------------------------------------------------------------------
+
+pub fn default_config_path() -> PathBuf {
+    if let Ok(home) = std::env::var("HOME") {
+        PathBuf::from(home)
+            .join(".config")
+            .join("fire_red_tracker")
+            .join("config.toml")
+    } else {
+        PathBuf::from("tracker.toml")
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Load / save
+// ---------------------------------------------------------------------------
+
+pub fn load_or_prompt(path: &PathBuf) -> TrackerConfig {
+    if path.exists() {
+        let content = std::fs::read_to_string(path).unwrap_or_else(|e| {
+            eprintln!("Failed to read config file {}: {}", path.display(), e);
+            std::process::exit(1);
+        });
+        toml::from_str(&content).unwrap_or_else(|e| {
+            eprintln!("Failed to parse config file {}: {}", path.display(), e);
+            std::process::exit(1);
+        })
+    } else {
+        let config = show_setup_dialog();
+        save_config(&config, path);
+        config
+    }
+}
+
+pub fn save_config(config: &TrackerConfig, path: &PathBuf) {
+    if let Some(parent) = path.parent() {
+        if let Err(e) = std::fs::create_dir_all(parent) {
+            eprintln!("Warning: could not create config directory: {}", e);
+        }
+    }
+    match toml::to_string_pretty(config) {
+        Ok(content) => {
+            if let Err(e) = std::fs::write(path, &content) {
+                eprintln!("Warning: could not write config file: {}", e);
+            } else {
+                println!("Config saved to {}", path.display());
+            }
+        }
+        Err(e) => eprintln!("Warning: could not serialize config: {}", e),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// First-run egui setup window
+// ---------------------------------------------------------------------------
+
+struct SetupApp {
+    rom: String,
+    db: String,
+    clean: bool,
+    mode: ConfigMode,
+    server_port: String,
+    client_host: String,
+    client_port: String,
+    result: Arc<Mutex<Option<TrackerConfig>>>,
+    should_close: bool,
+}
+
+impl SetupApp {
+    fn new(result: Arc<Mutex<Option<TrackerConfig>>>) -> Self {
+        Self {
+            rom: String::new(),
+            db: "localhost/nuzlocke".to_string(),
+            clean: false,
+            mode: ConfigMode::Standalone,
+            server_port: "7878".to_string(),
+            client_host: "127.0.0.1".to_string(),
+            client_port: "7878".to_string(),
+            result,
+            should_close: false,
+        }
+    }
+}
+
+impl eframe::App for SetupApp {
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        if self.should_close {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        }
+    }
+
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        ui.add_space(8.0);
+        ui.heading("FireRed Tracker — First-Run Setup");
+        ui.label("These settings will be saved to your config file for future runs.");
+        ui.separator();
+        ui.add_space(4.0);
+
+        egui::Grid::new("setup_grid")
+            .num_columns(2)
+            .spacing([12.0, 10.0])
+            .min_col_width(110.0)
+            .show(ui, |ui| {
+                // ROM path (not needed in client mode)
+                let client_mode = self.mode == ConfigMode::Client;
+                ui.add_enabled(
+                    !client_mode,
+                    egui::Label::new(if client_mode { "ROM path: (not used in client mode)" } else { "ROM path:" }),
+                );
+                ui.add_enabled_ui(!client_mode, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.add(
+                            egui::TextEdit::singleline(&mut self.rom)
+                                .desired_width(280.0)
+                                .hint_text("path/to/firered.gba"),
+                        );
+                        if ui.button("Browse…").clicked() {
+                            if let Some(path) = rfd::FileDialog::new()
+                                .add_filter("GBA ROM", &["gba"])
+                                .pick_file()
+                            {
+                                self.rom = path.display().to_string();
+                            }
+                        }
+                    });
+                });
+                ui.end_row();
+
+                // Database
+                ui.label("Database:");
+                ui.vertical(|ui| {
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.db)
+                            .desired_width(340.0)
+                            .hint_text("localhost/nuzlocke"),
+                    );
+                    ui.small("postgresql:// is added automatically if omitted");
+                });
+                ui.end_row();
+
+                // Clean ROM
+                ui.label("Clean ROM:");
+                ui.vertical(|ui| {
+                    ui.checkbox(&mut self.clean, "Enable ability name display");
+                    ui.small("Only reliable on unmodified ROMs");
+                });
+                ui.end_row();
+
+                // Mode
+                ui.label("Default mode:");
+                ui.horizontal(|ui| {
+                    ui.selectable_value(&mut self.mode, ConfigMode::Standalone, "Standalone");
+                    ui.selectable_value(&mut self.mode, ConfigMode::Server, "Server");
+                    ui.selectable_value(&mut self.mode, ConfigMode::Client, "Client");
+                });
+                ui.end_row();
+
+                // Conditional: server port
+                if self.mode == ConfigMode::Server {
+                    ui.label("Listen port:");
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.server_port)
+                            .desired_width(80.0),
+                    );
+                    ui.end_row();
+                }
+
+                // Conditional: client host + port
+                if self.mode == ConfigMode::Client {
+                    ui.label("Server host:");
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.client_host)
+                            .desired_width(200.0),
+                    );
+                    ui.end_row();
+
+                    ui.label("Server port:");
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.client_port)
+                            .desired_width(80.0),
+                    );
+                    ui.end_row();
+                }
+            });
+
+        ui.add_space(12.0);
+        ui.separator();
+        ui.add_space(4.0);
+
+        let rom_ok = self.mode == ConfigMode::Client || !self.rom.trim().is_empty();
+
+        ui.horizontal(|ui| {
+            let btn = ui.add_enabled(rom_ok, egui::Button::new("Save & Continue"));
+            if btn.clicked() {
+                let db_raw = self.db.trim().to_string();
+                let db = if db_raw.starts_with("postgresql://") || db_raw.starts_with("postgres://") {
+                    db_raw
+                } else {
+                    format!("postgresql://{}", db_raw)
+                };
+
+                let config = TrackerConfig {
+                    rom: self.rom.trim().to_string(),
+                    db,
+                    clean: self.clean,
+                    mode: self.mode.clone(),
+                    server_port: self.server_port.parse().unwrap_or(7878),
+                    client_host: self.client_host.trim().to_string(),
+                    client_port: self.client_port.parse().unwrap_or(7878),
+                };
+
+                *self.result.lock().unwrap() = Some(config);
+                self.should_close = true;
+            }
+
+            if !rom_ok && self.mode != ConfigMode::Client {
+                ui.label(
+                    egui::RichText::new("  ROM path is required")
+                        .color(egui::Color32::from_rgb(220, 80, 80))
+                        .small(),
+                );
+            }
+        });
+    }
+}
+
+fn show_setup_dialog() -> TrackerConfig {
+    let result: Arc<Mutex<Option<TrackerConfig>>> = Arc::new(Mutex::new(None));
+    let result_for_app = result.clone();
+
+    let _ = eframe::run_native(
+        "FireRed Tracker — Setup",
+        eframe::NativeOptions {
+            viewport: egui::ViewportBuilder::default()
+                .with_title("FireRed Tracker — First-Run Setup")
+                .with_inner_size([520.0, 340.0])
+                .with_resizable(false),
+            ..Default::default()
+        },
+        Box::new(move |_cc| Ok(Box::new(SetupApp::new(result_for_app)))),
+    );
+
+    result.lock().unwrap().take().unwrap_or_else(|| {
+        println!("Setup cancelled.");
+        std::process::exit(0);
+    })
+}
