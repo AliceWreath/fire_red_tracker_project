@@ -10,7 +10,7 @@ use std::io::{Read, Write};
 const MAX_MESSAGE_SIZE: usize = 20 * 1024 * 1024; // 20 MB
 
 /// Messages sent from a client to the server.
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(serde::Serialize, serde::Deserialize, Clone)]
 pub enum ClientMessage {
     /// Request sprite textures for a list of Pokémon species IDs.
     RequestTextures(Vec<u16>),

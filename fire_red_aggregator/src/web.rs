@@ -770,22 +770,22 @@ async fn handle_socket(
     }
 
     // Spawn a task to forward incoming browser messages as tracker commands.
+    // end_run and new_run are broadcast to every connected slot so all trackers
+    // stay in sync.
     tokio::spawn(async move {
         while let Some(Ok(axum::extract::ws::Message::Text(text))) = ws_rx.next().await {
             if let Ok(val) = serde_json::from_str::<serde_json::Value>(&text) {
-                let cmd  = val["cmd"].as_str().unwrap_or("");
-                let idx  = val["slot"].as_u64().unwrap_or(0) as usize;
-                let msg  = match cmd {
+                let msg = match val["cmd"].as_str().unwrap_or("") {
                     "end_run" => Some(ClientMessage::EndRun),
                     "new_run" => Some(ClientMessage::NewRun),
                     _ => None,
                 };
                 if let Some(msg) = msg {
-                    let slot = live_slots
-                        .lock().unwrap_or_else(|e| e.into_inner())
-                        .get(idx).cloned();
-                    if let Some(s) = slot {
-                        s.command_queue.lock().unwrap_or_else(|e| e.into_inner()).push_back(msg);
+                    let slots = live_slots.lock().unwrap_or_else(|e| e.into_inner()).clone();
+                    for slot in &slots {
+                        slot.command_queue
+                            .lock().unwrap_or_else(|e| e.into_inner())
+                            .push_back(msg.clone());
                     }
                 }
             }

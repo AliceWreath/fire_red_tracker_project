@@ -206,11 +206,14 @@ function render(slots) {
         const endBtn = el('button', 'run-btn end', 'End Run');
         endBtn.disabled = slot.active_run_id == null;
         endBtn.onclick = () => {
-            if (confirm('End Run #' + slot.active_run_id + ' for ' + slot.label + '?'))
-                sendCmd('end_run', slotIndex);
+            if (confirm('End the current run for all connected players?'))
+                sendCmd('end_run', 0);
         };
         const newBtn = el('button', 'run-btn new', 'New Run');
-        newBtn.onclick = () => sendCmd('new_run', slotIndex);
+        newBtn.onclick = () => {
+            if (confirm('Start a new run for all connected players?'))
+                sendCmd('new_run', 0);
+        };
         controls.appendChild(endBtn);
         controls.appendChild(newBtn);
         hd.appendChild(controls);
