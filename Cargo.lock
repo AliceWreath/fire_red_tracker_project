@@ -1611,6 +1611,7 @@ dependencies = [
  "fire_red_rom_buffer",
  "fire_red_states",
  "flate2",
+ "futures-util",
  "image",
  "serde",
  "serde_json",

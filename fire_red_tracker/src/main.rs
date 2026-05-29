@@ -174,6 +174,10 @@ fn main() {
     // Shared between the game-polling thread (writer) and handle_client (reader).
     let game_loaded: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
 
+    // Set to true by handle_client when EndRun or NewRun is processed so the
+    // game loop can reset encounter state for the new/absent run.
+    let run_changed: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
+
     // Shared state between the game-polling / network threads and the GUI.
     let shared_party: Arc<Mutex<Vec<fire_red_party_monitor::Pokemon>>> =
         Arc::new(Mutex::new(Vec::new()));
@@ -196,6 +200,7 @@ fn main() {
             let thread_party       = shared_party.clone();
             let thread_encounters  = shared_encounters.clone();
             let thread_game_loaded = game_loaded.clone();
+            let thread_run_changed = run_changed.clone();
 
             let main_thread = std::thread::spawn(move || {
                 match start_loop(rom_path.as_str(), is_clean) {
@@ -307,6 +312,11 @@ fn main() {
                         check_for_dead_pokemon(&thread_party);
                     }
 
+                    if thread_run_changed.swap(false, Ordering::SeqCst) {
+                        enc_tracker.reset();
+                        player_name_set = false;
+                    }
+
                     if state_initialized {
                         enc_tracker.tick(current_state, &thread_party);
                     }
@@ -323,6 +333,7 @@ fn main() {
                 let server_encounters = shared_encounters.clone();
                 let server_cache      = sprite_cache.clone();
 
+                let server_run_changed = run_changed.clone();
                 let server_thread = std::thread::spawn(move || {
                     let listener = match TcpListener::bind(format!("0.0.0.0:{}", port)) {
                         Ok(l)  => l,
@@ -334,11 +345,12 @@ fn main() {
                         if !RUNNING.load(Ordering::SeqCst) { break; }
                         match stream {
                             Ok(s) => {
-                                let party      = server_party.clone();
-                                let encounters = server_encounters.clone();
-                                let cache      = server_cache.clone();
-                                let loaded     = game_loaded.clone();
-                                std::thread::spawn(move || handle_client(s, party, encounters, cache, loaded));
+                                let party       = server_party.clone();
+                                let encounters  = server_encounters.clone();
+                                let cache       = server_cache.clone();
+                                let loaded      = game_loaded.clone();
+                                let run_chg     = server_run_changed.clone();
+                                std::thread::spawn(move || handle_client(s, party, encounters, cache, loaded, run_chg));
                             }
                             Err(e) => eprintln!("Connection error: {}", e),
                         }
@@ -416,6 +428,7 @@ fn main() {
                                             });
                                         }
                                     }
+                                    Ok(ServerMessage::RunChanged(_)) => {}
                                     Err(e) => { eprintln!("Lost connection: {}", e); break; }
                                 }
                             }

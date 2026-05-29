@@ -109,6 +109,11 @@ pub struct MonitorSlot {
     /// reader thread encodes received sprites directly into this cache so the
     /// HTTP sprite endpoint can serve them without a separate drain step.
     pub sprite_cache: Arc<Mutex<Option<SpriteCache>>>,
+    /// Commands queued by the web server to be forwarded to the tracker over TCP.
+    pub command_queue: Arc<Mutex<VecDeque<ClientMessage>>>,
+    /// Set to `true` when the tracker confirms a run change (EndRun / NewRun),
+    /// so the BroadcastLoop can mark the DB reader dirty and re-sync.
+    pub run_changed: Arc<AtomicBool>,
 }
 
 impl MonitorSlot {
@@ -132,7 +137,9 @@ impl MonitorSlot {
             texture_request_queue: Arc::new(Mutex::new(VecDeque::new())),
             _db_path: db_path,
             db,
-            sprite_cache: Arc::new(Mutex::new(None)),
+            sprite_cache:  Arc::new(Mutex::new(None)),
+            command_queue: Arc::new(Mutex::new(VecDeque::new())),
+            run_changed:   Arc::new(AtomicBool::new(false)),
         }
     }
 }
@@ -195,6 +202,8 @@ pub fn spawn_client(
     texture_request_queue: Arc<Mutex<VecDeque<Vec<u16>>>>,
     label: Arc<Mutex<String>>,
     sprite_cache: Arc<Mutex<Option<SpriteCache>>>,
+    command_queue: Arc<Mutex<VecDeque<ClientMessage>>>,
+    run_changed: Arc<AtomicBool>,
 ) {
     std::thread::spawn(move || {
         loop {
@@ -214,11 +223,23 @@ pub fn spawn_client(
 
                     let connected = Arc::new(AtomicBool::new(true));
                     let connected_writer = connected.clone();
-                    let writer_queue = texture_request_queue.clone();
+                    let writer_queue   = texture_request_queue.clone();
+                    let writer_cmds    = command_queue.clone();
 
-                    // ── Writer thread: drains texture request queue ──────────────
+                    // ── Writer thread: drains texture requests and commands ──────
                     let writer = std::thread::spawn(move || {
                         while connected_writer.load(Ordering::SeqCst) {
+                            // Drain any queued commands (EndRun, NewRun) first.
+                            let cmds: Vec<ClientMessage> = {
+                                let mut q = writer_cmds.lock().unwrap_or_else(|e| e.into_inner());
+                                q.drain(..).collect()
+                            };
+                            for cmd in cmds {
+                                if send_message(&mut write_stream, &cmd).is_err() {
+                                    return;
+                                }
+                            }
+
                             let batch = {
                                 let mut q = writer_queue.lock().unwrap_or_else(|e| e.into_inner());
                                 let mut all: Vec<u16> = q.drain(..).flatten().collect();
@@ -290,6 +311,9 @@ pub fn spawn_client(
                                         height: sprite.height,
                                     });
                                 }
+                            }
+                            Ok(ServerMessage::RunChanged(_)) => {
+                                run_changed.store(true, Ordering::SeqCst);
                             }
                             Err(e) => {
                                 eprintln!("Lost connection to {}: {}", addr, e);

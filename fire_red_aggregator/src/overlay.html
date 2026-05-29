@@ -123,17 +123,66 @@ html, body {
 }
 .enc-sprite { width: 40px; height: 40px; image-rendering: pixelated; }
 .enc-lv { font-size: 9px; color: #bbb; font-weight: 600; text-align: center; }
+.run-ended-summary {
+    margin: 6px 0 2px;
+    padding: 6px 8px;
+    background: rgba(60,30,0,0.5);
+    border-radius: 6px;
+    font-size: 11px;
+    color: #ddd;
+    line-height: 1.6;
+}
+.run-ended-summary .summary-title {
+    font-size: 13px;
+    font-weight: bold;
+    color: #e09040;
+    margin-bottom: 3px;
+}
+.db-enc-section { margin-top: 6px; border-top: 1px solid rgba(255,255,255,0.15); padding-top: 4px; }
+.db-enc-heading { font-size: 11px; color: #ccc; font-style: italic; font-weight: 600; margin-bottom: 3px; }
+.db-enc-row { display: flex; flex-wrap: wrap; gap: 4px; }
+.db-enc-mon { display: flex; flex-direction: column; align-items: center; gap: 1px; }
+.db-enc-sprite { width: 40px; height: 40px; image-rendering: pixelated; }
+.db-enc-sprite.failed { filter: grayscale(80%) brightness(0.6); }
+.db-enc-label { font-size: 9px; color: #bbb; font-weight: 600; text-align: center; }
+.db-enc-label.caught-yes { color: #60e060; }
+.db-enc-label.caught-no  { color: #e06060; }
+.run-controls {
+    display: flex;
+    gap: 4px;
+    margin-left: auto;
+}
+.run-btn {
+    font-size: 10px;
+    font-weight: 600;
+    padding: 2px 7px;
+    border-radius: 4px;
+    border: none;
+    cursor: pointer;
+    color: #fff;
+    text-shadow: none;
+}
+.run-btn.end { background: #8b2020; }
+.run-btn.end:hover { background: #b02828; }
+.run-btn.new  { background: #1a6b1a; }
+.run-btn.new:hover  { background: #228b22; }
 </style>
 </head>
 <body>
 <div id="root"></div>
 <script>
+let ws;
 function connect() {
-    const ws = new WebSocket('ws://' + location.host + '/ws');
+    ws = new WebSocket('ws://' + location.host + '/ws');
     ws.onmessage = e => render(JSON.parse(e.data));
     ws.onclose   = () => setTimeout(connect, 2000);
 }
 connect();
+
+function sendCmd(cmd, slot) {
+    if (ws && ws.readyState === WebSocket.OPEN)
+        ws.send(JSON.stringify({ cmd, slot }));
+}
 
 function render(slots) {
     const root = document.getElementById('root');
@@ -141,13 +190,39 @@ function render(slots) {
     for (const slot of slots) {
         const col = el('div', 'col');
 
+        const slotIndex = slots.indexOf(slot);
         const hd = el('div', 'heading');
         hd.appendChild(document.createTextNode(slot.label));
-        if (slot.db_connected) hd.appendChild(el('span', 'db-indicator', '● DB'));
+        if (slot.db_connected) {
+            const runLabel = slot.active_run_id != null
+                ? '● Run #' + slot.active_run_id
+                : '● No active run';
+            const ind = el('span', 'db-indicator', runLabel);
+            if (slot.active_run_id == null) ind.style.color = '#e09040';
+            hd.appendChild(ind);
+        }
+
+        const controls = el('div', 'run-controls');
+        const endBtn = el('button', 'run-btn end', 'End Run');
+        endBtn.disabled = slot.active_run_id == null;
+        endBtn.onclick = () => {
+            if (confirm('End Run #' + slot.active_run_id + ' for ' + slot.label + '?'))
+                sendCmd('end_run', slotIndex);
+        };
+        const newBtn = el('button', 'run-btn new', 'New Run');
+        newBtn.onclick = () => sendCmd('new_run', slotIndex);
+        controls.appendChild(endBtn);
+        controls.appendChild(newBtn);
+        hd.appendChild(controls);
+
         col.appendChild(hd);
 
-        if (!slot.connected) {
+        if (!slot.connected && slot.active_run_id == null && slot.run_summary) {
+            renderRunEnded(col, slot);
+        } else if (!slot.connected) {
             col.appendChild(el('div', 'disconnected', '⚠ Disconnected'));
+        } else if (slot.active_run_id == null && slot.run_summary) {
+            renderRunEnded(col, slot);
         } else {
             const brow = el('div', 'badges');
             brow.appendChild(document.createTextNode('Badges: ' + slot.badges.filter(Boolean).length + '/8  '));
@@ -256,6 +331,37 @@ function render(slots) {
             }
         }
         root.appendChild(col);
+    }
+}
+
+function renderRunEnded(col, slot) {
+    const s = slot.run_summary;
+    const summary = el('div', 'run-ended-summary');
+    summary.appendChild(el('div', 'summary-title', 'Run #' + s.run_id + ' ended'));
+    summary.appendChild(el('div', null, 'Player: ' + s.player_name));
+    summary.appendChild(el('div', null, 'Started: ' + s.started_at));
+    if (s.ended_at) summary.appendChild(el('div', null, 'Ended: ' + s.ended_at));
+    summary.appendChild(el('div', null, 'Caught: ' + s.caught + '  |  Deaths: ' + s.deaths));
+    col.appendChild(summary);
+
+    if (slot.db_encounters && slot.db_encounters.length > 0) {
+        const sec = el('div', 'db-enc-section');
+        sec.appendChild(el('div', 'db-enc-heading', 'First encounters'));
+        const row = el('div', 'db-enc-row');
+        for (const enc of slot.db_encounters) {
+            const mdiv = el('div', 'db-enc-mon');
+            if (enc.sprite) {
+                const img = document.createElement('img');
+                img.className = 'db-enc-sprite' + (enc.caught ? '' : ' failed');
+                img.src = enc.sprite;
+                mdiv.appendChild(img);
+            }
+            mdiv.appendChild(el('div', 'db-enc-label ' + (enc.caught ? 'caught-yes' : 'caught-no'),
+                enc.species_name + (enc.caught ? ' ✓' : ' ✗')));
+            row.appendChild(mdiv);
+        }
+        sec.appendChild(row);
+        col.appendChild(sec);
     }
 }
 

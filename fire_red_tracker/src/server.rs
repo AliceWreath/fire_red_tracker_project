@@ -22,18 +22,21 @@ use std::sync::{Arc, Mutex};
 ///
 /// # Arguments
 ///
-/// * `stream`           — Connected TCP stream.
-/// * `server_party`     — Shared party data to broadcast.
+/// * `stream`            — Connected TCP stream.
+/// * `server_party`      — Shared party data to broadcast.
 /// * `server_encounters` — Shared encounter data to broadcast.
-/// * `sprite_cache`     — Per-process sprite cache to amortise ROM decode cost.
-/// * `game_loaded`      — Set to `false` during reset/title screen to suppress
-///                        stale badge data from being sent to clients.
+/// * `sprite_cache`      — Per-process sprite cache to amortise ROM decode cost.
+/// * `game_loaded`       — Set to `false` during reset/title screen to suppress
+///                         stale badge data from being sent to clients.
+/// * `run_changed`       — Set to `true` when a `EndRun` or `NewRun` command is
+///                         processed so the game loop can reset encounter state.
 pub fn handle_client(
     stream: TcpStream,
     server_party: Arc<Mutex<Vec<fire_red_party_monitor::Pokemon>>>,
     server_encounters: Arc<Mutex<fire_red_pokemon_data::WildPokemonHeader>>,
     sprite_cache: Arc<Mutex<HashMap<(u16, bool), SpriteData>>>,
     game_loaded: Arc<AtomicBool>,
+    run_changed: Arc<AtomicBool>,
 ) {
     println!(
         "Client connected: {}",
@@ -46,7 +49,7 @@ pub fn handle_client(
     };
     let write_stream = Arc::new(Mutex::new(stream));
 
-    // Reader thread: responds to texture requests.
+    // Reader thread: responds to texture requests and run commands.
     let write_stream_clone = write_stream.clone();
     let cache_clone        = sprite_cache.clone();
     std::thread::spawn(move || {
@@ -77,6 +80,22 @@ pub fn handle_client(
                         if send_message(&mut *ws, &ServerMessage::Textures(sprites)).is_err() {
                             break;
                         }
+                    }
+                }
+                Ok(ClientMessage::EndRun) => {
+                    fire_red_database::end_run();
+                    run_changed.store(true, Ordering::SeqCst);
+                    let mut ws = write_stream_clone.lock().unwrap_or_else(|e| e.into_inner());
+                    if send_message(&mut *ws, &ServerMessage::RunChanged(None)).is_err() {
+                        break;
+                    }
+                }
+                Ok(ClientMessage::NewRun) => {
+                    let id = fire_red_database::new_run("Unknown");
+                    run_changed.store(true, Ordering::SeqCst);
+                    let mut ws = write_stream_clone.lock().unwrap_or_else(|e| e.into_inner());
+                    if send_message(&mut *ws, &ServerMessage::RunChanged(Some(id))).is_err() {
+                        break;
                     }
                 }
                 Err(_) => break,

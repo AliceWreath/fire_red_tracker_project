@@ -275,6 +275,9 @@ pub fn initialize(connection_string: &str) {
             key   TEXT PRIMARY KEY,
             value TEXT NOT NULL
         );
+
+        -- Migration: add ended_at for runs that were explicitly ended.
+        ALTER TABLE runs ADD COLUMN IF NOT EXISTS ended_at BIGINT;
     ").expect("Failed to create database schema");
 
     DB.set(Mutex::new(DbState { client, run_id: None })).ok();
@@ -500,6 +503,22 @@ pub fn active_run_id() -> Option<u32> {
         get_meta(&mut state.client, "active_run_id")
             .and_then(|v| v.parse().ok())
     })
+}
+
+/// Ends the active run by recording its end timestamp and clearing the
+/// in-process run ID. Subsequent writes (deaths, encounters, catches)
+/// will be silently dropped until a new run is started.
+///
+/// Returns the ID of the run that was ended, or `None` if no run was active.
+pub fn end_run() -> Option<u32> {
+    let mut state = db().lock().unwrap_or_else(|e| e.into_inner());
+    let id = state.run_id.take()?;
+    state.client.execute(
+        "UPDATE runs SET ended_at = $1 WHERE id = $2",
+        &[&(unix_now() as i64), &(id as i32)],
+    ).expect("Failed to end run");
+    set_meta(&mut state.client, "active_run_id", "");
+    Some(id)
 }
 
 /// Returns a summary of every run: `(id, player_name, started_at, dead_count)`.
@@ -809,6 +828,9 @@ pub struct DbReader {
     client:      Mutex<Client>,
     run_id:      Mutex<Option<u32>>,
     last_player: Mutex<String>,
+    dirty:       std::sync::atomic::AtomicBool,
+    /// `true` when the tracked run has `ended_at IS NULL` (currently active).
+    is_active:   std::sync::atomic::AtomicBool,
 }
 
 impl DbReader {
@@ -828,39 +850,61 @@ impl DbReader {
             client:      Mutex::new(client),
             run_id:      Mutex::new(None),
             last_player: Mutex::new(String::new()),
+            dirty:       std::sync::atomic::AtomicBool::new(false),
+            is_active:   std::sync::atomic::AtomicBool::new(false),
         })
     }
 
-    /// Updates the cached run ID to the most recent run in the database.
+    /// Forces the next `sync_player` call to re-query the database even if the
+    /// player name has not changed. Call this after a run is ended or started
+    /// remotely so the cached run ID is immediately refreshed.
+    pub fn mark_dirty(&self) {
+        self.dirty.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Returns the active run ID if the tracked run has not been ended, else `None`.
+    pub fn active_run_id(&self) -> Option<u32> {
+        if self.is_active.load(std::sync::atomic::Ordering::SeqCst) {
+            *self.run_id.lock().unwrap_or_else(|e| e.into_inner())
+        } else {
+            None
+        }
+    }
+
+    /// Updates the cached run ID to the most recent run (active or ended).
     ///
-    /// `player_name` is used only to avoid re-querying every frame — the lookup
-    /// itself picks the most recent run regardless of name. This allows both
-    /// players in a soul-link run to resolve to the same shared run even though
-    /// only one player's name is stored on the run row.
-    ///
-    /// Returns `true` if the run ID actually changed (including the first time
-    /// a run is successfully resolved). Safe to call every frame.
+    /// Re-queries whenever the player name changes OR `mark_dirty()` was called.
+    /// Returns `true` if the run ID changed (triggers a caught-list refresh).
     pub fn sync_player(&self, player_name: &str) -> bool {
-        {
+        let forced = self.dirty.swap(false, std::sync::atomic::Ordering::SeqCst);
+        if !forced {
             let last = self.last_player.lock().unwrap_or_else(|e| e.into_inner());
             if *last == player_name { return false; }
         }
-        let new_id = self.client
+
+        let row = self.client
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .query_opt(
-                "SELECT id FROM runs ORDER BY id DESC LIMIT 1",
+                "SELECT id, ended_at FROM runs ORDER BY id DESC LIMIT 1",
                 &[],
             )
             .ok()
-            .flatten()
-            .map(|row| row.get::<_, i32>(0) as u32);
+            .flatten();
 
+        let (new_id, active) = match row {
+            Some(r) => {
+                let id: i32 = r.get(0);
+                let ended: Option<i64> = r.get(1);
+                (Some(id as u32), ended.is_none())
+            }
+            None => (None, false),
+        };
+
+        self.is_active.store(active, std::sync::atomic::Ordering::SeqCst);
         let old_id = *self.run_id.lock().unwrap_or_else(|e| e.into_inner());
         *self.run_id.lock().unwrap_or_else(|e| e.into_inner()) = new_id;
-        // Only cache the name on success so that a failed lookup retries every
-        // frame (the tracker may not have written the player name yet).
-        if new_id.is_some() {
+        if new_id.is_some() || forced {
             *self.last_player.lock().unwrap_or_else(|e| e.into_inner()) = player_name.to_string();
         }
         new_id != old_id
@@ -911,6 +955,63 @@ impl DbReader {
                 (dp.personality, dp)
             })
             .collect()
+    }
+
+    /// Returns all recorded first encounters for the tracked run, ordered by time.
+    pub fn list_encounters(&self) -> Vec<Encounter> {
+        let run_id = match *self.run_id.lock().unwrap_or_else(|e| e.into_inner()) {
+            Some(id) => id,
+            None => return vec![],
+        };
+        self.client
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .query(
+                "SELECT map_group, map_name, species, species_name, level, caught, encountered_at
+                 FROM encounters WHERE run_id = $1 ORDER BY encountered_at ASC",
+                &[&(run_id as i32)],
+            )
+            .unwrap_or_default()
+            .iter()
+            .map(|row| Encounter {
+                map_group:      row.get::<_, i32>(0) as u8,
+                map_name:       row.get::<_, i32>(1) as u8,
+                species:        row.get::<_, i32>(2) as u16,
+                species_name:   row.get(3),
+                level:          row.get::<_, i32>(4) as u8,
+                caught:         row.get(5),
+                encountered_at: row.get::<_, i64>(6) as u64,
+            })
+            .collect()
+    }
+
+    /// Returns a summary of the tracked run: player name, start/end times,
+    /// death count, and catch count. Returns `None` if no run is tracked yet.
+    pub fn run_summary(&self) -> Option<(u32, String, u64, Option<u64>, usize, usize)> {
+        let run_id = (*self.run_id.lock().unwrap_or_else(|e| e.into_inner()))?;
+        self.client
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .query_opt(
+                "SELECT r.player_name, r.started_at, r.ended_at,
+                        COUNT(DISTINCT d.personality), COUNT(DISTINCT c.personality)
+                 FROM runs r
+                 LEFT JOIN dead_pokemon    d ON d.run_id = r.id
+                 LEFT JOIN caught_pokemon  c ON c.run_id = r.id
+                 WHERE r.id = $1
+                 GROUP BY r.id, r.player_name, r.started_at, r.ended_at",
+                &[&(run_id as i32)],
+            )
+            .ok()
+            .flatten()
+            .map(|row| (
+                run_id,
+                row.get::<_, String>(0),
+                row.get::<_, i64>(1) as u64,
+                row.get::<_, Option<i64>>(2).map(|v| v as u64),
+                row.get::<_, i64>(3) as usize,
+                row.get::<_, i64>(4) as usize,
+            ))
     }
 
     /// Inserts a soul-link death record for `caught` in this player's active run.

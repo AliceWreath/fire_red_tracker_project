@@ -110,6 +110,8 @@ fn main() {
                 slot.texture_request_queue.clone(),
                 slot.label.clone(),
                 slot.sprite_cache.clone(),
+                slot.command_queue.clone(),
+                slot.run_changed.clone(),
             );
             slot
         })

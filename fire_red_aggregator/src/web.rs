@@ -18,8 +18,9 @@ use axum::{
     Router,
 };
 use fire_red_database::{CaughtPokemon, DeadPokemon};
-use fire_red_states::GameState;
-use std::collections::{HashMap, HashSet};
+use fire_red_states::{ClientMessage, GameState};
+use futures_util::{SinkExt, StreamExt};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::sync::watch;
@@ -49,16 +50,38 @@ fn base64_encode(data: &[u8]) -> String {
 // ---------------------------------------------------------------------------
 
 #[derive(serde::Serialize, Clone)]
+struct RunSummaryDto {
+    run_id:      u32,
+    player_name: String,
+    started_at:  String,
+    ended_at:    Option<String>,
+    deaths:      usize,
+    caught:      usize,
+}
+
+#[derive(serde::Serialize, Clone)]
+struct DbEncounterDto {
+    species_name:   String,
+    level:          u8,
+    caught:         bool,
+    encountered_at: String,
+    sprite:         Option<String>,
+}
+
+#[derive(serde::Serialize, Clone)]
 struct SlotDto {
-    label:        String,
-    connected:    bool,
-    db_connected: bool,
-    badges:       Vec<bool>,
-    next_gym:     Option<GymDto>,
-    party:        Vec<MemberDto>,
-    encounters:   Vec<EncounterGroupDto>,
-    dead:         Vec<DeadMonDto>,
-    caught:       Vec<CaughtMonDto>,
+    label:          String,
+    connected:      bool,
+    db_connected:   bool,
+    active_run_id:  Option<u32>,
+    run_summary:    Option<RunSummaryDto>,
+    db_encounters:  Vec<DbEncounterDto>,
+    badges:         Vec<bool>,
+    next_gym:       Option<GymDto>,
+    party:          Vec<MemberDto>,
+    encounters:     Vec<EncounterGroupDto>,
+    dead:           Vec<DeadMonDto>,
+    caught:         Vec<CaughtMonDto>,
 }
 
 #[derive(serde::Serialize, Clone)]
@@ -165,6 +188,7 @@ struct MemberDto {
 
 struct SlotCache {
     caught:       Vec<CaughtPokemon>,
+    encounters:   Vec<fire_red_database::Encounter>,
     last_refresh: Instant,
 }
 
@@ -172,6 +196,7 @@ impl SlotCache {
     fn new() -> Self {
         Self {
             caught:       Vec::new(),
+            encounters:   Vec::new(),
             last_refresh: Instant::now() - Duration::from_secs(60),
         }
     }
@@ -308,6 +333,16 @@ impl BroadcastLoop {
         self.request_sprites(&states);
         self.drain_sprites();
 
+        // If the tracker confirmed a run change, mark the DB reader dirty so
+        // sync_player re-queries even though the player name hasn't changed.
+        for slot in &self.slots {
+            if slot.run_changed.swap(false, std::sync::atomic::Ordering::SeqCst) {
+                if let Some(db) = &slot.db {
+                    db.mark_dirty();
+                }
+            }
+        }
+
         // Sync DB run IDs
         let mut run_id_changed = vec![false; n];
         for (i, slot) in self.slots.iter().enumerate() {
@@ -322,7 +357,8 @@ impl BroadcastLoop {
             let stale = now.duration_since(self.caches[i].last_refresh) >= Duration::from_secs(1);
             if run_id_changed[i] || stale {
                 if let Some(db) = &self.slots[i].db {
-                    self.caches[i].caught       = db.list_caught();
+                    self.caches[i].caught      = db.list_caught();
+                    self.caches[i].encounters  = db.list_encounters();
                     self.caches[i].last_refresh = now;
                 }
             }
@@ -355,6 +391,13 @@ impl BroadcastLoop {
                 for cp in &self.caches[i].caught {
                     let s = cp.species;
                     if s > 0 && s <= 386 && !known.contains(&s) && !cache.contains_key(&(s, cp.is_shiny)) {
+                        needed.push(s);
+                        known.insert(s);
+                    }
+                }
+                for enc in &self.caches[i].encounters {
+                    let s = enc.species;
+                    if s > 0 && s <= 386 && !known.contains(&s) && !cache.contains_key(&(s, false)) {
                         needed.push(s);
                         known.insert(s);
                     }
@@ -435,6 +478,27 @@ impl BroadcastLoop {
                 let dead_records   = &all_dead[i];
                 let soul_link_dead = &live_soul_link_dead[i];
                 let db_connected   = self.slots[i].db.is_some();
+                let active_run_id  = self.slots[i].db.as_ref().and_then(|db| db.active_run_id());
+
+                let run_summary = self.slots[i].db.as_ref().and_then(|db| db.run_summary())
+                    .map(|(run_id, player_name, started_at, ended_at, deaths, caught)| RunSummaryDto {
+                        run_id,
+                        player_name,
+                        started_at:  fire_red_database::format_timestamp(started_at),
+                        ended_at:    ended_at.map(fire_red_database::format_timestamp),
+                        deaths,
+                        caught,
+                    });
+
+                let db_encounters: Vec<DbEncounterDto> = self.caches[i].encounters.iter()
+                    .map(|enc| DbEncounterDto {
+                        species_name:   enc.species_name.clone(),
+                        level:          enc.level,
+                        caught:         enc.caught,
+                        encountered_at: fire_red_database::format_timestamp(enc.encountered_at),
+                        sprite:         self.sprite_uri(enc.species, false),
+                    })
+                    .collect();
 
                 let (connected, badges, next_gym, party, encounters) = match state {
                     None => (false, vec![false; 8], None, vec![], vec![]),
@@ -635,7 +699,7 @@ impl BroadcastLoop {
                     sprite:       self.sprite_uri(cp.species, cp.is_shiny),
                 }).collect();
 
-                SlotDto { label: label.clone(), connected, db_connected, badges, next_gym, party, encounters, dead, caught }
+                SlotDto { label: label.clone(), connected, db_connected, active_run_id, run_summary, db_encounters, badges, next_gym, party, encounters, dead, caught }
             })
             .collect();
 
@@ -646,6 +710,16 @@ impl BroadcastLoop {
         self.last_json = json.clone();
         Some(json)
     }
+}
+
+// ---------------------------------------------------------------------------
+// Axum shared state
+// ---------------------------------------------------------------------------
+
+#[derive(Clone)]
+struct WebState {
+    tx:            watch::Sender<String>,
+    slot_commands: Arc<Vec<Arc<Mutex<VecDeque<ClientMessage>>>>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -665,20 +739,23 @@ async fn serve_focused() -> Html<&'static str> {
 
 async fn ws_handler(
     ws: axum::extract::ws::WebSocketUpgrade,
-    State(tx): State<watch::Sender<String>>,
+    State(state): State<WebState>,
 ) -> impl IntoResponse {
-    ws.on_upgrade(move |socket| handle_socket(socket, tx.subscribe()))
+    ws.on_upgrade(move |socket| handle_socket(socket, state.tx.subscribe(), state.slot_commands))
 }
 
 async fn handle_socket(
-    mut socket: axum::extract::ws::WebSocket,
+    socket: axum::extract::ws::WebSocket,
     mut rx: watch::Receiver<String>,
+    slot_commands: Arc<Vec<Arc<Mutex<VecDeque<ClientMessage>>>>>,
 ) {
+    let (mut ws_tx, mut ws_rx) = socket.split();
+
     // Send current state immediately so the browser isn't blank on connect.
     {
         let current = rx.borrow_and_update().clone();
         if !current.is_empty() {
-            if socket
+            if ws_tx
                 .send(axum::extract::ws::Message::Text(current))
                 .await
                 .is_err()
@@ -687,10 +764,31 @@ async fn handle_socket(
             }
         }
     }
+
+    // Spawn a task to forward incoming browser messages as tracker commands.
+    let cmds = slot_commands.clone();
+    tokio::spawn(async move {
+        while let Some(Ok(axum::extract::ws::Message::Text(text))) = ws_rx.next().await {
+            if let Ok(val) = serde_json::from_str::<serde_json::Value>(&text) {
+                let cmd  = val["cmd"].as_str().unwrap_or("");
+                let slot = val["slot"].as_u64().unwrap_or(0) as usize;
+                let msg  = match cmd {
+                    "end_run" => Some(ClientMessage::EndRun),
+                    "new_run" => Some(ClientMessage::NewRun),
+                    _ => None,
+                };
+                if let (Some(msg), Some(queue)) = (msg, cmds.get(slot)) {
+                    queue.lock().unwrap_or_else(|e| e.into_inner()).push_back(msg);
+                }
+            }
+        }
+    });
+
+    // Push state updates whenever the broadcast channel changes.
     loop {
         if rx.changed().await.is_err() { break; }
         let msg = rx.borrow_and_update().clone();
-        if socket.send(axum::extract::ws::Message::Text(msg)).await.is_err() {
+        if ws_tx.send(axum::extract::ws::Message::Text(msg)).await.is_err() {
             break;
         }
     }
@@ -708,8 +806,11 @@ pub fn run(slots: Vec<MonitorSlot>, port: u16) {
         *slot.sprite_cache.lock().unwrap_or_else(|e| e.into_inner()) = Some(sprites.clone());
     }
 
+    let slot_commands: Arc<Vec<Arc<Mutex<VecDeque<ClientMessage>>>>> =
+        Arc::new(slots.iter().map(|s| s.command_queue.clone()).collect());
+
     let (tx, _rx) = watch::channel::<String>(String::new());
-    let tx_bg       = tx.clone();
+    let tx_bg        = tx.clone();
     let sprites_loop = sprites.clone();
 
     std::thread::spawn(move || {
@@ -722,6 +823,8 @@ pub fn run(slots: Vec<MonitorSlot>, port: u16) {
         }
     });
 
+    let web_state = WebState { tx, slot_commands };
+
     let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
     rt.block_on(async move {
         let app = Router::new()
@@ -731,7 +834,7 @@ pub fn run(slots: Vec<MonitorSlot>, port: u16) {
             .route("/:index/encounters", get(serve_focused))
             .route("/:index/dead", get(serve_focused))
             .route("/:index/caught", get(serve_focused))
-            .with_state(tx);
+            .with_state(web_state);
 
         let addr = format!("0.0.0.0:{}", port);
         println!("WebSocket overlay listening on http://{}", addr);
