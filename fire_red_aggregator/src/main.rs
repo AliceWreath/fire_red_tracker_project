@@ -129,10 +129,16 @@ fn main() {
             let run_chg      = slot_arc.run_changed.clone();
 
             std::thread::spawn(move || {
-                handle_tracker_connection(
-                    stream, state, pending, known, tex_queue,
-                    label, sprite_cache, cmd_queue, run_chg,
-                );
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    handle_tracker_connection(
+                        stream, state.clone(), pending, known, tex_queue,
+                        label, sprite_cache, cmd_queue, run_chg,
+                    );
+                }));
+                if result.is_err() {
+                    eprintln!("Tracker thread for {} panicked — clearing slot state.", peer);
+                    *state.lock().unwrap_or_else(|e| e.into_inner()) = None;
+                }
                 println!("Tracker from {} disconnected.", peer);
             });
         }

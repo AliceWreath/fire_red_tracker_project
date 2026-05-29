@@ -153,7 +153,7 @@ fn validate_table(rom: &[u8], start: usize) -> bool {
 pub fn find_wild_headers(rom: &[u8]) -> Option<usize> {
     let mut i = 0;
 
-    while i < rom.len() - HEADER_SIZE {
+    while i + HEADER_SIZE <= rom.len() {
         if looks_like_header(rom, i) {
             if validate_table(rom, i) {
                 return Some(i);
