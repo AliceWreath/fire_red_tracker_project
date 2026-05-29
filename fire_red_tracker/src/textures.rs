@@ -5,7 +5,7 @@
 //! and compressed sprite packets received over TCP (client mode).
 
 use crate::game::is_shiny;
-use std::io::{Read, Write};
+use std::io::Write;
 
 /// Size of party pokemon sprites, in logical pixels.
 pub const PARTY_IMAGE_SIZE: (f32, f32) = (64.0, 64.0);
@@ -37,16 +37,6 @@ pub fn compress_pixels(data: &[u8]) -> Vec<u8> {
 }
 
 /// Decompresses zlib-compressed pixel data back to raw RGBA bytes.
-///
-/// Called client-side after receiving a sprite packet. Returns an empty `Vec`
-/// on failure so the texture pipeline can continue without panicking.
-pub fn decompress_pixels(data: &[u8]) -> Vec<u8> {
-    use flate2::read::ZlibDecoder;
-    let mut decoder = ZlibDecoder::new(data);
-    let mut out = Vec::new();
-    decoder.read_to_end(&mut out).unwrap_or(0);
-    out
-}
 
 /// Extracts a pokemon sprite from the ROM, compresses it, and returns a
 /// [`SpriteData`] packet ready to send to a client.

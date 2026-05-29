@@ -10,7 +10,7 @@
 //! separate HTTP sprite endpoint or browser caching issues exist.
 
 use crate::app::is_shiny;
-use crate::client::{MonitorSlot, SpriteCache, encode_png};
+use crate::client::{MonitorSlot, SharedSlots, SpriteCache, encode_png};
 use axum::{
     extract::State,
     response::{Html, IntoResponse},
@@ -20,7 +20,7 @@ use axum::{
 use fire_red_database::{CaughtPokemon, DeadPokemon};
 use fire_red_states::{ClientMessage, GameState};
 use futures_util::{SinkExt, StreamExt};
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::sync::watch;
@@ -203,33 +203,30 @@ impl SlotCache {
 }
 
 struct BroadcastLoop {
-    slots:                Vec<MonitorSlot>,
+    live_slots:           SharedSlots,
     caches:               Vec<SlotCache>,
     soul_link_propagated: HashSet<(usize, u32)>,
     last_json:            String,
     sprites:              SpriteCache,
-    /// OT ID seen from each slot's live party — used to filter caught/dead
-    /// records so each player only sees their own pokemon.
     player_ot_ids:        Vec<Option<u32>>,
 }
 
 impl BroadcastLoop {
-    fn new(slots: Vec<MonitorSlot>, sprites: SpriteCache) -> Self {
-        let n = slots.len();
+    fn new(live_slots: SharedSlots, sprites: SpriteCache) -> Self {
         Self {
-            slots,
-            caches:               (0..n).map(|_| SlotCache::new()).collect(),
+            live_slots,
+            caches:               Vec::new(),
             soul_link_propagated: HashSet::new(),
             last_json:            String::new(),
             sprites,
-            player_ot_ids:        vec![None; n],
+            player_ot_ids:        Vec::new(),
         }
     }
 
     /// Requests sprites for party members and encounter pokemon not yet cached.
-    fn request_sprites(&self, states: &[(String, Option<GameState>)]) {
+    fn request_sprites(&self, slots: &[Arc<MonitorSlot>], states: &[(String, Option<GameState>)]) {
         let cache = self.sprites.lock().unwrap_or_else(|e| e.into_inner());
-        for (i, slot) in self.slots.iter().enumerate() {
+        for (i, slot) in slots.iter().enumerate() {
             let Some(gs) = &states[i].1 else { continue };
             let mut known = slot.known_species.lock().unwrap_or_else(|e| e.into_inner());
             let mut needed: Vec<u16> = Vec::new();
@@ -276,9 +273,14 @@ impl BroadcastLoop {
     }
 
     /// Drains any pending textures from the TCP pipeline into the sprite cache.
-    /// Belt-and-suspenders alongside the direct encoding in `spawn_client`.
-    fn drain_sprites(&mut self) {
-        for slot in &self.slots {
+    /// Also wires the shared sprite cache into any slot that connected after
+    /// `run()` started (identified by having `sprite_cache = None`).
+    fn drain_sprites(&mut self, slots: &[Arc<MonitorSlot>]) {
+        for slot in slots {
+            let mut sc = slot.sprite_cache.lock().unwrap_or_else(|e| e.into_inner());
+            if sc.is_none() { *sc = Some(self.sprites.clone()); }
+            drop(sc);
+
             let mut pending = slot.pending_textures.lock().unwrap_or_else(|e| e.into_inner());
             if pending.is_empty() { continue; }
             let drained: Vec<_> = pending.drain(..).collect();
@@ -307,11 +309,14 @@ impl BroadcastLoop {
     /// Runs one tick: refreshes DB caches, propagates soul-link deaths, and
     /// returns a JSON string if the state has changed since the last tick.
     fn tick(&mut self) -> Option<String> {
-        let n = self.slots.len();
+        let slots: Vec<Arc<MonitorSlot>> =
+            self.live_slots.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let n = slots.len();
+        while self.caches.len() < n      { self.caches.push(SlotCache::new()); }
+        while self.player_ot_ids.len() < n { self.player_ot_ids.push(None); }
 
         // Collect live states
-        let states: Vec<(String, Option<GameState>)> = self
-            .slots
+        let states: Vec<(String, Option<GameState>)> = slots
             .iter()
             .map(|s| {
                 let state = s.state.lock().unwrap_or_else(|e| e.into_inner()).clone();
@@ -330,12 +335,12 @@ impl BroadcastLoop {
         }
 
         // Sprite pipeline
-        self.request_sprites(&states);
-        self.drain_sprites();
+        self.request_sprites(&slots, &states);
+        self.drain_sprites(&slots);
 
         // If the tracker confirmed a run change, mark the DB reader dirty so
         // sync_player re-queries even though the player name hasn't changed.
-        for slot in &self.slots {
+        for slot in &slots {
             if slot.run_changed.swap(false, std::sync::atomic::Ordering::SeqCst) {
                 if let Some(db) = &slot.db {
                     db.mark_dirty();
@@ -345,7 +350,7 @@ impl BroadcastLoop {
 
         // Sync DB run IDs
         let mut run_id_changed = vec![false; n];
-        for (i, slot) in self.slots.iter().enumerate() {
+        for (i, slot) in slots.iter().enumerate() {
             if let Some(db) = &slot.db {
                 run_id_changed[i] = db.sync_player(&states[i].0);
             }
@@ -356,7 +361,7 @@ impl BroadcastLoop {
         for i in 0..n {
             let stale = now.duration_since(self.caches[i].last_refresh) >= Duration::from_secs(1);
             if run_id_changed[i] || stale {
-                if let Some(db) = &self.slots[i].db {
+                if let Some(db) = &slots[i].db {
                     self.caches[i].caught      = db.list_caught();
                     self.caches[i].encounters  = db.list_encounters();
                     self.caches[i].last_refresh = now;
@@ -365,8 +370,7 @@ impl BroadcastLoop {
         }
 
         // Dead records (fresh every tick)
-        let all_dead: Vec<HashMap<u32, DeadPokemon>> = self
-            .slots
+        let all_dead: Vec<HashMap<u32, DeadPokemon>> = slots
             .iter()
             .map(|s| {
                 s.db.as_ref()
@@ -378,7 +382,7 @@ impl BroadcastLoop {
         // Request sprites for dead and caught pokemon not yet in the cache
         {
             let cache = self.sprites.lock().unwrap_or_else(|e| e.into_inner());
-            for (i, slot) in self.slots.iter().enumerate() {
+            for (i, slot) in slots.iter().enumerate() {
                 let mut known = slot.known_species.lock().unwrap_or_else(|e| e.into_inner());
                 let mut needed: Vec<u16> = Vec::new();
                 for dp in all_dead[i].values() {
@@ -437,7 +441,7 @@ impl BroadcastLoop {
                         let already_dead       = all_dead[j].contains_key(&p.personality);
                         let already_propagated = self.soul_link_propagated.contains(&key);
                         if !already_dead && !already_propagated {
-                            let wrote = self.slots[j]
+                            let wrote = slots[j]
                                 .db
                                 .as_ref()
                                 .map(|db| db.mark_soul_link_dead(&p))
@@ -477,10 +481,10 @@ impl BroadcastLoop {
                 let (label, state) = &states[i];
                 let dead_records   = &all_dead[i];
                 let soul_link_dead = &live_soul_link_dead[i];
-                let db_connected   = self.slots[i].db.is_some();
-                let active_run_id  = self.slots[i].db.as_ref().and_then(|db| db.active_run_id());
+                let db_connected   = slots[i].db.is_some();
+                let active_run_id  = slots[i].db.as_ref().and_then(|db| db.active_run_id());
 
-                let run_summary = self.slots[i].db.as_ref().and_then(|db| db.run_summary())
+                let run_summary = slots[i].db.as_ref().and_then(|db| db.run_summary())
                     .map(|(run_id, player_name, started_at, ended_at, deaths, caught)| RunSummaryDto {
                         run_id,
                         player_name,
@@ -718,8 +722,8 @@ impl BroadcastLoop {
 
 #[derive(Clone)]
 struct WebState {
-    tx:            watch::Sender<String>,
-    slot_commands: Arc<Vec<Arc<Mutex<VecDeque<ClientMessage>>>>>,
+    tx:         watch::Sender<String>,
+    live_slots: SharedSlots,
 }
 
 // ---------------------------------------------------------------------------
@@ -741,13 +745,13 @@ async fn ws_handler(
     ws: axum::extract::ws::WebSocketUpgrade,
     State(state): State<WebState>,
 ) -> impl IntoResponse {
-    ws.on_upgrade(move |socket| handle_socket(socket, state.tx.subscribe(), state.slot_commands))
+    ws.on_upgrade(move |socket| handle_socket(socket, state.tx.subscribe(), state.live_slots))
 }
 
 async fn handle_socket(
     socket: axum::extract::ws::WebSocket,
     mut rx: watch::Receiver<String>,
-    slot_commands: Arc<Vec<Arc<Mutex<VecDeque<ClientMessage>>>>>,
+    live_slots: SharedSlots,
 ) {
     let (mut ws_tx, mut ws_rx) = socket.split();
 
@@ -766,19 +770,23 @@ async fn handle_socket(
     }
 
     // Spawn a task to forward incoming browser messages as tracker commands.
-    let cmds = slot_commands.clone();
     tokio::spawn(async move {
         while let Some(Ok(axum::extract::ws::Message::Text(text))) = ws_rx.next().await {
             if let Ok(val) = serde_json::from_str::<serde_json::Value>(&text) {
                 let cmd  = val["cmd"].as_str().unwrap_or("");
-                let slot = val["slot"].as_u64().unwrap_or(0) as usize;
+                let idx  = val["slot"].as_u64().unwrap_or(0) as usize;
                 let msg  = match cmd {
                     "end_run" => Some(ClientMessage::EndRun),
                     "new_run" => Some(ClientMessage::NewRun),
                     _ => None,
                 };
-                if let (Some(msg), Some(queue)) = (msg, cmds.get(slot)) {
-                    queue.lock().unwrap_or_else(|e| e.into_inner()).push_back(msg);
+                if let Some(msg) = msg {
+                    let slot = live_slots
+                        .lock().unwrap_or_else(|e| e.into_inner())
+                        .get(idx).cloned();
+                    if let Some(s) = slot {
+                        s.command_queue.lock().unwrap_or_else(|e| e.into_inner()).push_back(msg);
+                    }
                 }
             }
         }
@@ -798,23 +806,25 @@ async fn handle_socket(
 // Entry point
 // ---------------------------------------------------------------------------
 
-pub fn run(slots: Vec<MonitorSlot>, port: u16) {
-    // Shared sprite cache: spawn_client reader threads encode directly into it,
-    // and BroadcastLoop also drains pending_textures into it as a fallback.
+pub fn run(live_slots: SharedSlots, port: u16) {
     let sprites: SpriteCache = Arc::new(Mutex::new(HashMap::new()));
-    for slot in &slots {
-        *slot.sprite_cache.lock().unwrap_or_else(|e| e.into_inner()) = Some(sprites.clone());
-    }
 
-    let slot_commands: Arc<Vec<Arc<Mutex<VecDeque<ClientMessage>>>>> =
-        Arc::new(slots.iter().map(|s| s.command_queue.clone()).collect());
+    // Wire the shared sprite cache into any already-connected slots and keep
+    // it available for slots that connect later (BroadcastLoop sets it on drain).
+    {
+        let slots = live_slots.lock().unwrap_or_else(|e| e.into_inner());
+        for slot in slots.iter() {
+            *slot.sprite_cache.lock().unwrap_or_else(|e| e.into_inner()) = Some(sprites.clone());
+        }
+    }
 
     let (tx, _rx) = watch::channel::<String>(String::new());
     let tx_bg        = tx.clone();
     let sprites_loop = sprites.clone();
+    let loop_slots   = live_slots.clone();
 
     std::thread::spawn(move || {
-        let mut bloop = BroadcastLoop::new(slots, sprites_loop);
+        let mut bloop = BroadcastLoop::new(loop_slots, sprites_loop);
         loop {
             if let Some(json) = bloop.tick() {
                 let _ = tx_bg.send(json);
@@ -823,7 +833,7 @@ pub fn run(slots: Vec<MonitorSlot>, port: u16) {
         }
     });
 
-    let web_state = WebState { tx, slot_commands };
+    let web_state = WebState { tx, live_slots };
 
     let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
     rt.block_on(async move {

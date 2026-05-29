@@ -64,24 +64,17 @@ pub struct GameState {
     pub badge_state: Option<fire_red_badge::BadgeState>,
 }
 
-/// Network operating mode for the program.
+/// Network operating mode for the tracker.
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
 pub enum Mode {
-    /// Run entirely locally with no networking
+    /// Run entirely locally with no networking.
     Standalone,
 
-    /// Run as a TCP server listening on the specified port.
-    Server {
-        /// TCP port to bind to.
-        port: u16,
-    },
-
-    /// Run as a TCP client connecting to a remote server.
-    Client {
-        /// Remote host or IP address to connect to.
+    /// Connect to an aggregator and stream game state to it.
+    Connected {
+        /// Aggregator host or IP address.
         host: String,
-
-        /// Remote TCP port to connect to.
+        /// Aggregator TCP port.
         port: u16,
     },
 }

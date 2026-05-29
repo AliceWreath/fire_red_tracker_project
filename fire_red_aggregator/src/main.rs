@@ -1,26 +1,16 @@
 //! # FireRed Aggregator
 //!
-//! Entry point for the multi-player aggregator binary.
-//!
-//! Accepts one or more `host:port` addresses as arguments, each pointing to a
-//! running tracker server instance. For each address it creates a [`MonitorSlot`]
-//! and spawns a background client thread via [`spawn_client`], then opens an
-//! [`AggregatorApp`] window that renders all players side-by-side.
+//! Listens for incoming tracker connections and displays all connected players
+//! side-by-side.  Each tracker dials out to the aggregator — no addresses need
+//! to be pre-configured here.
 //!
 //! # Usage
 //!
 //! ```text
-//! aggregator <HOST:PORT> [HOST:PORT ...]
-//!
-//! # Two local servers on different ports:
-//! aggregator localhost:7878 localhost:7979
+//! aggregator                          # use config defaults
+//! aggregator --listen-port <PORT>     # override listen port
+//! aggregator --ws-port <PORT>         # headless WebSocket overlay mode
 //! ```
-//!
-//! # Window sizing
-//!
-//! The initial window width is `320 × max(slot_count, 2)` logical pixels,
-//! giving each player column roughly 320 pixels. The window is resizable after
-//! launch and the column layout reflows automatically.
 
 mod app;
 mod client;
@@ -29,25 +19,17 @@ mod web;
 
 use app::AggregatorApp;
 use clap::Parser;
-use client::{MonitorSlot, spawn_client};
+use client::{MonitorSlot, SharedSlots, handle_tracker_connection};
+use std::net::TcpListener;
+use std::sync::Arc;
 
 // ---------------------------------------------------------------------------
 // CLI definition
 // ---------------------------------------------------------------------------
 
-/// Multi-player FireRed tracker aggregator.
-///
-/// Server addresses, database, and WebSocket overlay settings are read from
-/// the config file at first launch and saved for future runs.  Any value can
-/// be overridden for a single run with the corresponding argument below.
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct Cli {
-    /// Override: one or more tracker server addresses in `host:port` format.
-    /// Replaces the address list stored in the config file for this run.
-    #[arg(value_name = "HOST:PORT")]
-    addrs: Vec<String>,
-
     /// Path to the config file (default: ~/.config/fire_red_aggregator/config.toml).
     #[arg(long, value_name = "FILE")]
     config: Option<String>,
@@ -56,8 +38,11 @@ struct Cli {
     #[arg(long = "db", value_name = "CONN")]
     db: Option<String>,
 
+    /// Override: listen for tracker connections on this port.
+    #[arg(long = "listen-port", value_name = "PORT")]
+    listen_port: Option<u16>,
+
     /// Override: run headless with a WebSocket overlay server on this port.
-    /// OBS connects to the served URL as a Browser Source.
     #[arg(long = "ws-port", value_name = "PORT")]
     ws_port: Option<u16>,
 }
@@ -66,24 +51,13 @@ struct Cli {
 // main
 // ---------------------------------------------------------------------------
 
-/// Parses CLI overrides, loads (or prompts for) the config, then creates one
-/// [`MonitorSlot`] and one background client thread per address before
-/// launching the egui window.
 fn main() {
     let cli = Cli::parse();
 
-    // Load config (prompts on first run), then overlay any CLI overrides.
     let config_path = cli.config.as_deref()
         .map(std::path::PathBuf::from)
         .unwrap_or_else(config::default_config_path);
     let cfg = config::load_or_prompt(&config_path);
-
-    // Addresses: CLI positional args replace config list when provided.
-    let addrs = if cli.addrs.is_empty() { cfg.addrs } else { cli.addrs };
-    if addrs.is_empty() {
-        eprintln!("Error: no server addresses provided. Add them to the config file or pass them as arguments.");
-        std::process::exit(1);
-    }
 
     // db: CLI arg overrides config.
     let db = cli.db.or(cfg.db).map(|s| {
@@ -94,45 +68,87 @@ fn main() {
         }
     });
 
-    // ws-port: CLI arg overrides config.
-    let ws_port = cli.ws_port.or(cfg.ws_port);
+    let listen_port = cli.listen_port.unwrap_or(cfg.listen_port);
+    let ws_port     = cli.ws_port.or(cfg.ws_port);
 
-    let slots: Vec<MonitorSlot> = addrs
-        .into_iter()
-        .enumerate()
-        .map(|(i, addr)| {
-            let slot = MonitorSlot::new(i, addr.clone(), db.clone());
-            spawn_client(
-                addr,
-                slot.state.clone(),
-                slot.pending_textures.clone(),
-                slot.known_species.clone(),
-                slot.texture_request_queue.clone(),
-                slot.label.clone(),
-                slot.sprite_cache.clone(),
-                slot.command_queue.clone(),
-                slot.run_changed.clone(),
-            );
-            slot
-        })
-        .collect();
+    // Shared slot list — grown as trackers connect.
+    let shared_slots: SharedSlots = Arc::new(std::sync::Mutex::new(Vec::new()));
+
+    // TCP listener — accepts incoming tracker connections.
+    let listener = TcpListener::bind(format!("0.0.0.0:{}", listen_port))
+        .unwrap_or_else(|e| {
+            eprintln!("Failed to bind port {}: {}", listen_port, e);
+            std::process::exit(1);
+        });
+    println!("Aggregator listening on port {} for tracker connections.", listen_port);
+
+    let listener_slots = shared_slots.clone();
+    let listener_db    = db.clone();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let stream = match stream {
+                Ok(s)  => s,
+                Err(e) => { eprintln!("Accept error: {}", e); continue; }
+            };
+            let peer = stream.peer_addr()
+                .map(|a| a.to_string())
+                .unwrap_or_else(|_| "unknown".to_string());
+            println!("Tracker connected from {}", peer);
+
+            // Reuse the first disconnected slot, or create a new one.
+            let slot_arc = {
+                let mut slots = listener_slots.lock().unwrap_or_else(|e| e.into_inner());
+                let reuse = slots.iter().find(|s| {
+                    s.state.lock().unwrap_or_else(|e| e.into_inner()).is_none()
+                }).cloned();
+                if let Some(s) = reuse {
+                    // Reset stale per-connection state before handing to a new tracker.
+                    s.known_species.lock().unwrap_or_else(|e| e.into_inner()).clear();
+                    s.command_queue.lock().unwrap_or_else(|e| e.into_inner()).clear();
+                    s.run_changed.store(false, std::sync::atomic::Ordering::SeqCst);
+                    s
+                } else {
+                    let idx = slots.len();
+                    let new = Arc::new(MonitorSlot::new(idx, peer.clone(), listener_db.clone()));
+                    slots.push(new.clone());
+                    new
+                }
+            };
+
+            let state        = slot_arc.state.clone();
+            let pending      = slot_arc.pending_textures.clone();
+            let known        = slot_arc.known_species.clone();
+            let tex_queue    = slot_arc.texture_request_queue.clone();
+            let label        = slot_arc.label.clone();
+            let sprite_cache = slot_arc.sprite_cache.clone();
+            let cmd_queue    = slot_arc.command_queue.clone();
+            let run_chg      = slot_arc.run_changed.clone();
+
+            std::thread::spawn(move || {
+                handle_tracker_connection(
+                    stream, state, pending, known, tex_queue,
+                    label, sprite_cache, cmd_queue, run_chg,
+                );
+                println!("Tracker from {} disconnected.", peer);
+            });
+        }
+    });
 
     if let Some(port) = ws_port {
-        // Headless WebSocket overlay mode — no window opened.
-        web::run(slots, port);
+        // Headless WebSocket overlay mode.
+        web::run(shared_slots, port);
     } else {
         // Normal egui window mode.
-        let slot_count = slots.len();
         let options = eframe::NativeOptions {
             viewport: egui::ViewportBuilder::default()
                 .with_title("Fire Red Aggregator")
-                .with_inner_size([(320 * slot_count.max(2)) as f32, 1000.0]),
+                .with_inner_size([640.0, 1000.0]),
             ..Default::default()
         };
         let _ = eframe::run_native(
             "Fire Red Aggregator",
             options,
-            Box::new(move |cc| Ok(Box::new(AggregatorApp::new(cc, slots)))),
+            Box::new(move |cc| Ok(Box::new(AggregatorApp::new(cc, shared_slots)))),
         );
     }
 }

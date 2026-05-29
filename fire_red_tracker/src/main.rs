@@ -1,32 +1,28 @@
 //! # FireRed Tracker
 //!
-//! A real-time Pokémon FireRed party and encounter monitor with an egui GUI.
+//! A real-time Pokémon FireRed party and encounter monitor.
 //!
 //! # Modes
 //!
 //! - **Standalone** — reads the ROM and game memory locally, renders the GUI.
-//! - **Server** — like standalone but also accepts TCP client connections and
-//!   streams [`GameState`] updates and sprite data to them. Runs headless.
-//! - **Client** — connects to a server over TCP, receives state and sprites,
-//!   and renders the GUI without needing the ROM locally.
+//! - **Connected** — like standalone but connects to an aggregator and streams
+//!   game state to it. Runs headless (no local GUI window).
 //!
 //! # Configuration
 //!
-//! Settings (ROM path, database, clean mode, default operating mode) are stored
-//! in `~/.config/fire_red_tracker/config.toml`.  On first launch the tracker
-//! prompts for each value and writes the file.  Any value can be overridden for
-//! a single run via CLI flags:
+//! Settings are stored in `~/.config/fire_red_tracker/config.toml`. On first
+//! launch the tracker prompts for each value and writes the file. Any value can
+//! be overridden for a single run via CLI flags:
 //!
 //! ```text
-//! tracker                                  # use config defaults
-//! tracker [ROM]                            # override ROM path for this run
-//! tracker --clean                          # enable ability names for this run
-//! tracker --db <CONN>                      # override database for this run
-//! tracker server [--port <PORT>]           # force server mode for this run
-//! tracker client [--host <HOST>] [--port]  # force client mode for this run
-//! tracker --new-run                        # start a new nuzlocke run
-//! tracker --list-runs                      # print stored runs and exit
-//! tracker --config <FILE>                  # use an alternate config file
+//! tracker                                        # use config defaults
+//! tracker [ROM]                                  # override ROM path
+//! tracker --clean                                # enable ability names
+//! tracker --db <CONN>                            # override database
+//! tracker connect [--host <HOST>] [--port <N>]   # force connected mode
+//! tracker --new-run                              # start a new nuzlocke run
+//! tracker --list-runs                            # print stored runs and exit
+//! tracker --config <FILE>                        # use an alternate config file
 //! ```
 //!
 //! # Module layout
@@ -39,7 +35,7 @@
 //! | [`game`]      | EWRAM/IWRAM helpers, `is_shiny`, `game_is_loaded`      |
 //! | [`textures`]  | Sprite loading, compression, `PendingTexture`          |
 //! | [`gui`]       | `WindowInfo`, egui rendering, party/encounter panels   |
-//! | [`server`]    | Per-client TCP handler for server mode                 |
+//! | [`server`]    | Aggregator connection handler                          |
 
 mod cli;
 mod config;
@@ -57,9 +53,8 @@ use fire_red_states::*;
 use game::{check_for_dead_pokemon, check_for_new_pokemon, fill_party_list, game_is_loaded, map_state_from_ewram};
 use gui::{WindowInfo, PARTY_WINDOW};
 use server::handle_client;
-use textures::{PendingTexture, decompress_pixels};
-use std::collections::{HashMap, VecDeque};
-use std::net::{TcpListener, TcpStream};
+use std::collections::HashMap;
+use std::net::TcpStream;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -76,10 +71,9 @@ const FORCE_PARTY_CHECK_INTERVAL: u64 = 5;
 // ---------------------------------------------------------------------------
 
 static MAIN_THREAD_HANDLE: Mutex<Option<std::thread::JoinHandle<()>>> = Mutex::new(None);
-static CLIENT_THREAD_HANDLE: Mutex<Option<std::thread::JoinHandle<()>>> = Mutex::new(None);
-static SERVER_THREAD_HANDLE: Mutex<Option<std::thread::JoinHandle<()>>> = Mutex::new(None);
+static NET_THREAD_HANDLE:  Mutex<Option<std::thread::JoinHandle<()>>> = Mutex::new(None);
 
-/// Set to `false` by the Ctrl-C handler to trigger a clean shutdown in server mode.
+/// Set to `false` by the Ctrl-C handler to trigger a clean shutdown.
 static RUNNING: AtomicBool = AtomicBool::new(true);
 
 // ---------------------------------------------------------------------------
@@ -97,14 +91,12 @@ fn main() {
 
     // Mode: CLI subcommand wins; otherwise use what the config says.
     let mode = match cli.command {
-        Some(Command::Server { port })       => Mode::Server { port },
-        Some(Command::Client { host, port }) => Mode::Client { host, port },
+        Some(Command::Connect { host, port }) => Mode::Connected { host, port },
         None => match cfg.mode {
             config::ConfigMode::Standalone => Mode::Standalone,
-            config::ConfigMode::Server     => Mode::Server { port: cfg.server_port },
-            config::ConfigMode::Client     => Mode::Client {
-                host: cfg.client_host.clone(),
-                port: cfg.client_port,
+            config::ConfigMode::Connected  => Mode::Connected {
+                host: cfg.aggregator_host.clone(),
+                port: cfg.aggregator_port,
             },
         },
     };
@@ -161,294 +153,167 @@ fn main() {
         }
     }
 
-    // clean: CLI flag enables; config value is the baseline.
-    let is_clean = cfg.clean || cli.clean;
+    let is_clean  = cfg.clean || cli.clean;
+    let rom_path  = cli.rom.unwrap_or(cfg.rom);
 
-    // ROM: CLI arg overrides config; client mode doesn't need one.
-    let rom_path = match &mode {
-        Mode::Client { .. } => String::new(),
-        _ => cli.rom.unwrap_or(cfg.rom),
-    };
-
-    // Tracks whether the game is fully loaded (past title screen).
-    // Shared between the game-polling thread (writer) and handle_client (reader).
     let game_loaded: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
-
-    // Set to true by handle_client when EndRun or NewRun is processed so the
-    // game loop can reset encounter state for the new/absent run.
     let run_changed: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
 
-    // Shared state between the game-polling / network threads and the GUI.
     let shared_party: Arc<Mutex<Vec<fire_red_party_monitor::Pokemon>>> =
         Arc::new(Mutex::new(Vec::new()));
     let shared_encounters: Arc<Mutex<fire_red_pokemon_data::WildPokemonHeader>> =
         Arc::new(Mutex::new(fire_red_pokemon_data::WildPokemonHeader::default()));
-
-    // Sprite cache shared across all server clients to avoid re-decoding the ROM.
     let sprite_cache: Arc<Mutex<HashMap<(u16, bool), SpriteData>>> =
         Arc::new(Mutex::new(HashMap::new()));
 
-    // Client-mode texture pipeline.
-    let pending_textures: Arc<Mutex<Vec<PendingTexture>>> = Arc::new(Mutex::new(Vec::new()));
-    let known_species: Arc<Mutex<std::collections::HashSet<u16>>> =
-        Arc::new(Mutex::new(std::collections::HashSet::new()));
-    let texture_request_queue: Arc<Mutex<VecDeque<Vec<u16>>>> =
-        Arc::new(Mutex::new(VecDeque::new()));
+    // ── Game-polling thread (both modes) ──────────────────────────────────────
+    {
+        let thread_party       = shared_party.clone();
+        let thread_encounters  = shared_encounters.clone();
+        let thread_game_loaded = game_loaded.clone();
+        let thread_run_changed = run_changed.clone();
 
-    match &mode {
-        Mode::Standalone | Mode::Server { .. } => {
-            let thread_party       = shared_party.clone();
-            let thread_encounters  = shared_encounters.clone();
-            let thread_game_loaded = game_loaded.clone();
-            let thread_run_changed = run_changed.clone();
-
-            let main_thread = std::thread::spawn(move || {
-                match start_loop(rom_path.as_str(), is_clean) {
-                    0    => println!("Monitor loop started."),
-                    code => {
-                        eprintln!("Failed to start monitor loop (code {}).", code);
-                        std::process::exit(1);
-                    }
+        let main_thread = std::thread::spawn(move || {
+            match start_loop(rom_path.as_str(), is_clean) {
+                0    => println!("Monitor loop started."),
+                code => {
+                    eprintln!("Failed to start monitor loop (code {}).", code);
+                    std::process::exit(1);
                 }
-
-                // Wait for the EWRAM snapshot to contain a real non-zero map state.
-                // The memory loop needs one full poll cycle (~500ms) to populate.
-                println!("Waiting for initial map state...");
-                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-                loop {
-                    if map_state_from_ewram().is_some() { break; }
-                    if std::time::Instant::now() > deadline {
-                        eprintln!("Warning: map state did not populate within 5 seconds.");
-                        break;
-                    }
-                    std::thread::sleep(std::time::Duration::from_millis(50));
-                }
-
-                // Load initial encounters directly from EWRAM, bypassing STATE which
-                // may not have been written by the map-polling thread yet.
-                let initial_state = map_state_from_ewram()
-                    .unwrap_or(FireRedState { map_group_id: 0, map_name_id: 0 });
-
-                println!(
-                    "Map state ready: group={} name={}",
-                    initial_state.map_group_id, initial_state.map_name_id,
-                );
-
-                *thread_encounters.lock().unwrap_or_else(|e| e.into_inner()) =
-                    get_area_pokemon_id_for_state(&initial_state);
-
-                let mut current_state      = initial_state;
-                let mut old_party_size     = get_party_size();
-                let mut last_party_refresh = std::time::Instant::now();
-                let mut state_initialized  = false;
-                let mut player_name_set    = false;
-
-                let mut enc_tracker = encounter::EncounterTracker::new();
-
-                fill_party_list(&thread_party);
-                check_for_new_pokemon(&thread_party);
-                check_for_dead_pokemon(&thread_party);
-
-                loop {
-                    // Check whether the game is fully loaded before doing anything else.
-                    // On reset or title screen, clear stale state and wait.
-                    if !game_is_loaded() {
-                        thread_game_loaded.store(false, Ordering::SeqCst);
-                        *thread_encounters.lock().unwrap_or_else(|e| e.into_inner()) =
-                            fire_red_pokemon_data::WildPokemonHeader::default();
-                        *thread_party.lock().unwrap_or_else(|e| e.into_inner()) = Vec::new();
-                        state_initialized = false;
-                        player_name_set   = false;
-                        current_state = FireRedState { map_group_id: 0xFF, map_name_id: 0xFF };
-                        enc_tracker.reset();
-                        std::thread::sleep(std::time::Duration::from_millis(500));
-                        continue;
-                    }
-                    thread_game_loaded.store(true, Ordering::SeqCst);
-
-                    // Capture the player name once the game is confirmed loaded.
-                    if !player_name_set {
-                        let name = get_trainer_name();
-                        if !name.trim().is_empty() {
-                            fire_red_database::set_player_name(&name);
-                            player_name_set = true;
-                        }
-                    }
-
-                    // Read map state directly from EWRAM — faster and more reliable than
-                    // get_value() which lags by up to ~833ms through two polling intervals.
-                    let state      = map_state_from_ewram().unwrap_or(current_state);
-                    let party_size = get_party_size();
-
-                    // Mark as initialized once we see a real non-zero state, and
-                    // immediately populate encounters for the current map so the
-                    // window is not empty on first load or after a reconnect.
-                    if !state_initialized
-                        && (state.map_group_id != 0 || state.map_name_id != 0)
-                    {
-                        state_initialized = true;
-                        current_state = state;
-                        *thread_encounters.lock().unwrap_or_else(|e| e.into_inner()) =
-                            get_area_pokemon_id_for_state(&current_state);
-                    }
-
-                    // Update encounters when the map changes.
-                    if state_initialized && current_state != state {
-                        current_state = state;
-                        *thread_encounters.lock().unwrap_or_else(|e| e.into_inner()) =
-                            get_area_pokemon_id_for_state(&current_state);
-                    }
-
-                    if old_party_size != party_size {
-                        old_party_size = party_size;
-                        update_box_list();
-                        fill_party_list(&thread_party);
-                        check_for_dead_pokemon(&thread_party);
-                    }
-
-                    if last_party_refresh.elapsed().as_secs() >= FORCE_PARTY_CHECK_INTERVAL {
-                        last_party_refresh = std::time::Instant::now();
-                        fill_party_list(&thread_party);
-                        check_for_dead_pokemon(&thread_party);
-                    }
-
-                    if thread_run_changed.swap(false, Ordering::SeqCst) {
-                        enc_tracker.reset();
-                        player_name_set = false;
-                    }
-
-                    if state_initialized {
-                        enc_tracker.tick(current_state, &thread_party);
-                    }
-
-                    std::thread::sleep(std::time::Duration::from_millis(100));
-                }
-            });
-
-            *MAIN_THREAD_HANDLE.lock().unwrap_or_else(|e| e.into_inner()) = Some(main_thread);
-
-            if let Mode::Server { port } = &mode {
-                let port              = *port;
-                let server_party      = shared_party.clone();
-                let server_encounters = shared_encounters.clone();
-                let server_cache      = sprite_cache.clone();
-
-                let server_run_changed = run_changed.clone();
-                let server_thread = std::thread::spawn(move || {
-                    let listener = match TcpListener::bind(format!("0.0.0.0:{}", port)) {
-                        Ok(l)  => l,
-                        Err(e) => { eprintln!("Failed to bind port {}: {}", port, e); return; }
-                    };
-                    println!("Server listening on port {}.", port);
-
-                    for stream in listener.incoming() {
-                        if !RUNNING.load(Ordering::SeqCst) { break; }
-                        match stream {
-                            Ok(s) => {
-                                let party       = server_party.clone();
-                                let encounters  = server_encounters.clone();
-                                let cache       = server_cache.clone();
-                                let loaded      = game_loaded.clone();
-                                let run_chg     = server_run_changed.clone();
-                                std::thread::spawn(move || handle_client(s, party, encounters, cache, loaded, run_chg));
-                            }
-                            Err(e) => eprintln!("Connection error: {}", e),
-                        }
-                    }
-                });
-
-                *SERVER_THREAD_HANDLE.lock().unwrap_or_else(|e| e.into_inner()) = Some(server_thread);
             }
-        }
 
-        Mode::Client { host, port } => {
-            let addr              = format!("{}:{}", host, port);
-            let client_party      = shared_party.clone();
-            let client_encounters = shared_encounters.clone();
-            let client_pending    = pending_textures.clone();
-            let client_known      = known_species.clone();
-            let client_queue      = texture_request_queue.clone();
-
-            let client_thread = std::thread::spawn(move || {
-                loop {
-                    println!("Connecting to {}...", addr);
-                    match TcpStream::connect(&addr) {
-                        Ok(stream) => {
-                            println!("Connected to server.");
-
-                            let mut write_stream = match stream.try_clone() {
-                                Ok(s)  => s,
-                                Err(e) => { eprintln!("Failed to clone stream: {}", e); break; }
-                            };
-                            let mut read_stream  = stream;
-                            let connected        = Arc::new(AtomicBool::new(true));
-                            let connected_writer = connected.clone();
-                            let writer_queue     = client_queue.clone();
-
-                            // Writer thread: batches and sends texture requests every 50ms.
-                            let writer = std::thread::spawn(move || {
-                                while connected_writer.load(Ordering::SeqCst) {
-                                    let batch = {
-                                        let mut q = writer_queue.lock().unwrap_or_else(|e| e.into_inner());
-                                        let mut all: Vec<u16> = q.drain(..).flatten().collect();
-                                        all.sort();
-                                        all.dedup();
-                                        all
-                                    };
-                                    if !batch.is_empty() {
-                                        if send_message(
-                                            &mut write_stream,
-                                            &ClientMessage::RequestTextures(batch),
-                                        ).is_err() { break; }
-                                    }
-                                    std::thread::sleep(std::time::Duration::from_millis(50));
-                                }
-                            });
-
-                            // Reader loop: receives State and Textures from the server.
-                            loop {
-                                match recv_message::<ServerMessage>(&mut read_stream) {
-                                    Ok(ServerMessage::State(state)) => {
-                                        *client_party.lock().unwrap_or_else(|e| e.into_inner()) =
-                                            state.party;
-                                        *client_encounters.lock().unwrap_or_else(|e| e.into_inner()) =
-                                            state.encounters;
-                                    }
-                                    Ok(ServerMessage::Textures(sprites)) => {
-                                        let mut pending = client_pending.lock().unwrap_or_else(|e| e.into_inner());
-                                        let mut known   = client_known.lock().unwrap_or_else(|e| e.into_inner());
-                                        for sprite in sprites {
-                                            known.insert(sprite.species);
-                                            pending.push(PendingTexture {
-                                                species: sprite.species,
-                                                shiny:   sprite.shiny,
-                                                pixels:  decompress_pixels(&sprite.pixels),
-                                                width:   sprite.width,
-                                                height:  sprite.height,
-                                            });
-                                        }
-                                    }
-                                    Ok(ServerMessage::RunChanged(_)) => {}
-                                    Err(e) => { eprintln!("Lost connection: {}", e); break; }
-                                }
-                            }
-
-                            connected.store(false, Ordering::SeqCst);
-                            let _ = writer.join();
-                        }
-                        Err(e) => eprintln!("Failed to connect: {}", e),
-                    }
-                    std::thread::sleep(std::time::Duration::from_secs(3));
+            println!("Waiting for initial map state...");
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            loop {
+                if map_state_from_ewram().is_some() { break; }
+                if std::time::Instant::now() > deadline {
+                    eprintln!("Warning: map state did not populate within 5 seconds.");
+                    break;
                 }
-            });
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
 
-            *CLIENT_THREAD_HANDLE.lock().unwrap_or_else(|e| e.into_inner()) = Some(client_thread);
-        }
+            let initial_state = map_state_from_ewram()
+                .unwrap_or(FireRedState { map_group_id: 0, map_name_id: 0 });
+
+            *thread_encounters.lock().unwrap_or_else(|e| e.into_inner()) =
+                get_area_pokemon_id_for_state(&initial_state);
+
+            let mut current_state      = initial_state;
+            let mut old_party_size     = get_party_size();
+            let mut last_party_refresh = std::time::Instant::now();
+            let mut state_initialized  = false;
+            let mut player_name_set    = false;
+            let mut enc_tracker        = encounter::EncounterTracker::new();
+
+            fill_party_list(&thread_party);
+            check_for_new_pokemon(&thread_party);
+            check_for_dead_pokemon(&thread_party);
+
+            loop {
+                if !game_is_loaded() {
+                    thread_game_loaded.store(false, Ordering::SeqCst);
+                    *thread_encounters.lock().unwrap_or_else(|e| e.into_inner()) =
+                        fire_red_pokemon_data::WildPokemonHeader::default();
+                    *thread_party.lock().unwrap_or_else(|e| e.into_inner()) = Vec::new();
+                    state_initialized = false;
+                    player_name_set   = false;
+                    current_state = FireRedState { map_group_id: 0xFF, map_name_id: 0xFF };
+                    enc_tracker.reset();
+                    std::thread::sleep(std::time::Duration::from_millis(500));
+                    continue;
+                }
+                thread_game_loaded.store(true, Ordering::SeqCst);
+
+                if !player_name_set {
+                    let name = get_trainer_name();
+                    if !name.trim().is_empty() {
+                        fire_red_database::set_player_name(&name);
+                        player_name_set = true;
+                    }
+                }
+
+                let state      = map_state_from_ewram().unwrap_or(current_state);
+                let party_size = get_party_size();
+
+                if !state_initialized
+                    && (state.map_group_id != 0 || state.map_name_id != 0)
+                {
+                    state_initialized = true;
+                    current_state = state;
+                    *thread_encounters.lock().unwrap_or_else(|e| e.into_inner()) =
+                        get_area_pokemon_id_for_state(&current_state);
+                }
+
+                if state_initialized && current_state != state {
+                    current_state = state;
+                    *thread_encounters.lock().unwrap_or_else(|e| e.into_inner()) =
+                        get_area_pokemon_id_for_state(&current_state);
+                }
+
+                if old_party_size != party_size {
+                    old_party_size = party_size;
+                    update_box_list();
+                    fill_party_list(&thread_party);
+                    check_for_dead_pokemon(&thread_party);
+                }
+
+                if last_party_refresh.elapsed().as_secs() >= FORCE_PARTY_CHECK_INTERVAL {
+                    last_party_refresh = std::time::Instant::now();
+                    fill_party_list(&thread_party);
+                    check_for_dead_pokemon(&thread_party);
+                }
+
+                if thread_run_changed.swap(false, Ordering::SeqCst) {
+                    enc_tracker.reset();
+                    player_name_set = false;
+                }
+
+                if state_initialized {
+                    enc_tracker.tick(current_state, &thread_party);
+                }
+
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+        });
+
+        *MAIN_THREAD_HANDLE.lock().unwrap_or_else(|e| e.into_inner()) = Some(main_thread);
     }
 
-    // ── Server mode: headless, park until Ctrl-C ─────────────────────────────
-    if let Mode::Server { .. } = &mode {
-        println!("{}", "***** Server mode — no GUI. Press Ctrl-C to exit. *****".green().bold());
+    // ── Connected mode: dial out to the aggregator ────────────────────────────
+    if let Mode::Connected { host, port } = &mode {
+        let addr              = format!("{}:{}", host, port);
+        let net_party         = shared_party.clone();
+        let net_encounters    = shared_encounters.clone();
+        let net_cache         = sprite_cache.clone();
+        let net_loaded        = game_loaded.clone();
+        let net_run_changed   = run_changed.clone();
+
+        let net_thread = std::thread::spawn(move || {
+            loop {
+                println!("Connecting to aggregator at {}...", addr);
+                match TcpStream::connect(&addr) {
+                    Ok(stream) => {
+                        println!("Connected to aggregator.");
+                        handle_client(
+                            stream,
+                            net_party.clone(),
+                            net_encounters.clone(),
+                            net_cache.clone(),
+                            net_loaded.clone(),
+                            net_run_changed.clone(),
+                        );
+                        println!("Disconnected from aggregator.");
+                    }
+                    Err(e) => eprintln!("Failed to connect to aggregator: {}", e),
+                }
+                std::thread::sleep(std::time::Duration::from_secs(5));
+            }
+        });
+
+        *NET_THREAD_HANDLE.lock().unwrap_or_else(|e| e.into_inner()) = Some(net_thread);
+
+        println!("{}", "***** Connected mode — no GUI. Press Ctrl-C to exit. *****".green().bold());
         ctrlc::set_handler(|| {
             RUNNING.store(false, Ordering::SeqCst);
             println!("\nShutting down...");
@@ -460,20 +325,9 @@ fn main() {
         return;
     }
 
-    // ── GUI (Standalone + Client) ─────────────────────────────────────────────
-    let app_title = match &mode {
-        Mode::Standalone            => "Tracker".to_string(),
-        Mode::Server { port }       => format!("Tracker (Server :{})", port),
-        Mode::Client { host, port } => format!("Tracker (Client {}:{})", host, port),
-    };
-
-    let queue_for_gui = match &mode {
-        Mode::Client { .. } => Some(texture_request_queue),
-        _                   => None,
-    };
-
+    // ── Standalone: show local GUI ────────────────────────────────────────────
     let _ = eframe::run_native(
-        &app_title,
+        "Tracker",
         eframe::NativeOptions {
             viewport: egui::ViewportBuilder::default()
                 .with_inner_size([PARTY_WINDOW.0, PARTY_WINDOW.1]),
@@ -484,9 +338,9 @@ fn main() {
                 cc,
                 shared_party,
                 shared_encounters,
-                pending_textures,
-                known_species,
-                queue_for_gui,
+                Arc::new(Mutex::new(Vec::new())),
+                Arc::new(Mutex::new(std::collections::HashSet::new())),
+                None,
             )))
         }),
     );

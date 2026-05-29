@@ -22,7 +22,8 @@
 //! another player's caught table at the same location, `mark_soul_link_dead`
 //! is called automatically so both partners are shown as dead.
 
-use crate::client::MonitorSlot;
+use crate::client::{MonitorSlot, SharedSlots};
+use std::sync::Arc;
 use egui::Ui;
 use fire_red_database::{CaughtPokemon, DeadPokemon};
 use fire_red_party_monitor::Pokemon;
@@ -80,14 +81,12 @@ impl SlotDbCache {
 
 /// The top-level eframe application for the multi-player aggregator view.
 pub struct AggregatorApp {
-    slots:                Vec<MonitorSlot>,
+    live_slots:           SharedSlots,
+    /// Snapshot of slots taken at the start of each frame.
+    slots:                Vec<Arc<MonitorSlot>>,
     textures:             HashMap<String, egui::TextureHandle>,
     db_caches:            Vec<SlotDbCache>,
-    /// Tracks (slot_index, personality) pairs that have already had their
-    /// soul-link death written to the database, so we don't re-insert every
-    /// frame.
     soul_link_propagated: HashSet<(usize, u32)>,
-    // Computed each frame in update(), consumed in ui().
     frame_states:              Vec<(String, Option<GameState>)>,
     frame_all_dead:            Vec<HashMap<u32, DeadPokemon>>,
     frame_live_soul_link_dead: Vec<HashSet<u32>>,
@@ -95,12 +94,12 @@ pub struct AggregatorApp {
 }
 
 impl AggregatorApp {
-    pub fn new(_cc: &eframe::CreationContext<'_>, slots: Vec<MonitorSlot>) -> Self {
-        let n = slots.len();
+    pub fn new(_cc: &eframe::CreationContext<'_>, live_slots: SharedSlots) -> Self {
         Self {
-            slots,
+            live_slots,
+            slots:                     Vec::new(),
             textures:                  HashMap::new(),
-            db_caches:                 (0..n).map(|_| SlotDbCache::new()).collect(),
+            db_caches:                 Vec::new(),
             soul_link_propagated:      HashSet::new(),
             frame_states:              Vec::new(),
             frame_all_dead:            Vec::new(),
@@ -560,6 +559,12 @@ impl eframe::App for AggregatorApp {
     }
 
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Snapshot the live slot list for this frame.
+        self.slots = self.live_slots.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        while self.db_caches.len() < self.slots.len() {
+            self.db_caches.push(SlotDbCache::new());
+        }
+
         ctx.request_repaint();
         self.process_textures(ctx);
 

@@ -1,25 +1,18 @@
-//! Aggregator Client
+//! Aggregator tracker connection handler.
 //!
-//! Network client for the multi-player aggregator. Each connected tracker
-//! server gets one [`MonitorSlot`] and one background thread spawned by
-//! [`spawn_client`].
+//! Each tracker that connects to the aggregator gets one [`MonitorSlot`] (reused
+//! on reconnect if available) and one call to [`handle_tracker_connection`].
 //!
 //! ## Thread model
 //!
-//! [`spawn_client`] spawns an **outer reconnect loop** thread. On each
-//! successful TCP connection it starts an inner **writer thread** that drains
-//! `texture_request_queue` every 50 ms, while the other thread's **reader loop**
-//! receives [`ServerMessage::State`] and [`ServerMessage::Textures`] messages.
+//! [`handle_tracker_connection`] starts an inner **writer thread** that drains
+//! `texture_request_queue` and `command_queue` every 50 ms, while the calling
+//! thread's **reader loop** receives [`ServerMessage::State`],
+//! [`ServerMessage::Textures`], and [`ServerMessage::RunChanged`] messages.
 //!
-//! When the connection drops:
-//! 1. The reader loop exits and sets `state` to `None` (shown as "Disconnected
-//!    in the UI").
-//! 2. `connected` is set to `false`, signalling the writer thread to stop.
-//! 3. The writer thread is joined.
-//! 4. The outer loop sleeps for 3 seconds then reconnects.
-//!
-//! This mirrors the single-player client in the main tracker binary but is
-//! self-contained here so the aggregator has no dependency on that crate.
+//! When the connection drops the reader loop exits, sets `state` to `None`, and
+//! returns. The caller (TCP listener loop) can then accept the next connection
+//! and reuse the same slot.
 
 use fire_red_states::{ClientMessage, GameState, ServerMessage, recv_message, send_message};
 use image::ImageEncoder;
@@ -29,6 +22,9 @@ use std::net::TcpStream;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+
+/// Shared list of tracker slots, grown dynamically as trackers connect.
+pub type SharedSlots = Arc<Mutex<Vec<Arc<MonitorSlot>>>>;
 
 // ---------------------------------------------------------------------------
 // Sprite cache
@@ -170,32 +166,23 @@ fn decompress_pixels(data: &[u8]) -> Vec<u8> {
 // Client thread
 // ---------------------------------------------------------------------------
 
-/// Spawns a background thread that maintains a TCP connection to one tracker
-/// server and keeps the shared state arcs up to date.
+/// Handles a live TCP connection from a tracker.
 ///
-/// The spawned thread runs an outer reconnect loop that retries every 3 seconds
-/// on connection failure. Inside each successful connection two activities run
-/// concurrently:
-///
-/// - **Writer thread** - flushes `texture_request_queue` to the server as
-///   [`ClientMessage::RequestTextures`] message every 50 ms. All pending
-///   batches are merged and deduplicated before sending.
-/// - **Reader loop** (on the spawned thread itself) =  receives [`ServerMessage::State`]
-///   and [`ServerMessage::Textures`] messages and updates teh shared arcs
-///   accordingly.
-///
-/// On diconnect, `state` is set to `None` so the UI can show a "Disconnected"
-/// warning, the writer thread is signalled and joined, and the outer loop
-/// sleeps before retrying.
+/// Blocks until the connection is lost, then returns. The caller is responsible
+/// for accepting the next connection and calling this function again.
 ///
 /// # Arguments
-/// * `addr`                  - Server address (e.g. "192.168.1.1:1234").
-/// * `state`                 - Shared game state written on every received `State` message.
+/// * `stream`                - Connected TCP stream from the accepted tracker.
+/// * `state`                 - Shared game state updated on every `State` message.
 /// * `pending_textures`      - Decompressed sprites queued for GPU upload.
-/// * `known_species`         - Species IDs already requested / received; prevents re-requests
-/// * `texture_request_queue` - Batches of species IDs the GUI wants textures for.
-pub fn spawn_client(
-    addr: String,
+/// * `known_species`         - Species IDs already requested; prevents duplicates.
+/// * `texture_request_queue` - Texture request batches queued by the GUI.
+/// * `label`                 - Display label updated from the tracker's player name.
+/// * `sprite_cache`          - Optional shared PNG cache for web/overlay mode.
+/// * `command_queue`         - `EndRun`/`NewRun` commands forwarded to the tracker.
+/// * `run_changed`           - Set when the tracker confirms a run change.
+pub fn handle_tracker_connection(
+    stream: TcpStream,
     state: Arc<Mutex<Option<GameState>>>,
     pending_textures: Arc<Mutex<Vec<PendingTexture>>>,
     known_species: Arc<Mutex<HashSet<u16>>>,
@@ -205,133 +192,90 @@ pub fn spawn_client(
     command_queue: Arc<Mutex<VecDeque<ClientMessage>>>,
     run_changed: Arc<AtomicBool>,
 ) {
-    std::thread::spawn(move || {
-        loop {
-            println!("Connecting to monitor at {}...", addr);
-            match TcpStream::connect(&addr) {
-                Ok(stream) => {
-                    println!("Connected to {}", addr);
+    let mut write_stream = match stream.try_clone() {
+        Ok(s)  => s,
+        Err(e) => { eprintln!("Failed to clone stream: {}", e); return; }
+    };
+    let mut read_stream = stream;
 
-                    let mut write_stream = match stream.try_clone() {
-                        Ok(s) => s,
-                        Err(e) => {
-                            eprintln!("Failed to clone stream: {}", e);
-                            break;
-                        }
-                    };
-                    let mut read_stream = stream;
+    let connected        = Arc::new(AtomicBool::new(true));
+    let connected_writer = connected.clone();
+    let writer_queue     = texture_request_queue.clone();
+    let writer_cmds      = command_queue.clone();
 
-                    let connected = Arc::new(AtomicBool::new(true));
-                    let connected_writer = connected.clone();
-                    let writer_queue   = texture_request_queue.clone();
-                    let writer_cmds    = command_queue.clone();
+    // ── Writer thread: drains texture requests and commands ──────────────────
+    let writer = std::thread::spawn(move || {
+        while connected_writer.load(Ordering::SeqCst) {
+            let cmds: Vec<ClientMessage> = {
+                let mut q = writer_cmds.lock().unwrap_or_else(|e| e.into_inner());
+                q.drain(..).collect()
+            };
+            for cmd in cmds {
+                if send_message(&mut write_stream, &cmd).is_err() {
+                    return;
+                }
+            }
 
-                    // ── Writer thread: drains texture requests and commands ──────
-                    let writer = std::thread::spawn(move || {
-                        while connected_writer.load(Ordering::SeqCst) {
-                            // Drain any queued commands (EndRun, NewRun) first.
-                            let cmds: Vec<ClientMessage> = {
-                                let mut q = writer_cmds.lock().unwrap_or_else(|e| e.into_inner());
-                                q.drain(..).collect()
-                            };
-                            for cmd in cmds {
-                                if send_message(&mut write_stream, &cmd).is_err() {
-                                    return;
-                                }
-                            }
+            let batch = {
+                let mut q = writer_queue.lock().unwrap_or_else(|e| e.into_inner());
+                let mut all: Vec<u16> = q.drain(..).flatten().collect();
+                all.sort();
+                all.dedup();
+                all
+            };
+            if !batch.is_empty()
+                && send_message(&mut write_stream, &ClientMessage::RequestTextures(batch))
+                    .is_err()
+            {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    });
 
-                            let batch = {
-                                let mut q = writer_queue.lock().unwrap_or_else(|e| e.into_inner());
-                                let mut all: Vec<u16> = q.drain(..).flatten().collect();
-                                all.sort();
-                                all.dedup();
-                                all
-                            };
-
-                            if !batch.is_empty()
-                                && send_message(
-                                    &mut write_stream,
-                                    &ClientMessage::RequestTextures(batch),
-                                )
-                                .is_err()
-                                {
-                                    break;
-                                }
-
-                            std::thread::sleep(Duration::from_millis(50));
-                        }
-                    });
-
-                    // ── Reader loop: receives State + Textures ───────────────────
-                    loop {
-                        match recv_message::<ServerMessage>(&mut read_stream) {
-                            Ok(ServerMessage::State(gs)) => {
-                                *label.lock().unwrap_or_else(|e| e.into_inner()) =
-                                    gs.player_name.clone();
-                                *state.lock().unwrap_or_else(|e| e.into_inner()) = Some(gs);
-                            }
-                            Ok(ServerMessage::Textures(sprites)) => {
-                                // Snapshot the sprite cache Arc so we don't
-                                // hold the outer lock while encoding.
-                                let maybe_cache: Option<SpriteCache> = sprite_cache
-                                    .lock()
-                                    .unwrap_or_else(|e| e.into_inner())
-                                    .clone();
-
-                                let mut pending =
-                                    pending_textures.lock().unwrap_or_else(|e| e.into_inner());
-                                let mut known =
-                                    known_species.lock().unwrap_or_else(|e| e.into_inner());
-                                for sprite in sprites {
-                                    known.insert(sprite.species);
-                                    let pixels = decompress_pixels(&sprite.pixels);
-
-                                    // Encode PNG directly into cache (web mode).
-                                    if let Some(ref cache) = maybe_cache {
-                                        let key = (sprite.species, sprite.shiny);
-                                        let mut c = cache
-                                            .lock()
-                                            .unwrap_or_else(|e| e.into_inner());
-                                        if !c.contains_key(&key) {
-                                            if let Some(png) = encode_png(
-                                                &pixels,
-                                                sprite.width,
-                                                sprite.height,
-                                            ) {
-                                                c.insert(key, png);
-                                            }
-                                        }
-                                    }
-
-                                    pending.push(PendingTexture {
-                                        species: sprite.species,
-                                        shiny: sprite.shiny,
-                                        pixels,
-                                        width: sprite.width,
-                                        height: sprite.height,
-                                    });
-                                }
-                            }
-                            Ok(ServerMessage::RunChanged(_)) => {
-                                run_changed.store(true, Ordering::SeqCst);
-                            }
-                            Err(e) => {
-                                eprintln!("Lost connection to {}: {}", addr, e);
-                                *state.lock().unwrap_or_else(|e| e.into_inner()) = None;
-                                break;
+    // ── Reader loop: receives State + Textures ───────────────────────────────
+    loop {
+        match recv_message::<ServerMessage>(&mut read_stream) {
+            Ok(ServerMessage::State(gs)) => {
+                *label.lock().unwrap_or_else(|e| e.into_inner()) = gs.player_name.clone();
+                *state.lock().unwrap_or_else(|e| e.into_inner()) = Some(gs);
+            }
+            Ok(ServerMessage::Textures(sprites)) => {
+                let maybe_cache: Option<SpriteCache> =
+                    sprite_cache.lock().unwrap_or_else(|e| e.into_inner()).clone();
+                let mut pending = pending_textures.lock().unwrap_or_else(|e| e.into_inner());
+                let mut known   = known_species.lock().unwrap_or_else(|e| e.into_inner());
+                for sprite in sprites {
+                    known.insert(sprite.species);
+                    let pixels = decompress_pixels(&sprite.pixels);
+                    if let Some(ref cache) = maybe_cache {
+                        let key = (sprite.species, sprite.shiny);
+                        let mut c = cache.lock().unwrap_or_else(|e| e.into_inner());
+                        if !c.contains_key(&key) {
+                            if let Some(png) = encode_png(&pixels, sprite.width, sprite.height) {
+                                c.insert(key, png);
                             }
                         }
                     }
-
-                    connected.store(false, Ordering::SeqCst);
-                    let _ = writer.join();
-                }
-                Err(e) => {
-                    eprintln!("Failed to connect to {}: {}", addr, e);
-                    *state.lock().unwrap_or_else(|e| e.into_inner()) = None;
+                    pending.push(PendingTexture {
+                        species: sprite.species,
+                        shiny:   sprite.shiny,
+                        pixels,
+                        width:   sprite.width,
+                        height:  sprite.height,
+                    });
                 }
             }
-            std::thread::sleep(Duration::from_secs(3));
+            Ok(ServerMessage::RunChanged(_)) => {
+                run_changed.store(true, Ordering::SeqCst);
+            }
+            Err(_) => {
+                *state.lock().unwrap_or_else(|e| e.into_inner()) = None;
+                break;
+            }
         }
-    });
+    }
+
+    connected.store(false, Ordering::SeqCst);
+    let _ = writer.join();
 }

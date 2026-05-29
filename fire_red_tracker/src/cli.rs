@@ -2,9 +2,8 @@ use clap::{Parser, Subcommand};
 
 /// Real-time Pokémon FireRed party and encounter tracker.
 ///
-/// Settings (ROM path, database, clean mode, default operating mode) are read
-/// from the config file at first launch and saved for future runs.  Any value
-/// can be overridden for a single run with the corresponding argument below.
+/// Settings are read from the config file at first launch and saved for future
+/// runs. Any value can be overridden for a single run with the flags below.
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 pub struct Cli {
@@ -16,9 +15,7 @@ pub struct Cli {
     #[arg(long, value_name = "FILE")]
     pub config: Option<String>,
 
-    /// Override: enable ability name display (only reliable on unmodified ROMs).
-    /// Merges with the config value — passing this flag enables clean mode even
-    /// if the config has it set to false.
+    /// Enable ability name display (only reliable on unmodified ROMs).
     #[arg(long, default_value_t = false)]
     pub clean: bool,
 
@@ -39,26 +36,19 @@ pub struct Cli {
     pub list_runs: bool,
 
     /// Override the operating mode for this run only.
-    /// Omit to use the mode stored in the config file.
     #[command(subcommand)]
     pub command: Option<Command>,
 }
 
-/// Mode override subcommands — force a specific operating mode for this run.
+/// Mode override subcommands.
 #[derive(Subcommand, Debug)]
 pub enum Command {
-    /// Force server mode: run as a headless TCP server streaming game state to clients.
-    Server {
-        /// Port to listen on (overrides config server_port for this run).
-        #[arg(long, default_value_t = 7878)]
-        port: u16,
-    },
-    /// Force client mode: connect to a tracker server and display its game state.
-    Client {
-        /// Server hostname or IP address (overrides config client_host for this run).
+    /// Connect to an aggregator and stream game state to it (headless).
+    Connect {
+        /// Aggregator host or IP address.
         #[arg(long, default_value = "127.0.0.1")]
         host: String,
-        /// Server port (overrides config client_port for this run).
+        /// Aggregator port.
         #[arg(long, default_value_t = 7878)]
         port: u16,
     },

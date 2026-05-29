@@ -10,8 +10,7 @@ use std::sync::{Arc, Mutex};
 #[serde(rename_all = "lowercase")]
 pub enum ConfigMode {
     Standalone,
-    Server,
-    Client,
+    Connected,
 }
 
 impl Default for ConfigMode {
@@ -28,17 +27,14 @@ pub struct TrackerConfig {
     pub clean: bool,
     #[serde(default)]
     pub mode: ConfigMode,
-    #[serde(default = "default_server_port")]
-    pub server_port: u16,
-    #[serde(default = "default_client_host")]
-    pub client_host: String,
-    #[serde(default = "default_client_port")]
-    pub client_port: u16,
+    #[serde(default = "default_aggregator_host")]
+    pub aggregator_host: String,
+    #[serde(default = "default_aggregator_port")]
+    pub aggregator_port: u16,
 }
 
-fn default_server_port() -> u16 { 7878 }
-fn default_client_host() -> String { "127.0.0.1".to_string() }
-fn default_client_port() -> u16 { 7878 }
+fn default_aggregator_host() -> String { "127.0.0.1".to_string() }
+fn default_aggregator_port() -> u16 { 7878 }
 
 // ---------------------------------------------------------------------------
 // Config path
@@ -99,29 +95,27 @@ pub fn save_config(config: &TrackerConfig, path: &PathBuf) {
 // ---------------------------------------------------------------------------
 
 struct SetupApp {
-    rom: String,
-    db: String,
-    clean: bool,
-    mode: ConfigMode,
-    server_port: String,
-    client_host: String,
-    client_port: String,
-    result: Arc<Mutex<Option<TrackerConfig>>>,
-    should_close: bool,
+    rom:              String,
+    db:               String,
+    clean:            bool,
+    mode:             ConfigMode,
+    aggregator_host:  String,
+    aggregator_port:  String,
+    result:           Arc<Mutex<Option<TrackerConfig>>>,
+    should_close:     bool,
 }
 
 impl SetupApp {
     fn new(result: Arc<Mutex<Option<TrackerConfig>>>) -> Self {
         Self {
-            rom: String::new(),
-            db: "localhost/nuzlocke".to_string(),
-            clean: false,
-            mode: ConfigMode::Standalone,
-            server_port: "7878".to_string(),
-            client_host: "127.0.0.1".to_string(),
-            client_port: "7878".to_string(),
+            rom:             String::new(),
+            db:              "localhost/nuzlocke".to_string(),
+            clean:           false,
+            mode:            ConfigMode::Standalone,
+            aggregator_host: "127.0.0.1".to_string(),
+            aggregator_port: "7878".to_string(),
             result,
-            should_close: false,
+            should_close:    false,
         }
     }
 }
@@ -145,28 +139,22 @@ impl eframe::App for SetupApp {
             .spacing([12.0, 10.0])
             .min_col_width(110.0)
             .show(ui, |ui| {
-                // ROM path (not needed in client mode)
-                let client_mode = self.mode == ConfigMode::Client;
-                ui.add_enabled(
-                    !client_mode,
-                    egui::Label::new(if client_mode { "ROM path: (not used in client mode)" } else { "ROM path:" }),
-                );
-                ui.add_enabled_ui(!client_mode, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.add(
-                            egui::TextEdit::singleline(&mut self.rom)
-                                .desired_width(280.0)
-                                .hint_text("path/to/firered.gba"),
-                        );
-                        if ui.button("Browse…").clicked() {
-                            if let Some(path) = rfd::FileDialog::new()
-                                .add_filter("GBA ROM", &["gba"])
-                                .pick_file()
-                            {
-                                self.rom = path.display().to_string();
-                            }
+                // ROM path
+                ui.label("ROM path:");
+                ui.horizontal(|ui| {
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.rom)
+                            .desired_width(280.0)
+                            .hint_text("path/to/firered.gba"),
+                    );
+                    if ui.button("Browse…").clicked() {
+                        if let Some(path) = rfd::FileDialog::new()
+                            .add_filter("GBA ROM", &["gba"])
+                            .pick_file()
+                        {
+                            self.rom = path.display().to_string();
                         }
-                    });
+                    }
                 });
                 ui.end_row();
 
@@ -194,33 +182,22 @@ impl eframe::App for SetupApp {
                 ui.label("Default mode:");
                 ui.horizontal(|ui| {
                     ui.selectable_value(&mut self.mode, ConfigMode::Standalone, "Standalone");
-                    ui.selectable_value(&mut self.mode, ConfigMode::Server, "Server");
-                    ui.selectable_value(&mut self.mode, ConfigMode::Client, "Client");
+                    ui.selectable_value(&mut self.mode, ConfigMode::Connected,  "Connected");
                 });
                 ui.end_row();
 
-                // Conditional: server port
-                if self.mode == ConfigMode::Server {
-                    ui.label("Listen port:");
+                // Aggregator address (only when Connected)
+                if self.mode == ConfigMode::Connected {
+                    ui.label("Aggregator host:");
                     ui.add(
-                        egui::TextEdit::singleline(&mut self.server_port)
-                            .desired_width(80.0),
-                    );
-                    ui.end_row();
-                }
-
-                // Conditional: client host + port
-                if self.mode == ConfigMode::Client {
-                    ui.label("Server host:");
-                    ui.add(
-                        egui::TextEdit::singleline(&mut self.client_host)
+                        egui::TextEdit::singleline(&mut self.aggregator_host)
                             .desired_width(200.0),
                     );
                     ui.end_row();
 
-                    ui.label("Server port:");
+                    ui.label("Aggregator port:");
                     ui.add(
-                        egui::TextEdit::singleline(&mut self.client_port)
+                        egui::TextEdit::singleline(&mut self.aggregator_port)
                             .desired_width(80.0),
                     );
                     ui.end_row();
@@ -231,7 +208,7 @@ impl eframe::App for SetupApp {
         ui.separator();
         ui.add_space(4.0);
 
-        let rom_ok = self.mode == ConfigMode::Client || !self.rom.trim().is_empty();
+        let rom_ok = !self.rom.trim().is_empty();
 
         ui.horizontal(|ui| {
             let btn = ui.add_enabled(rom_ok, egui::Button::new("Save & Continue"));
@@ -244,20 +221,19 @@ impl eframe::App for SetupApp {
                 };
 
                 let config = TrackerConfig {
-                    rom: self.rom.trim().to_string(),
+                    rom:             self.rom.trim().to_string(),
                     db,
-                    clean: self.clean,
-                    mode: self.mode.clone(),
-                    server_port: self.server_port.parse().unwrap_or(7878),
-                    client_host: self.client_host.trim().to_string(),
-                    client_port: self.client_port.parse().unwrap_or(7878),
+                    clean:           self.clean,
+                    mode:            self.mode.clone(),
+                    aggregator_host: self.aggregator_host.trim().to_string(),
+                    aggregator_port: self.aggregator_port.parse().unwrap_or(7878),
                 };
 
                 *self.result.lock().unwrap() = Some(config);
                 self.should_close = true;
             }
 
-            if !rom_ok && self.mode != ConfigMode::Client {
+            if !rom_ok {
                 ui.label(
                     egui::RichText::new("  ROM path is required")
                         .color(egui::Color32::from_rgb(220, 80, 80))
@@ -277,7 +253,7 @@ fn show_setup_dialog() -> TrackerConfig {
         eframe::NativeOptions {
             viewport: egui::ViewportBuilder::default()
                 .with_title("FireRed Tracker — First-Run Setup")
-                .with_inner_size([520.0, 340.0])
+                .with_inner_size([520.0, 300.0])
                 .with_resizable(false),
             ..Default::default()
         },
