@@ -254,8 +254,15 @@ impl WildPokemonInfoROM {
         let sentinel = self.wild_pokemon_list_rom_ptr | 0x08000000;
         let entry_size = std::mem::size_of::<WildPokemon>();
         let mut index = 0;
+        // FireRed has at most 13 slots per encounter table. 200 is a safe ceiling
+        // that prevents an infinite loop when the ROM is corrupt or the pointer
+        // is wrong and the sentinel is never reached.
+        const MAX_ENTRIES: usize = 200;
 
         loop {
+            if index / entry_size >= MAX_ENTRIES {
+                break;
+            }
             // Stop when we read back the sentinel value.
             if read_u32(buffer, start + index) == sentinel {
                 break;
@@ -425,7 +432,7 @@ unsafe fn alloc_wild_pokemon_info_ffi(
     let n = list.len();
     let layout = Layout::from_size_align(
         std::mem::size_of::<WildPokemonInfoFFI>() + n * std::mem::size_of::<WildPokemon>(),
-        std::mem::align_of::<WildPokemon>(),
+        std::mem::align_of::<WildPokemonInfoFFI>(),
     )
     .unwrap();
 
@@ -462,7 +469,7 @@ unsafe fn dealloc_wild_pokemon_info_ffi(ptr: *mut WildPokemonInfoFFI) {
     let layout = Layout::from_size_align(
         std::mem::size_of::<WildPokemonInfoFFI>()
             + unsafe { (*ptr).pokemon_count } * std::mem::size_of::<WildPokemon>(),
-        std::mem::align_of::<WildPokemon>(),
+        std::mem::align_of::<WildPokemonInfoFFI>(),
     )
     .unwrap();
     unsafe { dealloc(ptr as *mut c_uchar, layout) };

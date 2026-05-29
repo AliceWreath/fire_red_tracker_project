@@ -160,12 +160,17 @@ pub fn build_name_list(buffer: &[u8], offset: usize) -> Vec<String> {
     
     while name.len() <= LAST_POKEMON_ID_NUMBER {
         let mut name_s = String::from("");
-        while read_u8(buffer, offset + index) != 0xff {
+        while offset + index < buffer.len() && read_u8(buffer, offset + index) != 0xff {
             name_s.push(char_gba_to_ascii(read_u8(buffer, offset + index)));
             index += 1;
         }
         name.push(name_s);
-        index += 1;
+        // Skip the 0xff terminator, guarding against a truncated buffer.
+        if offset + index < buffer.len() {
+            index += 1;
+        } else {
+            break;
+        }
     }
 
     name

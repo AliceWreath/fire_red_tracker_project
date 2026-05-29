@@ -206,13 +206,15 @@ fn get_box_0_ewram_offset() -> Option<usize> {
         iwram[ptr_offset + 3],
     ]) as usize;
 
-    if save_block_3_base < EWRAM_BASE {
+    let ewram = fire_red_memory::get_ewram();
+    if save_block_3_base < EWRAM_BASE || save_block_3_base >= EWRAM_BASE + ewram.len() {
         eprintln!(
             "SaveBlock3 pointer 0x{:08X} is outside EWRAM — snapshot may not be ready.",
             save_block_3_base
         );
         return None;
     }
+    drop(ewram);
 
     let box_0_addr = save_block_3_base + BOX_DATA_OFFSET;
     if box_0_addr < EWRAM_BASE {

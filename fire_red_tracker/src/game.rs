@@ -72,6 +72,7 @@ pub fn check_for_dead_pokemon(thread_party: &Arc<Mutex<Vec<Pokemon>>>) {
             .unwrap_or(0);
 
         fire_red_database::mark_dead(fire_red_database::DeadPokemon {
+            player_name:   String::new(), // populated from DbState::current_player by mark_dead
             personality,
             ot_id,
             ot_name,
@@ -166,6 +167,7 @@ pub fn check_for_new_pokemon(thread_party: &Arc<Mutex<Vec<Pokemon>>>) {
             .unwrap_or(0);
 
         fire_red_database::mark_caught(fire_red_database::CaughtPokemon {
+            player_name:  String::new(), // populated from DbState::current_player by mark_caught
             personality,
             ot_id,
             nickname:     pokemon.box_mon.nickname_string.clone(),

@@ -598,7 +598,7 @@ impl eframe::App for AggregatorApp {
                     >= std::time::Duration::from_secs(1);
             if should_refresh {
                 if let Some(db) = &self.slots[i].db {
-                    self.db_caches[i].caught = db.list_caught();
+                    self.db_caches[i].caught = db.list_caught(&states[i].0);
                     self.db_caches[i].last_refresh = now;
                 }
             }
@@ -610,10 +610,11 @@ impl eframe::App for AggregatorApp {
         let all_dead: Vec<HashMap<u32, DeadPokemon>> = self
             .slots
             .iter()
-            .map(|slot| {
+            .enumerate()
+            .map(|(i, slot)| {
                 slot.db
                     .as_ref()
-                    .map(|db| db.list_dead_with_records())
+                    .map(|db| db.list_dead_with_records(&states[i].0))
                     .unwrap_or_default()
             })
             .collect();

@@ -38,7 +38,7 @@ fn read_u32_le(bytes: &[u8], offset: usize) -> u32 {
 /// 
 /// * `ptr` - Value to check.
 fn is_valid_gba_ptr(ptr: u32) -> bool {
-    (ptr >= 0x08000000 && ptr < 0x09000000) || ptr == 0
+    (ptr >= 0x08000000 && ptr <= 0x09FFFFFF) || ptr == 0
 }
 
 /// Performs a heuristic check on a potential wild encounter header
