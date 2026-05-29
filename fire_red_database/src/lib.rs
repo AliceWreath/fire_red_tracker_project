@@ -110,6 +110,19 @@ pub struct DeadPokemon {
     pub died_at: u64,
 }
 
+/// A wild Pokémon encounter — the first one per area is stored for Nuzlocke tracking.
+#[derive(Clone, Debug)]
+pub struct Encounter {
+    pub map_group: u8,
+    pub map_name: u8,
+    pub species: u16,
+    pub species_name: String,
+    pub level: u8,
+    /// `false` until updated to `true` if the Pokémon was successfully caught.
+    pub caught: bool,
+    pub encountered_at: u64,
+}
+
 /// Snapshot of a Pokemon at the moment it first joined the party.
 #[derive(Clone, Debug)]
 pub struct CaughtPokemon {
@@ -241,6 +254,20 @@ pub fn initialize(connection_string: &str) {
             iv_sp_defense INTEGER NOT NULL,
             caught_at     BIGINT  NOT NULL,
             PRIMARY KEY (run_id, personality)
+        );
+
+        -- First wild encounter per area per run (Nuzlocke rule).
+        CREATE TABLE IF NOT EXISTS encounters (
+            id             SERIAL  PRIMARY KEY,
+            run_id         INTEGER NOT NULL REFERENCES runs(id),
+            map_group      INTEGER NOT NULL,
+            map_name       INTEGER NOT NULL,
+            species        INTEGER NOT NULL,
+            species_name   TEXT    NOT NULL,
+            level          INTEGER NOT NULL,
+            caught         BOOLEAN NOT NULL DEFAULT FALSE,
+            encountered_at BIGINT  NOT NULL,
+            UNIQUE (run_id, map_group, map_name)
         );
 
         -- Stores the last-active run_id per process for the --list-runs display.
@@ -674,6 +701,98 @@ pub fn list_caught() -> Vec<CaughtPokemon> {
         None => return vec![],
     };
     query_caught(&mut state.client, active)
+}
+
+// ---------------------------------------------------------------------------
+// Public API — encounter tracking
+// ---------------------------------------------------------------------------
+
+/// Records the first wild encounter in an area.
+///
+/// Subsequent encounters in the same area are silently ignored (Nuzlocke rule).
+/// Returns `true` if this was a new encounter (row was inserted).
+pub fn record_encounter(encounter: Encounter) -> bool {
+    let mut state = db().lock().unwrap_or_else(|e| e.into_inner());
+    let active = match state.run_id {
+        Some(id) => id,
+        None => return false,
+    };
+    let rows = state.client.execute(
+        "INSERT INTO encounters (
+            run_id, map_group, map_name, species, species_name, level, caught, encountered_at
+         ) VALUES ($1, $2, $3, $4, $5, $6, FALSE, $7)
+         ON CONFLICT (run_id, map_group, map_name) DO NOTHING",
+        &[
+            &(active as i32),
+            &(encounter.map_group as i32),
+            &(encounter.map_name as i32),
+            &(encounter.species as i32),
+            &encounter.species_name,
+            &(encounter.level as i32),
+            &(encounter.encountered_at as i64),
+        ],
+    ).unwrap_or(0);
+    rows == 1
+}
+
+/// Marks the encounter for this area as successfully caught.
+pub fn set_encounter_caught(map_group: u8, map_name: u8) {
+    let mut state = db().lock().unwrap_or_else(|e| e.into_inner());
+    let active = match state.run_id {
+        Some(id) => id,
+        None => return,
+    };
+    state.client.execute(
+        "UPDATE encounters SET caught = TRUE
+         WHERE run_id = $1 AND map_group = $2 AND map_name = $3",
+        &[&(active as i32), &(map_group as i32), &(map_name as i32)],
+    ).ok();
+}
+
+/// Returns `true` if an encounter has already been recorded for this area.
+pub fn has_encounter(map_group: u8, map_name: u8) -> bool {
+    let mut state = db().lock().unwrap_or_else(|e| e.into_inner());
+    let active = match state.run_id {
+        Some(id) => id,
+        None => return false,
+    };
+    state.client
+        .query_one(
+            "SELECT COUNT(*) FROM encounters
+             WHERE run_id = $1 AND map_group = $2 AND map_name = $3",
+            &[&(active as i32), &(map_group as i32), &(map_name as i32)],
+        )
+        .map(|row| row.get::<_, i64>(0) > 0)
+        .unwrap_or(false)
+}
+
+/// Returns all encounters for the active run, ordered by time.
+pub fn list_encounters() -> Vec<Encounter> {
+    let mut state = db().lock().unwrap_or_else(|e| e.into_inner());
+    let active = match state.run_id {
+        Some(id) => id,
+        None => return vec![],
+    };
+    state.client
+        .query(
+            "SELECT map_group, map_name, species, species_name, level, caught, encountered_at
+             FROM encounters
+             WHERE run_id = $1
+             ORDER BY encountered_at ASC",
+            &[&(active as i32)],
+        )
+        .unwrap_or_default()
+        .iter()
+        .map(|row| Encounter {
+            map_group:     row.get::<_, i32>(0) as u8,
+            map_name:      row.get::<_, i32>(1) as u8,
+            species:       row.get::<_, i32>(2) as u16,
+            species_name:  row.get(3),
+            level:         row.get::<_, i32>(4) as u8,
+            caught:        row.get(5),
+            encountered_at: row.get::<_, i64>(6) as u64,
+        })
+        .collect()
 }
 
 // ---------------------------------------------------------------------------

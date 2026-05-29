@@ -17,6 +17,12 @@ pub const EWRAM_BASE: usize = 0x02000000;
 /// Base address of IWRAM in the GBA address space.
 pub const IWRAM_BASE: usize = 0x03000000;
 
+/// GBA address of gEnemyParty[0] for FireRed USA Rev 1.
+/// Confirmed empirically: personality changes to a new value on every new wild battle.
+/// Note: this slot is NOT cleared between battles — detection must use personality
+/// change rather than presence/absence.
+const ENEMY_PARTY_ADDR: usize = 0x0202402C;
+
 /// Returns `true` if the pokemon with `personality` and `ot_id` is shiny.
 ///
 /// Uses the Gen III formula: `(p_high ^ p_low ^ id_high ^ id_low) < 8`.
@@ -228,4 +234,38 @@ pub fn game_is_loaded() -> bool {
     }
 
     true
+}
+
+/// Returns the wild Pokémon currently engaged in battle, or `None` when not
+/// in a wild encounter.
+///
+/// Reads `gEnemyParty[0]` from the EWRAM snapshot. FireRed's `CreateWildMon`
+/// calls `CreateMon` with `OT_ID_PLAYER_ID`, so wild Pokémon receive the
+/// player's OT ID — the same as every Pokémon in the player's own party.
+/// Trainer-owned Pokémon carry a different OT ID. Comparing the enemy's
+/// `ot_id` against the lead party member's `ot_id` therefore distinguishes
+/// wild battles from trainer battles without any gBattleTypeFlags address.
+///
+/// Returns `None` when the slot is empty, fails checksum, or OT IDs don't
+/// match (trainer battle or no party data available yet).
+pub fn get_wild_enemy_pokemon() -> Option<Pokemon> {
+    let ewram  = fire_red_memory::get_ewram();
+    let rom    = fire_red_rom_buffer::get_rom();
+    let offset = ENEMY_PARTY_ADDR - EWRAM_BASE;
+    if ewram.len() < offset + 100 {
+        return None;
+    }
+    let enemy = Pokemon::from_bytes(&ewram[offset..offset + 100], rom)?;
+
+    // Require the player's party to be populated so we can read the player OT.
+    let player_ot = fire_red_party_monitor::get_party()
+        .and_then(|p| p.members.first().cloned())
+        .map(|m| m.box_mon.ot_id)
+        .filter(|&ot| ot != 0)?;
+
+    if enemy.box_mon.ot_id == player_ot {
+        Some(enemy)
+    } else {
+        None
+    }
 }
