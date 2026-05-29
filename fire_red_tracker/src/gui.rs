@@ -262,6 +262,8 @@ impl WindowInfo {
         // ── Party members ─────────────────────────────────────────────────────
         let list = self.party_list.lock().unwrap_or_else(|e| e.into_inner());
         for (idx, pokemon) in list.iter().enumerate() {
+            let dead = fire_red_database::is_dead(pokemon.box_mon.personality);
+
             ui.horizontal(|ui| {
                 let species     = pokemon.box_mon.secure.growth.species;
                 let personality = pokemon.box_mon.personality;
@@ -273,51 +275,111 @@ impl WindowInfo {
                 );
 
                 if let Some(tex) = self.textures.get(&key) {
+                    let tint = if dead {
+                        egui::Color32::from_rgba_unmultiplied(80, 80, 80, 180)
+                    } else {
+                        egui::Color32::WHITE
+                    };
                     ui.add(
                         egui::Image::new(tex)
-                            .fit_to_exact_size(egui::vec2(PARTY_IMAGE_SIZE.0, PARTY_IMAGE_SIZE.1)),
+                            .fit_to_exact_size(egui::vec2(PARTY_IMAGE_SIZE.0, PARTY_IMAGE_SIZE.1))
+                            .tint(tint),
                     );
                 }
 
                 ui.vertical(|ui| {
-                    ui.horizontal(|ui| {
-                        ui.label(
-                            egui::RichText::new(pokemon.get_nickname_string())
-                                .strong()
-                                .size(18.0)
-                                .color(egui::Color32::WHITE),
+                    if dead {
+                        let record = fire_red_database::get_dead_pokemon(
+                            pokemon.box_mon.personality,
                         );
-                        ui.label(format!("Lvl: {}", pokemon.level));
-                        ui.label(format!("Exp: {}", pokemon.box_mon.secure.growth.experience));
-                    });
-
-                    egui::Grid::new(format!("stats_{}", idx))
-                        .min_col_width(80.0)
-                        .spacing([10.0, 2.0])
-                        .show(ui, |ui| {
-                            let hp_ratio = pokemon.hp as f32 / pokemon.max_hp as f32;
-                            let color = if hp_ratio < 0.3 {
-                                egui::Color32::RED
-                            } else if hp_ratio < 0.8 {
-                                egui::Color32::YELLOW
-                            } else {
-                                egui::Color32::WHITE
-                            };
+                        ui.horizontal(|ui| {
                             ui.label(
-                                egui::RichText::new(format!("{}/{}", pokemon.hp, pokemon.max_hp))
+                                egui::RichText::new(pokemon.get_nickname_string())
                                     .strong()
                                     .size(18.0)
-                                    .color(color),
+                                    .color(egui::Color32::from_rgb(150, 50, 50)),
+                            );
+                            ui.label(
+                                egui::RichText::new("DEAD")
+                                    .strong()
+                                    .size(18.0)
+                                    .color(egui::Color32::RED),
                             );
                         });
+                        if let Some(r) = &record {
+                            let dim = egui::Color32::from_rgb(140, 140, 140);
+                            ui.label(
+                                egui::RichText::new(format!(
+                                    "Lv.{} {} — {}{}",
+                                    r.level,
+                                    r.species_name,
+                                    r.nature,
+                                    if r.is_shiny { " ★" } else { "" },
+                                ))
+                                .color(dim),
+                            );
+                            ui.label(
+                                egui::RichText::new(format!(
+                                    "HP {max} | Atk {atk} | Def {def} | Spe {spe} | SpA {spa} | SpD {spd}",
+                                    max = r.max_hp,
+                                    atk = r.attack,
+                                    def = r.defense,
+                                    spe = r.speed,
+                                    spa = r.sp_attack,
+                                    spd = r.sp_defense,
+                                ))
+                                .color(dim)
+                                .size(11.0),
+                            );
+                            ui.label(
+                                egui::RichText::new(format!(
+                                    "Died: {}",
+                                    fire_red_database::format_timestamp(r.died_at),
+                                ))
+                                .color(dim)
+                                .size(11.0),
+                            );
+                        }
+                    } else {
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                egui::RichText::new(pokemon.get_nickname_string())
+                                    .strong()
+                                    .size(18.0)
+                                    .color(egui::Color32::WHITE),
+                            );
+                            ui.label(format!("Lvl: {}", pokemon.level));
+                            ui.label(format!("Exp: {}", pokemon.box_mon.secure.growth.experience));
+                        });
 
-                    ui.label(format!(
-                        "Caught Location: {}",
-                        pokemon.box_mon.secure.misc.met_location,
-                    ));
+                        egui::Grid::new(format!("stats_{}", idx))
+                            .min_col_width(80.0)
+                            .spacing([10.0, 2.0])
+                            .show(ui, |ui| {
+                                let hp_ratio = pokemon.hp as f32 / pokemon.max_hp as f32;
+                                let color = if hp_ratio < 0.3 {
+                                    egui::Color32::RED
+                                } else if hp_ratio < 0.8 {
+                                    egui::Color32::YELLOW
+                                } else {
+                                    egui::Color32::WHITE
+                                };
+                                ui.label(
+                                    egui::RichText::new(format!("{}/{}", pokemon.hp, pokemon.max_hp))
+                                        .strong()
+                                        .size(18.0)
+                                        .color(color),
+                                );
+                            });
 
-                    if get_is_clean() {
-                        ui.label(format!("Ability: {}", pokemon.box_mon.ability_string));
+                        ui.label(format!(
+                            "Caught Location: {}",
+                            pokemon.box_mon.secure.misc.met_location,
+                        ));
+
+                        if get_is_clean() {
+                            ui.label(format!("Ability: {}", pokemon.box_mon.ability_string));
+                        }
                     }
                 });
             });

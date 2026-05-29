@@ -1,32 +1,50 @@
-//! Aggregator Client
+//! Aggregator tracker connection handler.
 //!
-//! Network client for the multi-player aggregator. Each connected tracker
-//! server gets one [`MonitorSlot`] and one background thread spawned by
-//! [`spawn_client`].
+//! Each tracker that connects to the aggregator gets one [`MonitorSlot`] (reused
+//! on reconnect if available) and one call to [`handle_tracker_connection`].
 //!
 //! ## Thread model
 //!
-//! [`spawn_client`] spawns an **outer reconnect loop** thread. On each
-//! successful TCP connection it starts an inner **writer thread** that drains
-//! `texture_request_queue` every 50 ms, while the other thread's **reader loop**
-//! receives [`ServerMessage::State`] and [`ServerMessage::Textures`] messages.
+//! [`handle_tracker_connection`] starts an inner **writer thread** that drains
+//! `texture_request_queue` and `command_queue` every 50 ms, while the calling
+//! thread's **reader loop** receives [`ServerMessage::State`],
+//! [`ServerMessage::Textures`], and [`ServerMessage::RunChanged`] messages.
 //!
-//! When the connection drops:
-//! 1. The reader loop exits and sets `state` to `None` (shown as "Disconnected
-//!    in the UI").
-//! 2. `connected` is set to `false`, signalling the writer thread to stop.
-//! 3. The writer thread is joined.
-//! 4. The outer loop sleeps for 3 seconds then reconnects.
-//!
-//! This mirrors the single-player client in the main tracker binary but is
-//! self-contained here so the aggregator has no dependency on that crate.
+//! When the connection drops the reader loop exits, sets `state` to `None`, and
+//! returns. The caller (TCP listener loop) can then accept the next connection
+//! and reuse the same slot.
 
 use fire_red_states::{ClientMessage, GameState, ServerMessage, recv_message, send_message};
-use std::collections::{HashSet, VecDeque};
+use image::ImageEncoder;
+use image::codecs::png::PngEncoder;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::TcpStream;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+
+/// Shared list of tracker slots, grown dynamically as trackers connect.
+pub type SharedSlots = Arc<Mutex<Vec<Arc<MonitorSlot>>>>;
+
+// ---------------------------------------------------------------------------
+// Sprite cache
+// ---------------------------------------------------------------------------
+
+/// PNG-encoded sprite cache shared between the TCP reader thread and the HTTP
+/// sprite endpoint. Keyed by `(species, is_shiny)`.
+pub type SpriteCache = Arc<Mutex<HashMap<(u16, bool), Vec<u8>>>>;
+
+/// Encodes raw RGBA pixels directly to PNG bytes using the PNG codec.
+pub fn encode_png(pixels: &[u8], width: u32, height: u32) -> Option<Vec<u8>> {
+    if pixels.len() < (width as usize) * (height as usize) * 4 {
+        return None;
+    }
+    let mut buf = Vec::new();
+    PngEncoder::new(&mut buf)
+        .write_image(pixels, width, height, image::ExtendedColorType::Rgba8)
+        .ok()?;
+    Some(buf)
+}
 
 // ---------------------------------------------------------------------------
 // Pending texture
@@ -58,7 +76,7 @@ pub struct PendingTexture {
 ///
 /// A [`MonitorSlot`] is created for each server address before the GUI starts.
 /// [`spawn_client`] is then called with clones of the inner `Arc`s to wire up
-/// the background network thread.The GUI reads from these arcs each frame.
+/// the background network thread. The GUI reads from these arcs each frame.
 pub struct MonitorSlot {
     /// Display label shown as the column heading (e.g. `"Player 1"`)
     pub label: Arc<Mutex<String>>,
@@ -72,24 +90,40 @@ pub struct MonitorSlot {
     /// Drained by the GUI thread at the start of each frame.
     pub pending_textures: Arc<Mutex<Vec<PendingTexture>>>,
     /// Set of species IDs for which a texture request has already been sent,
-    /// preventing dulicate requests across reconnects.
+    /// preventing duplicate requests across reconnects.
     pub known_species: Arc<Mutex<HashSet<u16>>>,
     /// Outbound texture request batches produced by the GUI and consumed by the
     /// network writer thread every 50 ms.
     pub texture_request_queue: Arc<Mutex<VecDeque<Vec<u16>>>>,
+    /// Connection string used to open `db` (kept for diagnostics).
+    pub _db_path: Option<String>,
+    /// Read-only handle to this player's nuzlocke database.
+    /// Opened lazily on first successful access; `None` if no path was given or
+    /// the file does not yet exist.
+    pub db: Option<fire_red_database::DbReader>,
+    /// Optional sprite cache set by web mode. When populated, the `spawn_client`
+    /// reader thread encodes received sprites directly into this cache so the
+    /// HTTP sprite endpoint can serve them without a separate drain step.
+    pub sprite_cache: Arc<Mutex<Option<SpriteCache>>>,
+    /// Commands queued by the web server to be forwarded to the tracker over TCP.
+    pub command_queue: Arc<Mutex<VecDeque<ClientMessage>>>,
+    /// Set to `true` when the tracker confirms a run change (EndRun / NewRun),
+    /// so the BroadcastLoop can mark the DB reader dirty and re-sync.
+    pub run_changed: Arc<AtomicBool>,
 }
 
 impl MonitorSlot {
-    /// Creates a new [`MonitorSlot`] for the server at `addr`
+    /// Creates a new [`MonitorSlot`] for the server at `addr`.
     ///
     /// All shared state is initialized to empty / `None`. Call [`spawn_client`]
     /// with clones of the inner arcs to start the background network thread.
     ///
     /// # Arguments
-    /// * `index` - Zero-based slot index; used to generate the display label
-    ///             (`"Player 1"`, `"Player 2"`, ...).
-    /// * `addr`  - TCP address of the tracker server (e.g. "192.168.1.10:7878").
-    pub fn new(index: usize, addr: String) -> Self {
+    /// * `index`   - Zero-based slot index; used to generate the display label.
+    /// * `addr`    - TCP address of the tracker server.
+    /// * `db_path` - Optional path to this player's SQLite nuzlocke database.
+    pub fn new(index: usize, addr: String, db_path: Option<String>) -> Self {
+        let db = db_path.as_deref().and_then(|s| fire_red_database::DbReader::open(s));
         Self {
             label: Arc::new(Mutex::new(format!("Player {}", index + 1))),
             _addr: addr,
@@ -97,6 +131,11 @@ impl MonitorSlot {
             pending_textures: Arc::new(Mutex::new(Vec::new())),
             known_species: Arc::new(Mutex::new(HashSet::new())),
             texture_request_queue: Arc::new(Mutex::new(VecDeque::new())),
+            _db_path: db_path,
+            db,
+            sprite_cache:  Arc::new(Mutex::new(None)),
+            command_queue: Arc::new(Mutex::new(VecDeque::new())),
+            run_changed:   Arc::new(AtomicBool::new(false)),
         }
     }
 }
@@ -127,124 +166,116 @@ fn decompress_pixels(data: &[u8]) -> Vec<u8> {
 // Client thread
 // ---------------------------------------------------------------------------
 
-/// Spawns a background thread that maintains a TCP connection to one tracker
-/// server and keeps the shared state arcs up to date.
+/// Handles a live TCP connection from a tracker.
 ///
-/// The spawned thread runs an outer reconnect loop that retries every 3 seconds
-/// on connection failure. Inside each successful connection two activities run
-/// concurrently:
-///
-/// - **Writer thread** - flushes `texture_request_queue` to the server as
-///   [`ClientMessage::RequestTextures`] message every 50 ms. All pending
-///   batches are merged and deduplicated before sending.
-/// - **Reader loop** (on the spawned thread itself) =  receives [`ServerMessage::State`]
-///   and [`ServerMessage::Textures`] messages and updates teh shared arcs
-///   accordingly.
-///
-/// On diconnect, `state` is set to `None` so the UI can show a "Disconnected"
-/// warning, the writer thread is signalled and joined, and the outer loop
-/// sleeps before retrying.
+/// Blocks until the connection is lost, then returns. The caller is responsible
+/// for accepting the next connection and calling this function again.
 ///
 /// # Arguments
-/// * `addr`                  - Server address (e.g. "192.168.1.1:1234").
-/// * `state`                 - Shared game state written on every received `State` message.
+/// * `stream`                - Connected TCP stream from the accepted tracker.
+/// * `state`                 - Shared game state updated on every `State` message.
 /// * `pending_textures`      - Decompressed sprites queued for GPU upload.
-/// * `known_species`         - Species IDs already requested / received; prevents re-requests
-/// * `texture_request_queue` - Batches of species IDs the GUI wants textures for.
-pub fn spawn_client(
-    addr: String,
+/// * `known_species`         - Species IDs already requested; prevents duplicates.
+/// * `texture_request_queue` - Texture request batches queued by the GUI.
+/// * `label`                 - Display label updated from the tracker's player name.
+/// * `sprite_cache`          - Optional shared PNG cache for web/overlay mode.
+/// * `command_queue`         - `EndRun`/`NewRun` commands forwarded to the tracker.
+/// * `run_changed`           - Set when the tracker confirms a run change.
+pub fn handle_tracker_connection(
+    stream: TcpStream,
     state: Arc<Mutex<Option<GameState>>>,
     pending_textures: Arc<Mutex<Vec<PendingTexture>>>,
     known_species: Arc<Mutex<HashSet<u16>>>,
     texture_request_queue: Arc<Mutex<VecDeque<Vec<u16>>>>,
     label: Arc<Mutex<String>>,
+    sprite_cache: Arc<Mutex<Option<SpriteCache>>>,
+    command_queue: Arc<Mutex<VecDeque<ClientMessage>>>,
+    run_changed: Arc<AtomicBool>,
 ) {
-    std::thread::spawn(move || {
-        loop {
-            println!("Connecting to monitor at {}...", addr);
-            match TcpStream::connect(&addr) {
-                Ok(stream) => {
-                    println!("Connected to {}", addr);
+    let mut write_stream = match stream.try_clone() {
+        Ok(s)  => s,
+        Err(e) => { eprintln!("Failed to clone stream: {}", e); return; }
+    };
+    let mut read_stream = stream;
 
-                    let mut write_stream = match stream.try_clone() {
-                        Ok(s) => s,
-                        Err(e) => {
-                            eprintln!("Failed to clone stream: {}", e);
-                            break;
-                        }
-                    };
-                    let mut read_stream = stream;
+    let connected        = Arc::new(AtomicBool::new(true));
+    let connected_writer = connected.clone();
+    let writer_queue     = texture_request_queue.clone();
+    let writer_cmds      = command_queue.clone();
 
-                    let connected = Arc::new(AtomicBool::new(true));
-                    let connected_writer = connected.clone();
-                    let writer_queue = texture_request_queue.clone();
+    // ── Writer thread: drains texture requests and commands ──────────────────
+    let writer = std::thread::spawn(move || {
+        while connected_writer.load(Ordering::SeqCst) {
+            let cmds: Vec<ClientMessage> = {
+                let mut q = writer_cmds.lock().unwrap_or_else(|e| e.into_inner());
+                q.drain(..).collect()
+            };
+            for cmd in cmds {
+                if send_message(&mut write_stream, &cmd).is_err() {
+                    return;
+                }
+            }
 
-                    // ── Writer thread: drains texture request queue ──────────────
-                    let writer = std::thread::spawn(move || {
-                        while connected_writer.load(Ordering::SeqCst) {
-                            let batch = {
-                                let mut q = writer_queue.lock().unwrap_or_else(|e| e.into_inner());
-                                let mut all: Vec<u16> = q.drain(..).flatten().collect();
-                                all.sort();
-                                all.dedup();
-                                all
-                            };
+            let batch = {
+                let mut q = writer_queue.lock().unwrap_or_else(|e| e.into_inner());
+                let mut all: Vec<u16> = q.drain(..).flatten().collect();
+                all.sort();
+                all.dedup();
+                all
+            };
+            if !batch.is_empty()
+                && send_message(&mut write_stream, &ClientMessage::RequestTextures(batch))
+                    .is_err()
+            {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    });
 
-                            if !batch.is_empty()
-                                && send_message(
-                                    &mut write_stream,
-                                    &ClientMessage::RequestTextures(batch),
-                                )
-                                .is_err()
-                                {
-                                    break;
-                                }
-
-                            std::thread::sleep(Duration::from_millis(50));
-                        }
-                    });
-
-                    // ── Reader loop: receives State + Textures ───────────────────
-                    loop {
-                        match recv_message::<ServerMessage>(&mut read_stream) {
-                            Ok(ServerMessage::State(gs)) => {
-                                *label.lock().unwrap_or_else(|e| e.into_inner()) =
-                                    gs.player_name.clone();
-                                *state.lock().unwrap_or_else(|e| e.into_inner()) = Some(gs);
-                            }
-                            Ok(ServerMessage::Textures(sprites)) => {
-                                let mut pending =
-                                    pending_textures.lock().unwrap_or_else(|e| e.into_inner());
-                                let mut known =
-                                    known_species.lock().unwrap_or_else(|e| e.into_inner());
-                                for sprite in sprites {
-                                    known.insert(sprite.species);
-                                    pending.push(PendingTexture {
-                                        species: sprite.species,
-                                        shiny: sprite.shiny,
-                                        pixels: decompress_pixels(&sprite.pixels),
-                                        width: sprite.width,
-                                        height: sprite.height,
-                                    });
-                                }
-                            }
-                            Err(e) => {
-                                eprintln!("Lost connection to {}: {}", addr, e);
-                                *state.lock().unwrap_or_else(|e| e.into_inner()) = None;
-                                break;
+    // ── Reader loop: receives State + Textures ───────────────────────────────
+    loop {
+        match recv_message::<ServerMessage>(&mut read_stream) {
+            Ok(ServerMessage::State(gs)) => {
+                *label.lock().unwrap_or_else(|e| e.into_inner()) = gs.player_name.clone();
+                *state.lock().unwrap_or_else(|e| e.into_inner()) = Some(gs);
+            }
+            Ok(ServerMessage::Textures(sprites)) => {
+                let maybe_cache: Option<SpriteCache> =
+                    sprite_cache.lock().unwrap_or_else(|e| e.into_inner()).clone();
+                let mut pending = pending_textures.lock().unwrap_or_else(|e| e.into_inner());
+                let mut known   = known_species.lock().unwrap_or_else(|e| e.into_inner());
+                for sprite in sprites {
+                    known.insert(sprite.species);
+                    let pixels = decompress_pixels(&sprite.pixels);
+                    if let Some(ref cache) = maybe_cache {
+                        let key = (sprite.species, sprite.shiny);
+                        let mut c = cache.lock().unwrap_or_else(|e| e.into_inner());
+                        if !c.contains_key(&key) {
+                            if let Some(png) = encode_png(&pixels, sprite.width, sprite.height) {
+                                c.insert(key, png);
                             }
                         }
                     }
-
-                    connected.store(false, Ordering::SeqCst);
-                    let _ = writer.join();
-                }
-                Err(e) => {
-                    eprintln!("Failed to connect to {}: {}", addr, e);
-                    *state.lock().unwrap_or_else(|e| e.into_inner()) = None;
+                    pending.push(PendingTexture {
+                        species: sprite.species,
+                        shiny:   sprite.shiny,
+                        pixels,
+                        width:   sprite.width,
+                        height:  sprite.height,
+                    });
                 }
             }
-            std::thread::sleep(Duration::from_secs(3));
+            Ok(ServerMessage::RunChanged(_)) => {
+                run_changed.store(true, Ordering::SeqCst);
+            }
+            Err(_) => {
+                *state.lock().unwrap_or_else(|e| e.into_inner()) = None;
+                break;
+            }
         }
-    });
+    }
+
+    connected.store(false, Ordering::SeqCst);
+    let _ = writer.join();
 }

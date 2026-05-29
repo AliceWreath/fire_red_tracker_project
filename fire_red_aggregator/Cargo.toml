@@ -9,6 +9,7 @@ path = "src/main.rs"
 
 [dependencies]
 fire_red_states = { path = "../fire_red_states" }
+fire_red_database = { path = "../fire_red_database" }
 fire_red_party_monitor = { path = "../fire_red_party_monitor" }
 fire_red_pokemon_data = { path = "../fire_red_pokemon_data" }
 fire_red_rom_buffer = { path = "../fire_red_rom_buffer" }
@@ -16,6 +17,12 @@ fire_red_image_data = { path = "../fire_red_image_data" }
 flate2 = "1"
 bincode = "1"
 serde = { version = "1", features = ["derive"] }
-eframe = "0.27"
-egui = "0.27"
+serde_json = "1"
+eframe = "0.34.2"
+egui = "0.34.2"
 clap = { version = "4.0", features = ["derive"] }
+toml = "0.8"
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+axum = { version = "0.7", features = ["ws"] }
+image = "0.25"
+futures-util = "0.3"

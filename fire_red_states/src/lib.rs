@@ -10,14 +10,14 @@ use std::io::{Read, Write};
 const MAX_MESSAGE_SIZE: usize = 20 * 1024 * 1024; // 20 MB
 
 /// Messages sent from a client to the server.
-/// 
-/// Used for requesting resources or issuing commands.
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(serde::Serialize, serde::Deserialize, Clone)]
 pub enum ClientMessage {
-    /// Request sprite texture fro a list of pokemon species IDs.
-    /// 
-    /// The contained `Vec<u16>` represents the pokemon species IDs.
+    /// Request sprite textures for a list of Pokémon species IDs.
     RequestTextures(Vec<u16>),
+    /// End the current active run (sets ended_at, stops recording data).
+    EndRun,
+    /// Start a new run and make it the active run.
+    NewRun,
 }
 
 /// Messages sent from the server to connected clients.
@@ -28,6 +28,10 @@ pub enum ServerMessage {
 
     /// Collection of sprite textures requested by client.
     Textures(Vec<SpriteData>),
+
+    /// Confirmation that the active run changed.
+    /// `None` = run ended (no active run); `Some(id)` = new run ID.
+    RunChanged(Option<u32>),
 }
 
 /// Serialized Pokemon sprite texture data for network transmission.
@@ -60,24 +64,17 @@ pub struct GameState {
     pub badge_state: Option<fire_red_badge::BadgeState>,
 }
 
-/// Network operating mode for the program.
+/// Network operating mode for the tracker.
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
 pub enum Mode {
-    /// Run entirely locally with no networking
+    /// Run entirely locally with no networking.
     Standalone,
 
-    /// Run as a TCP server listening on the specified port.
-    Server {
-        /// TCP port to bind to.
-        port: u16,
-    },
-
-    /// Run as a TCP client connecting to a remote server.
-    Client {
-        /// Remote host or IP address to connect to.
+    /// Connect to an aggregator and stream game state to it.
+    Connected {
+        /// Aggregator host or IP address.
         host: String,
-
-        /// Remote TCP port to connect to.
+        /// Aggregator TCP port.
         port: u16,
     },
 }
