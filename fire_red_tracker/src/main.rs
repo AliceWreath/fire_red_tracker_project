@@ -35,6 +35,7 @@
 //! |---------------|--------------------------------------------------------|
 //! | [`cli`]       | clap CLI struct and subcommand definitions             |
 //! | [`config`]    | Config file loading, saving, and first-run prompts     |
+//! | [`encounter`] | `EncounterTracker` — wild battle and catch detection   |
 //! | [`game`]      | EWRAM/IWRAM helpers, `is_shiny`, `game_is_loaded`      |
 //! | [`textures`]  | Sprite loading, compression, `PendingTexture`          |
 //! | [`gui`]       | `WindowInfo`, egui rendering, party/encounter panels   |
@@ -42,6 +43,7 @@
 
 mod cli;
 mod config;
+mod encounter;
 mod game;
 mod gui;
 mod server;
@@ -236,25 +238,7 @@ fn main() {
                 let mut state_initialized  = false;
                 let mut player_name_set    = false;
 
-                // Wild encounter tracking state.
-                //
-                // gEnemyParty[0] is never cleared between battles — the game only
-                // overwrites it at the START of each new battle. Detection therefore
-                // uses personality CHANGE rather than presence/absence:
-                //
-                //   • last_enemy_personality: the personality we last saw; a new
-                //     non-equal value means a new wild Pokémon was generated.
-                //   • tracked_personality: personality of the wild Pokémon in the
-                //     current first-encounter battle we are waiting on for a catch.
-                //
-                // Catch detection: watch the player party for the exact personality
-                // value. No timer needed — the next personality change (next battle)
-                // implicitly closes any unresolved encounter as "failed/fled".
-                let mut last_enemy_personality: u32 = 0;
-                let mut tracked_personality: Option<u32> = None;
-                let mut enc_map: (u8, u8) = (0, 0);
-
-
+                let mut enc_tracker = encounter::EncounterTracker::new();
 
                 fill_party_list(&thread_party);
                 check_for_new_pokemon(&thread_party);
@@ -271,8 +255,7 @@ fn main() {
                         state_initialized = false;
                         player_name_set   = false;
                         current_state = FireRedState { map_group_id: 0xFF, map_name_id: 0xFF };
-                        last_enemy_personality = 0;
-                        tracked_personality    = None;
+                        enc_tracker.reset();
                         std::thread::sleep(std::time::Duration::from_millis(500));
                         continue;
                     }
@@ -324,54 +307,9 @@ fn main() {
                         check_for_dead_pokemon(&thread_party);
                     }
 
-                    // ── Wild encounter tracking ──────────────────────────────
                     if state_initialized {
-                        if let Some(enemy) = game::get_wild_enemy_pokemon() {
-                            if enemy.box_mon.personality != last_enemy_personality {
-                                // Personality changed → new wild battle started.
-                                last_enemy_personality = enemy.box_mon.personality;
-
-                                let map_group = current_state.map_group_id;
-                                let map_name  = current_state.map_name_id;
-                                let now = std::time::SystemTime::now()
-                                    .duration_since(std::time::UNIX_EPOCH)
-                                    .map(|d| d.as_secs())
-                                    .unwrap_or(0);
-
-                                let is_first = fire_red_database::record_encounter(
-                                    fire_red_database::Encounter {
-                                        map_group,
-                                        map_name,
-                                        species:        enemy.box_mon.secure.growth.species,
-                                        species_name:   enemy.box_mon.secure.growth.species_string.clone(),
-                                        level:          enemy.level,
-                                        caught:         false,
-                                        encountered_at: now,
-                                    },
-                                );
-
-                                if is_first {
-                                    enc_map             = (map_group, map_name);
-                                    tracked_personality = Some(last_enemy_personality);
-                                } else {
-                                    tracked_personality = None;
-                                }
-                            }
-                        }
-
-                        // Catch detection: the wild Pokémon's personality appears
-                        // in the player's party once it is caught.
-                        if let Some(tp) = tracked_personality {
-                            let party = thread_party.lock().unwrap_or_else(|e| e.into_inner());
-                            let caught = party.iter().any(|p| p.box_mon.personality == tp);
-                            drop(party);
-                            if caught {
-                                fire_red_database::set_encounter_caught(enc_map.0, enc_map.1);
-                                tracked_personality = None;
-                            }
-                        }
+                        enc_tracker.tick(current_state, &thread_party);
                     }
-                    // ────────────────────────────────────────────────────────
 
                     std::thread::sleep(std::time::Duration::from_millis(100));
                 }
