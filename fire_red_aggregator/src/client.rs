@@ -205,7 +205,7 @@ pub fn handle_tracker_connection(
 
     // ── Writer thread: drains texture requests and commands ──────────────────
     let writer = std::thread::spawn(move || {
-        while connected_writer.load(Ordering::SeqCst) {
+        while connected_writer.load(Ordering::Acquire) {
             let cmds: Vec<ClientMessage> = {
                 let mut q = writer_cmds.lock().unwrap_or_else(|e| e.into_inner());
                 q.drain(..).collect()
@@ -267,7 +267,7 @@ pub fn handle_tracker_connection(
                 }
             }
             Ok(ServerMessage::RunChanged(_)) => {
-                run_changed.store(true, Ordering::SeqCst);
+                run_changed.store(true, Ordering::Release);
             }
             Err(_) => {
                 *state.lock().unwrap_or_else(|e| e.into_inner()) = None;
@@ -276,6 +276,6 @@ pub fn handle_tracker_connection(
         }
     }
 
-    connected.store(false, Ordering::SeqCst);
+    connected.store(false, Ordering::Release);
     let _ = writer.join();
 }

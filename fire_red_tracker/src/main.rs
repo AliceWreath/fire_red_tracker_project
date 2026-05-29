@@ -212,7 +212,7 @@ fn main() {
 
             loop {
                 if !game_is_loaded() {
-                    thread_game_loaded.store(false, Ordering::SeqCst);
+                    thread_game_loaded.store(false, Ordering::Release);
                     *thread_encounters.lock().unwrap_or_else(|e| e.into_inner()) =
                         fire_red_pokemon_data::WildPokemonHeader::default();
                     *thread_party.lock().unwrap_or_else(|e| e.into_inner()) = Vec::new();
@@ -223,7 +223,7 @@ fn main() {
                     std::thread::sleep(std::time::Duration::from_millis(500));
                     continue;
                 }
-                thread_game_loaded.store(true, Ordering::SeqCst);
+                thread_game_loaded.store(true, Ordering::Release);
 
                 if !player_name_set {
                     let name = get_trainer_name();
@@ -264,7 +264,7 @@ fn main() {
                     check_for_dead_pokemon(&thread_party);
                 }
 
-                if thread_run_changed.swap(false, Ordering::SeqCst) {
+                if thread_run_changed.swap(false, Ordering::AcqRel) {
                     enc_tracker.reset();
                     player_name_set = false;
                 }
@@ -315,11 +315,11 @@ fn main() {
 
         println!("{}", "***** Connected mode — no GUI. Press Ctrl-C to exit. *****".green().bold());
         ctrlc::set_handler(|| {
-            RUNNING.store(false, Ordering::SeqCst);
+            RUNNING.store(false, Ordering::Release);
             println!("\nShutting down...");
             std::process::exit(0);
         }).expect("Error setting Ctrl-C handler.");
-        while RUNNING.load(Ordering::SeqCst) {
+        while RUNNING.load(Ordering::Acquire) {
             std::thread::sleep(std::time::Duration::from_millis(100));
         }
         return;

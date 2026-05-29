@@ -84,7 +84,7 @@ pub fn handle_client(
                 }
                 Ok(ClientMessage::EndRun) => {
                     fire_red_database::end_run();
-                    run_changed.store(true, Ordering::SeqCst);
+                    run_changed.store(true, Ordering::Release);
                     let mut ws = write_stream_clone.lock().unwrap_or_else(|e| e.into_inner());
                     if send_message(&mut *ws, &ServerMessage::RunChanged(None)).is_err() {
                         break;
@@ -92,7 +92,7 @@ pub fn handle_client(
                 }
                 Ok(ClientMessage::NewRun) => {
                     let id = fire_red_database::new_run("Unknown");
-                    run_changed.store(true, Ordering::SeqCst);
+                    run_changed.store(true, Ordering::Release);
                     let mut ws = write_stream_clone.lock().unwrap_or_else(|e| e.into_inner());
                     if send_message(&mut *ws, &ServerMessage::RunChanged(Some(id))).is_err() {
                         break;
@@ -115,7 +115,7 @@ pub fn handle_client(
                 // Only read badge state when the game is fully loaded.
                 // During a reset or title screen this returns None so clients
                 // clear their badge display rather than showing stale data.
-                badge_state: if game_loaded.load(Ordering::SeqCst) {
+                badge_state: if game_loaded.load(Ordering::Acquire) {
                     fire_red_badge::read_badge_state()
                 } else {
                     None
