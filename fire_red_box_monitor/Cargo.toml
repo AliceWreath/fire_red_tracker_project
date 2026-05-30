@@ -7,8 +7,8 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-fire_red_get_values = { path = "../fire_red_get_values/" }
-fire_red_memory = { path = "../fire_red_memory" }
-fire_red_text = { path = "../fire_red_text/" }
-fire_red_party_monitor = { path = "../fire_red_party_monitor/" }
-fire_red_rom_buffer = { path = "../fire_red_rom_buffer" }
+fire_red_get_values.workspace    = true
+fire_red_memory.workspace        = true
+fire_red_text.workspace          = true
+fire_red_party_monitor.workspace = true
+fire_red_rom_buffer.workspace    = true

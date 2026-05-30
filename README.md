@@ -4,6 +4,17 @@ A real-time Pokémon FireRed party and encounter monitor built in Rust. It reads
 
 ---
 
+## Documentation
+
+| Document | Contents |
+|----------|----------|
+| [docs/architecture.md](docs/architecture.md) | Crate dependency graph, system architecture diagram, thread inventory |
+| [docs/data_flow.md](docs/data_flow.md) | End-to-end data flow (RetroArch → tracker → aggregator → overlay), DB write/read paths, sprite pipeline, run-change flow |
+| [docs/memory_map.md](docs/memory_map.md) | GBA EWRAM/IWRAM/ROM address map, party and wild-encounter struct layouts |
+| [docs/ffi.md](docs/ffi.md) | C FFI entry points, ownership and lifetime diagrams for `fire_red_loop`, `fire_red_badge`, and `fire_red_pokemon_data` FFI allocations |
+
+---
+
 ## What it does
 
 - **Party panel** — shows each Pokémon's sprite (shiny-aware), nickname, level, HP (colour-coded), experience, caught location, and badge progress in real time.
