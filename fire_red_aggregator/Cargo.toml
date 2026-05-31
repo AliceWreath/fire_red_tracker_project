@@ -1,6 +1,6 @@
 [package]
 name = "fire_red_aggregator"
-version = "0.1.0"
+version = "0.8.0"
 edition = "2024"
 
 [[bin]]
@@ -26,3 +26,4 @@ tokio.workspace                  = true
 axum.workspace                   = true
 image.workspace                  = true
 futures-util.workspace           = true
+self_update.workspace            = true

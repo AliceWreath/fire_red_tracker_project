@@ -50,7 +50,7 @@ use cli::{Cli, Command};
 use colored::Colorize;
 use fire_red_loop::*;
 use fire_red_states::*;
-use game::{check_for_dead_pokemon, check_for_new_pokemon, fill_party_list, game_is_loaded, map_state_from_ewram};
+use game::{check_for_dead_pokemon, check_for_new_pokemon, fill_party_list, game_is_loaded, is_shiny, map_state_from_ewram};
 use gui::{WindowInfo, PARTY_WINDOW};
 use server::handle_client;
 use std::collections::HashMap;
@@ -65,6 +65,41 @@ use std::sync::{Arc, Mutex};
 /// How often (in seconds) the party list is force-refreshed even when the
 /// party size has not changed, to catch in-place changes such as HP loss.
 const FORCE_PARTY_CHECK_INTERVAL: u64 = 5;
+
+// ---------------------------------------------------------------------------
+// Box data helpers
+// ---------------------------------------------------------------------------
+
+/// Reads all occupied PC box slots from the EWRAM snapshot and converts them
+/// to [`BoxEntry`] values suitable for network transmission.
+fn build_box_entries() -> Vec<BoxEntry> {
+    fire_red_box_monitor::get_box_entries_positioned()
+        .into_iter()
+        .map(|(box_idx, slot_idx, mon)| {
+            let personality = mon.personality;
+            let ot_id       = mon.ot_id;
+            let iv          = &mon.secure.misc.iv_egg_ability;
+            BoxEntry {
+                box_index:    box_idx,
+                slot_index:   slot_idx,
+                species:      mon.secure.growth.species,
+                species_name: mon.secure.growth.species_string.clone(),
+                nickname:     mon.nickname_string.clone(),
+                personality,
+                ot_id,
+                is_shiny:     is_shiny(personality, ot_id),
+                nature:       fire_red_database::nature_name(personality).to_string(),
+                iv_hp:        iv.hp_iv,
+                iv_atk:       iv.attack_iv,
+                iv_def:       iv.defense_iv,
+                iv_spe:       iv.speed_iv,
+                iv_spa:       iv.sp_attack_iv,
+                iv_spd:       iv.sp_def_iv,
+                is_egg:       iv.egg != 0,
+            }
+        })
+        .collect()
+}
 
 // ---------------------------------------------------------------------------
 // Statics
@@ -163,6 +198,8 @@ fn main() {
         Arc::new(Mutex::new(Vec::new()));
     let shared_encounters: Arc<Mutex<fire_red_pokemon_data::WildPokemonHeader>> =
         Arc::new(Mutex::new(fire_red_pokemon_data::WildPokemonHeader::default()));
+    let shared_box: Arc<Mutex<Vec<BoxEntry>>> =
+        Arc::new(Mutex::new(Vec::new()));
     let sprite_cache: Arc<Mutex<HashMap<(u16, bool), SpriteData>>> =
         Arc::new(Mutex::new(HashMap::new()));
 
@@ -170,6 +207,7 @@ fn main() {
     {
         let thread_party       = shared_party.clone();
         let thread_encounters  = shared_encounters.clone();
+        let thread_box         = shared_box.clone();
         let thread_game_loaded = game_loaded.clone();
         let thread_run_changed = run_changed.clone();
 
@@ -254,6 +292,7 @@ fn main() {
                 if old_party_size != party_size {
                     old_party_size = party_size;
                     update_box_list();
+                    *thread_box.lock().unwrap_or_else(|e| e.into_inner()) = build_box_entries();
                     fill_party_list(&thread_party);
                     check_for_dead_pokemon(&thread_party);
                 }
@@ -285,6 +324,7 @@ fn main() {
         let addr              = format!("{}:{}", host, port);
         let net_party         = shared_party.clone();
         let net_encounters    = shared_encounters.clone();
+        let net_box           = shared_box.clone();
         let net_cache         = sprite_cache.clone();
         let net_loaded        = game_loaded.clone();
         let net_run_changed   = run_changed.clone();
@@ -299,6 +339,7 @@ fn main() {
                             stream,
                             net_party.clone(),
                             net_encounters.clone(),
+                            net_box.clone(),
                             net_cache.clone(),
                             net_loaded.clone(),
                             net_run_changed.clone(),

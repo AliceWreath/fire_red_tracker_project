@@ -110,6 +110,8 @@ pub struct MonitorSlot {
     /// Set to `true` when the tracker confirms a run change (EndRun / NewRun),
     /// so the BroadcastLoop can mark the DB reader dirty and re-sync.
     pub run_changed: Arc<AtomicBool>,
+    /// Latest PC box snapshot received from the tracker (~5 s cadence).
+    pub box_data: Arc<Mutex<Vec<fire_red_states::BoxEntry>>>,
 }
 
 impl MonitorSlot {
@@ -136,6 +138,7 @@ impl MonitorSlot {
             sprite_cache:  Arc::new(Mutex::new(None)),
             command_queue: Arc::new(Mutex::new(VecDeque::new())),
             run_changed:   Arc::new(AtomicBool::new(false)),
+            box_data:      Arc::new(Mutex::new(Vec::new())),
         }
     }
 }
@@ -181,6 +184,7 @@ fn decompress_pixels(data: &[u8]) -> Vec<u8> {
 /// * `sprite_cache`          - Optional shared PNG cache for web/overlay mode.
 /// * `command_queue`         - `EndRun`/`NewRun` commands forwarded to the tracker.
 /// * `run_changed`           - Set when the tracker confirms a run change.
+/// * `box_data`              - Updated when a BoxData message arrives (~5 s cadence).
 pub fn handle_tracker_connection(
     stream: TcpStream,
     state: Arc<Mutex<Option<GameState>>>,
@@ -191,6 +195,7 @@ pub fn handle_tracker_connection(
     sprite_cache: Arc<Mutex<Option<SpriteCache>>>,
     command_queue: Arc<Mutex<VecDeque<ClientMessage>>>,
     run_changed: Arc<AtomicBool>,
+    box_data: Arc<Mutex<Vec<fire_red_states::BoxEntry>>>,
 ) {
     let mut write_stream = match stream.try_clone() {
         Ok(s)  => s,
@@ -268,6 +273,9 @@ pub fn handle_tracker_connection(
             }
             Ok(ServerMessage::RunChanged(_)) => {
                 run_changed.store(true, Ordering::Release);
+            }
+            Ok(ServerMessage::BoxData(entries)) => {
+                *box_data.lock().unwrap_or_else(|e| e.into_inner()) = entries;
             }
             Err(_) => {
                 *state.lock().unwrap_or_else(|e| e.into_inner()) = None;
