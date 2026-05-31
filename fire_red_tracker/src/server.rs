@@ -25,6 +25,7 @@ use std::sync::{Arc, Mutex};
 /// * `stream`            — Connected TCP stream.
 /// * `server_party`      — Shared party data to broadcast.
 /// * `server_encounters` — Shared encounter data to broadcast.
+/// * `server_box`        — Shared PC box snapshot; sent once on connect then every 5 s.
 /// * `sprite_cache`      — Per-process sprite cache to amortise ROM decode cost.
 /// * `game_loaded`       — Set to `false` during reset/title screen to suppress
 ///                         stale badge data from being sent to clients.
@@ -34,6 +35,7 @@ pub fn handle_client(
     stream: TcpStream,
     server_party: Arc<Mutex<Vec<fire_red_party_monitor::Pokemon>>>,
     server_encounters: Arc<Mutex<fire_red_pokemon_data::WildPokemonHeader>>,
+    server_box: Arc<Mutex<Vec<BoxEntry>>>,
     sprite_cache: Arc<Mutex<HashMap<(u16, bool), SpriteData>>>,
     game_loaded: Arc<AtomicBool>,
     run_changed: Arc<AtomicBool>,
@@ -103,7 +105,11 @@ pub fn handle_client(
         }
     });
 
-    // Writer loop: pushes GameState every 100 ms.
+    // Writer loop: pushes GameState every 100 ms and BoxData every 5 s.
+    let mut last_box_send = std::time::Instant::now()
+        .checked_sub(std::time::Duration::from_secs(10))
+        .unwrap_or_else(std::time::Instant::now);
+
     loop {
         let state = {
             let party      = server_party.lock().unwrap_or_else(|e| e.into_inner());
@@ -128,8 +134,18 @@ pub fn handle_client(
             println!("Client disconnected.");
             break;
         }
-        drop(ws);
 
+        // Send box snapshot on first tick and every 5 seconds thereafter.
+        if last_box_send.elapsed() >= std::time::Duration::from_secs(5) {
+            let entries = server_box.lock().unwrap_or_else(|e| e.into_inner()).clone();
+            if send_message(&mut *ws, &ServerMessage::BoxData(entries)).is_err() {
+                println!("Client disconnected.");
+                break;
+            }
+            last_box_send = std::time::Instant::now();
+        }
+
+        drop(ws);
         std::thread::sleep(std::time::Duration::from_millis(100));
     }
 }

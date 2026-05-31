@@ -1127,3 +1127,133 @@ impl DbReader {
         true
     }
 }
+
+// ---------------------------------------------------------------------------
+// Full database dump — used by the DB viewer web page
+// ---------------------------------------------------------------------------
+
+/// Opens a fresh connection and returns a JSON snapshot of every table.
+///
+/// Intended for the `/db.json` endpoint; opens its own connection so the live
+/// tracker connections are not blocked. Returns a JSON error object on failure.
+pub fn dump_all(conn_str: &str) -> serde_json::Value {
+    let mut client = match Client::connect(conn_str, NoTls) {
+        Ok(c)  => c,
+        Err(e) => return serde_json::json!({ "error": format!("DB connection failed: {e}") }),
+    };
+
+    let runs       = dump_runs(&mut client);
+    let caught     = dump_caught(&mut client);
+    let dead       = dump_dead(&mut client);
+    let encounters = dump_encounters(&mut client);
+
+    serde_json::json!({ "runs": runs, "caught": caught, "dead": dead, "encounters": encounters })
+}
+
+fn dump_runs(client: &mut Client) -> serde_json::Value {
+    let rows = client.query(
+        "SELECT r.id, r.player_name, r.started_at, r.ended_at,
+                COUNT(DISTINCT d.personality) AS deaths,
+                COUNT(DISTINCT c.personality) AS catches,
+                COUNT(DISTINCT e.id) AS encounters
+         FROM runs r
+         LEFT JOIN dead_pokemon d ON d.run_id = r.id
+         LEFT JOIN caught_pokemon c ON c.run_id = r.id
+         LEFT JOIN encounters e ON e.run_id = r.id
+         GROUP BY r.id ORDER BY r.id",
+        &[],
+    ).unwrap_or_default();
+
+    serde_json::Value::Array(rows.iter().map(|row| {
+        let ended: Option<i64> = row.get(3);
+        serde_json::json!({
+            "id":         row.get::<_, i32>(0),
+            "player":     row.get::<_, String>(1),
+            "started":    format_timestamp(row.get::<_, i64>(2) as u64),
+            "ended":      ended.map(|t| format_timestamp(t as u64)),
+            "deaths":     row.get::<_, i64>(4),
+            "catches":    row.get::<_, i64>(5),
+            "encounters": row.get::<_, i64>(6),
+        })
+    }).collect())
+}
+
+fn dump_caught(client: &mut Client) -> serde_json::Value {
+    let rows = client.query(
+        "SELECT run_id, player_name, nickname, species_name, level, nature, is_shiny,
+                met_location,
+                iv_hp, iv_attack, iv_defense, iv_speed, iv_sp_attack, iv_sp_defense,
+                caught_at
+         FROM caught_pokemon ORDER BY caught_at ASC",
+        &[],
+    ).unwrap_or_default();
+
+    serde_json::Value::Array(rows.iter().map(|row| {
+        serde_json::json!({
+            "run_id":    row.get::<_, i32>(0),
+            "player":    row.get::<_, String>(1),
+            "nickname":  row.get::<_, String>(2),
+            "species":   row.get::<_, String>(3),
+            "level":     row.get::<_, i32>(4),
+            "nature":    row.get::<_, String>(5),
+            "shiny":     row.get::<_, bool>(6),
+            "location":  row.get::<_, i32>(7),
+            "ivs":       format!("{}/{}/{}/{}/{}/{}",
+                row.get::<_, i32>(8),  row.get::<_, i32>(9),  row.get::<_, i32>(10),
+                row.get::<_, i32>(11), row.get::<_, i32>(12), row.get::<_, i32>(13)),
+            "caught_at": format_timestamp(row.get::<_, i64>(14) as u64),
+        })
+    }).collect())
+}
+
+fn dump_dead(client: &mut Client) -> serde_json::Value {
+    let rows = client.query(
+        "SELECT run_id, player_name, nickname, species_name, level, nature, is_shiny,
+                max_hp, attack, defense, speed, sp_attack, sp_defense,
+                iv_hp, iv_attack, iv_defense, iv_speed, iv_sp_attack, iv_sp_defense,
+                (max_hp = 0) AS soul_link,
+                died_at
+         FROM dead_pokemon ORDER BY died_at ASC",
+        &[],
+    ).unwrap_or_default();
+
+    serde_json::Value::Array(rows.iter().map(|row| {
+        serde_json::json!({
+            "run_id":    row.get::<_, i32>(0),
+            "player":    row.get::<_, String>(1),
+            "nickname":  row.get::<_, String>(2),
+            "species":   row.get::<_, String>(3),
+            "level":     row.get::<_, i32>(4),
+            "nature":    row.get::<_, String>(5),
+            "shiny":     row.get::<_, bool>(6),
+            "stats":     format!("{}/{}/{}/{}/{}/{}",
+                row.get::<_, i32>(7),  row.get::<_, i32>(8),  row.get::<_, i32>(9),
+                row.get::<_, i32>(10), row.get::<_, i32>(11), row.get::<_, i32>(12)),
+            "ivs":       format!("{}/{}/{}/{}/{}/{}",
+                row.get::<_, i32>(13), row.get::<_, i32>(14), row.get::<_, i32>(15),
+                row.get::<_, i32>(16), row.get::<_, i32>(17), row.get::<_, i32>(18)),
+            "soul_link": row.get::<_, bool>(19),
+            "died_at":   format_timestamp(row.get::<_, i64>(20) as u64),
+        })
+    }).collect())
+}
+
+fn dump_encounters(client: &mut Client) -> serde_json::Value {
+    let rows = client.query(
+        "SELECT run_id, player_name, map_group, map_name, species_name, level, caught, encountered_at
+         FROM encounters ORDER BY encountered_at ASC",
+        &[],
+    ).unwrap_or_default();
+
+    serde_json::Value::Array(rows.iter().map(|row| {
+        serde_json::json!({
+            "run_id":  row.get::<_, i32>(0),
+            "player":  row.get::<_, String>(1),
+            "map":     format!("{}:{}", row.get::<_, i32>(2), row.get::<_, i32>(3)),
+            "species": row.get::<_, String>(4),
+            "level":   row.get::<_, i32>(5),
+            "caught":  row.get::<_, bool>(6),
+            "seen_at": format_timestamp(row.get::<_, i64>(7) as u64),
+        })
+    }).collect())
+}
