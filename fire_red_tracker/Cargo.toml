@@ -4,24 +4,24 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-eframe = "0.34.2"
-egui = "0.34.2"
-image = "0.25"
-bincode = "1"
-serde = { version = "1", features = ["derive"] }
-ctrlc = "3"
-flate2 = "1"
-fire_red_loop = { path = "../fire_red_loop/" }
-fire_red_party_monitor = { path = "../fire_red_party_monitor/" }
-fire_red_image_data = { path = "../fire_red_image_data/" }
-fire_red_rom_buffer = { path = "../fire_red_rom_buffer/" }
-fire_red_pokemon_data = { path = "../fire_red_pokemon_data/" }
-fire_red_states = { path = "../fire_red_states/" }
-fire_red_badge = { path = "../fire_red_badge" }
-fire_red_memory = { path = "../fire_red_memory" }
-fire_red_database = { path = "../fire_red_database" }
-fire_red_text = { path = "../fire_red_text" }
-colored = "3.1.1"
-clap = { version = "4.0", features = ["derive"] }
-toml = "0.8"
-rfd = "0.15"
+eframe.workspace               = true
+egui.workspace                 = true
+image.workspace                = true
+bincode.workspace              = true
+serde.workspace                = true
+ctrlc.workspace                = true
+flate2.workspace               = true
+colored.workspace              = true
+clap.workspace                 = true
+toml.workspace                 = true
+rfd.workspace                  = true
+fire_red_loop.workspace        = true
+fire_red_party_monitor.workspace = true
+fire_red_image_data.workspace  = true
+fire_red_rom_buffer.workspace  = true
+fire_red_pokemon_data.workspace = true
+fire_red_states.workspace      = true
+fire_red_badge.workspace       = true
+fire_red_memory.workspace      = true
+fire_red_database.workspace    = true
+fire_red_text.workspace        = true

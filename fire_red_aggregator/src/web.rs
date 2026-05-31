@@ -329,7 +329,7 @@ impl BroadcastLoop {
         // If the tracker confirmed a run change, mark the DB reader dirty so
         // sync_player re-queries even though the player name hasn't changed.
         for slot in &slots {
-            if slot.run_changed.swap(false, std::sync::atomic::Ordering::SeqCst) {
+            if slot.run_changed.swap(false, std::sync::atomic::Ordering::AcqRel) {
                 if let Some(db) = &slot.db {
                     db.mark_dirty();
                 }

@@ -804,11 +804,13 @@ pub fn set_encounter_caught(map_group: u8, map_name: u8) {
         None => return,
     };
     let player = state.current_player.clone();
-    state.client.execute(
+    if let Err(e) = state.client.execute(
         "UPDATE encounters SET caught = TRUE
          WHERE run_id = $1 AND player_name = $2 AND map_group = $3 AND map_name = $4",
         &[&(active as i32), &player, &(map_group as i32), &(map_name as i32)],
-    ).ok();
+    ) {
+        eprintln!("set_encounter_caught: DB error: {}", e);
+    }
 }
 
 /// Returns `true` if an encounter has already been recorded for this area by the current player.
@@ -1077,7 +1079,7 @@ impl DbReader {
             None => return false,
         };
         let now = unix_now();
-        self.client
+        if let Err(e) = self.client
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .execute(
@@ -1119,7 +1121,9 @@ impl DbReader {
                     &(now as i64),
                 ],
             )
-            .ok();
+        {
+            eprintln!("mark_caught: DB error: {}", e);
+        }
         true
     }
 }

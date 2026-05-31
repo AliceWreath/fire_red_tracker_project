@@ -7,6 +7,6 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-fire_red_get_values = { path = "../fire_red_get_values" }
-fire_red_memory = { path = "../fire_red_memory" }
-serde = { version = "1", features = ["derive"] }
+fire_red_get_values.workspace = true
+fire_red_memory.workspace     = true
+serde.workspace               = true
