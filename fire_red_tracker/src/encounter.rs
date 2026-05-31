@@ -47,6 +47,7 @@ impl EncounterTracker {
 
                 let is_first = fire_red_database::record_encounter(
                     fire_red_database::Encounter {
+                        player_name:    String::new(), // populated from DbState::current_player
                         map_group,
                         map_name,
                         species:        enemy.box_mon.secure.growth.species,

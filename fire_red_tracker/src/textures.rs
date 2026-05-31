@@ -28,12 +28,13 @@ pub struct PendingTexture {
 
 /// Compresses raw RGBA pixel data using zlib (fast preset).
 ///
+/// Returns `None` if compression fails (only possible on OOM).
 /// Used server-side before sending sprites over TCP to reduce bandwidth.
-pub fn compress_pixels(data: &[u8]) -> Vec<u8> {
+pub fn compress_pixels(data: &[u8]) -> Option<Vec<u8>> {
     use flate2::{Compression, write::ZlibEncoder};
     let mut encoder = ZlibEncoder::new(Vec::new(), Compression::fast());
-    encoder.write_all(data).unwrap();
-    encoder.finish().unwrap()
+    encoder.write_all(data).ok()?;
+    encoder.finish().ok()
 }
 
 /// Decompresses zlib-compressed pixel data back to raw RGBA bytes.
@@ -51,7 +52,7 @@ pub fn build_sprite_data(
     let img    = fire_red_image_data::get_pokemon_sprite(rom, species, shiny).ok()?;
     let width  = img.width();
     let height = img.height();
-    let pixels = compress_pixels(&img.into_raw());
+    let pixels = compress_pixels(&img.into_raw())?;
     Some(fire_red_states::SpriteData { species, shiny, pixels, width, height })
 }
 

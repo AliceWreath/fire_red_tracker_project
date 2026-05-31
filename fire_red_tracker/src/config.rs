@@ -209,9 +209,12 @@ impl eframe::App for SetupApp {
         ui.add_space(4.0);
 
         let rom_ok = !self.rom.trim().is_empty();
+        let port_parse: Result<u16, _> = self.aggregator_port.parse();
+        let port_ok = self.mode != ConfigMode::Connected || port_parse.is_ok();
+        let can_save = rom_ok && port_ok;
 
         ui.horizontal(|ui| {
-            let btn = ui.add_enabled(rom_ok, egui::Button::new("Save & Continue"));
+            let btn = ui.add_enabled(can_save, egui::Button::new("Save & Continue"));
             if btn.clicked() {
                 let db_raw = self.db.trim().to_string();
                 let db = if db_raw.starts_with("postgresql://") || db_raw.starts_with("postgres://") {
@@ -226,7 +229,7 @@ impl eframe::App for SetupApp {
                     clean:           self.clean,
                     mode:            self.mode.clone(),
                     aggregator_host: self.aggregator_host.trim().to_string(),
-                    aggregator_port: self.aggregator_port.parse().unwrap_or(7878),
+                    aggregator_port: port_parse.unwrap_or(7878),
                 };
 
                 *self.result.lock().unwrap() = Some(config);
@@ -236,6 +239,12 @@ impl eframe::App for SetupApp {
             if !rom_ok {
                 ui.label(
                     egui::RichText::new("  ROM path is required")
+                        .color(egui::Color32::from_rgb(220, 80, 80))
+                        .small(),
+                );
+            } else if !port_ok {
+                ui.label(
+                    egui::RichText::new("  Invalid port (1–65535)")
                         .color(egui::Color32::from_rgb(220, 80, 80))
                         .small(),
                 );

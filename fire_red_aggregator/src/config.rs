@@ -166,8 +166,14 @@ impl eframe::App for SetupApp {
         ui.separator();
         ui.add_space(4.0);
 
+        let listen_parse: Result<u16, _> = self.listen_port_str.trim().parse();
+        let ws_parse: Result<u16, _>     = self.ws_port_str.trim().parse();
+        let listen_ok = listen_parse.is_ok();
+        let ws_ok     = !self.ws_port_enabled || ws_parse.is_ok();
+
         ui.horizontal(|ui| {
-            if ui.button("Save & Continue").clicked() {
+            let btn = ui.add_enabled(listen_ok && ws_ok, egui::Button::new("Save & Continue"));
+            if btn.clicked() {
                 let db = if self.db_enabled {
                     let raw = self.db.trim().to_string();
                     Some(if raw.starts_with("postgresql://") || raw.starts_with("postgres://") {
@@ -179,18 +185,28 @@ impl eframe::App for SetupApp {
                     None
                 };
 
-                let ws_port = if self.ws_port_enabled {
-                    self.ws_port_str.trim().parse().ok()
-                } else {
-                    None
-                };
+                let ws_port = if self.ws_port_enabled { ws_parse.ok() } else { None };
 
                 *self.result.lock().unwrap() = Some(AggregatorConfig {
-                    listen_port: self.listen_port_str.trim().parse().unwrap_or(7878),
+                    listen_port: listen_parse.unwrap_or(7878),
                     db,
                     ws_port,
                 });
                 self.should_close = true;
+            }
+
+            if !listen_ok {
+                ui.label(
+                    egui::RichText::new("  Invalid listen port (1–65535)")
+                        .color(egui::Color32::from_rgb(220, 80, 80))
+                        .small(),
+                );
+            } else if !ws_ok {
+                ui.label(
+                    egui::RichText::new("  Invalid WebSocket port (1–65535)")
+                        .color(egui::Color32::from_rgb(220, 80, 80))
+                        .small(),
+                );
             }
         });
     }

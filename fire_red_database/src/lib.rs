@@ -79,6 +79,9 @@ pub struct EVs {
 /// All meaningful data captured at the moment a Pokemon faints.
 #[derive(Clone, Debug)]
 pub struct DeadPokemon {
+    /// Trainer name of the player who owned this Pokémon. Used to distinguish
+    /// records from different players sharing the same run.
+    pub player_name: String,
     pub personality: u32,
     pub ot_id: u32,
     pub ot_name: String,
@@ -110,9 +113,11 @@ pub struct DeadPokemon {
     pub died_at: u64,
 }
 
-/// A wild Pokémon encounter — the first one per area is stored for Nuzlocke tracking.
+/// A wild Pokémon encounter — the first one per area per player is stored for Nuzlocke tracking.
 #[derive(Clone, Debug)]
 pub struct Encounter {
+    /// Trainer name of the player who had this encounter.
+    pub player_name: String,
     pub map_group: u8,
     pub map_name: u8,
     pub species: u16,
@@ -126,6 +131,8 @@ pub struct Encounter {
 /// Snapshot of a Pokemon at the moment it first joined the party.
 #[derive(Clone, Debug)]
 pub struct CaughtPokemon {
+    /// Trainer name of the player who caught this Pokémon.
+    pub player_name:  String,
     pub personality:  u32,
     pub ot_id:        u32,
     pub nickname:     String,
@@ -141,17 +148,16 @@ pub struct CaughtPokemon {
 
 // ---------------------------------------------------------------------------
 // Storage
-//
-// The active run ID is stored in process memory alongside the connection.
-// This means two tracker processes can safely share the same PostgreSQL
-// database — each manages its own run independently without overwriting a
-// global "active" pointer in the database.
 // ---------------------------------------------------------------------------
 
 struct DbState {
     client: Client,
-    /// Which run this process is currently recording into.
+    /// The shared run all connected trackers record into.
     run_id: Option<u32>,
+    /// This tracker's player name, set when the game loads. Included on every
+    /// write (dead_pokemon, caught_pokemon, encounters) so records from different
+    /// players sharing the same run can be distinguished.
+    current_player: String,
 }
 
 static DB: OnceLock<Mutex<DbState>> = OnceLock::new();
@@ -278,9 +284,26 @@ pub fn initialize(connection_string: &str) {
 
         -- Migration: add ended_at for runs that were explicitly ended.
         ALTER TABLE runs ADD COLUMN IF NOT EXISTS ended_at BIGINT;
+
+        -- Migration: add player_name to record tables so that entries from
+        -- different players sharing the same run can be distinguished.
+        ALTER TABLE dead_pokemon   ADD COLUMN IF NOT EXISTS player_name TEXT NOT NULL DEFAULT 'Unknown';
+        ALTER TABLE caught_pokemon ADD COLUMN IF NOT EXISTS player_name TEXT NOT NULL DEFAULT 'Unknown';
+        ALTER TABLE encounters     ADD COLUMN IF NOT EXISTS player_name TEXT NOT NULL DEFAULT 'Unknown';
+
+        -- Migration: drop the old per-run encounters unique constraint and replace
+        -- it with a per-player one so two players can each have a first encounter
+        -- in the same map area within the same shared run.
+        ALTER TABLE encounters DROP CONSTRAINT IF EXISTS encounters_run_id_map_group_map_name_key;
+        DO $$ BEGIN
+            ALTER TABLE encounters ADD CONSTRAINT encounters_run_id_player_name_map_key
+                UNIQUE (run_id, player_name, map_group, map_name);
+        EXCEPTION WHEN duplicate_object OR duplicate_table THEN NULL;
+        END $$;
     ").expect("Failed to create database schema");
 
-    DB.set(Mutex::new(DbState { client, run_id: None })).ok();
+    DB.set(Mutex::new(DbState { client, run_id: None, current_player: String::new() }))
+        .unwrap_or_else(|_| panic!("fire_red_database::initialize called more than once"));
 }
 
 // ---------------------------------------------------------------------------
@@ -295,48 +318,55 @@ fn get_meta(client: &mut Client, key: &str) -> Option<String> {
 }
 
 fn set_meta(client: &mut Client, key: &str, value: &str) {
-    client
-        .execute(
-            "INSERT INTO meta (key, value) VALUES ($1, $2)
-             ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value",
-            &[&key, &value],
-        )
-        .expect("Failed to write meta");
+    if let Err(e) = client.execute(
+        "INSERT INTO meta (key, value) VALUES ($1, $2)
+         ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value",
+        &[&key, &value],
+    ) {
+        eprintln!("Warning: failed to write meta key '{key}': {e}");
+    }
 }
 
-fn query_caught(client: &mut Client, run_id: u32) -> Vec<CaughtPokemon> {
+fn delete_meta(client: &mut Client, key: &str) {
+    if let Err(e) = client.execute("DELETE FROM meta WHERE key = $1", &[&key]) {
+        eprintln!("Warning: failed to delete meta key '{key}': {e}");
+    }
+}
+
+fn query_caught(client: &mut Client, run_id: u32, player_name: &str) -> Vec<CaughtPokemon> {
     client
         .query(
-            "SELECT personality, ot_id, nickname, species, species_name,
+            "SELECT player_name, personality, ot_id, nickname, species, species_name,
                     is_shiny, nature, level, met_location,
                     iv_hp, iv_attack, iv_defense, iv_speed, iv_sp_attack, iv_sp_defense,
                     caught_at
              FROM caught_pokemon
-             WHERE run_id = $1
+             WHERE run_id = $1 AND player_name = $2
              ORDER BY caught_at ASC",
-            &[&(run_id as i32)],
+            &[&(run_id as i32), &player_name],
         )
         .unwrap_or_default()
         .iter()
         .map(|row| CaughtPokemon {
-            personality:  row.get::<_, i64>(0) as u32,
-            ot_id:        row.get::<_, i64>(1) as u32,
-            nickname:     row.get(2),
-            species:      row.get::<_, i32>(3) as u16,
-            species_name: row.get(4),
-            is_shiny:     row.get(5),
-            nature:       row.get(6),
-            level:        row.get::<_, i32>(7) as u8,
-            met_location: row.get::<_, i32>(8) as u8,
+            player_name:  row.get(0),
+            personality:  row.get::<_, i64>(1) as u32,
+            ot_id:        row.get::<_, i64>(2) as u32,
+            nickname:     row.get(3),
+            species:      row.get::<_, i32>(4) as u16,
+            species_name: row.get(5),
+            is_shiny:     row.get(6),
+            nature:       row.get(7),
+            level:        row.get::<_, i32>(8) as u8,
+            met_location: row.get::<_, i32>(9) as u8,
             ivs: IVs {
-                hp:         row.get::<_, i32>(9)  as u8,
-                attack:     row.get::<_, i32>(10) as u8,
-                defense:    row.get::<_, i32>(11) as u8,
-                speed:      row.get::<_, i32>(12) as u8,
-                sp_attack:  row.get::<_, i32>(13) as u8,
-                sp_defense: row.get::<_, i32>(14) as u8,
+                hp:         row.get::<_, i32>(10) as u8,
+                attack:     row.get::<_, i32>(11) as u8,
+                defense:    row.get::<_, i32>(12) as u8,
+                speed:      row.get::<_, i32>(13) as u8,
+                sp_attack:  row.get::<_, i32>(14) as u8,
+                sp_defense: row.get::<_, i32>(15) as u8,
             },
-            caught_at: row.get::<_, i64>(15) as u64,
+            caught_at: row.get::<_, i64>(16) as u64,
         })
         .collect()
 }
@@ -351,60 +381,62 @@ fn query_is_dead(client: &mut Client, run_id: u32, personality: u32) -> bool {
         .unwrap_or(false)
 }
 
-/// Converts a dead_pokemon SELECT row (columns in the order used by all queries
-/// in this file) into a [`DeadPokemon`].
+/// Converts a dead_pokemon SELECT row into a [`DeadPokemon`].
+/// Column 0 must be `player_name`; the remaining columns follow the standard
+/// order used by all dead_pokemon queries in this file.
 fn row_to_dead_pokemon(row: &postgres::Row) -> DeadPokemon {
     DeadPokemon {
-        personality:  row.get::<_, i64>(0) as u32,
-        ot_id:        row.get::<_, i64>(1) as u32,
-        ot_name:      row.get(2),
-        nickname:     row.get(3),
-        species:      row.get::<_, i32>(4) as u16,
-        species_name: row.get(5),
-        is_shiny:     row.get(6),
-        nature:       row.get(7),
-        level:        row.get::<_, i32>(8) as u8,
-        experience:   row.get::<_, i64>(9) as u32,
-        max_hp:       row.get::<_, i32>(10) as u16,
-        attack:       row.get::<_, i32>(11) as u16,
-        defense:      row.get::<_, i32>(12) as u16,
-        speed:        row.get::<_, i32>(13) as u16,
-        sp_attack:    row.get::<_, i32>(14) as u16,
-        sp_defense:   row.get::<_, i32>(15) as u16,
+        player_name:  row.get(0),
+        personality:  row.get::<_, i64>(1) as u32,
+        ot_id:        row.get::<_, i64>(2) as u32,
+        ot_name:      row.get(3),
+        nickname:     row.get(4),
+        species:      row.get::<_, i32>(5) as u16,
+        species_name: row.get(6),
+        is_shiny:     row.get(7),
+        nature:       row.get(8),
+        level:        row.get::<_, i32>(9) as u8,
+        experience:   row.get::<_, i64>(10) as u32,
+        max_hp:       row.get::<_, i32>(11) as u16,
+        attack:       row.get::<_, i32>(12) as u16,
+        defense:      row.get::<_, i32>(13) as u16,
+        speed:        row.get::<_, i32>(14) as u16,
+        sp_attack:    row.get::<_, i32>(15) as u16,
+        sp_defense:   row.get::<_, i32>(16) as u16,
         moves: [
-            row.get::<_, i32>(16) as u16,
             row.get::<_, i32>(17) as u16,
             row.get::<_, i32>(18) as u16,
             row.get::<_, i32>(19) as u16,
+            row.get::<_, i32>(20) as u16,
         ],
         pp: [
-            row.get::<_, i32>(20) as u8,
             row.get::<_, i32>(21) as u8,
             row.get::<_, i32>(22) as u8,
             row.get::<_, i32>(23) as u8,
+            row.get::<_, i32>(24) as u8,
         ],
         ivs: IVs {
-            hp:         row.get::<_, i32>(24) as u8,
-            attack:     row.get::<_, i32>(25) as u8,
-            defense:    row.get::<_, i32>(26) as u8,
-            speed:      row.get::<_, i32>(27) as u8,
-            sp_attack:  row.get::<_, i32>(28) as u8,
-            sp_defense: row.get::<_, i32>(29) as u8,
+            hp:         row.get::<_, i32>(25) as u8,
+            attack:     row.get::<_, i32>(26) as u8,
+            defense:    row.get::<_, i32>(27) as u8,
+            speed:      row.get::<_, i32>(28) as u8,
+            sp_attack:  row.get::<_, i32>(29) as u8,
+            sp_defense: row.get::<_, i32>(30) as u8,
         },
         evs: EVs {
-            hp:         row.get::<_, i32>(30) as u8,
-            attack:     row.get::<_, i32>(31) as u8,
-            defense:    row.get::<_, i32>(32) as u8,
-            speed:      row.get::<_, i32>(33) as u8,
-            sp_attack:  row.get::<_, i32>(34) as u8,
-            sp_defense: row.get::<_, i32>(35) as u8,
+            hp:         row.get::<_, i32>(31) as u8,
+            attack:     row.get::<_, i32>(32) as u8,
+            defense:    row.get::<_, i32>(33) as u8,
+            speed:      row.get::<_, i32>(34) as u8,
+            sp_attack:  row.get::<_, i32>(35) as u8,
+            sp_defense: row.get::<_, i32>(36) as u8,
         },
-        held_item:    row.get::<_, i32>(36) as u16,
-        ability:      row.get::<_, i32>(37) as u8,
-        ability_name: row.get(38),
-        friendship:   row.get::<_, i32>(39) as u8,
-        met_location: row.get::<_, i32>(40) as u8,
-        died_at:      row.get::<_, i64>(41) as u64,
+        held_item:    row.get::<_, i32>(37) as u16,
+        ability:      row.get::<_, i32>(38) as u8,
+        ability_name: row.get(39),
+        friendship:   row.get::<_, i32>(40) as u8,
+        met_location: row.get::<_, i32>(41) as u8,
+        died_at:      row.get::<_, i64>(42) as u64,
     }
 }
 
@@ -453,9 +485,12 @@ pub fn get_or_create_run(player_name: &str) -> u32 {
         return id;
     }
 
-    // Fall back to the most recently created run.
+    // Fall back to the most recently created run — all trackers share one run.
     if let Some(row) = state.client
-        .query_opt("SELECT id FROM runs ORDER BY id DESC LIMIT 1", &[])
+        .query_opt(
+            "SELECT id FROM runs ORDER BY id DESC LIMIT 1",
+            &[],
+        )
         .expect("Failed to query runs")
     {
         let id = row.get::<_, i32>(0) as u32;
@@ -477,13 +512,13 @@ pub fn get_or_create_run(player_name: &str) -> u32 {
     id
 }
 
-/// Updates the player name on the active run once it is known from the game.
+/// Updates the player name once it is known from the game.
 ///
-/// Only writes if the run name is still 'Unknown' — this prevents a second
-/// tracker process (soul-link partner) from overwriting the first player's name
-/// and breaking the aggregator's run lookup.
+/// Stores the name in-process for tagging all subsequent DB writes, and updates
+/// the run row if it still holds the placeholder 'Unknown'.
 pub fn set_player_name(name: &str) {
     let mut state = db().lock().unwrap_or_else(|e| e.into_inner());
+    state.current_player = name.to_string();
     if let Some(id) = state.run_id {
         state.client
             .execute(
@@ -517,7 +552,7 @@ pub fn end_run() -> Option<u32> {
         "UPDATE runs SET ended_at = $1 WHERE id = $2",
         &[&(unix_now() as i64), &(id as i32)],
     ).expect("Failed to end run");
-    set_meta(&mut state.client, "active_run_id", "");
+    delete_meta(&mut state.client, "active_run_id");
     Some(id)
 }
 
@@ -557,9 +592,10 @@ pub fn mark_dead(pokemon: DeadPokemon) {
         Some(id) => id,
         None => return,
     };
+    let player = state.current_player.clone();
     state.client.execute(
         "INSERT INTO dead_pokemon (
-            run_id, personality, ot_id, ot_name, nickname,
+            run_id, player_name, personality, ot_id, ot_name, nickname,
             species, species_name, is_shiny, nature,
             level, experience, max_hp, attack, defense, speed, sp_attack, sp_defense,
             move1, move2, move3, move4,
@@ -571,10 +607,11 @@ pub fn mark_dead(pokemon: DeadPokemon) {
             $1,  $2,  $3,  $4,  $5,  $6,  $7,  $8,  $9,  $10, $11,
             $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22,
             $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33,
-            $34, $35, $36, $37, $38, $39, $40, $41, $42, $43
+            $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44
         ) ON CONFLICT (run_id, personality) DO NOTHING",
         &[
             &(active as i32),
+            &player,  // $2 = player_name
             &(pokemon.personality as i64),
             &(pokemon.ot_id as i64),
             &pokemon.ot_name,
@@ -638,7 +675,7 @@ pub fn get_dead_pokemon(personality: u32) -> Option<DeadPokemon> {
     let row = state.client
         .query_opt(
             "SELECT
-                personality, ot_id, ot_name, nickname, species, species_name, is_shiny, nature,
+                player_name, personality, ot_id, ot_name, nickname, species, species_name, is_shiny, nature,
                 level, experience, max_hp, attack, defense, speed, sp_attack, sp_defense,
                 move1, move2, move3, move4, pp1, pp2, pp3, pp4,
                 iv_hp, iv_attack, iv_defense, iv_speed, iv_sp_attack, iv_sp_defense,
@@ -666,16 +703,18 @@ pub fn mark_caught(pokemon: CaughtPokemon) {
         Some(id) => id,
         None => return,
     };
+    let player = state.current_player.clone();
     state.client.execute(
         "INSERT INTO caught_pokemon (
-            run_id, personality, ot_id, nickname, species, species_name,
+            run_id, player_name, personality, ot_id, nickname, species, species_name,
             is_shiny, nature, level, met_location,
             iv_hp, iv_attack, iv_defense, iv_speed, iv_sp_attack, iv_sp_defense,
             caught_at
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
         ON CONFLICT (run_id, personality) DO NOTHING",
         &[
             &(active as i32),
+            &player,
             &(pokemon.personality as i64),
             &(pokemon.ot_id as i64),
             &pokemon.nickname,
@@ -712,37 +751,40 @@ pub fn is_caught(personality: u32) -> bool {
         .unwrap_or(false)
 }
 
-/// Returns all caught Pokemon for the active run, ordered by catch time.
+/// Returns all caught Pokemon for the active run for the current player.
 pub fn list_caught() -> Vec<CaughtPokemon> {
     let mut state = db().lock().unwrap_or_else(|e| e.into_inner());
     let active = match state.run_id {
         Some(id) => id,
         None => return vec![],
     };
-    query_caught(&mut state.client, active)
+    let player = state.current_player.clone();
+    query_caught(&mut state.client, active, &player)
 }
 
 // ---------------------------------------------------------------------------
 // Public API — encounter tracking
 // ---------------------------------------------------------------------------
 
-/// Records the first wild encounter in an area.
+/// Records the first wild encounter in an area for the current player.
 ///
-/// Subsequent encounters in the same area are silently ignored (Nuzlocke rule).
-/// Returns `true` if this was a new encounter (row was inserted).
+/// Subsequent encounters in the same area by the same player are silently
+/// ignored (Nuzlocke rule). Returns `true` if this was a new encounter.
 pub fn record_encounter(encounter: Encounter) -> bool {
     let mut state = db().lock().unwrap_or_else(|e| e.into_inner());
     let active = match state.run_id {
         Some(id) => id,
         None => return false,
     };
+    let player = state.current_player.clone();
     let rows = state.client.execute(
         "INSERT INTO encounters (
-            run_id, map_group, map_name, species, species_name, level, caught, encountered_at
-         ) VALUES ($1, $2, $3, $4, $5, $6, FALSE, $7)
-         ON CONFLICT (run_id, map_group, map_name) DO NOTHING",
+            run_id, player_name, map_group, map_name, species, species_name, level, caught, encountered_at
+         ) VALUES ($1, $2, $3, $4, $5, $6, $7, FALSE, $8)
+         ON CONFLICT (run_id, player_name, map_group, map_name) DO NOTHING",
         &[
             &(active as i32),
+            &player,
             &(encounter.map_group as i32),
             &(encounter.map_name as i32),
             &(encounter.species as i32),
@@ -754,32 +796,36 @@ pub fn record_encounter(encounter: Encounter) -> bool {
     rows == 1
 }
 
-/// Marks the encounter for this area as successfully caught.
+/// Marks the current player's encounter for this area as successfully caught.
 pub fn set_encounter_caught(map_group: u8, map_name: u8) {
     let mut state = db().lock().unwrap_or_else(|e| e.into_inner());
     let active = match state.run_id {
         Some(id) => id,
         None => return,
     };
-    state.client.execute(
+    let player = state.current_player.clone();
+    if let Err(e) = state.client.execute(
         "UPDATE encounters SET caught = TRUE
-         WHERE run_id = $1 AND map_group = $2 AND map_name = $3",
-        &[&(active as i32), &(map_group as i32), &(map_name as i32)],
-    ).ok();
+         WHERE run_id = $1 AND player_name = $2 AND map_group = $3 AND map_name = $4",
+        &[&(active as i32), &player, &(map_group as i32), &(map_name as i32)],
+    ) {
+        eprintln!("set_encounter_caught: DB error: {}", e);
+    }
 }
 
-/// Returns `true` if an encounter has already been recorded for this area.
+/// Returns `true` if an encounter has already been recorded for this area by the current player.
 pub fn has_encounter(map_group: u8, map_name: u8) -> bool {
     let mut state = db().lock().unwrap_or_else(|e| e.into_inner());
     let active = match state.run_id {
         Some(id) => id,
         None => return false,
     };
+    let player = state.current_player.clone();
     state.client
         .query_one(
             "SELECT COUNT(*) FROM encounters
-             WHERE run_id = $1 AND map_group = $2 AND map_name = $3",
-            &[&(active as i32), &(map_group as i32), &(map_name as i32)],
+             WHERE run_id = $1 AND player_name = $2 AND map_group = $3 AND map_name = $4",
+            &[&(active as i32), &player, &(map_group as i32), &(map_name as i32)],
         )
         .map(|row| row.get::<_, i64>(0) > 0)
         .unwrap_or(false)
@@ -792,24 +838,26 @@ pub fn list_encounters() -> Vec<Encounter> {
         Some(id) => id,
         None => return vec![],
     };
+    let player = state.current_player.clone();
     state.client
         .query(
-            "SELECT map_group, map_name, species, species_name, level, caught, encountered_at
+            "SELECT player_name, map_group, map_name, species, species_name, level, caught, encountered_at
              FROM encounters
-             WHERE run_id = $1
+             WHERE run_id = $1 AND player_name = $2
              ORDER BY encountered_at ASC",
-            &[&(active as i32)],
+            &[&(active as i32), &player],
         )
         .unwrap_or_default()
         .iter()
         .map(|row| Encounter {
-            map_group:     row.get::<_, i32>(0) as u8,
-            map_name:      row.get::<_, i32>(1) as u8,
-            species:       row.get::<_, i32>(2) as u16,
-            species_name:  row.get(3),
-            level:         row.get::<_, i32>(4) as u8,
-            caught:        row.get(5),
-            encountered_at: row.get::<_, i64>(6) as u64,
+            player_name:    row.get(0),
+            map_group:      row.get::<_, i32>(1) as u8,
+            map_name:       row.get::<_, i32>(2) as u8,
+            species:        row.get::<_, i32>(3) as u16,
+            species_name:   row.get(4),
+            level:          row.get::<_, i32>(5) as u8,
+            caught:         row.get(6),
+            encountered_at: row.get::<_, i64>(7) as u64,
         })
         .collect()
 }
@@ -871,7 +919,10 @@ impl DbReader {
         }
     }
 
-    /// Updates the cached run ID to the most recent run (active or ended).
+    /// Updates the cached run ID to the most recent shared run (active or ended).
+    ///
+    /// All connected trackers share a single run. The most recently created run
+    /// is always used so that historical data is still visible after a run ends.
     ///
     /// Re-queries whenever the player name changes OR `mark_dirty()` was called.
     /// Returns `true` if the run ID changed (triggers a caught-list refresh).
@@ -910,13 +961,13 @@ impl DbReader {
         new_id != old_id
     }
 
-    /// Returns all caught Pokemon for the active run, ordered by catch time.
-    pub fn list_caught(&self) -> Vec<CaughtPokemon> {
+    /// Returns caught Pokemon for the active run belonging to `player_name`.
+    pub fn list_caught(&self, player_name: &str) -> Vec<CaughtPokemon> {
         let run_id = match *self.run_id.lock().unwrap_or_else(|e| e.into_inner()) {
             Some(id) => id,
             None => return vec![],
         };
-        query_caught(&mut *self.client.lock().unwrap_or_else(|e| e.into_inner()), run_id)
+        query_caught(&mut *self.client.lock().unwrap_or_else(|e| e.into_inner()), run_id, player_name)
     }
 
     /// Returns `true` if the Pokemon with this personality is dead in the active run.
@@ -928,8 +979,8 @@ impl DbReader {
         query_is_dead(&mut *self.client.lock().unwrap_or_else(|e| e.into_inner()), run_id, personality)
     }
 
-    /// Returns all dead Pokemon for the active run, keyed by personality.
-    pub fn list_dead_with_records(&self) -> HashMap<u32, DeadPokemon> {
+    /// Returns dead Pokemon for the active run belonging to `player_name`, keyed by personality.
+    pub fn list_dead_with_records(&self, player_name: &str) -> HashMap<u32, DeadPokemon> {
         let run_id = match *self.run_id.lock().unwrap_or_else(|e| e.into_inner()) {
             Some(id) => id,
             None => return HashMap::new(),
@@ -939,14 +990,14 @@ impl DbReader {
             .unwrap_or_else(|e| e.into_inner())
             .query(
                 "SELECT
-                    personality, ot_id, ot_name, nickname, species, species_name, is_shiny, nature,
+                    player_name, personality, ot_id, ot_name, nickname, species, species_name, is_shiny, nature,
                     level, experience, max_hp, attack, defense, speed, sp_attack, sp_defense,
                     move1, move2, move3, move4, pp1, pp2, pp3, pp4,
                     iv_hp, iv_attack, iv_defense, iv_speed, iv_sp_attack, iv_sp_defense,
                     ev_hp, ev_attack, ev_defense, ev_speed, ev_sp_attack, ev_sp_defense,
                     held_item, ability, ability_name, friendship, met_location, died_at
-                 FROM dead_pokemon WHERE run_id = $1",
-                &[&(run_id as i32)],
+                 FROM dead_pokemon WHERE run_id = $1 AND player_name = $2",
+                &[&(run_id as i32), &player_name],
             )
             .unwrap_or_default()
             .iter()
@@ -957,8 +1008,8 @@ impl DbReader {
             .collect()
     }
 
-    /// Returns all recorded first encounters for the tracked run, ordered by time.
-    pub fn list_encounters(&self) -> Vec<Encounter> {
+    /// Returns recorded first encounters for the active run belonging to `player_name`.
+    pub fn list_encounters(&self, player_name: &str) -> Vec<Encounter> {
         let run_id = match *self.run_id.lock().unwrap_or_else(|e| e.into_inner()) {
             Some(id) => id,
             None => return vec![],
@@ -967,20 +1018,21 @@ impl DbReader {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .query(
-                "SELECT map_group, map_name, species, species_name, level, caught, encountered_at
-                 FROM encounters WHERE run_id = $1 ORDER BY encountered_at ASC",
-                &[&(run_id as i32)],
+                "SELECT player_name, map_group, map_name, species, species_name, level, caught, encountered_at
+                 FROM encounters WHERE run_id = $1 AND player_name = $2 ORDER BY encountered_at ASC",
+                &[&(run_id as i32), &player_name],
             )
             .unwrap_or_default()
             .iter()
             .map(|row| Encounter {
-                map_group:      row.get::<_, i32>(0) as u8,
-                map_name:       row.get::<_, i32>(1) as u8,
-                species:        row.get::<_, i32>(2) as u16,
-                species_name:   row.get(3),
-                level:          row.get::<_, i32>(4) as u8,
-                caught:         row.get(5),
-                encountered_at: row.get::<_, i64>(6) as u64,
+                player_name:    row.get(0),
+                map_group:      row.get::<_, i32>(1) as u8,
+                map_name:       row.get::<_, i32>(2) as u8,
+                species:        row.get::<_, i32>(3) as u16,
+                species_name:   row.get(4),
+                level:          row.get::<_, i32>(5) as u8,
+                caught:         row.get(6),
+                encountered_at: row.get::<_, i64>(7) as u64,
             })
             .collect()
     }
@@ -1027,7 +1079,7 @@ impl DbReader {
             None => return false,
         };
         let now = unix_now();
-        self.client
+        if let Err(e) = self.client
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .execute(
@@ -1069,7 +1121,139 @@ impl DbReader {
                     &(now as i64),
                 ],
             )
-            .ok();
+        {
+            eprintln!("mark_caught: DB error: {}", e);
+        }
         true
     }
+}
+
+// ---------------------------------------------------------------------------
+// Full database dump — used by the DB viewer web page
+// ---------------------------------------------------------------------------
+
+/// Opens a fresh connection and returns a JSON snapshot of every table.
+///
+/// Intended for the `/db.json` endpoint; opens its own connection so the live
+/// tracker connections are not blocked. Returns a JSON error object on failure.
+pub fn dump_all(conn_str: &str) -> serde_json::Value {
+    let mut client = match Client::connect(conn_str, NoTls) {
+        Ok(c)  => c,
+        Err(e) => return serde_json::json!({ "error": format!("DB connection failed: {e}") }),
+    };
+
+    let runs       = dump_runs(&mut client);
+    let caught     = dump_caught(&mut client);
+    let dead       = dump_dead(&mut client);
+    let encounters = dump_encounters(&mut client);
+
+    serde_json::json!({ "runs": runs, "caught": caught, "dead": dead, "encounters": encounters })
+}
+
+fn dump_runs(client: &mut Client) -> serde_json::Value {
+    let rows = client.query(
+        "SELECT r.id, r.player_name, r.started_at, r.ended_at,
+                COUNT(DISTINCT d.personality) AS deaths,
+                COUNT(DISTINCT c.personality) AS catches,
+                COUNT(DISTINCT e.id) AS encounters
+         FROM runs r
+         LEFT JOIN dead_pokemon d ON d.run_id = r.id
+         LEFT JOIN caught_pokemon c ON c.run_id = r.id
+         LEFT JOIN encounters e ON e.run_id = r.id
+         GROUP BY r.id ORDER BY r.id",
+        &[],
+    ).unwrap_or_default();
+
+    serde_json::Value::Array(rows.iter().map(|row| {
+        let ended: Option<i64> = row.get(3);
+        serde_json::json!({
+            "id":         row.get::<_, i32>(0),
+            "player":     row.get::<_, String>(1),
+            "started":    format_timestamp(row.get::<_, i64>(2) as u64),
+            "ended":      ended.map(|t| format_timestamp(t as u64)),
+            "deaths":     row.get::<_, i64>(4),
+            "catches":    row.get::<_, i64>(5),
+            "encounters": row.get::<_, i64>(6),
+        })
+    }).collect())
+}
+
+fn dump_caught(client: &mut Client) -> serde_json::Value {
+    let rows = client.query(
+        "SELECT run_id, player_name, nickname, species_name, level, nature, is_shiny,
+                met_location,
+                iv_hp, iv_attack, iv_defense, iv_speed, iv_sp_attack, iv_sp_defense,
+                caught_at
+         FROM caught_pokemon ORDER BY caught_at ASC",
+        &[],
+    ).unwrap_or_default();
+
+    serde_json::Value::Array(rows.iter().map(|row| {
+        serde_json::json!({
+            "run_id":    row.get::<_, i32>(0),
+            "player":    row.get::<_, String>(1),
+            "nickname":  row.get::<_, String>(2),
+            "species":   row.get::<_, String>(3),
+            "level":     row.get::<_, i32>(4),
+            "nature":    row.get::<_, String>(5),
+            "shiny":     row.get::<_, bool>(6),
+            "location":  row.get::<_, i32>(7),
+            "ivs":       format!("{}/{}/{}/{}/{}/{}",
+                row.get::<_, i32>(8),  row.get::<_, i32>(9),  row.get::<_, i32>(10),
+                row.get::<_, i32>(11), row.get::<_, i32>(12), row.get::<_, i32>(13)),
+            "caught_at": format_timestamp(row.get::<_, i64>(14) as u64),
+        })
+    }).collect())
+}
+
+fn dump_dead(client: &mut Client) -> serde_json::Value {
+    let rows = client.query(
+        "SELECT run_id, player_name, nickname, species_name, level, nature, is_shiny,
+                max_hp, attack, defense, speed, sp_attack, sp_defense,
+                iv_hp, iv_attack, iv_defense, iv_speed, iv_sp_attack, iv_sp_defense,
+                (max_hp = 0) AS soul_link,
+                died_at
+         FROM dead_pokemon ORDER BY died_at ASC",
+        &[],
+    ).unwrap_or_default();
+
+    serde_json::Value::Array(rows.iter().map(|row| {
+        serde_json::json!({
+            "run_id":    row.get::<_, i32>(0),
+            "player":    row.get::<_, String>(1),
+            "nickname":  row.get::<_, String>(2),
+            "species":   row.get::<_, String>(3),
+            "level":     row.get::<_, i32>(4),
+            "nature":    row.get::<_, String>(5),
+            "shiny":     row.get::<_, bool>(6),
+            "stats":     format!("{}/{}/{}/{}/{}/{}",
+                row.get::<_, i32>(7),  row.get::<_, i32>(8),  row.get::<_, i32>(9),
+                row.get::<_, i32>(10), row.get::<_, i32>(11), row.get::<_, i32>(12)),
+            "ivs":       format!("{}/{}/{}/{}/{}/{}",
+                row.get::<_, i32>(13), row.get::<_, i32>(14), row.get::<_, i32>(15),
+                row.get::<_, i32>(16), row.get::<_, i32>(17), row.get::<_, i32>(18)),
+            "soul_link": row.get::<_, bool>(19),
+            "died_at":   format_timestamp(row.get::<_, i64>(20) as u64),
+        })
+    }).collect())
+}
+
+fn dump_encounters(client: &mut Client) -> serde_json::Value {
+    let rows = client.query(
+        "SELECT run_id, player_name, map_group, map_name, species_name, level, caught, encountered_at
+         FROM encounters ORDER BY encountered_at ASC",
+        &[],
+    ).unwrap_or_default();
+
+    serde_json::Value::Array(rows.iter().map(|row| {
+        serde_json::json!({
+            "run_id":  row.get::<_, i32>(0),
+            "player":  row.get::<_, String>(1),
+            "map":     format!("{}:{}", row.get::<_, i32>(2), row.get::<_, i32>(3)),
+            "species": row.get::<_, String>(4),
+            "level":   row.get::<_, i32>(5),
+            "caught":  row.get::<_, bool>(6),
+            "seen_at": format_timestamp(row.get::<_, i64>(7) as u64),
+        })
+    }).collect())
 }

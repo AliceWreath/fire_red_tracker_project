@@ -43,9 +43,9 @@ pub fn char_gba_to_ascii(character: u8) -> char {
     } else if (0xD5..=0xEE).contains(&character) {
         return char::from(0x61 + character - 0xD5);
     } else if character == 0x20 {
-        return char::from_u32(0x9794).unwrap();
+        return char::from_u32(0x9794).unwrap_or('♂');
     } else if character == 0x1D {
-        return char::from_u32(0x9792).unwrap();
+        return char::from_u32(0x9792).unwrap_or('♀');
     } else if character == 0xFF {
         return '\0'
     }
@@ -98,7 +98,10 @@ pub fn get_pokemon_name_by_number(species: usize) -> Result<String, String> {
 pub fn gba_string_to_ascii(buffer: &[u8], len: usize, offset: usize) -> String {
     let mut result = String::new();
     for i in 0..len {
-        result.push(char_gba_to_ascii(buffer[offset + i]));
+        match buffer.get(offset + i) {
+            Some(&b) => result.push(char_gba_to_ascii(b)),
+            None => break,
+        }
     }
     result
 }
@@ -160,12 +163,17 @@ pub fn build_name_list(buffer: &[u8], offset: usize) -> Vec<String> {
     
     while name.len() <= LAST_POKEMON_ID_NUMBER {
         let mut name_s = String::from("");
-        while read_u8(buffer, offset + index) != 0xff {
+        while offset + index < buffer.len() && read_u8(buffer, offset + index) != 0xff {
             name_s.push(char_gba_to_ascii(read_u8(buffer, offset + index)));
             index += 1;
         }
         name.push(name_s);
-        index += 1;
+        // Skip the 0xff terminator, guarding against a truncated buffer.
+        if offset + index < buffer.len() {
+            index += 1;
+        } else {
+            break;
+        }
     }
 
     name

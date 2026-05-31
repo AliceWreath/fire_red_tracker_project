@@ -10,28 +10,64 @@ use std::io::{Read, Write};
 const MAX_MESSAGE_SIZE: usize = 20 * 1024 * 1024; // 20 MB
 
 /// Messages sent from a client to the server.
+///
+/// # IMPORTANT — bincode variant ordering
+/// bincode encodes enum variants by their **positional index** (0, 1, 2, …).
+/// Inserting a new variant anywhere other than the end silently breaks
+/// deserialization between old and new binaries.  New variants MUST be
+/// appended at the end only.  Current stable indices:
+///   0 = RequestTextures
+///   1 = EndRun
+///   2 = NewRun
 #[derive(serde::Serialize, serde::Deserialize, Clone)]
 pub enum ClientMessage {
-    /// Request sprite textures for a list of Pokémon species IDs.
-    RequestTextures(Vec<u16>),
-    /// End the current active run (sets ended_at, stops recording data).
-    EndRun,
-    /// Start a new run and make it the active run.
-    NewRun,
+    RequestTextures(Vec<u16>), // index 0 — do not reorder
+    EndRun,                    // index 1 — do not reorder
+    NewRun,                    // index 2 — do not reorder
+    // Append new variants here only.
 }
 
 /// Messages sent from the server to connected clients.
+///
+/// # IMPORTANT — bincode variant ordering
+/// Same constraint as [`ClientMessage`].  Current stable indices:
+///   0 = State
+///   1 = Textures
+///   2 = RunChanged
+///   3 = BoxData
 #[derive(serde::Serialize, serde::Deserialize)]
 pub enum ServerMessage {
-    /// Full game state update.
-    State(GameState),
+    State(GameState),           // index 0 — do not reorder
+    Textures(Vec<SpriteData>),  // index 1 — do not reorder
+    RunChanged(Option<u32>),    // index 2 — do not reorder
+    BoxData(Vec<BoxEntry>),     // index 3 — do not reorder
+    // Append new variants here only.
+}
 
-    /// Collection of sprite textures requested by client.
-    Textures(Vec<SpriteData>),
-
-    /// Confirmation that the active run changed.
-    /// `None` = run ended (no active run); `Some(id)` = new run ID.
-    RunChanged(Option<u32>),
+/// A compact snapshot of one PC box slot for network transmission.
+///
+/// Built by the tracker from the live EWRAM snapshot and sent to the aggregator
+/// every ~5 seconds so the web overlay can display the full box contents.
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
+pub struct BoxEntry {
+    /// Zero-based index of the PC box (0–13).
+    pub box_index:    u8,
+    /// Zero-based slot within the box (0–29).
+    pub slot_index:   u8,
+    pub species:      u16,
+    pub species_name: String,
+    pub nickname:     String,
+    pub personality:  u32,
+    pub ot_id:        u32,
+    pub is_shiny:     bool,
+    pub nature:       String,
+    pub iv_hp:        u8,
+    pub iv_atk:       u8,
+    pub iv_def:       u8,
+    pub iv_spe:       u8,
+    pub iv_spa:       u8,
+    pub iv_spd:       u8,
+    pub is_egg:       bool,
 }
 
 /// Serialized Pokemon sprite texture data for network transmission.
@@ -107,7 +143,8 @@ pub enum Mode {
 pub fn send_message<T: serde::Serialize>(stream: &mut TcpStream, msg: &T) -> std::io::Result<()> {
     let encoded =
         bincode::serialize(msg).map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
-    let len = encoded.len() as u32;
+    let len = u32::try_from(encoded.len())
+        .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidData, "message too large"))?;
     stream.write_all(&len.to_be_bytes())?;
     stream.write_all(&encoded)?;
     Ok(())

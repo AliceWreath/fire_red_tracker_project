@@ -82,6 +82,7 @@ struct SlotDto {
     encounters:     Vec<EncounterGroupDto>,
     dead:           Vec<DeadMonDto>,
     caught:         Vec<CaughtMonDto>,
+    box_pokemon:    Vec<BoxMonDto>,
 }
 
 #[derive(serde::Serialize, Clone)]
@@ -130,6 +131,24 @@ struct CaughtMonDto {
     iv_spa:        u8,
     iv_spd:        u8,
     sprite:        Option<String>,
+}
+
+#[derive(serde::Serialize, Clone)]
+struct BoxMonDto {
+    box_index:    u8,
+    slot_index:   u8,
+    species_name: String,
+    nickname:     String,
+    is_shiny:     bool,
+    nature:       String,
+    is_egg:       bool,
+    iv_hp:        u8,
+    iv_atk:       u8,
+    iv_def:       u8,
+    iv_spe:       u8,
+    iv_spa:       u8,
+    iv_spd:       u8,
+    sprite:       Option<String>,
 }
 
 #[derive(serde::Serialize, Clone)]
@@ -208,7 +227,6 @@ struct BroadcastLoop {
     soul_link_propagated: HashSet<(usize, u32)>,
     last_json:            String,
     sprites:              SpriteCache,
-    player_ot_ids:        Vec<Option<u32>>,
 }
 
 impl BroadcastLoop {
@@ -219,7 +237,6 @@ impl BroadcastLoop {
             soul_link_propagated: HashSet::new(),
             last_json:            String::new(),
             sprites,
-            player_ot_ids:        Vec::new(),
         }
     }
 
@@ -312,8 +329,7 @@ impl BroadcastLoop {
         let slots: Vec<Arc<MonitorSlot>> =
             self.live_slots.lock().unwrap_or_else(|e| e.into_inner()).clone();
         let n = slots.len();
-        while self.caches.len() < n      { self.caches.push(SlotCache::new()); }
-        while self.player_ot_ids.len() < n { self.player_ot_ids.push(None); }
+        while self.caches.len() < n { self.caches.push(SlotCache::new()); }
 
         // Collect live states
         let states: Vec<(String, Option<GameState>)> = slots
@@ -325,15 +341,6 @@ impl BroadcastLoop {
             })
             .collect();
 
-        // Update OT ID cache from live party (persists after disconnect)
-        for i in 0..n {
-            if let Some(gs) = &states[i].1 {
-                if let Some(p) = gs.party.first() {
-                    self.player_ot_ids[i] = Some(p.box_mon.ot_id);
-                }
-            }
-        }
-
         // Sprite pipeline
         self.request_sprites(&slots, &states);
         self.drain_sprites(&slots);
@@ -341,7 +348,7 @@ impl BroadcastLoop {
         // If the tracker confirmed a run change, mark the DB reader dirty so
         // sync_player re-queries even though the player name hasn't changed.
         for slot in &slots {
-            if slot.run_changed.swap(false, std::sync::atomic::Ordering::SeqCst) {
+            if slot.run_changed.swap(false, std::sync::atomic::Ordering::AcqRel) {
                 if let Some(db) = &slot.db {
                     db.mark_dirty();
                 }
@@ -362,24 +369,30 @@ impl BroadcastLoop {
             let stale = now.duration_since(self.caches[i].last_refresh) >= Duration::from_secs(1);
             if run_id_changed[i] || stale {
                 if let Some(db) = &slots[i].db {
-                    self.caches[i].caught      = db.list_caught();
-                    self.caches[i].encounters  = db.list_encounters();
+                    let label = &states[i].0;
+                    self.caches[i].caught      = db.list_caught(label);
+                    self.caches[i].encounters  = db.list_encounters(label);
                     self.caches[i].last_refresh = now;
                 }
             }
         }
 
-        // Dead records (fresh every tick)
-        let all_dead: Vec<HashMap<u32, DeadPokemon>> = slots
-            .iter()
-            .map(|s| {
-                s.db.as_ref()
-                    .map(|db| db.list_dead_with_records())
+        // Dead records (fresh every tick), filtered per player by name.
+        let all_dead: Vec<HashMap<u32, DeadPokemon>> = (0..n)
+            .map(|i| {
+                slots[i].db.as_ref()
+                    .map(|db| db.list_dead_with_records(&states[i].0))
                     .unwrap_or_default()
             })
             .collect();
 
-        // Request sprites for dead and caught pokemon not yet in the cache
+        // Snapshot box data per slot for use in sprite requests and DTO building.
+        let all_box: Vec<Vec<fire_red_states::BoxEntry>> = slots
+            .iter()
+            .map(|s| s.box_data.lock().unwrap_or_else(|e| e.into_inner()).clone())
+            .collect();
+
+        // Request sprites for dead, caught, and box pokemon not yet in the cache
         {
             let cache = self.sprites.lock().unwrap_or_else(|e| e.into_inner());
             for (i, slot) in slots.iter().enumerate() {
@@ -402,6 +415,13 @@ impl BroadcastLoop {
                 for enc in &self.caches[i].encounters {
                     let s = enc.species;
                     if s > 0 && s <= 386 && !known.contains(&s) && !cache.contains_key(&(s, false)) {
+                        needed.push(s);
+                        known.insert(s);
+                    }
+                }
+                for be in &all_box[i] {
+                    let s = be.species;
+                    if s > 0 && s <= 386 && !known.contains(&s) && !cache.contains_key(&(s, be.is_shiny)) {
                         needed.push(s);
                         known.insert(s);
                     }
@@ -646,13 +666,9 @@ impl BroadcastLoop {
                     }
                 };
 
-                // Dead and caught come from the DB regardless of live connection.
-                // Filter by OT ID so each slot only shows its own trainer's pokemon.
-                let ot_id = self.player_ot_ids[i];
-                let mut dead_sorted: Vec<&DeadPokemon> = dead_records
-                    .values()
-                    .filter(|dp| ot_id.map_or(false, |id| dp.ot_id == id))
-                    .collect();
+                // dead_records and caches are already filtered by player_name in
+                // list_dead_with_records / list_caught, so no further filtering needed.
+                let mut dead_sorted: Vec<&DeadPokemon> = dead_records.values().collect();
                 dead_sorted.sort_by(|a, b| b.died_at.cmp(&a.died_at));
                 let dead: Vec<DeadMonDto> = dead_sorted.iter().map(|dp| DeadMonDto {
                     nickname:     dp.nickname.clone(),
@@ -684,7 +700,6 @@ impl BroadcastLoop {
                 }).collect();
 
                 let caught: Vec<CaughtMonDto> = self.caches[i].caught.iter()
-                    .filter(|cp| ot_id.map_or(false, |id| cp.ot_id == id))
                     .rev()
                     .map(|cp| CaughtMonDto {
                     nickname:     cp.nickname.clone(),
@@ -703,7 +718,26 @@ impl BroadcastLoop {
                     sprite:       self.sprite_uri(cp.species, cp.is_shiny),
                 }).collect();
 
-                SlotDto { label: label.clone(), connected, db_connected, active_run_id, run_summary, db_encounters, badges, next_gym, party, encounters, dead, caught }
+                let box_pokemon: Vec<BoxMonDto> = all_box[i].iter()
+                    .map(|be| BoxMonDto {
+                        box_index:    be.box_index,
+                        slot_index:   be.slot_index,
+                        species_name: be.species_name.clone(),
+                        nickname:     be.nickname.clone(),
+                        is_shiny:     be.is_shiny,
+                        nature:       be.nature.clone(),
+                        is_egg:       be.is_egg,
+                        iv_hp:        be.iv_hp,
+                        iv_atk:       be.iv_atk,
+                        iv_def:       be.iv_def,
+                        iv_spe:       be.iv_spe,
+                        iv_spa:       be.iv_spa,
+                        iv_spd:       be.iv_spd,
+                        sprite:       self.sprite_uri(be.species, be.is_shiny),
+                    })
+                    .collect();
+
+                SlotDto { label: label.clone(), connected, db_connected, active_run_id, run_summary, db_encounters, badges, next_gym, party, encounters, dead, caught, box_pokemon }
             })
             .collect();
 
@@ -724,14 +758,16 @@ impl BroadcastLoop {
 struct WebState {
     tx:         watch::Sender<String>,
     live_slots: SharedSlots,
+    db_conn:    Option<String>,
 }
 
 // ---------------------------------------------------------------------------
 // Axum handlers
 // ---------------------------------------------------------------------------
 
-const OVERLAY_HTML: &str = include_str!("overlay.html");
-const FOCUSED_HTML: &str = include_str!("focused.html");
+const OVERLAY_HTML:  &str = include_str!("overlay.html");
+const FOCUSED_HTML:  &str = include_str!("focused.html");
+const DBVIEWER_HTML: &str = include_str!("db.html");
 
 async fn serve_html() -> Html<&'static str> {
     Html(OVERLAY_HTML)
@@ -739,6 +775,19 @@ async fn serve_html() -> Html<&'static str> {
 
 async fn serve_focused() -> Html<&'static str> {
     Html(FOCUSED_HTML)
+}
+
+async fn serve_db_viewer() -> Html<&'static str> {
+    Html(DBVIEWER_HTML)
+}
+
+async fn serve_db_json(State(state): State<WebState>) -> axum::Json<serde_json::Value> {
+    let conn = match state.db_conn {
+        Some(s) => s,
+        None    => return axum::Json(serde_json::json!({ "error": "No database configured" })),
+    };
+    let result = tokio::task::spawn_blocking(move || fire_red_database::dump_all(&conn)).await;
+    axum::Json(result.unwrap_or_else(|_| serde_json::json!({ "error": "Query failed" })))
 }
 
 async fn ws_handler(
@@ -806,7 +855,7 @@ async fn handle_socket(
 // Entry point
 // ---------------------------------------------------------------------------
 
-pub fn run(live_slots: SharedSlots, port: u16) {
+pub fn run(live_slots: SharedSlots, port: u16, db_conn: Option<String>) {
     let sprites: SpriteCache = Arc::new(Mutex::new(HashMap::new()));
 
     // Wire the shared sprite cache into any already-connected slots and keep
@@ -833,17 +882,20 @@ pub fn run(live_slots: SharedSlots, port: u16) {
         }
     });
 
-    let web_state = WebState { tx, live_slots };
+    let web_state = WebState { tx, live_slots, db_conn };
 
     let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
     rt.block_on(async move {
         let app = Router::new()
             .route("/", get(serve_html))
             .route("/ws", get(ws_handler))
+            .route("/db", get(serve_db_viewer))
+            .route("/db.json", get(serve_db_json))
             .route("/:index/party", get(serve_focused))
             .route("/:index/encounters", get(serve_focused))
             .route("/:index/dead", get(serve_focused))
             .route("/:index/caught", get(serve_focused))
+            .route("/:index/box", get(serve_focused))
             .with_state(web_state);
 
         let addr = format!("0.0.0.0:{}", port);
@@ -853,6 +905,8 @@ pub fn run(live_slots: SharedSlots, port: u16) {
         let listener = tokio::net::TcpListener::bind(&addr)
             .await
             .expect("failed to bind WebSocket port");
-        axum::serve(listener, app).await.unwrap();
+        if let Err(e) = axum::serve(listener, app).await {
+            eprintln!("WebSocket server error: {e}");
+        }
     });
 }

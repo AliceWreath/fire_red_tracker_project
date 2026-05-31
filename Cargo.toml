@@ -2,7 +2,7 @@
 members = [
     "fire_red_aggregator",
     "fire_red_badge",
-    "fire_red_box_monitor", 
+    "fire_red_box_monitor",
     "fire_red_database",
     "fire_red_get_values",
     "fire_red_image_data",
@@ -22,3 +22,47 @@ members = [
 ]
 
 resolver = "3"
+
+[workspace.dependencies]
+# External — shared across multiple crates
+serde         = { version = "1", features = ["derive"] }
+bincode       = "1"
+arc-swap      = "1.9.1"
+eframe        = "0.34.2"
+egui          = "0.34.2"
+image         = "0.25"
+clap          = { version = "4.0", features = ["derive"] }
+toml          = "0.8"
+flate2        = "1"
+libc          = "0.2.186"
+
+# External — single-crate but version-pinned here for consistency
+serde_json      = "1"
+tokio           = { version = "1", features = ["rt-multi-thread", "macros"] }
+axum            = { version = "0.7", features = ["ws"] }
+futures-util    = "0.3"
+once_cell       = "1.21.4"
+serde-big-array = "0.5"
+postgres        = "0.19"
+colored         = "3.1.1"
+ctrlc           = "3"
+rfd             = "0.15"
+self_update     = { version = "0.44", features = ["archive-tar", "compression-flate2"] }
+
+# Internal path crates (used as dependencies by other workspace members)
+fire_red_badge                 = { path = "fire_red_badge" }
+fire_red_box_monitor           = { path = "fire_red_box_monitor" }
+fire_red_database              = { path = "fire_red_database" }
+fire_red_get_values            = { path = "fire_red_get_values" }
+fire_red_image_data            = { path = "fire_red_image_data" }
+fire_red_loop                  = { path = "fire_red_loop" }
+fire_red_memory                = { path = "fire_red_memory" }
+fire_red_party_monitor         = { path = "fire_red_party_monitor" }
+fire_red_pokemon_data          = { path = "fire_red_pokemon_data" }
+fire_red_pokemon_name_buffer   = { path = "fire_red_pokemon_name_buffer" }
+fire_red_retroarch_interfacing = { path = "fire_red_retroarch_interfacing" }
+fire_red_rom_buffer            = { path = "fire_red_rom_buffer" }
+fire_red_scanner               = { path = "fire_red_scanner" }
+fire_red_states                = { path = "fire_red_states" }
+fire_red_text                  = { path = "fire_red_text" }
+fire_red_trainer_data          = { path = "fire_red_trainer_data" }

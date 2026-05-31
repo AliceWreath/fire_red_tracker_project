@@ -1,0 +1,325 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>FireRed DB Viewer</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body {
+    background: #0f0f0f;
+    font-family: 'Segoe UI', Tahoma, sans-serif;
+    color: #e0e0e0;
+    min-height: 100vh;
+}
+#root { max-width: 1400px; margin: 0 auto; padding: 16px; }
+
+/* Header */
+.page-header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding-bottom: 12px;
+    border-bottom: 1px solid rgba(255,255,255,0.1);
+    margin-bottom: 14px;
+}
+.page-title { font-size: 20px; font-weight: bold; color: #fff; }
+.refresh-btn {
+    margin-left: auto;
+    font-size: 12px; font-weight: 600; padding: 4px 12px;
+    background: #1a4a1a; border: 1px solid #2a7a2a; border-radius: 5px;
+    color: #80e080; cursor: pointer;
+}
+.refresh-btn:hover { background: #224a22; }
+.status { font-size: 12px; color: #888; }
+
+/* Tabs */
+.tabs {
+    display: flex;
+    gap: 4px;
+    margin-bottom: 10px;
+    border-bottom: 1px solid rgba(255,255,255,0.08);
+    padding-bottom: 0;
+}
+.tab {
+    font-size: 13px; font-weight: 600; padding: 7px 14px;
+    background: transparent; border: none; border-radius: 5px 5px 0 0;
+    color: #aaa; cursor: pointer; border-bottom: 2px solid transparent;
+    margin-bottom: -1px;
+}
+.tab:hover { color: #ddd; background: rgba(255,255,255,0.05); }
+.tab.active { color: #fff; border-bottom-color: #5090e0; background: rgba(80,144,224,0.08); }
+.tab-count { font-size: 10px; color: #888; margin-left: 4px; }
+.tab.active .tab-count { color: #5090e0; }
+
+/* Search */
+.search-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 8px;
+}
+.search-input {
+    flex: 1; max-width: 320px;
+    background: #1a1a1a; border: 1px solid #333; border-radius: 5px;
+    color: #e0e0e0; font-size: 12px; padding: 5px 10px; outline: none;
+}
+.search-input:focus { border-color: #5090e0; }
+.row-count { font-size: 11px; color: #777; }
+
+/* Table */
+.table-wrap {
+    overflow-x: auto;
+    border-radius: 6px;
+    border: 1px solid rgba(255,255,255,0.08);
+}
+table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12px;
+}
+thead tr {
+    background: #1a1a2e;
+}
+th {
+    padding: 8px 10px;
+    text-align: left;
+    font-size: 11px;
+    font-weight: 700;
+    color: #8899cc;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    white-space: nowrap;
+    border-bottom: 1px solid rgba(255,255,255,0.1);
+    cursor: pointer;
+    user-select: none;
+}
+th:hover { color: #aabbdd; }
+th.sort-asc::after  { content: ' ↑'; color: #5090e0; }
+th.sort-desc::after { content: ' ↓'; color: #5090e0; }
+tbody tr {
+    border-bottom: 1px solid rgba(255,255,255,0.04);
+    transition: background 0.1s;
+}
+tbody tr:hover { background: rgba(255,255,255,0.04); }
+tbody tr.run-active { background: rgba(30,80,30,0.2); }
+td {
+    padding: 6px 10px;
+    color: #ccc;
+    white-space: nowrap;
+}
+td.mono { font-family: monospace; font-size: 11px; color: #aaa; }
+td.yes { color: #60d060; font-weight: 600; }
+td.no  { color: #808080; }
+td.dead-yes { color: #e06060; font-weight: 600; }
+td.shiny  { color: #ffd040; }
+td.run-id { color: #5090e0; font-weight: 600; }
+.empty-msg {
+    padding: 24px;
+    text-align: center;
+    color: #555;
+    font-size: 13px;
+}
+.error-msg {
+    padding: 20px;
+    background: rgba(80,20,20,0.4);
+    border-radius: 6px;
+    color: #e06060;
+    font-size: 13px;
+}
+</style>
+</head>
+<body>
+<div id="root">
+    <div class="page-header">
+        <div class="page-title">Nuzlocke Database</div>
+        <div class="status" id="status">Loading...</div>
+        <button class="refresh-btn" onclick="loadData()">↺ Refresh</button>
+    </div>
+
+    <div class="tabs" id="tabs"></div>
+
+    <div class="search-row">
+        <input class="search-input" id="search" type="text" placeholder="Filter rows...">
+        <span class="row-count" id="row-count"></span>
+    </div>
+
+    <div id="content"></div>
+</div>
+
+<script>
+const TABLES = {
+    runs: {
+        label: 'Runs',
+        cols: [
+            { key: 'id',         label: 'ID',         cls: 'run-id' },
+            { key: 'player',     label: 'Player' },
+            { key: 'started',    label: 'Started',    cls: 'mono' },
+            { key: 'ended',      label: 'Ended',      cls: 'mono', fmt: v => v ?? '— active —' },
+            { key: 'catches',    label: 'Catches' },
+            { key: 'deaths',     label: 'Deaths',     fmt: (v, row) => v },
+            { key: 'encounters', label: 'Encounters' },
+        ],
+        rowClass: row => row.ended == null ? 'run-active' : '',
+    },
+    caught: {
+        label: 'Caught',
+        cols: [
+            { key: 'run_id',    label: 'Run',      cls: 'run-id' },
+            { key: 'player',    label: 'Player' },
+            { key: 'nickname',  label: 'Nickname', fmt: v => v || '—' },
+            { key: 'species',   label: 'Species' },
+            { key: 'level',     label: 'Lv' },
+            { key: 'nature',    label: 'Nature' },
+            { key: 'shiny',     label: 'Shiny',    cls: row => row.shiny ? 'shiny' : 'no',   fmt: v => v ? '★' : '' },
+            { key: 'ivs',       label: 'IVs',      cls: 'mono' },
+            { key: 'location',  label: 'Loc',      cls: 'mono' },
+            { key: 'caught_at', label: 'Caught',   cls: 'mono' },
+        ],
+    },
+    dead: {
+        label: 'Dead',
+        cols: [
+            { key: 'run_id',    label: 'Run',       cls: 'run-id' },
+            { key: 'player',    label: 'Player' },
+            { key: 'nickname',  label: 'Nickname',  fmt: v => v || '—' },
+            { key: 'species',   label: 'Species' },
+            { key: 'level',     label: 'Lv' },
+            { key: 'nature',    label: 'Nature' },
+            { key: 'shiny',     label: 'Shiny',     cls: row => row.shiny ? 'shiny' : 'no',      fmt: v => v ? '★' : '' },
+            { key: 'soul_link', label: 'SoulLink',  cls: row => row.soul_link ? 'dead-yes' : 'no', fmt: v => v ? 'yes' : '' },
+            { key: 'stats',     label: 'Stats',     cls: 'mono' },
+            { key: 'ivs',       label: 'IVs',       cls: 'mono' },
+            { key: 'died_at',   label: 'Died',      cls: 'mono' },
+        ],
+    },
+    encounters: {
+        label: 'Encounters',
+        cols: [
+            { key: 'run_id',  label: 'Run',     cls: 'run-id' },
+            { key: 'player',  label: 'Player' },
+            { key: 'map',     label: 'Map',     cls: 'mono' },
+            { key: 'species', label: 'Species' },
+            { key: 'level',   label: 'Lv' },
+            { key: 'caught',  label: 'Caught',  cls: row => row.caught ? 'yes' : 'no', fmt: v => v ? '✓' : '✗' },
+            { key: 'seen_at', label: 'Seen',    cls: 'mono' },
+        ],
+    },
+};
+
+let data = null;
+let activeTable = 'runs';
+let sortKey = null;
+let sortDir = 1;
+let filterText = '';
+
+async function loadData() {
+    document.getElementById('status').textContent = 'Loading...';
+    try {
+        const res = await fetch('/db.json');
+        data = await res.json();
+        if (data.error) throw new Error(data.error);
+        document.getElementById('status').textContent =
+            'Last fetched: ' + new Date().toLocaleTimeString();
+        renderTabs();
+        renderTable();
+    } catch (e) {
+        document.getElementById('status').textContent = 'Error';
+        document.getElementById('content').innerHTML =
+            '<div class="error-msg">Failed to load data: ' + e.message + '</div>';
+    }
+}
+
+function renderTabs() {
+    const tabs = document.getElementById('tabs');
+    tabs.innerHTML = '';
+    for (const [key, def] of Object.entries(TABLES)) {
+        const count = data[key] ? data[key].length : 0;
+        const btn = document.createElement('button');
+        btn.className = 'tab' + (key === activeTable ? ' active' : '');
+        btn.innerHTML = def.label + '<span class="tab-count">' + count + '</span>';
+        btn.onclick = () => { activeTable = key; sortKey = null; sortDir = 1; renderTabs(); renderTable(); };
+        tabs.appendChild(btn);
+    }
+}
+
+document.getElementById('search').addEventListener('input', e => {
+    filterText = e.target.value.toLowerCase();
+    renderTable();
+});
+
+function renderTable() {
+    const def   = TABLES[activeTable];
+    const rows  = data ? (data[activeTable] || []) : [];
+    const content = document.getElementById('content');
+
+    let filtered = rows.filter(row =>
+        filterText === '' ||
+        def.cols.some(col => String(row[col.key] ?? '').toLowerCase().includes(filterText))
+    );
+
+    if (sortKey) {
+        filtered = [...filtered].sort((a, b) => {
+            const av = a[sortKey], bv = b[sortKey];
+            if (av == null) return 1;
+            if (bv == null) return -1;
+            return av < bv ? -sortDir : av > bv ? sortDir : 0;
+        });
+    }
+
+    document.getElementById('row-count').textContent =
+        filtered.length + ' of ' + rows.length + ' rows';
+
+    if (filtered.length === 0) {
+        content.innerHTML = '<div class="empty-msg">' +
+            (rows.length === 0 ? 'No records in this table.' : 'No rows match the filter.') +
+            '</div>';
+        return;
+    }
+
+    const wrap  = document.createElement('div');
+    wrap.className = 'table-wrap';
+    const table = document.createElement('table');
+
+    // Header
+    const thead = document.createElement('thead');
+    const hr    = document.createElement('tr');
+    for (const col of def.cols) {
+        const th = document.createElement('th');
+        th.textContent = col.label;
+        if (sortKey === col.key) th.className = sortDir === 1 ? 'sort-asc' : 'sort-desc';
+        th.onclick = () => {
+            if (sortKey === col.key) sortDir = -sortDir;
+            else { sortKey = col.key; sortDir = 1; }
+            renderTable();
+        };
+        hr.appendChild(th);
+    }
+    thead.appendChild(hr);
+    table.appendChild(thead);
+
+    // Body
+    const tbody = document.createElement('tbody');
+    for (const row of filtered) {
+        const tr = document.createElement('tr');
+        if (def.rowClass) tr.className = def.rowClass(row);
+        for (const col of def.cols) {
+            const td  = document.createElement('td');
+            const val = row[col.key];
+            td.textContent = col.fmt ? col.fmt(val, row) : (val ?? '');
+            const cls = typeof col.cls === 'function' ? col.cls(row) : (col.cls || '');
+            if (cls) td.className = cls;
+            tr.appendChild(td);
+        }
+        tbody.appendChild(tr);
+    }
+    table.appendChild(tbody);
+
+    wrap.appendChild(table);
+    content.innerHTML = '';
+    content.appendChild(wrap);
+}
+
+loadData();
+</script>
+</body>
+</html>

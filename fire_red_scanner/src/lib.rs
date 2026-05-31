@@ -38,7 +38,7 @@ fn read_u32_le(bytes: &[u8], offset: usize) -> u32 {
 /// 
 /// * `ptr` - Value to check.
 fn is_valid_gba_ptr(ptr: u32) -> bool {
-    (ptr >= 0x08000000 && ptr < 0x09000000) || ptr == 0
+    (ptr >= 0x08000000 && ptr <= 0x09FFFFFF) || ptr == 0
 }
 
 /// Performs a heuristic check on a potential wild encounter header
@@ -153,7 +153,7 @@ fn validate_table(rom: &[u8], start: usize) -> bool {
 pub fn find_wild_headers(rom: &[u8]) -> Option<usize> {
     let mut i = 0;
 
-    while i < rom.len() - HEADER_SIZE {
+    while i + HEADER_SIZE <= rom.len() {
         if looks_like_header(rom, i) {
             if validate_table(rom, i) {
                 return Some(i);

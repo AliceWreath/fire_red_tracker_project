@@ -7,6 +7,6 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-serde = { version = "1", features = ["derive"] }
-fire_red_rom_buffer = { path = "../fire_red_rom_buffer/" }
-fire_red_get_values = { path = "../fire_red_get_values/" }
+serde.workspace               = true
+fire_red_rom_buffer.workspace = true
+fire_red_get_values.workspace = true

@@ -45,14 +45,51 @@ struct Cli {
     /// Override: run headless with a WebSocket overlay server on this port.
     #[arg(long = "ws-port", value_name = "PORT")]
     ws_port: Option<u16>,
+
+    /// Check GitHub for a newer release and replace this binary if one is found.
+    #[arg(long)]
+    update: bool,
 }
 
 // ---------------------------------------------------------------------------
 // main
 // ---------------------------------------------------------------------------
 
+fn do_update() {
+    println!(
+        "Checking for updates (current version: v{})...",
+        env!("CARGO_PKG_VERSION")
+    );
+    let result = self_update::backends::github::Update::configure()
+        .repo_owner("AliceWreath")
+        .repo_name("fire_red_tracker_project")
+        .bin_name("fire_red_aggregator")
+        .show_download_progress(true)
+        .current_version(env!("CARGO_PKG_VERSION"))
+        .build()
+        .and_then(|u| u.update());
+
+    match result {
+        Ok(self_update::Status::UpToDate(v)) => {
+            println!("Already up to date (v{}).", v);
+        }
+        Ok(self_update::Status::Updated(v)) => {
+            println!("Updated to v{}. Restart the aggregator to use the new version.", v);
+        }
+        Err(e) => {
+            eprintln!("Update failed: {}", e);
+            std::process::exit(1);
+        }
+    }
+}
+
 fn main() {
     let cli = Cli::parse();
+
+    if cli.update {
+        do_update();
+        return;
+    }
 
     let config_path = cli.config.as_deref()
         .map(std::path::PathBuf::from)
@@ -88,7 +125,11 @@ fn main() {
         for stream in listener.incoming() {
             let stream = match stream {
                 Ok(s)  => s,
-                Err(e) => { eprintln!("Accept error: {}", e); continue; }
+                Err(e) => {
+                    eprintln!("Accept error: {}", e);
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                    continue;
+                }
             };
             let peer = stream.peer_addr()
                 .map(|a| a.to_string())
@@ -105,7 +146,7 @@ fn main() {
                     // Reset stale per-connection state before handing to a new tracker.
                     s.known_species.lock().unwrap_or_else(|e| e.into_inner()).clear();
                     s.command_queue.lock().unwrap_or_else(|e| e.into_inner()).clear();
-                    s.run_changed.store(false, std::sync::atomic::Ordering::SeqCst);
+                    s.run_changed.store(false, std::sync::atomic::Ordering::Relaxed);
                     s
                 } else {
                     let idx = slots.len();
@@ -123,12 +164,19 @@ fn main() {
             let sprite_cache = slot_arc.sprite_cache.clone();
             let cmd_queue    = slot_arc.command_queue.clone();
             let run_chg      = slot_arc.run_changed.clone();
+            let box_data     = slot_arc.box_data.clone();
 
             std::thread::spawn(move || {
-                handle_tracker_connection(
-                    stream, state, pending, known, tex_queue,
-                    label, sprite_cache, cmd_queue, run_chg,
-                );
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    handle_tracker_connection(
+                        stream, state.clone(), pending, known, tex_queue,
+                        label, sprite_cache, cmd_queue, run_chg, box_data,
+                    );
+                }));
+                if result.is_err() {
+                    eprintln!("Tracker thread for {} panicked — clearing slot state.", peer);
+                    *state.lock().unwrap_or_else(|e| e.into_inner()) = None;
+                }
                 println!("Tracker from {} disconnected.", peer);
             });
         }
@@ -136,7 +184,7 @@ fn main() {
 
     if let Some(port) = ws_port {
         // Headless WebSocket overlay mode.
-        web::run(shared_slots, port);
+        web::run(shared_slots, port, db);
     } else {
         // Normal egui window mode.
         let options = eframe::NativeOptions {

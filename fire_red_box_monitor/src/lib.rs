@@ -206,13 +206,15 @@ fn get_box_0_ewram_offset() -> Option<usize> {
         iwram[ptr_offset + 3],
     ]) as usize;
 
-    if save_block_3_base < EWRAM_BASE {
+    let ewram = fire_red_memory::get_ewram();
+    if save_block_3_base < EWRAM_BASE || save_block_3_base >= EWRAM_BASE + ewram.len() {
         eprintln!(
             "SaveBlock3 pointer 0x{:08X} is outside EWRAM — snapshot may not be ready.",
             save_block_3_base
         );
         return None;
     }
+    drop(ewram);
 
     let box_0_addr = save_block_3_base + BOX_DATA_OFFSET;
     if box_0_addr < EWRAM_BASE {
@@ -312,6 +314,44 @@ pub fn sync_storage(list: &[BoxPokemon]) -> isize {
 // ---------------------------------------------------------------------------
 // Snapshot reading
 // ---------------------------------------------------------------------------
+
+/// Reads all box slots from the current EWRAM snapshot and returns a `Vec` of
+/// non-empty [`BoxPokemon`] with their `(box_index, slot_index)` positions.
+///
+/// Unlike [`get_box_entries_from_ram`], position information is preserved so
+/// the caller can display or sort by box layout.
+pub fn get_box_entries_positioned() -> Vec<(u8, u8, BoxPokemon)> {
+    let ewram = fire_red_memory::get_ewram();
+    let rom   = fire_red_rom_buffer::get_rom();
+
+    let box_0_offset = match get_box_0_ewram_offset() {
+        Some(offset) => offset,
+        None => return Vec::new(),
+    };
+
+    let end_offset = box_0_offset + TOTAL_BOX_BYTES;
+    if ewram.len() < end_offset {
+        return Vec::new();
+    }
+
+    let box_data = &ewram[box_0_offset..end_offset];
+    let mut list = Vec::new();
+
+    for slot in 0..TOTAL_SLOTS {
+        let box_index  = (slot / NUMBER_SLOTS) as u8;
+        let slot_index = (slot % NUMBER_SLOTS) as u8;
+        let slot_offset = slot * SLOT_SIZE;
+        let slot_bytes = &box_data[slot_offset..slot_offset + SLOT_SIZE];
+
+        if let Some(mon) = BoxPokemon::from_bytes(slot_bytes, rom) {
+            if mon.checksum != 0 {
+                list.push((box_index, slot_index, mon));
+            }
+        }
+    }
+
+    list
+}
 
 /// Reads all box slots from the current EWRAM snapshot and returns a `Vec` of
 /// non-empty [`BoxPokemon`].
