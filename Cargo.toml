@@ -48,7 +48,7 @@ postgres        = "0.19"
 colored         = "3.1.1"
 ctrlc           = "3"
 rfd             = "0.15"
-self_update     = { version = "0.44", features = ["archive-tar", "compression-flate2"] }
+self_update     = { version = "0.44", default-features = false, features = ["reqwest", "rustls", "compression-flate2"] }
 
 # Internal path crates (used as dependencies by other workspace members)
 fire_red_badge                 = { path = "fire_red_badge" }
