@@ -335,6 +335,8 @@ function renderDead(root, slot) {
 
         const nr = el('div', 'record-name');
         nr.appendChild(document.createTextNode(mon.nickname));
+        const dgs = genderSym(mon.gender);
+        if (dgs.sym) nr.appendChild(el('span', dgs.cls, dgs.sym));
         if (mon.shiny) nr.appendChild(el('span', 'shiny', '✨'));
         nr.appendChild(el('span', 'dead-badge', 'DEAD'));
         info.appendChild(nr);
@@ -389,6 +391,8 @@ function renderCaught(root, slot) {
 
         const nr = el('div', 'record-name');
         nr.appendChild(document.createTextNode(mon.nickname));
+        const cgs = genderSym(mon.gender);
+        if (cgs.sym) nr.appendChild(el('span', cgs.cls, cgs.sym));
         if (mon.shiny) nr.appendChild(el('span', 'shiny', '✨'));
         nr.appendChild(el('span', 'lv', 'Lv' + mon.level));
         info.appendChild(nr);

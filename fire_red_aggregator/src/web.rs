@@ -97,6 +97,7 @@ struct DeadMonDto {
     shiny:         bool,
     soul_link:     bool,
     died_at:       String,
+    gender:        u8,
     max_hp:        u16,
     attack:        u16,
     defense:       u16,
@@ -127,6 +128,7 @@ struct CaughtMonDto {
     shiny:         bool,
     caught_at:         String,
     met_location_name: String,
+    gender:            u8,
     iv_hp:             u8,
     iv_atk:        u8,
     iv_def:        u8,
@@ -693,6 +695,7 @@ impl BroadcastLoop {
                     nature:       dp.nature.clone(),
                     shiny:        dp.is_shiny,
                     soul_link:    dp.max_hp == 0,
+                    gender:       dp.gender,
                     died_at:      fire_red_database::format_timestamp(dp.died_at),
                     max_hp:       dp.max_hp,
                     attack:       dp.attack,
@@ -725,6 +728,7 @@ impl BroadcastLoop {
                     shiny:        cp.is_shiny,
                     caught_at:         fire_red_database::format_timestamp(cp.caught_at),
                     met_location_name: fire_red_location_names::location_name(cp.met_location).to_string(),
+                    gender:            cp.gender,
                     iv_hp:        cp.ivs.hp,
                     iv_atk:       cp.ivs.attack,
                     iv_def:       cp.ivs.defense,
@@ -785,6 +789,7 @@ struct WebState {
 const OVERLAY_HTML:  &str = include_str!("overlay.html");
 const FOCUSED_HTML:  &str = include_str!("focused.html");
 const DBVIEWER_HTML: &str = include_str!("db.html");
+const HISTORY_HTML:  &str = include_str!("history.html");
 
 async fn serve_html() -> Html<&'static str> {
     Html(OVERLAY_HTML)
@@ -796,6 +801,10 @@ async fn serve_focused() -> Html<&'static str> {
 
 async fn serve_db_viewer() -> Html<&'static str> {
     Html(DBVIEWER_HTML)
+}
+
+async fn serve_history() -> Html<&'static str> {
+    Html(HISTORY_HTML)
 }
 
 async fn serve_db_json(State(state): State<WebState>) -> axum::Json<serde_json::Value> {
@@ -908,6 +917,7 @@ pub fn run(live_slots: SharedSlots, port: u16, db_conn: Option<String>) {
             .route("/ws", get(ws_handler))
             .route("/db", get(serve_db_viewer))
             .route("/db.json", get(serve_db_json))
+            .route("/history", get(serve_history))
             .route("/:index/party", get(serve_focused))
             .route("/:index/encounters", get(serve_focused))
             .route("/:index/dead", get(serve_focused))

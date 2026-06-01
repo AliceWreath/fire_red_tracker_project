@@ -166,6 +166,8 @@ html, body {
 .run-btn.end:hover { background: #b02828; }
 .run-btn.new  { background: #1a6b1a; }
 .run-btn.new:hover  { background: #228b22; }
+.gender-m { color: #64a0ff; font-size: 12px; font-weight: bold; }
+.gender-f { color: #ff82b4; font-size: 12px; font-weight: bold; }
 </style>
 </head>
 <body>
@@ -269,6 +271,8 @@ function render(slots) {
 
                 const nr = el('div', 'mon-name-row');
                 nr.appendChild(document.createTextNode(mon.nickname));
+                const gs = genderSym(mon.gender);
+                if (gs.sym) nr.appendChild(el('span', gs.cls, gs.sym));
                 if (mon.shiny) nr.appendChild(el('span', 'shiny', '✨'));
                 if (mon.dead) {
                     nr.appendChild(el('span', 'dead-badge', 'DEAD'));
@@ -370,6 +374,12 @@ function renderRunEnded(col, slot) {
         sec.appendChild(row);
         col.appendChild(sec);
     }
+}
+
+function genderSym(g) {
+    if (g === 0) return { sym: '♂', cls: 'gender-m' };
+    if (g === 1) return { sym: '♀', cls: 'gender-f' };
+    return { sym: '', cls: '' };
 }
 
 function el(tag, cls, txt) {

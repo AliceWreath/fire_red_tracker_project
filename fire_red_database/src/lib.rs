@@ -111,6 +111,8 @@ pub struct DeadPokemon {
     pub friendship: u8,
     pub met_location: u8,
     pub died_at: u64,
+    /// `0` = male, `1` = female, `2` = genderless.
+    pub gender: u8,
 }
 
 /// A wild Pokémon encounter — the first one per area per player is stored for Nuzlocke tracking.
@@ -144,6 +146,8 @@ pub struct CaughtPokemon {
     pub met_location: u8,
     pub ivs:          IVs,
     pub caught_at:    u64,
+    /// `0` = male, `1` = female, `2` = genderless.
+    pub gender:       u8,
 }
 
 // ---------------------------------------------------------------------------
@@ -300,6 +304,10 @@ pub fn initialize(connection_string: &str) {
                 UNIQUE (run_id, player_name, map_group, map_name);
         EXCEPTION WHEN duplicate_object OR duplicate_table THEN NULL;
         END $$;
+
+        -- Migration: add gender column (0=male 1=female 2=genderless, default genderless).
+        ALTER TABLE caught_pokemon ADD COLUMN IF NOT EXISTS gender INTEGER NOT NULL DEFAULT 2;
+        ALTER TABLE dead_pokemon   ADD COLUMN IF NOT EXISTS gender INTEGER NOT NULL DEFAULT 2;
     ").expect("Failed to create database schema");
 
     DB.set(Mutex::new(DbState { client, run_id: None, current_player: String::new() }))
@@ -339,7 +347,7 @@ fn query_caught(client: &mut Client, run_id: u32, player_name: &str) -> Vec<Caug
             "SELECT player_name, personality, ot_id, nickname, species, species_name,
                     is_shiny, nature, level, met_location,
                     iv_hp, iv_attack, iv_defense, iv_speed, iv_sp_attack, iv_sp_defense,
-                    caught_at
+                    caught_at, gender
              FROM caught_pokemon
              WHERE run_id = $1 AND player_name = $2
              ORDER BY caught_at ASC",
@@ -367,6 +375,7 @@ fn query_caught(client: &mut Client, run_id: u32, player_name: &str) -> Vec<Caug
                 sp_defense: row.get::<_, i32>(15) as u8,
             },
             caught_at: row.get::<_, i64>(16) as u64,
+            gender:    row.get::<_, i32>(17) as u8,
         })
         .collect()
 }
@@ -437,6 +446,7 @@ fn row_to_dead_pokemon(row: &postgres::Row) -> DeadPokemon {
         friendship:   row.get::<_, i32>(40) as u8,
         met_location: row.get::<_, i32>(41) as u8,
         died_at:      row.get::<_, i64>(42) as u64,
+        gender:       row.get::<_, i32>(43) as u8,
     }
 }
 
@@ -602,12 +612,12 @@ pub fn mark_dead(pokemon: DeadPokemon) {
             pp1, pp2, pp3, pp4,
             iv_hp, iv_attack, iv_defense, iv_speed, iv_sp_attack, iv_sp_defense,
             ev_hp, ev_attack, ev_defense, ev_speed, ev_sp_attack, ev_sp_defense,
-            held_item, ability, ability_name, friendship, met_location, died_at
+            held_item, ability, ability_name, friendship, met_location, died_at, gender
         ) VALUES (
             $1,  $2,  $3,  $4,  $5,  $6,  $7,  $8,  $9,  $10, $11,
             $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22,
             $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33,
-            $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44
+            $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45
         ) ON CONFLICT (run_id, personality) DO NOTHING",
         &[
             &(active as i32),
@@ -654,6 +664,7 @@ pub fn mark_dead(pokemon: DeadPokemon) {
             &(pokemon.friendship as i32),
             &(pokemon.met_location as i32),
             &(pokemon.died_at as i64),
+            &(pokemon.gender as i32),
         ],
     ).expect("Failed to insert dead pokemon");
 }
@@ -680,7 +691,7 @@ pub fn get_dead_pokemon(personality: u32) -> Option<DeadPokemon> {
                 move1, move2, move3, move4, pp1, pp2, pp3, pp4,
                 iv_hp, iv_attack, iv_defense, iv_speed, iv_sp_attack, iv_sp_defense,
                 ev_hp, ev_attack, ev_defense, ev_speed, ev_sp_attack, ev_sp_defense,
-                held_item, ability, ability_name, friendship, met_location, died_at
+                held_item, ability, ability_name, friendship, met_location, died_at, gender
              FROM dead_pokemon
              WHERE run_id = $1 AND personality = $2",
             &[&(active as i32), &(personality as i64)],
@@ -709,8 +720,8 @@ pub fn mark_caught(pokemon: CaughtPokemon) {
             run_id, player_name, personality, ot_id, nickname, species, species_name,
             is_shiny, nature, level, met_location,
             iv_hp, iv_attack, iv_defense, iv_speed, iv_sp_attack, iv_sp_defense,
-            caught_at
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
+            caught_at, gender
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
         ON CONFLICT (run_id, personality) DO NOTHING",
         &[
             &(active as i32),
@@ -731,6 +742,7 @@ pub fn mark_caught(pokemon: CaughtPokemon) {
             &(pokemon.ivs.sp_attack as i32),
             &(pokemon.ivs.sp_defense as i32),
             &(pokemon.caught_at as i64),
+            &(pokemon.gender as i32),
         ],
     ).expect("Failed to insert caught pokemon");
 }
@@ -995,7 +1007,7 @@ impl DbReader {
                     move1, move2, move3, move4, pp1, pp2, pp3, pp4,
                     iv_hp, iv_attack, iv_defense, iv_speed, iv_sp_attack, iv_sp_defense,
                     ev_hp, ev_attack, ev_defense, ev_speed, ev_sp_attack, ev_sp_defense,
-                    held_item, ability, ability_name, friendship, met_location, died_at
+                    held_item, ability, ability_name, friendship, met_location, died_at, gender
                  FROM dead_pokemon WHERE run_id = $1 AND player_name = $2",
                 &[&(run_id as i32), &player_name],
             )
@@ -1091,7 +1103,7 @@ impl DbReader {
                     pp1, pp2, pp3, pp4,
                     iv_hp, iv_attack, iv_defense, iv_speed, iv_sp_attack, iv_sp_defense,
                     ev_hp, ev_attack, ev_defense, ev_speed, ev_sp_attack, ev_sp_defense,
-                    held_item, ability, ability_name, friendship, met_location, died_at
+                    held_item, ability, ability_name, friendship, met_location, died_at, gender
                 ) VALUES (
                     $1, $2, $3, '', $4, $5, $6, $7, $8, $9,
                     0, 0, 0, 0, 0, 0, 0,
@@ -1099,7 +1111,7 @@ impl DbReader {
                     0, 0, 0, 0,
                     $10, $11, $12, $13, $14, $15,
                     0, 0, 0, 0, 0, 0,
-                    0, 0, '', 0, $16, $17
+                    0, 0, '', 0, $16, $17, $18
                 ) ON CONFLICT (run_id, personality) DO NOTHING",
                 &[
                     &(run_id as i32),
@@ -1119,6 +1131,7 @@ impl DbReader {
                     &(caught.ivs.sp_defense as i32),
                     &(caught.met_location as i32),
                     &(now as i64),
+                    &(caught.gender as i32),
                 ],
             )
         {
@@ -1183,7 +1196,7 @@ fn dump_caught(client: &mut Client) -> serde_json::Value {
         "SELECT run_id, player_name, nickname, species_name, level, nature, is_shiny,
                 met_location,
                 iv_hp, iv_attack, iv_defense, iv_speed, iv_sp_attack, iv_sp_defense,
-                caught_at
+                caught_at, gender
          FROM caught_pokemon ORDER BY caught_at ASC",
         &[],
     ).unwrap_or_default();
@@ -1202,6 +1215,7 @@ fn dump_caught(client: &mut Client) -> serde_json::Value {
                 row.get::<_, i32>(8),  row.get::<_, i32>(9),  row.get::<_, i32>(10),
                 row.get::<_, i32>(11), row.get::<_, i32>(12), row.get::<_, i32>(13)),
             "caught_at": format_timestamp(row.get::<_, i64>(14) as u64),
+            "gender":    row.get::<_, i32>(15),
         })
     }).collect())
 }
@@ -1212,7 +1226,7 @@ fn dump_dead(client: &mut Client) -> serde_json::Value {
                 max_hp, attack, defense, speed, sp_attack, sp_defense,
                 iv_hp, iv_attack, iv_defense, iv_speed, iv_sp_attack, iv_sp_defense,
                 (max_hp = 0) AS soul_link,
-                died_at
+                died_at, gender
          FROM dead_pokemon ORDER BY died_at ASC",
         &[],
     ).unwrap_or_default();
@@ -1234,6 +1248,7 @@ fn dump_dead(client: &mut Client) -> serde_json::Value {
                 row.get::<_, i32>(16), row.get::<_, i32>(17), row.get::<_, i32>(18)),
             "soul_link": row.get::<_, bool>(19),
             "died_at":   format_timestamp(row.get::<_, i64>(20) as u64),
+            "gender":    row.get::<_, i32>(21),
         })
     }).collect())
 }

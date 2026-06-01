@@ -1,0 +1,369 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Run History — FireRed Nuzlocke</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body {
+    background: #0f0f0f;
+    font-family: 'Segoe UI', Tahoma, sans-serif;
+    color: #e0e0e0;
+    min-height: 100vh;
+}
+#root { max-width: 1100px; margin: 0 auto; padding: 16px; }
+
+.page-header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding-bottom: 12px;
+    border-bottom: 1px solid rgba(255,255,255,0.1);
+    margin-bottom: 20px;
+}
+.page-title { font-size: 20px; font-weight: bold; color: #fff; }
+.status { font-size: 12px; color: #888; }
+.refresh-btn {
+    margin-left: auto;
+    font-size: 12px; font-weight: 600; padding: 4px 12px;
+    background: #1a4a1a; border: 1px solid #2a7a2a; border-radius: 5px;
+    color: #80e080; cursor: pointer;
+}
+.refresh-btn:hover { background: #224a22; }
+.empty { text-align: center; color: #555; padding: 40px; font-size: 14px; }
+.error { padding: 16px; background: rgba(80,20,20,0.4); border-radius: 6px; color: #e06060; }
+
+/* Run card */
+.run-card {
+    background: rgba(255,255,255,0.03);
+    border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 8px;
+    margin-bottom: 16px;
+    overflow: hidden;
+}
+.run-header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 12px 16px;
+    cursor: pointer;
+    user-select: none;
+    background: #1a1a2e;
+    border-bottom: 1px solid rgba(255,255,255,0.06);
+}
+.run-header:hover { background: #1e1e38; }
+.run-num { font-size: 16px; font-weight: bold; color: #5090e0; min-width: 60px; }
+.run-player { font-size: 14px; font-weight: 600; color: #fff; }
+.run-active-badge {
+    font-size: 10px; font-weight: 700; padding: 2px 7px;
+    background: #1a5a1a; border: 1px solid #2a8a2a; border-radius: 10px;
+    color: #60e060;
+}
+.run-dates { font-size: 11px; color: #888; margin-left: auto; text-align: right; }
+.run-stats { display: flex; gap: 14px; font-size: 12px; }
+.stat { display: flex; flex-direction: column; align-items: center; gap: 1px; }
+.stat-val { font-size: 15px; font-weight: bold; }
+.stat-val.catches  { color: #60d060; }
+.stat-val.deaths   { color: #e06060; }
+.stat-val.encs     { color: #d0a040; }
+.stat-lbl { font-size: 9px; color: #777; text-transform: uppercase; letter-spacing: 0.5px; }
+.chevron { color: #888; font-size: 12px; transition: transform 0.2s; }
+.chevron.open { transform: rotate(90deg); }
+
+/* Run body */
+.run-body { display: none; padding: 12px 16px; }
+.run-body.open { display: block; }
+
+/* Section within a run */
+.section { margin-bottom: 12px; }
+.section-title {
+    font-size: 11px; font-weight: 700; color: #aaa;
+    text-transform: uppercase; letter-spacing: 0.6px;
+    border-bottom: 1px solid rgba(255,255,255,0.06);
+    padding-bottom: 5px; margin-bottom: 8px;
+    display: flex; align-items: center; gap: 8px;
+    cursor: pointer; user-select: none;
+}
+.section-title .count { color: #777; font-weight: 500; }
+.section-title .chevron { font-size: 10px; }
+.section-body { display: none; }
+.section-body.open { display: block; }
+.section-empty { font-size: 12px; color: #555; padding: 6px 0; }
+
+/* Record rows */
+.records { display: flex; flex-direction: column; gap: 5px; }
+.record {
+    display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap;
+    padding: 5px 8px; border-radius: 4px;
+    background: rgba(255,255,255,0.02);
+    border-left: 3px solid transparent;
+    font-size: 12px;
+}
+.record.caught-rec  { border-left-color: #2a6a2a; }
+.record.dead-rec    { border-left-color: #6a1a1a; }
+.record.enc-rec     { border-left-color: #5a4a10; }
+.record.enc-caught  { border-left-color: #2a6a2a; }
+.record.enc-fled    { border-left-color: #6a1a1a; }
+.r-name  { font-weight: 600; color: #fff; min-width: 90px; }
+.r-spec  { color: #bbb; }
+.r-lv    { color: #888; font-size: 11px; }
+.r-nat   { color: #aaa; font-size: 11px; }
+.r-shiny { color: #ffd040; font-size: 11px; }
+.r-loc   { color: #7090cc; font-size: 11px; }
+.r-ivs   { font-family: monospace; color: #777; font-size: 10px; }
+.r-time  { color: #555; font-size: 10px; margin-left: auto; white-space: nowrap; }
+.r-dead  { color: #e06060; font-size: 11px; font-weight: 600; }
+.r-soul  { color: #d060d0; font-size: 10px; }
+.r-stats { font-family: monospace; color: #777; font-size: 10px; }
+.r-area  { color: #7090cc; font-size: 11px; }
+.r-out-caught { color: #60d060; font-size: 11px; font-weight: 600; }
+.r-out-fled   { color: #808080; font-size: 11px; }
+.r-gm { color: #64a0ff; font-size: 11px; font-weight: bold; }
+.r-gf { color: #ff82b4; font-size: 11px; font-weight: bold; }
+</style>
+</head>
+<body>
+<div id="root">
+    <div class="page-header">
+        <div class="page-title">Run History</div>
+        <div class="status" id="status">Loading...</div>
+        <button class="refresh-btn" onclick="loadData()">↺ Refresh</button>
+    </div>
+    <div id="runs"></div>
+</div>
+<script>
+function gSym(g) {
+    if (g === 0) return '♂';
+    if (g === 1) return '♀';
+    return '';
+}
+
+// met_location byte → name (MAPSEC constants, FireRed USA Rev 1)
+const MAPSEC = {
+    0:'Pallet Town', 1:'Viridian City', 2:'Pewter City', 3:'Cerulean City',
+    4:'Lavender Town', 5:'Vermilion City', 6:'Celadon City', 7:'Fuchsia City',
+    8:'Saffron City', 9:'Cinnabar Island', 10:'Indigo Plateau',
+    11:'Viridian Forest', 12:'Mt. Moon', 13:'S.S. Anne',
+    14:'Underground Path', 15:'Underground Path', 16:"Diglett's Cave",
+    17:'Victory Road', 18:'Rocket Hideout', 19:'Silph Co.',
+    20:'Pokémon Mansion', 21:'Safari Zone', 22:'Pokémon League',
+    23:'Rock Tunnel', 24:'Power Plant', 25:'Seafoam Islands',
+    26:'Pokémon Tower', 27:'Cerulean Cave', 28:'Mt. Ember',
+    29:'Berry Forest', 30:'Icefall Cave', 31:'Lost Cave',
+    32:'Pattern Bush', 33:'Altering Cave', 34:'Tanoby Ruins',
+    35:'Monean Chamber', 36:'Liptoo Chamber', 37:'Weepth Chamber',
+    38:'Dilford Chamber', 39:'Scufib Chamber', 40:'Rixy Chamber',
+    41:'Viapois Chamber', 42:'Three Isle Path', 43:'Navel Rock',
+    44:'Birth Island',
+    45:'Route 1',  46:'Route 2',  47:'Route 3',  48:'Route 4',
+    49:'Route 5',  50:'Route 6',  51:'Route 7',  52:'Route 8',
+    53:'Route 9',  54:'Route 10', 55:'Route 11', 56:'Route 12',
+    57:'Route 13', 58:'Route 14', 59:'Route 15', 60:'Route 16',
+    61:'Route 17', 62:'Route 18', 63:'Route 19', 64:'Route 20',
+    65:'Route 21', 66:'Route 22', 67:'Route 23', 68:'Route 24',
+    69:'Route 25',
+    70:'One Island', 71:'Two Island', 72:'Three Island', 73:'Four Island',
+    74:'Five Island', 75:'Six Island', 76:'Seven Island',
+    77:'Treasure Beach', 78:'Kindle Road', 79:'Cape Brink',
+    80:'Bond Bridge', 81:'Three Isle Port',
+    82:'Sevii Isle 6', 83:'Sevii Isle 7', 84:'Sevii Isle 8',
+    85:'Sevii Isle 9', 86:'Resort Gorgeous', 87:'Water Path',
+    88:'Ruin Valley', 89:'Trainer Tower', 90:'Canyon Entrance',
+    91:'Sevault Canyon', 92:'Tanoby Chambers',
+    255:'—',
+};
+function locName(n) { return MAPSEC[n] || 'Location ' + n; }
+
+async function loadData() {
+    document.getElementById('status').textContent = 'Loading...';
+    try {
+        const res  = await fetch('/db.json');
+        const data = await res.json();
+        if (data.error) throw new Error(data.error);
+        document.getElementById('status').textContent =
+            'Last fetched: ' + new Date().toLocaleTimeString();
+        render(data);
+    } catch (e) {
+        document.getElementById('status').textContent = 'Error';
+        document.getElementById('runs').innerHTML =
+            '<div class="error">Failed to load: ' + e.message + '</div>';
+    }
+}
+
+function render(data) {
+    const container = document.getElementById('runs');
+    if (!data.runs || data.runs.length === 0) {
+        container.innerHTML = '<div class="empty">No runs recorded yet.</div>';
+        return;
+    }
+
+    // Group caught/dead/encounters by run_id
+    const byRun = {};
+    for (const r of data.runs) {
+        byRun[r.id] = { run: r, caught: [], dead: [], encounters: [] };
+    }
+    for (const c of (data.caught     || [])) if (byRun[c.run_id]) byRun[c.run_id].caught.push(c);
+    for (const d of (data.dead       || [])) if (byRun[d.run_id]) byRun[d.run_id].dead.push(d);
+    for (const e of (data.encounters || [])) if (byRun[e.run_id]) byRun[e.run_id].encounters.push(e);
+
+    container.innerHTML = '';
+
+    // Newest run first
+    const sorted = Object.values(byRun).sort((a, b) => b.run.id - a.run.id);
+
+    for (const { run, caught, dead, encounters } of sorted) {
+        const active = run.ended == null;
+        const card   = document.createElement('div');
+        card.className = 'run-card';
+
+        // ── Header ──────────────────────────────────────────────────────
+        const hdr = document.createElement('div');
+        hdr.className = 'run-header';
+
+        const num = el('div', 'run-num', 'Run #' + run.id);
+        const player = el('div', 'run-player', run.player);
+        hdr.appendChild(num);
+        hdr.appendChild(player);
+        if (active) hdr.appendChild(el('span', 'run-active-badge', 'Active'));
+
+        const dates = document.createElement('div');
+        dates.className = 'run-dates';
+        dates.innerHTML = 'Started: ' + run.started +
+            '<br>' + (run.ended ? 'Ended: ' + run.ended : '— ongoing —');
+        hdr.appendChild(dates);
+
+        const stats = document.createElement('div');
+        stats.className = 'run-stats';
+        stats.appendChild(statEl(run.catches,    'Caught',     'catches'));
+        stats.appendChild(statEl(run.deaths,     'Deaths',     'deaths'));
+        stats.appendChild(statEl(run.encounters, 'Encounters', 'encs'));
+        hdr.appendChild(stats);
+
+        const chev = el('span', 'chevron', '▶');
+        hdr.appendChild(chev);
+
+        // ── Body ─────────────────────────────────────────────────────────
+        const body = document.createElement('div');
+        body.className = 'run-body';
+
+        body.appendChild(buildCaughtSection(caught));
+        body.appendChild(buildDeadSection(dead));
+        body.appendChild(buildEncountersSection(encounters));
+
+        hdr.onclick = () => {
+            const open = body.classList.toggle('open');
+            chev.classList.toggle('open', open);
+        };
+
+        card.appendChild(hdr);
+        card.appendChild(body);
+        container.appendChild(card);
+    }
+}
+
+function statEl(val, label, cls) {
+    const s = document.createElement('div');
+    s.className = 'stat';
+    s.appendChild(el('div', 'stat-val ' + cls, String(val)));
+    s.appendChild(el('div', 'stat-lbl', label));
+    return s;
+}
+
+function buildCaughtSection(caught) {
+    const sorted = [...caught].sort((a, b) => a.caught_at.localeCompare(b.caught_at));
+    return buildSection('Caught', sorted.length, sorted, row => {
+        const r = document.createElement('div');
+        r.className = 'record caught-rec';
+        r.appendChild(el('span', 'r-name', row.nickname || row.species));
+        r.appendChild(el('span', 'r-spec', row.nickname ? row.species : ''));
+        const cg = gSym(row.gender);
+        if (cg) r.appendChild(el('span', cg === '♂' ? 'r-gm' : 'r-gf', cg));
+        r.appendChild(el('span', 'r-lv',   'Lv' + row.level));
+        r.appendChild(el('span', 'r-nat',  row.nature));
+        if (row.shiny) r.appendChild(el('span', 'r-shiny', '★'));
+        r.appendChild(el('span', 'r-loc',  locName(row.location)));
+        r.appendChild(el('span', 'r-ivs',  row.ivs));
+        r.appendChild(el('span', 'r-time', row.caught_at));
+        return r;
+    });
+}
+
+function buildDeadSection(dead) {
+    const sorted = [...dead].sort((a, b) => a.died_at.localeCompare(b.died_at));
+    return buildSection('Deaths', sorted.length, sorted, row => {
+        const r = document.createElement('div');
+        r.className = 'record dead-rec';
+        r.appendChild(el('span', 'r-name', row.nickname || row.species));
+        r.appendChild(el('span', 'r-spec', row.nickname ? row.species : ''));
+        const dg = gSym(row.gender);
+        if (dg) r.appendChild(el('span', dg === '♂' ? 'r-gm' : 'r-gf', dg));
+        r.appendChild(el('span', 'r-lv',   'Lv' + row.level));
+        r.appendChild(el('span', 'r-nat',  row.nature));
+        if (row.shiny)     r.appendChild(el('span', 'r-shiny', '★'));
+        if (row.soul_link) r.appendChild(el('span', 'r-soul',  'soul link'));
+        else               r.appendChild(el('span', 'r-stats', row.stats));
+        r.appendChild(el('span', 'r-ivs',  row.ivs));
+        r.appendChild(el('span', 'r-time', row.died_at));
+        return r;
+    });
+}
+
+function buildEncountersSection(encounters) {
+    const sorted = [...encounters].sort((a, b) => a.seen_at.localeCompare(b.seen_at));
+    return buildSection('First Encounters', sorted.length, sorted, row => {
+        const r = document.createElement('div');
+        r.className = 'record enc-rec ' + (row.caught ? 'enc-caught' : 'enc-fled');
+        r.appendChild(el('span', 'r-area',  row.area));
+        r.appendChild(el('span', 'r-spec',  row.species));
+        r.appendChild(el('span', 'r-lv',    'Lv' + row.level));
+        r.appendChild(el('span', row.caught ? 'r-out-caught' : 'r-out-fled',
+                         row.caught ? 'caught' : 'fled'));
+        r.appendChild(el('span', 'r-time', row.seen_at));
+        return r;
+    });
+}
+
+function buildSection(title, count, rows, buildRow) {
+    const sec   = document.createElement('div');
+    sec.className = 'section';
+
+    const hdr   = document.createElement('div');
+    hdr.className = 'section-title';
+    hdr.innerHTML = title + ' <span class="count">(' + count + ')</span>'
+                  + ' <span class="chevron">▶</span>';
+
+    const body  = document.createElement('div');
+    body.className = 'section-body open';
+
+    if (rows.length === 0) {
+        body.appendChild(el('div', 'section-empty', 'None recorded'));
+    } else {
+        const list = document.createElement('div');
+        list.className = 'records';
+        for (const row of rows) list.appendChild(buildRow(row));
+        body.appendChild(list);
+    }
+
+    hdr.onclick = () => {
+        const open = body.classList.toggle('open');
+        hdr.querySelector('.chevron').style.transform = open ? 'rotate(90deg)' : '';
+    };
+    // Start expanded
+    hdr.querySelector('.chevron').style.transform = 'rotate(90deg)';
+
+    sec.appendChild(hdr);
+    sec.appendChild(body);
+    return sec;
+}
+
+function el(tag, cls, txt) {
+    const e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (txt !== undefined) e.textContent = txt;
+    return e;
+}
+
+loadData();
+</script>
+</body>
+</html>

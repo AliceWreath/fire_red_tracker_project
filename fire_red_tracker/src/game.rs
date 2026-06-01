@@ -116,6 +116,7 @@ pub fn check_for_dead_pokemon(thread_party: &Arc<Mutex<Vec<Pokemon>>>) {
             ability_name: pokemon.box_mon.ability_string.clone(),
             friendship:   growth.friendship,
             met_location: misc.met_location,
+            gender:       pokemon.box_mon.gender,
 
             died_at,
         });
@@ -177,6 +178,7 @@ pub fn check_for_new_pokemon(thread_party: &Arc<Mutex<Vec<Pokemon>>>) {
             nature:       fire_red_database::nature_name(personality).to_string(),
             level:        pokemon.level,
             met_location: misc.met_location,
+            gender:       pokemon.box_mon.gender,
             ivs: fire_red_database::IVs {
                 hp:         iv.hp_iv,
                 attack:     iv.attack_iv,
