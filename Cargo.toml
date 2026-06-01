@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "fire_red_aggregator",
+    "fire_red_location_names",
     "fire_red_badge",
     "fire_red_box_monitor",
     "fire_red_database",
@@ -63,6 +64,7 @@ fire_red_pokemon_name_buffer   = { path = "fire_red_pokemon_name_buffer" }
 fire_red_retroarch_interfacing = { path = "fire_red_retroarch_interfacing" }
 fire_red_rom_buffer            = { path = "fire_red_rom_buffer" }
 fire_red_scanner               = { path = "fire_red_scanner" }
+fire_red_location_names        = { path = "fire_red_location_names" }
 fire_red_states                = { path = "fire_red_states" }
 fire_red_text                  = { path = "fire_red_text" }
 fire_red_trainer_data          = { path = "fire_red_trainer_data" }

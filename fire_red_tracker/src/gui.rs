@@ -214,6 +214,15 @@ impl eframe::App for WindowInfo {
     }
 }
 
+/// Returns the display symbol and color for a gender byte (0=male, 1=female, 2=genderless).
+fn gender_label(gender: u8) -> (&'static str, egui::Color32) {
+    match gender {
+        0 => ("♂", egui::Color32::from_rgb(100, 160, 255)),
+        1 => ("♀", egui::Color32::from_rgb(255, 130, 180)),
+        _ => ("",  egui::Color32::TRANSPARENT),
+    }
+}
+
 impl WindowInfo {
     /// Draws the party panel.
     ///
@@ -288,6 +297,8 @@ impl WindowInfo {
                 }
 
                 ui.vertical(|ui| {
+                    let (gender_sym, gender_color) = gender_label(pokemon.box_mon.gender);
+
                     if dead {
                         let record = fire_red_database::get_dead_pokemon(
                             pokemon.box_mon.personality,
@@ -299,6 +310,14 @@ impl WindowInfo {
                                     .size(18.0)
                                     .color(egui::Color32::from_rgb(150, 50, 50)),
                             );
+                            if !gender_sym.is_empty() {
+                                ui.label(
+                                    egui::RichText::new(gender_sym)
+                                        .strong()
+                                        .size(15.0)
+                                        .color(gender_color),
+                                );
+                            }
                             ui.label(
                                 egui::RichText::new("DEAD")
                                     .strong()
@@ -348,6 +367,14 @@ impl WindowInfo {
                                     .size(18.0)
                                     .color(egui::Color32::WHITE),
                             );
+                            if !gender_sym.is_empty() {
+                                ui.label(
+                                    egui::RichText::new(gender_sym)
+                                        .strong()
+                                        .size(15.0)
+                                        .color(gender_color),
+                                );
+                            }
                             ui.label(format!("Lvl: {}", pokemon.level));
                             ui.label(format!("Exp: {}", pokemon.box_mon.secure.growth.experience));
                         });
@@ -373,8 +400,10 @@ impl WindowInfo {
                             });
 
                         ui.label(format!(
-                            "Caught Location: {}",
-                            pokemon.box_mon.secure.misc.met_location,
+                            "Caught: {}",
+                            fire_red_location_names::location_name(
+                                pokemon.box_mon.secure.misc.met_location,
+                            ),
                         ));
 
                         if get_is_clean() {

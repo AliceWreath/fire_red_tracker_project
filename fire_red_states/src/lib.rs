@@ -68,6 +68,8 @@ pub struct BoxEntry {
     pub iv_spa:       u8,
     pub iv_spd:       u8,
     pub is_egg:       bool,
+    /// `0` = male, `1` = female, `2` = genderless.
+    pub gender:       u8,
 }
 
 /// Serialized Pokemon sprite texture data for network transmission.

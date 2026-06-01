@@ -1,6 +1,6 @@
 [package]
 name = "fire_red_aggregator"
-version = "0.8.0"
+version = "0.8.5"
 edition = "2024"
 
 [[bin]]
@@ -8,7 +8,8 @@ name = "fire_red_aggregator"
 path = "src/main.rs"
 
 [dependencies]
-fire_red_states.workspace        = true
+fire_red_location_names.workspace = true
+fire_red_states.workspace         = true
 fire_red_database.workspace      = true
 fire_red_party_monitor.workspace = true
 fire_red_pokemon_data.workspace  = true

@@ -68,6 +68,12 @@ const ABILITY_1_OFFSET: u32 = 0x16;
 /// Byte offset of ability slot 2 within a base stat entry.
 const ABILITY_2_OFFSET: u32 = 0x17;
 
+/// Byte offset of the gender ratio within a base stat entry.
+///
+/// 0 = always male, 254 = always female, 255 = genderless.
+/// Otherwise female when `personality & 0xFF < ratio`.
+const GENDER_RATIO_OFFSET: u32 = 0x10;
+
 /// Maximum length of a pokemon nickname in bytes.
 const POKEMON_NAME_LENGTH: usize = 10;
 
@@ -324,6 +330,28 @@ pub fn get_ability_string_from_id(rom_buffer: &[u8], id: u8) -> String {
     fire_red_text::gba_string_to_ascii(&name_bytes, name_bytes.len(), 0)
 }
 
+/// Returns the gender for a Pokémon as a `u8`: `0` = male, `1` = female,
+/// `2` = genderless.
+///
+/// Uses the gender ratio byte from the FireRed ROM base stat table and the
+/// Gen III formula: female when `personality & 0xFF < ratio`.
+pub fn get_gender(rom_buffer: &[u8], species: u16, personality: u32) -> u8 {
+    if species == 0 {
+        return 2;
+    }
+    let entry_addr = (BASE_STATS_ADDR + (species as u32 * BASE_STATS_ENTRY_SIZE)) as usize;
+    let offset = entry_addr + GENDER_RATIO_OFFSET as usize;
+    if offset >= rom_buffer.len() {
+        return 2;
+    }
+    match rom_buffer[offset] {
+        255 => 2, // genderless
+        254 => 1, // always female
+        0   => 0, // always male
+        r   => if personality & 0xFF < r as u32 { 1 } else { 0 },
+    }
+}
+
 /// Reads the ability ID for a given species from the FireRed ROM base stat
 /// table.
 ///
@@ -389,6 +417,8 @@ pub struct BoxPokemon {
     pub nickname_string: String,
     pub ability: u8,
     pub ability_string: String,
+    /// `0` = male, `1` = female, `2` = genderless.
+    pub gender: u8,
 }
 
 impl Default for BoxPokemon {
@@ -412,6 +442,7 @@ impl Default for BoxPokemon {
             nickname_string: String::new(),
             ability: 0,
             ability_string: String::new(),
+            gender: 2,
         }
     }
 }
@@ -497,6 +528,7 @@ impl BoxPokemon {
             .trim_matches('\0')
             .to_string();
 
+        let gender = get_gender(rom_buffer, secure.growth.species, personality);
         let mut ret = BoxPokemon {
             personality,
             ot_id,
@@ -516,6 +548,7 @@ impl BoxPokemon {
             nickname_string,
             ability: 0,
             ability_string: String::new(),
+            gender,
         };
         ret.fill_ability(rom_buffer);
         Some(ret)

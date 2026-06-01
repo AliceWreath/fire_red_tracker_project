@@ -36,6 +36,8 @@ html, body {
 .badge-dot.on  { background: #60e060; }
 .badge-dot.off { background: #555; }
 .next-gym { font-size: 11px; color: #ffd040; font-weight: 600; }
+.gender-m { color: #64a0ff; font-size: 12px; font-weight: bold; }
+.gender-f { color: #ff82b4; font-size: 12px; font-weight: bold; }
 .soul-link-ann { font-size: 11px; color: #d060d0; font-weight: 600; margin-bottom: 2px; }
 .mon { padding: 4px 0; border-bottom: 1px solid rgba(255,255,255,0.08); }
 .mon.dead { background: rgba(90,0,0,0.45); border-radius: 4px; padding: 4px 5px; }
@@ -240,6 +242,8 @@ function renderParty(root, slot) {
         const content = el('div', 'mon-content');
         const nr = el('div', 'mon-name-row');
         nr.appendChild(document.createTextNode(mon.nickname));
+        const gs = genderSym(mon.gender);
+        if (gs.sym) nr.appendChild(el('span', gs.cls, gs.sym));
         if (mon.shiny) nr.appendChild(el('span', 'shiny', '✨'));
         if (mon.dead) {
             nr.appendChild(el('span', 'dead-badge', 'DEAD'));
@@ -397,7 +401,7 @@ function renderCaught(root, slot) {
             '/' + mon.iv_spe + '/' + mon.iv_spa + '/' + mon.iv_spd));
 
         info.appendChild(el('div', 'mon-sub-sm', 'Caught: ' + mon.caught_at));
-        info.appendChild(el('div', 'mon-sub-sm', 'Area: map #' + mon.met_location));
+        info.appendChild(el('div', 'mon-sub-sm', 'Location: ' + mon.met_location_name));
 
         row.appendChild(info);
         root.appendChild(row);
@@ -433,6 +437,7 @@ function renderDbEncounters(root, slot) {
         }
         mdiv.appendChild(el('div', 'db-enc-label ' + (enc.caught ? 'caught-yes' : 'caught-no'),
             enc.species_name + ' Lv.' + enc.level + (enc.caught ? ' ✓' : ' ✗')));
+        mdiv.appendChild(el('div', 'db-enc-label', enc.area));
         row.appendChild(mdiv);
     }
     sec.appendChild(row);
@@ -467,8 +472,9 @@ function renderBox(root, slot) {
                 slot.appendChild(img);
             }
 
+            const gs2   = genderSym(mon.gender);
             const label = mon.is_egg ? 'Egg' : mon.nickname || mon.species_name;
-            slot.appendChild(el('div', 'box-name', label + (mon.is_shiny ? ' ✨' : '')));
+            slot.appendChild(el('div', 'box-name', label + (mon.is_shiny ? ' ✨' : '') + (gs2.sym ? ' ' + gs2.sym : '')));
             if (!mon.is_egg) {
                 slot.appendChild(el('div', 'box-nature', mon.nature));
                 slot.appendChild(el('div', 'box-ivs',
@@ -481,6 +487,12 @@ function renderBox(root, slot) {
 
         root.appendChild(grid);
     }
+}
+
+function genderSym(g) {
+    if (g === 0) return { sym: '♂', cls: 'gender-m' };
+    if (g === 1) return { sym: '♀', cls: 'gender-f' };
+    return { sym: '', cls: '' };
 }
 
 function el(tag, cls, txt) {
