@@ -65,6 +65,9 @@ struct DbEncounterDto {
     level:          u8,
     caught:         bool,
     encountered_at: String,
+    /// Formatted map area string. Full name lookup is a future improvement;
+    /// currently "G·N" where G=map_group and N=map_name.
+    area:           String,
     sprite:         Option<String>,
 }
 
@@ -122,9 +125,9 @@ struct CaughtMonDto {
     level:         u8,
     nature:        String,
     shiny:         bool,
-    caught_at:     String,
-    met_location:  u8,
-    iv_hp:         u8,
+    caught_at:         String,
+    met_location_name: String,
+    iv_hp:             u8,
     iv_atk:        u8,
     iv_def:        u8,
     iv_spe:        u8,
@@ -148,6 +151,8 @@ struct BoxMonDto {
     iv_spe:       u8,
     iv_spa:       u8,
     iv_spd:       u8,
+    /// `0` = male, `1` = female, `2` = genderless.
+    gender:       u8,
     sprite:       Option<String>,
 }
 
@@ -196,6 +201,8 @@ struct MemberDto {
     speed:             u16,
     sp_attack:         u16,
     sp_defense:        u16,
+    /// `0` = male, `1` = female, `2` = genderless.
+    gender:            u8,
     /// Base64 PNG data URI for the sprite, e.g. `data:image/png;base64,...`.
     /// `None` while the sprite is still in transit from the tracker server.
     sprite:            Option<String>,
@@ -520,6 +527,14 @@ impl BroadcastLoop {
                         level:          enc.level,
                         caught:         enc.caught,
                         encountered_at: fire_red_database::format_timestamp(enc.encountered_at),
+                        area: {
+                            let n = fire_red_location_names::map_area_name(enc.map_group, enc.map_name);
+                            if n.is_empty() {
+                                format!("{}\u{B7}{}", enc.map_group, enc.map_name)
+                            } else {
+                                n.to_string()
+                            }
+                        },
                         sprite:         self.sprite_uri(enc.species, false),
                     })
                     .collect();
@@ -613,6 +628,7 @@ impl BroadcastLoop {
                                     speed,
                                     sp_attack,
                                     sp_defense,
+                                    gender:            p.box_mon.gender,
                                     sprite,
                                 }
                             })
@@ -707,8 +723,8 @@ impl BroadcastLoop {
                     level:        cp.level,
                     nature:       cp.nature.clone(),
                     shiny:        cp.is_shiny,
-                    caught_at:    fire_red_database::format_timestamp(cp.caught_at),
-                    met_location: cp.met_location,
+                    caught_at:         fire_red_database::format_timestamp(cp.caught_at),
+                    met_location_name: fire_red_location_names::location_name(cp.met_location).to_string(),
                     iv_hp:        cp.ivs.hp,
                     iv_atk:       cp.ivs.attack,
                     iv_def:       cp.ivs.defense,
@@ -727,6 +743,7 @@ impl BroadcastLoop {
                         is_shiny:     be.is_shiny,
                         nature:       be.nature.clone(),
                         is_egg:       be.is_egg,
+                        gender:       be.gender,
                         iv_hp:        be.iv_hp,
                         iv_atk:       be.iv_atk,
                         iv_def:       be.iv_def,

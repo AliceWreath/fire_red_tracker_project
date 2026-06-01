@@ -96,6 +96,7 @@ fn build_box_entries() -> Vec<BoxEntry> {
                 iv_spa:       iv.sp_attack_iv,
                 iv_spd:       iv.sp_def_iv,
                 is_egg:       iv.egg != 0,
+                gender:       mon.gender,
             }
         })
         .collect()
@@ -115,8 +116,41 @@ static RUNNING: AtomicBool = AtomicBool::new(true);
 // main
 // ---------------------------------------------------------------------------
 
+fn do_update() {
+    println!(
+        "Checking for updates (current version: v{})...",
+        env!("CARGO_PKG_VERSION")
+    );
+    let result = self_update::backends::github::Update::configure()
+        .repo_owner("AliceWreath")
+        .repo_name("fire_red_tracker_project")
+        .bin_name("fire_red_tracker")
+        .show_download_progress(true)
+        .current_version(env!("CARGO_PKG_VERSION"))
+        .build()
+        .and_then(|u| u.update());
+
+    match result {
+        Ok(self_update::Status::UpToDate(v)) => {
+            println!("Already up to date (v{}).", v);
+        }
+        Ok(self_update::Status::Updated(v)) => {
+            println!("Updated to v{}. Restart the tracker to use the new version.", v);
+        }
+        Err(e) => {
+            eprintln!("Update failed: {}", e);
+            std::process::exit(1);
+        }
+    }
+}
+
 fn main() {
     let cli = Cli::parse();
+
+    if cli.update {
+        do_update();
+        return;
+    }
 
     // Load config (prompts on first run), then overlay any CLI overrides.
     let config_path = cli.config.as_deref()

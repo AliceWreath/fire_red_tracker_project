@@ -1771,7 +1771,7 @@ checksum = "5baebc0774151f905a1a2cc41989300b1e6fbb29aff0ceffa1064fdd3088d582"
 
 [[package]]
 name = "fire_red_aggregator"
-version = "0.8.0"
+version = "0.8.5"
 dependencies = [
  "axum",
  "bincode",
@@ -1780,6 +1780,7 @@ dependencies = [
  "egui",
  "fire_red_database",
  "fire_red_image_data",
+ "fire_red_location_names",
  "fire_red_party_monitor",
  "fire_red_pokemon_data",
  "fire_red_rom_buffer",
@@ -1832,6 +1833,10 @@ version = "0.1.0"
 dependencies = [
  "image",
 ]
+
+[[package]]
+name = "fire_red_location_names"
+version = "0.1.0"
 
 [[package]]
 name = "fire_red_loop"
@@ -1934,7 +1939,7 @@ dependencies = [
 
 [[package]]
 name = "fire_red_tracker"
-version = "0.8.0"
+version = "0.8.5"
 dependencies = [
  "bincode",
  "clap",
@@ -1946,6 +1951,7 @@ dependencies = [
  "fire_red_box_monitor",
  "fire_red_database",
  "fire_red_image_data",
+ "fire_red_location_names",
  "fire_red_loop",
  "fire_red_memory",
  "fire_red_party_monitor",
@@ -1956,6 +1962,7 @@ dependencies = [
  "flate2",
  "image",
  "rfd",
+ "self_update",
  "serde",
  "toml",
 ]

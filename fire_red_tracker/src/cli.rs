@@ -35,6 +35,10 @@ pub struct Cli {
     #[arg(long, default_value_t = false)]
     pub list_runs: bool,
 
+    /// Check GitHub for a newer release and replace this binary if one is found.
+    #[arg(long, default_value_t = false)]
+    pub update: bool,
+
     /// Override the operating mode for this run only.
     #[command(subcommand)]
     pub command: Option<Command>,
