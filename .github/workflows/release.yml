@@ -18,6 +18,14 @@ jobs:
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-gnu
+
+      - name: Install Zig
+        run: pip install ziglang
+
+      - name: Install cargo-zigbuild
+        run: cargo install cargo-zigbuild --locked
 
       - name: Cache cargo registry and build
         uses: actions/cache@v4
@@ -30,11 +38,11 @@ jobs:
           restore-keys: ${{ runner.os }}-cargo-
 
       - name: Build release binaries
-        run: cargo build --release -p fire_red_aggregator -p fire_red_tracker
+        run: cargo zigbuild --release --target x86_64-unknown-linux-gnu.2.17 -p fire_red_aggregator -p fire_red_tracker
 
       - name: Package binaries
         run: |
-          cd target/release
+          cd target/x86_64-unknown-linux-gnu/release
           tar czf fire_red_aggregator-x86_64-unknown-linux-gnu.tar.gz fire_red_aggregator
           tar czf fire_red_tracker-x86_64-unknown-linux-gnu.tar.gz    fire_red_tracker
 
@@ -43,5 +51,5 @@ jobs:
         with:
           generate_release_notes: true
           files: |
-            target/release/fire_red_aggregator-x86_64-unknown-linux-gnu.tar.gz
-            target/release/fire_red_tracker-x86_64-unknown-linux-gnu.tar.gz
+            target/x86_64-unknown-linux-gnu/release/fire_red_aggregator-x86_64-unknown-linux-gnu.tar.gz
+            target/x86_64-unknown-linux-gnu/release/fire_red_tracker-x86_64-unknown-linux-gnu.tar.gz

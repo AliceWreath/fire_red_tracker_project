@@ -1246,10 +1246,18 @@ fn dump_encounters(client: &mut Client) -> serde_json::Value {
     ).unwrap_or_default();
 
     serde_json::Value::Array(rows.iter().map(|row| {
+        let group = row.get::<_, i32>(2) as u8;
+        let map   = row.get::<_, i32>(3) as u8;
+        let name  = fire_red_location_names::map_area_name(group, map);
+        let area  = if name.is_empty() {
+            format!("{}:{}", group, map)
+        } else {
+            name.to_string()
+        };
         serde_json::json!({
             "run_id":  row.get::<_, i32>(0),
             "player":  row.get::<_, String>(1),
-            "map":     format!("{}:{}", row.get::<_, i32>(2), row.get::<_, i32>(3)),
+            "area":    area,
             "species": row.get::<_, String>(4),
             "level":   row.get::<_, i32>(5),
             "caught":  row.get::<_, bool>(6),
