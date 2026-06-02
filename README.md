@@ -20,7 +20,7 @@ A real-time Pokémon FireRed party and encounter monitor built in Rust. It reads
 - **Party panel** — shows each Pokémon's sprite (shiny-aware), nickname, level, HP (colour-coded), experience, caught location, and badge progress in real time.
 - **Encounters panel** — shows the wild Pokémon available in the current area, split by type: grass, water/fishing, and Rock Smash. Updates automatically when the player moves to a new map.
 - **Badge tracker** — displays obtained badges as coloured dots and shows the next gym leader's name, city, and highest Pokémon level.
-- **First-encounter tracking** — records the first wild Pokémon encountered in each area (Nuzlocke rule). Catches are flagged automatically when the Pokémon appears in the player's party.
+- **First-encounter tracking** — records the first wild Pokémon encountered in each area (Nuzlocke rule). Encounters are ignored until the player receives their first Pokéballs; once obtained, tracking continues even if all balls are later used. If the first encounter in an area is a species the player has already encountered elsewhere in the run, it is skipped as a duplicate. Catches are flagged automatically when the Pokémon appears in the player's party.
 - **Reset detection** — clears stale party, encounter, and badge data when a soft reset or title screen is detected.
 - **Soul Link detection** — in aggregator mode, Pokémon caught in the same location across two or more players' games are automatically linked and labelled in purple.
 - **Clean ROM mode** — pass `--clean` to also display ability data (only reliable on unmodified ROMs).
@@ -35,6 +35,7 @@ Runs locally. Reads the ROM and polls RetroArch on the same machine. Displays a 
 ```
 tracker firered.gba
 tracker firered.gba --clean
+tracker firered.gba --scan-balls-pocket   # locate bag balls pocket offset (run with balls in bag)
 ```
 
 ### Connected
@@ -102,6 +103,7 @@ The following pages are available:
 |---|---|
 | `http://localhost:PORT/` | Full overlay — all players side by side |
 | `http://localhost:PORT/db` | Database browser — all four tables (requires `--db`) |
+| `http://localhost:PORT/db?manage` | Database browser with **Clear All Records** button |
 | `http://localhost:PORT/0/party` | Player 1's party (or run summary if no active run) |
 | `http://localhost:PORT/0/encounters` | Player 1's area encounters (or DB encounter log if no active run) |
 | `http://localhost:PORT/0/dead` | Player 1's dead Pokémon log (requires `--db`) |
@@ -170,8 +172,8 @@ A **Soul Link** is a Nuzlocke variant played with a partner: each player's catch
 | `main.rs` | Entry point, thread spawning, mode dispatch |
 | `cli.rs` | `Cli` and `Command` structs (clap definitions) |
 | `config.rs` | Config file load/save, first-run setup dialog |
-| `encounter.rs` | `EncounterTracker` — wild battle detection via personality change, catch detection via party membership |
-| `game.rs` | `is_shiny`, `fill_party_list`, `map_state_from_ewram`, `game_is_loaded` |
+| `encounter.rs` | `EncounterTracker` — wild battle detection via personality change, balls-gate latch, duplicate species check, catch detection via party membership |
+| `game.rs` | `is_shiny`, `fill_party_list`, `map_state_from_ewram`, `game_is_loaded`, `has_pokeballs`, `scan_for_balls_pocket` |
 | `textures.rs` | `PendingTexture`, sprite compression, `build_sprite_data` |
 | `gui.rs` | `WindowInfo`, `eframe::App` impl, party panel, encounters viewport |
 | `server.rs` | Aggregator connection handler — manages the bidirectional push stream over an established TCP connection |
@@ -363,7 +365,8 @@ RetroArch memory reads use the `READ_CORE_MEMORY` UDP command (default port 5535
 | Enemy party | `0x0202402C` | `gEnemyParty[0]` — wild Pokémon slot; never cleared between battles |
 | PC box storage | `*0x03005010 + 0x4` | `SaveBlock3` pointer + offset; 14 × 30 × 80 bytes |
 | Current map | `0x02031DBC` | 2 bytes: map group, map name |
-| SaveBlock1 ptr | `0x03005008` | 4-byte IWRAM pointer; dereference for badge flag offset |
+| SaveBlock1 ptr | `0x03005008` | 4-byte IWRAM pointer; dereference for badge flag offset and bag pocket offsets |
+| Balls pocket | `*0x03005008 + 0x0430` | 13 × 4-byte `ItemSlot` (item_id u16, quantity u16); quantities are XOR-encrypted in RAM — only item_ids are readable directly |
 | SaveBlock2 (trainer) | `0x02024298` | 19 bytes: trainer name, gender, ID, play time |
 | WildMonHeaders | scanned at startup | Offset varies; `fire_red_scanner` locates it via heuristic validation |
 | Ability names | `0x24FCB0` | 13 bytes per entry |
@@ -453,6 +456,6 @@ The web overlay also hosts **End Run** and **New Run** buttons. Clicking either 
 
 Personal project built for Nuzlocke and Soul Link runs. The codebase is functional but not hardened for general distribution:
 
-- ROM scanning and all hardcoded addresses are calibrated for **FireRed USA (Rev 1)**. Other regional releases or ROM hacks will likely require address adjustments.
+- ROM scanning and all hardcoded addresses are calibrated for **FireRed USA (Rev 1)**. Other regional releases or ROM hacks will likely require address adjustments. If the balls pocket offset is wrong for a different revision, run `tracker <rom> --scan-balls-pocket` with at least one ball in the bag to locate the correct `BALLS_POCKET_SAVE_BLOCK_OFFSET` in `fire_red_tracker/src/game.rs`. Note that bag item quantities are XOR-encrypted in RAM; the scanner checks item IDs only.
 - The `--clean` ability feature reads from ROM base-stat tables and is only reliable on unmodified ROMs.
 - The `WildPokemonHeaderFFI` and `AreaEncountersStringArrays` FFI types are partially implemented; the C-callable interface helpers are in progress pending a stable API design.
