@@ -63,7 +63,7 @@ pub fn handle_client(
                     let mut sprites: Vec<SpriteData> = Vec::new();
 
                     for species in species_list {
-                        if species == 0 || species > 386 { continue; }
+                        if species == 0 || species > MAX_NATIONAL_DEX_FIRERED { continue; }
                         // Always send both variants so the client never needs the ROM.
                         for shiny in [false, true] {
                             let key = (species, shiny);

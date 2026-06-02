@@ -18,7 +18,7 @@ use axum::{
     Router,
 };
 use fire_red_database::{CaughtPokemon, DeadPokemon};
-use fire_red_states::{ClientMessage, GameState};
+use fire_red_states::{ClientMessage, GameState, MAX_NATIONAL_DEX_FIRERED};
 use futures_util::{SinkExt, StreamExt};
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
@@ -261,7 +261,7 @@ impl BroadcastLoop {
             for p in &gs.party {
                 let s = p.box_mon.secure.growth.species;
                 let shiny = is_shiny(p.box_mon.personality, p.box_mon.ot_id);
-                if s == 0 || s > 386 { continue; }
+                if s == 0 || s > MAX_NATIONAL_DEX_FIRERED { continue; }
                 if !known.contains(&s) && !cache.contains_key(&(s, false)) {
                     needed.push(s);
                     known.insert(s);
@@ -279,7 +279,7 @@ impl BroadcastLoop {
                 .chain(enc.fishing_encounters.wild_pokemon_list.iter());
             for w in all_enc {
                 let s = w.species;
-                if s == 0 || s > 386 { continue; }
+                if s == 0 || s > MAX_NATIONAL_DEX_FIRERED { continue; }
                 if !known.contains(&s) && !cache.contains_key(&(s, false)) {
                     needed.push(s);
                     known.insert(s);
@@ -406,28 +406,28 @@ impl BroadcastLoop {
                 let mut needed: Vec<u16> = Vec::new();
                 for dp in all_dead[i].values() {
                     let s = dp.species;
-                    if s > 0 && s <= 386 && !known.contains(&s) && !cache.contains_key(&(s, dp.is_shiny)) {
+                    if s > 0 && s <= MAX_NATIONAL_DEX_FIRERED && !known.contains(&s) && !cache.contains_key(&(s, dp.is_shiny)) {
                         needed.push(s);
                         known.insert(s);
                     }
                 }
                 for cp in &self.caches[i].caught {
                     let s = cp.species;
-                    if s > 0 && s <= 386 && !known.contains(&s) && !cache.contains_key(&(s, cp.is_shiny)) {
+                    if s > 0 && s <= MAX_NATIONAL_DEX_FIRERED && !known.contains(&s) && !cache.contains_key(&(s, cp.is_shiny)) {
                         needed.push(s);
                         known.insert(s);
                     }
                 }
                 for enc in &self.caches[i].encounters {
                     let s = enc.species;
-                    if s > 0 && s <= 386 && !known.contains(&s) && !cache.contains_key(&(s, false)) {
+                    if s > 0 && s <= MAX_NATIONAL_DEX_FIRERED && !known.contains(&s) && !cache.contains_key(&(s, false)) {
                         needed.push(s);
                         known.insert(s);
                     }
                 }
                 for be in &all_box[i] {
                     let s = be.species;
-                    if s > 0 && s <= 386 && !known.contains(&s) && !cache.contains_key(&(s, be.is_shiny)) {
+                    if s > 0 && s <= MAX_NATIONAL_DEX_FIRERED && !known.contains(&s) && !cache.contains_key(&(s, be.is_shiny)) {
                         needed.push(s);
                         known.insert(s);
                     }
@@ -639,7 +639,7 @@ impl BroadcastLoop {
 
                         let land: Vec<EncounterMonDto> = enc.land_mon_encounters
                             .wild_pokemon_list.iter()
-                            .filter(|w| w.species > 0 && w.species <= 386)
+                            .filter(|w| w.species > 0 && w.species <= MAX_NATIONAL_DEX_FIRERED)
                             .map(|w| EncounterMonDto {
                                 min_level: w.min_level,
                                 max_level: w.max_level,
@@ -653,7 +653,7 @@ impl BroadcastLoop {
                         let water_fish: Vec<EncounterMonDto> = enc.water_mon_encounters
                             .wild_pokemon_list.iter()
                             .chain(enc.fishing_encounters.wild_pokemon_list.iter())
-                            .filter(|w| w.species > 0 && w.species <= 386)
+                            .filter(|w| w.species > 0 && w.species <= MAX_NATIONAL_DEX_FIRERED)
                             .map(|w| EncounterMonDto {
                                 min_level: w.min_level,
                                 max_level: w.max_level,
@@ -666,7 +666,7 @@ impl BroadcastLoop {
 
                         let rock: Vec<EncounterMonDto> = enc.rock_smash_encounters
                             .wild_pokemon_list.iter()
-                            .filter(|w| w.species > 0 && w.species <= 386)
+                            .filter(|w| w.species > 0 && w.species <= MAX_NATIONAL_DEX_FIRERED)
                             .map(|w| EncounterMonDto {
                                 min_level: w.min_level,
                                 max_level: w.max_level,

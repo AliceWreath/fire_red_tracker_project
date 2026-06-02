@@ -10,6 +10,7 @@ use crate::textures::{
     PendingTexture, load_texture, load_texture_normal, make_placeholder,
 };
 use fire_red_party_monitor::get_is_clean;
+use fire_red_states::MAX_NATIONAL_DEX_FIRERED;
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -136,7 +137,7 @@ impl eframe::App for WindowInfo {
                 .chain(encounter_list.fishing_encounters.wild_pokemon_list.iter());
 
             for mon in all_encounter_mons {
-                if mon.species == 0 || mon.species > 386 { continue; }
+                if mon.species == 0 || mon.species > MAX_NATIONAL_DEX_FIRERED { continue; }
                 let key = format!("pokemon_{}_normal", mon.species);
                 if self.textures.contains_key(&key) { continue; }
                 if self.texture_request_queue.is_some() {
@@ -166,7 +167,7 @@ impl eframe::App for WindowInfo {
                 .collect();
 
             for (species, personality, ot_id) in missing_party {
-                if species == 0 || species > 386 { continue; }
+                if species == 0 || species > MAX_NATIONAL_DEX_FIRERED { continue; }
                 let key = format!(
                     "pokemon_{}_{}",
                     species,

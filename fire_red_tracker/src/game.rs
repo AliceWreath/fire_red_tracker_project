@@ -6,6 +6,7 @@
 
 use fire_red_loop::FireRedState;
 use fire_red_party_monitor::Pokemon;
+use fire_red_states::MAX_NATIONAL_DEX_FIRERED;
 use std::sync::{Arc, Mutex};
 
 /// GBA address of the packed (map_group, map_name) bytes in EWRAM.
@@ -153,7 +154,7 @@ pub fn check_for_new_pokemon(thread_party: &Arc<Mutex<Vec<Pokemon>>>) {
     let party = thread_party.lock().unwrap_or_else(|e| e.into_inner());
     for pokemon in party.iter() {
         let species = pokemon.box_mon.secure.growth.species;
-        if species == 0 || species > 386 { continue; }
+        if species == 0 || species > MAX_NATIONAL_DEX_FIRERED { continue; }
         let personality = pokemon.box_mon.personality;
         if fire_red_database::is_caught(personality) { continue; }
 

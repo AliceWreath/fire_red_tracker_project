@@ -2,12 +2,18 @@ use std::net::TcpStream;
 use std::io::{Read, Write};
 
 /// Maximum allowed network message size.
-/// 
+///
 /// Used as a safeguard against malformed or malicious packets that could
 /// otherwise allocate excessive memory.
-/// 
+///
 /// Current limit: 20 MB.
 const MAX_MESSAGE_SIZE: usize = 20 * 1024 * 1024; // 20 MB
+
+/// The highest valid National Pokédex number in FireRed (Generation III cap).
+///
+/// Used to filter out placeholder or sentinel species values that appear in
+/// ROM tables and EWRAM slots but do not correspond to real Pokémon.
+pub const MAX_NATIONAL_DEX_FIRERED: u16 = 386;
 
 /// Messages sent from a client to the server.
 ///

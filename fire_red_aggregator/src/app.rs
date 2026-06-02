@@ -29,7 +29,7 @@ use std::path::PathBuf;
 use egui::Ui;
 use fire_red_database::{CaughtPokemon, DeadPokemon};
 use fire_red_party_monitor::Pokemon;
-use fire_red_states::GameState;
+use fire_red_states::{GameState, MAX_NATIONAL_DEX_FIRERED};
 use std::collections::{HashMap, HashSet};
 
 // ---------------------------------------------------------------------------
@@ -167,7 +167,7 @@ impl AggregatorApp {
 
                 for p in &gs.party {
                     let s = p.box_mon.secure.growth.species;
-                    if s > 0 && s <= 386 && !known.contains(&s) {
+                    if s > 0 && s <= MAX_NATIONAL_DEX_FIRERED && !known.contains(&s) {
                         needed.push(s);
                     }
                 }
@@ -180,7 +180,7 @@ impl AggregatorApp {
                     .chain(gs.encounters.rock_smash_encounters.wild_pokemon_list.iter())
                     .chain(gs.encounters.fishing_encounters.wild_pokemon_list.iter())
                 {
-                    if wild.species > 0 && wild.species <= 386 && !known.contains(&wild.species) {
+                    if wild.species > 0 && wild.species <= MAX_NATIONAL_DEX_FIRERED && !known.contains(&wild.species) {
                         needed.push(wild.species);
                     }
                 }
@@ -572,7 +572,7 @@ impl AggregatorApp {
     ) {
         let valid: Vec<_> = list
             .iter()
-            .filter(|w| w.species > 0 && w.species <= 386)
+            .filter(|w| w.species > 0 && w.species <= MAX_NATIONAL_DEX_FIRERED)
             .collect();
         if valid.is_empty() {
             return;
