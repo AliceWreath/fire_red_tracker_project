@@ -39,6 +39,11 @@ pub struct Cli {
     #[arg(long, default_value_t = false)]
     pub update: bool,
 
+    /// Scan SaveBlock1 for Pokéball item slots and print their offsets, then exit.
+    /// Run with at least one ball in your bag to identify BALLS_POCKET_SAVE_BLOCK_OFFSET.
+    #[arg(long, default_value_t = false)]
+    pub scan_balls_pocket: bool,
+
     /// Override the operating mode for this run only.
     #[command(subcommand)]
     pub command: Option<Command>,

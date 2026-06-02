@@ -24,6 +24,17 @@ pub const IWRAM_BASE: usize = 0x03000000;
 /// change rather than presence/absence.
 const ENEMY_PARTY_ADDR: usize = 0x0202402C;
 
+/// IWRAM address of the gSaveBlock1Ptr pointer (4-byte little-endian GBA address).
+const SAVE_BLOCK_1_PTR_ADDR: usize = 0x03005008;
+
+/// Byte offset of the balls pocket (13 × ItemSlot) within SaveBlock1.
+/// Confirmed empirically via --scan-balls-pocket: Pokéball (item_id=4) first
+/// appears at slot 0 of the window starting here, with all other slots empty.
+const BALLS_POCKET_SAVE_BLOCK_OFFSET: usize = 0x0430;
+
+/// Number of slots in the balls pocket.
+const BALLS_POCKET_SLOTS: usize = 13;
+
 /// Returns `true` if the pokemon with `personality` and `ot_id` is shiny.
 ///
 /// Uses the Gen III formula: `(p_high ^ p_low ^ id_high ^ id_low) < 8`.
@@ -207,7 +218,7 @@ pub fn game_is_loaded() -> bool {
     let ewram = fire_red_memory::get_ewram();
 
     // The SaveBlock1 pointer lives in IWRAM at 0x03005008.
-    let ptr_offset = 0x03005008 - IWRAM_BASE;
+    let ptr_offset = SAVE_BLOCK_1_PTR_ADDR - IWRAM_BASE;
     if iwram.len() < ptr_offset + 4 {
         return false;
     }
@@ -239,6 +250,145 @@ pub fn game_is_loaded() -> bool {
     }
 
     true
+}
+
+/// Scans SaveBlock1 for the balls pocket by sliding a 13-slot window and
+/// checking only item IDs (quantities are XOR-encrypted in RAM and cannot be
+/// read directly). A valid candidate window has every item_id either 0 (empty
+/// slot) or 1–12 (a Pokéball type), with at least one non-zero item_id.
+///
+/// Run this with at least one ball in the bag. The printed SaveBlock1 offset
+/// is the value to use for `BALLS_POCKET_SAVE_BLOCK_OFFSET`.
+pub fn scan_for_balls_pocket() {
+    let iwram = fire_red_memory::get_iwram();
+    let ewram = fire_red_memory::get_ewram();
+
+    let ptr_offset = SAVE_BLOCK_1_PTR_ADDR - IWRAM_BASE;
+    if iwram.len() < ptr_offset + 4 {
+        eprintln!("IWRAM too small to read SaveBlock1 pointer.");
+        return;
+    }
+
+    let save_block_ptr = u32::from_le_bytes([
+        iwram[ptr_offset],
+        iwram[ptr_offset + 1],
+        iwram[ptr_offset + 2],
+        iwram[ptr_offset + 3],
+    ]) as usize;
+
+    println!("SaveBlock1 ptr: 0x{:08X}", save_block_ptr);
+
+    if save_block_ptr < EWRAM_BASE || save_block_ptr >= EWRAM_BASE + ewram.len() {
+        eprintln!("SaveBlock1 ptr 0x{:08X} is outside EWRAM — is the game loaded?", save_block_ptr);
+        return;
+    }
+
+    let sb1_start = save_block_ptr - EWRAM_BASE;
+    let scan_end  = sb1_start + 0x3000;
+
+    println!("Sliding 13-slot window through SaveBlock1+0x0000..+0x3000");
+    println!("Checking item IDs only (quantities are encrypted in RAM)");
+    println!("Valid window: all item_ids are 0 or 1-12, at least one is non-zero");
+    println!();
+
+    let mut found_any = false;
+    let mut window_start = sb1_start;
+    while window_start + BALLS_POCKET_SLOTS * 4 <= scan_end.min(ewram.len()) {
+        // Require that the slot immediately before the window is empty or non-ball.
+        // This filters out mid-pocket views and keeps only true pocket starts.
+        if window_start >= sb1_start + 4 {
+            let prev_base    = window_start - 4;
+            let prev_item_id = u16::from_le_bytes([ewram[prev_base], ewram[prev_base + 1]]);
+            if (1..=12).contains(&prev_item_id) {
+                window_start += 4;
+                continue;
+            }
+        }
+
+        let mut all_clean = true;
+        let mut any_ball  = false;
+
+        for slot in 0..BALLS_POCKET_SLOTS {
+            let base    = window_start + slot * 4;
+            let item_id = u16::from_le_bytes([ewram[base], ewram[base + 1]]);
+            if item_id == 0 {
+                continue;
+            }
+            if (1..=12).contains(&item_id) {
+                any_ball = true;
+            } else {
+                all_clean = false;
+                break;
+            }
+        }
+
+        if all_clean && any_ball {
+            let pocket_offset = window_start - sb1_start;
+            println!("  Candidate at SaveBlock1+0x{:04X}:", pocket_offset);
+            for slot in 0..BALLS_POCKET_SLOTS {
+                let base    = window_start + slot * 4;
+                let item_id = u16::from_le_bytes([ewram[base], ewram[base + 1]]);
+                if item_id != 0 {
+                    println!("    slot {:2}: item_id={:2}", slot, item_id);
+                }
+            }
+            println!();
+            found_any = true;
+        }
+
+        window_start += 4;
+    }
+
+    if !found_any {
+        println!("No candidate pocket found. Make sure you have at least one ball in your bag.");
+    }
+}
+
+/// Returns `true` if the player has at least one Pokéball in their bag.
+///
+/// Reads the balls pocket (13 ItemSlots) from SaveBlock1 via the IWRAM pointer.
+/// Each slot is 4 bytes: `u16` item_id followed by `u16` quantity. Returns
+/// `false` when the pocket is empty, the SaveBlock1 pointer is invalid, or the
+/// EWRAM snapshot is too small to reach the pocket.
+///
+/// Returns `false` (not `true`) on read failure so that pre-ball encounters on
+/// routes like Route 1 are silently skipped rather than incorrectly recorded.
+pub fn has_pokeballs() -> bool {
+    let iwram = fire_red_memory::get_iwram();
+    let ewram = fire_red_memory::get_ewram();
+
+    let ptr_offset = SAVE_BLOCK_1_PTR_ADDR - IWRAM_BASE;
+    if iwram.len() < ptr_offset + 4 {
+        return false;
+    }
+
+    let save_block_ptr = u32::from_le_bytes([
+        iwram[ptr_offset],
+        iwram[ptr_offset + 1],
+        iwram[ptr_offset + 2],
+        iwram[ptr_offset + 3],
+    ]) as usize;
+
+    if save_block_ptr < EWRAM_BASE || save_block_ptr >= EWRAM_BASE + ewram.len() {
+        return false;
+    }
+
+    let pocket_start = (save_block_ptr - EWRAM_BASE) + BALLS_POCKET_SAVE_BLOCK_OFFSET;
+    let pocket_end   = pocket_start + BALLS_POCKET_SLOTS * 4;
+    if ewram.len() < pocket_end {
+        return false;
+    }
+
+    // Quantities are XOR-encrypted in RAM; check item_id only.
+    for slot in 0..BALLS_POCKET_SLOTS {
+        let base    = pocket_start + slot * 4;
+        let item_id = u16::from_le_bytes([ewram[base], ewram[base + 1]]);
+        if (1..=12).contains(&item_id) {
+            return true;
+        }
+    }
+
+    false
 }
 
 /// Returns the wild Pokémon currently engaged in battle, or `None` when not

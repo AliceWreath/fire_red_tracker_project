@@ -30,6 +30,12 @@ html, body {
     color: #80e080; cursor: pointer;
 }
 .refresh-btn:hover { background: #224a22; }
+.clear-btn {
+    font-size: 12px; font-weight: 600; padding: 4px 12px;
+    background: #3a1010; border: 1px solid #7a2020; border-radius: 5px;
+    color: #e08080; cursor: pointer;
+}
+.clear-btn:hover { background: #4a1414; }
 .status { font-size: 12px; color: #888; }
 
 /* Tabs */
@@ -133,6 +139,7 @@ td.run-id { color: #5090e0; font-weight: 600; }
     <div class="page-header">
         <div class="page-title">Nuzlocke Database</div>
         <div class="status" id="status">Loading...</div>
+        <button class="clear-btn" onclick="clearAll()">✕ Clear All Records</button>
         <button class="refresh-btn" onclick="loadData()">↺ Refresh</button>
     </div>
 
@@ -213,6 +220,18 @@ let activeTable = 'runs';
 let sortKey = null;
 let sortDir = 1;
 let filterText = '';
+
+async function clearAll() {
+    if (!confirm('Delete all runs, encounters, catches, and deaths?\nThis cannot be undone.')) return;
+    document.getElementById('status').textContent = 'Clearing...';
+    try {
+        const res = await fetch('/db/clear', { method: 'POST' });
+        if (!res.ok) throw new Error(await res.text());
+        await loadData();
+    } catch (e) {
+        document.getElementById('status').textContent = 'Clear failed: ' + e.message;
+    }
+}
 
 async function loadData() {
     document.getElementById('status').textContent = 'Loading...';

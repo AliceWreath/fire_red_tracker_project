@@ -832,6 +832,25 @@ pub fn set_encounter_caught(map_group: u8, map_name: u8) {
     }
 }
 
+/// Returns `true` if this species has already been recorded as a first encounter
+/// anywhere in the active run for the current player.
+pub fn species_encountered(species: u16) -> bool {
+    let mut state = db().lock().unwrap_or_else(|e| e.into_inner());
+    let active = match state.run_id {
+        Some(id) => id,
+        None => return false,
+    };
+    let player = state.current_player.clone();
+    state.client
+        .query_one(
+            "SELECT COUNT(*) FROM encounters
+             WHERE run_id = $1 AND player_name = $2 AND species = $3",
+            &[&(active as i32), &player, &(species as i32)],
+        )
+        .map(|row| row.get::<_, i64>(0) > 0)
+        .unwrap_or(false)
+}
+
 /// Returns `true` if an encounter has already been recorded for this area by the current player.
 pub fn has_encounter(map_group: u8, map_name: u8) -> bool {
     let mut state = db().lock().unwrap_or_else(|e| e.into_inner());
@@ -1151,6 +1170,25 @@ impl DbReader {
 // ---------------------------------------------------------------------------
 // Full database dump — used by the DB viewer web page
 // ---------------------------------------------------------------------------
+
+/// Deletes every record from all tables in the database.
+///
+/// Opens its own connection (like `dump_all`) so the live tracker connections
+/// are not blocked. Deletes child tables before parent to satisfy foreign keys,
+/// then resets the active_run_id meta key.
+///
+/// Returns `Ok(())` on success or an error string on failure.
+pub fn clear_all_records(conn_str: &str) -> Result<(), String> {
+    let mut client = Client::connect(conn_str, NoTls)
+        .map_err(|e| format!("DB connection failed: {e}"))?;
+    client.batch_execute("
+        DELETE FROM encounters;
+        DELETE FROM caught_pokemon;
+        DELETE FROM dead_pokemon;
+        DELETE FROM runs;
+        DELETE FROM meta WHERE key = 'active_run_id';
+    ").map_err(|e| format!("Clear failed: {e}"))
+}
 
 /// Opens a fresh connection and returns a JSON snapshot of every table.
 ///

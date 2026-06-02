@@ -50,7 +50,7 @@ use cli::{Cli, Command};
 use colored::Colorize;
 use fire_red_loop::*;
 use fire_red_states::*;
-use game::{check_for_dead_pokemon, check_for_new_pokemon, fill_party_list, game_is_loaded, is_shiny, map_state_from_ewram};
+use game::{check_for_dead_pokemon, check_for_new_pokemon, fill_party_list, game_is_loaded, is_shiny, map_state_from_ewram, scan_for_balls_pocket};
 use gui::{WindowInfo, PARTY_WINDOW};
 use server::handle_client;
 use std::collections::HashMap;
@@ -227,8 +227,9 @@ fn main() {
         }
     }
 
-    let is_clean  = cfg.clean || cli.clean;
-    let rom_path  = cli.rom.unwrap_or(cfg.rom);
+    let is_clean          = cfg.clean || cli.clean;
+    let rom_path          = cli.rom.unwrap_or(cfg.rom);
+    let do_scan_balls     = cli.scan_balls_pocket;
 
     let game_loaded: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
     let run_changed: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
@@ -268,6 +269,11 @@ fn main() {
                     break;
                 }
                 std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+
+            if do_scan_balls {
+                scan_for_balls_pocket();
+                std::process::exit(0);
             }
 
             let initial_state = map_state_from_ewram()

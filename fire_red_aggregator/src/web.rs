@@ -13,8 +13,9 @@ use crate::app::is_shiny;
 use crate::client::{MonitorSlot, SharedSlots, SpriteCache, encode_png};
 use axum::{
     extract::State,
+    http::StatusCode,
     response::{Html, IntoResponse},
-    routing::get,
+    routing::{get, post},
     Router,
 };
 use fire_red_database::{CaughtPokemon, DeadPokemon};
@@ -813,6 +814,18 @@ async fn serve_db_json(State(state): State<WebState>) -> axum::Json<serde_json::
     axum::Json(result.unwrap_or_else(|_| serde_json::json!({ "error": "Query failed" })))
 }
 
+async fn clear_db(State(state): State<WebState>) -> impl IntoResponse {
+    let conn = match state.db_conn {
+        Some(s) => s,
+        None    => return (StatusCode::SERVICE_UNAVAILABLE, "No database configured".to_string()),
+    };
+    match tokio::task::spawn_blocking(move || fire_red_database::clear_all_records(&conn)).await {
+        Ok(Ok(())) => (StatusCode::OK, "ok".to_string()),
+        Ok(Err(e)) => (StatusCode::INTERNAL_SERVER_ERROR, e),
+        Err(_)     => (StatusCode::INTERNAL_SERVER_ERROR, "Task panicked".to_string()),
+    }
+}
+
 async fn ws_handler(
     ws: axum::extract::ws::WebSocketUpgrade,
     State(state): State<WebState>,
@@ -913,6 +926,7 @@ pub fn run(live_slots: SharedSlots, port: u16, db_conn: Option<String>) {
             .route("/ws", get(ws_handler))
             .route("/db", get(serve_db_viewer))
             .route("/db.json", get(serve_db_json))
+            .route("/db/clear", post(clear_db))
             .route("/history", get(serve_history))
             .route("/:index/party", get(serve_focused))
             .route("/:index/encounters", get(serve_focused))

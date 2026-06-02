@@ -15,6 +15,9 @@ pub struct EncounterTracker {
     last_enemy_personality: u32,
     tracked_personality:    Option<u32>,
     enc_map:                (u8, u8),
+    /// Latches to `true` the first time balls are detected in the bag and stays
+    /// true until reset. Ensures encounters still count after all balls are used.
+    has_received_balls:     bool,
 }
 
 impl EncounterTracker {
@@ -23,12 +26,14 @@ impl EncounterTracker {
             last_enemy_personality: 0,
             tracked_personality:    None,
             enc_map:                (0, 0),
+            has_received_balls:     false,
         }
     }
 
     pub fn reset(&mut self) {
         self.last_enemy_personality = 0;
         self.tracked_personality    = None;
+        self.has_received_balls     = false;
     }
 
     /// Called once per poll cycle while the game is loaded and state is
@@ -38,6 +43,19 @@ impl EncounterTracker {
             && enemy.box_mon.personality != self.last_enemy_personality
         {
             self.last_enemy_personality = enemy.box_mon.personality;
+
+            if !self.has_received_balls {
+                if crate::game::has_pokeballs() {
+                    self.has_received_balls = true;
+                } else {
+                    return;
+                }
+            }
+
+            let species = enemy.box_mon.secure.growth.species;
+            if fire_red_database::species_encountered(species) {
+                return;
+            }
 
             let map_group = current_state.map_group_id;
             let map_name  = current_state.map_name_id;
