@@ -183,13 +183,18 @@ fn db() -> &'static Mutex<DbState> {
 /// - `postgresql://localhost/nuzlocke`
 /// - `postgresql://user:password@192.168.1.10/nuzlocke`
 /// - `host=192.168.1.10 user=alice dbname=nuzlocke`
-pub fn initialize(connection_string: &str) {
+///
+/// # Errors
+///
+/// Returns an error string if the connection fails, schema setup fails, or
+/// `initialize` has already been called.
+pub fn initialize(connection_string: &str) -> Result<(), String> {
     let mut client = Client::connect(connection_string, NoTls)
-        .unwrap_or_else(|e| panic!(
+        .map_err(|e| format!(
             "Failed to connect to PostgreSQL: {e}\n\
              Ensure the server is reachable and the database exists.\n\
              Create it with:  psql -c 'CREATE DATABASE nuzlocke;'"
-        ));
+        ))?;
 
     client.batch_execute("
         CREATE TABLE IF NOT EXISTS runs (
@@ -308,10 +313,12 @@ pub fn initialize(connection_string: &str) {
         -- Migration: add gender column (0=male 1=female 2=genderless, default genderless).
         ALTER TABLE caught_pokemon ADD COLUMN IF NOT EXISTS gender INTEGER NOT NULL DEFAULT 2;
         ALTER TABLE dead_pokemon   ADD COLUMN IF NOT EXISTS gender INTEGER NOT NULL DEFAULT 2;
-    ").expect("Failed to create database schema");
+    ").map_err(|e| format!("Failed to create database schema: {e}"))?;
 
     DB.set(Mutex::new(DbState { client, run_id: None, current_player: String::new() }))
-        .unwrap_or_else(|_| panic!("fire_red_database::initialize called more than once"));
+        .map_err(|_| "fire_red_database::initialize called more than once".to_string())?;
+
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------

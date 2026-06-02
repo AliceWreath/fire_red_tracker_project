@@ -179,7 +179,10 @@ fn main() {
     } else {
         format!("postgresql://{}", db_raw)
     };
-    fire_red_database::initialize(&db_conn);
+    if let Err(e) = fire_red_database::initialize(&db_conn) {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+    }
 
     // --list-runs: print stored runs and exit without starting the tracker.
     if cli.list_runs {
