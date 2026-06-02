@@ -311,3 +311,113 @@ pub fn read_i32_raw(bytes: &[u8], offset: usize) -> i32 {
         .map(i32::from_be_bytes)
         .unwrap_or(0)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── read_u8 ──────────────────────────────────────────────────────────────
+
+    #[test]
+    fn read_u8_first_byte() {
+        assert_eq!(read_u8(&[0xAB, 0xCD], 0), 0xAB);
+    }
+
+    #[test]
+    fn read_u8_second_byte() {
+        assert_eq!(read_u8(&[0xAB, 0xCD], 1), 0xCD);
+    }
+
+    #[test]
+    fn read_u8_out_of_bounds_returns_zero() {
+        assert_eq!(read_u8(&[0x01], 1), 0);
+        assert_eq!(read_u8(&[], 0), 0);
+    }
+
+    // ── read_u16 ─────────────────────────────────────────────────────────────
+
+    #[test]
+    fn read_u16_little_endian() {
+        assert_eq!(read_u16(&[0x34, 0x12], 0), 0x1234);
+    }
+
+    #[test]
+    fn read_u16_with_offset() {
+        assert_eq!(read_u16(&[0x00, 0x78, 0x56], 1), 0x5678);
+    }
+
+    #[test]
+    fn read_u16_out_of_bounds_returns_zero() {
+        assert_eq!(read_u16(&[0x01], 0), 0);
+        assert_eq!(read_u16(&[0x01, 0x02], 1), 0);
+    }
+
+    // ── read_u32 ─────────────────────────────────────────────────────────────
+
+    #[test]
+    fn read_u32_little_endian() {
+        assert_eq!(read_u32(&[0x78, 0x56, 0x34, 0x12], 0), 0x12345678);
+    }
+
+    #[test]
+    fn read_u32_with_offset() {
+        assert_eq!(read_u32(&[0x00, 0x78, 0x56, 0x34, 0x12], 1), 0x12345678);
+    }
+
+    #[test]
+    fn read_u32_out_of_bounds_returns_zero() {
+        assert_eq!(read_u32(&[0x01, 0x02, 0x03], 0), 0);
+    }
+
+    // ── read_u32_raw (big-endian) ─────────────────────────────────────────────
+
+    #[test]
+    fn read_u32_raw_big_endian() {
+        assert_eq!(read_u32_raw(&[0x12, 0x34, 0x56, 0x78], 0), 0x12345678);
+    }
+
+    #[test]
+    fn read_u32_raw_differs_from_little_endian() {
+        let buf = [0x01, 0x00, 0x00, 0x00];
+        assert_eq!(read_u32(&buf, 0),     0x0000_0001);
+        assert_eq!(read_u32_raw(&buf, 0), 0x0100_0000);
+    }
+
+    // ── get_u32 / get_u16 / get_u8 ───────────────────────────────────────────
+
+    #[test]
+    fn get_u32_little_endian() {
+        assert_eq!(get_u32(&["78", "56", "34", "12"]), 0x12345678);
+    }
+
+    #[test]
+    fn get_u32_too_few_tokens_returns_zero() {
+        assert_eq!(get_u32(&["78", "56"]), 0);
+    }
+
+    #[test]
+    fn get_u16_little_endian() {
+        assert_eq!(get_u16(&["CD", "AB"]), 0xABCD);
+    }
+
+    #[test]
+    fn get_u8_valid_hex_token() {
+        assert_eq!(get_u8(&["AB"]), 0xAB);
+    }
+
+    #[test]
+    fn get_u8_empty_returns_zero() {
+        assert_eq!(get_u8(&[]), 0);
+    }
+
+    #[test]
+    fn get_n_bytes_returns_correct_slice() {
+        let result = get_n_bytes(2, &["01", "02", "03"]).unwrap();
+        assert_eq!(result, vec![0x01, 0x02]);
+    }
+
+    #[test]
+    fn get_n_bytes_too_short_returns_none() {
+        assert!(get_n_bytes(3, &["01", "02"]).is_none());
+    }
+}

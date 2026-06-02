@@ -537,3 +537,104 @@ pub fn fill_static_pokemon_header_list(buffer: &[u8], offset: usize) {
 pub fn get_pokemon_header_list() -> &'static Vec<WildPokemonHeaderROM> {
     WILD_POKEMON_HEADERS.get().expect("wild pokemon header list not initialized — call fill_static_pokemon_header_list first")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Builds a minimal 20-byte WildPokemonHeaderROM buffer at offset 0.
+    fn header_buf(group: u8, num: u8, land: u32, water: u32, rock: u32, fish: u32) -> Vec<u8> {
+        let mut b = vec![group, num, 0, 0];
+        b.extend_from_slice(&land.to_le_bytes());
+        b.extend_from_slice(&water.to_le_bytes());
+        b.extend_from_slice(&rock.to_le_bytes());
+        b.extend_from_slice(&fish.to_le_bytes());
+        b
+    }
+
+    // ── WildPokemonHeaderROM::fill_header ─────────────────────────────────────
+
+    #[test]
+    fn fill_header_map_ids() {
+        let buf = header_buf(3, 0x13, 0, 0, 0, 0);
+        let h = WildPokemonHeaderROM::fill_header(&buf, 0);
+        assert_eq!(h.map_group, 3);
+        assert_eq!(h.map_num, 0x13);
+    }
+
+    #[test]
+    fn fill_header_pointer_mask() {
+        // ROM pointers have the 0x08000000 bank byte stripped (mask 0x07FFFFFF).
+        let buf = header_buf(1, 0, 0x0812_3456, 0x0800_0001, 0, 0);
+        let h = WildPokemonHeaderROM::fill_header(&buf, 0);
+        assert_eq!(h.land_mon_enounters_rom_ptr,  0x0012_3456);
+        assert_eq!(h.water_mon_encounters_rom_ptr, 0x0000_0001);
+        assert_eq!(h.rock_smash_encounters_rom_ptr, 0);
+        assert_eq!(h.fishing_encounters_rom_ptr,    0);
+    }
+
+    #[test]
+    fn fill_header_with_nonzero_offset() {
+        let mut buf = vec![0u8; 8]; // 8 bytes of padding
+        buf.extend(header_buf(2, 5, 0, 0, 0, 0));
+        let h = WildPokemonHeaderROM::fill_header(&buf, 8);
+        assert_eq!(h.map_group, 2);
+        assert_eq!(h.map_num, 5);
+    }
+
+    // ── WildPokemonInfoROM::fill_pokemon_info ─────────────────────────────────
+
+    #[test]
+    fn fill_pokemon_info_rate_and_ptr() {
+        // layout: u8 rate, u8[3] pad, u32 ptr
+        let mut buf = vec![25u8, 0, 0, 0];
+        buf.extend_from_slice(&(0x0812_0000u32).to_le_bytes());
+        let info = WildPokemonInfoROM::fill_pokemon_info(&buf, 0);
+        assert_eq!(info.encounter_rate, 25);
+        assert_eq!(info.wild_pokemon_list_rom_ptr, 0x0012_0000);
+    }
+
+    #[test]
+    fn fill_pokemon_info_zero_rate() {
+        let buf = vec![0u8; 8];
+        let info = WildPokemonInfoROM::fill_pokemon_info(&buf, 0);
+        assert_eq!(info.encounter_rate, 0);
+        assert_eq!(info.wild_pokemon_list_rom_ptr, 0);
+    }
+
+    // ── WildPokemon::fill_wild_pokemon ────────────────────────────────────────
+
+    #[test]
+    fn fill_wild_pokemon_normal_entry() {
+        // min=5, max=10, species=25 (Pikachu), little-endian
+        let buf = [5u8, 10, 25, 0];
+        let mon = WildPokemon::fill_wild_pokemon(&buf, 0);
+        assert_eq!(mon.min_level, 5);
+        assert_eq!(mon.max_level, 10);
+        assert_eq!(mon.species, 25);
+    }
+
+    #[test]
+    fn fill_wild_pokemon_sentinel_returns_default() {
+        // Known malformed-entry sentinel: min_level=0x15, max_level=0.
+        let buf = [0x15u8, 0x00, 0x01, 0x00];
+        assert_eq!(WildPokemon::fill_wild_pokemon(&buf, 0), WildPokemon::default());
+    }
+
+    #[test]
+    fn fill_wild_pokemon_with_offset() {
+        let buf = [0u8, 0, 3, 7, 0x84, 0x00]; // 2 padding, then min=3, max=7, species=132 (Ditto)
+        let mon = WildPokemon::fill_wild_pokemon(&buf, 2);
+        assert_eq!(mon.min_level, 3);
+        assert_eq!(mon.max_level, 7);
+        assert_eq!(mon.species, 132);
+    }
+
+    #[test]
+    fn fill_wild_pokemon_species_endianness() {
+        // species=0x0101 stored little-endian as [0x01, 0x01]
+        let buf = [1u8, 5, 0x01, 0x01];
+        let mon = WildPokemon::fill_wild_pokemon(&buf, 0);
+        assert_eq!(mon.species, 0x0101);
+    }
+}

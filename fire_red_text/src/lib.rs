@@ -178,3 +178,60 @@ pub fn build_name_list(buffer: &[u8], offset: usize) -> Vec<String> {
 
     name
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── char_gba_to_ascii ─────────────────────────────────────────────────────
+
+    #[test]
+    fn uppercase_range() {
+        assert_eq!(char_gba_to_ascii(0xBB), 'A');
+        assert_eq!(char_gba_to_ascii(0xBB + 25), 'Z');
+    }
+
+    #[test]
+    fn lowercase_range() {
+        assert_eq!(char_gba_to_ascii(0xD5), 'a');
+        assert_eq!(char_gba_to_ascii(0xD5 + 25), 'z');
+    }
+
+    #[test]
+    fn null_terminator() {
+        assert_eq!(char_gba_to_ascii(0xFF), '\0');
+    }
+
+    #[test]
+    fn unmapped_byte_becomes_space() {
+        assert_eq!(char_gba_to_ascii(0x00), ' ');
+        assert_eq!(char_gba_to_ascii(0x42), ' ');
+    }
+
+    // ── gba_string_to_ascii ───────────────────────────────────────────────────
+
+    #[test]
+    fn decodes_pikachu() {
+        // "PIKA" in GBA encoding: P=0xCB, I=0xC6, K=0xC8, A=0xBB
+        let buf = [0xCB, 0xC6, 0xC8, 0xBB, 0xFF];
+        assert_eq!(gba_string_to_ascii(&buf, 4, 0), "PIKA");
+    }
+
+    #[test]
+    fn stops_at_len_before_null() {
+        let buf = [0xBB, 0xBC, 0xFF, 0xBD]; // A, B, null, C
+        assert_eq!(gba_string_to_ascii(&buf, 2, 0), "AB");
+    }
+
+    #[test]
+    fn decodes_from_offset() {
+        let buf = [0x00, 0x00, 0xBB, 0xBC]; // 2 padding, then A, B
+        assert_eq!(gba_string_to_ascii(&buf, 2, 2), "AB");
+    }
+
+    #[test]
+    fn empty_when_len_is_zero() {
+        let buf = [0xBB, 0xBC];
+        assert_eq!(gba_string_to_ascii(&buf, 0, 0), "");
+    }
+}

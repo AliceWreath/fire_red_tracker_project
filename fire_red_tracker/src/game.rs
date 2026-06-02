@@ -274,3 +274,38 @@ pub fn get_wild_enemy_pokemon() -> Option<Pokemon> {
         None
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::is_shiny;
+
+    // Gen III shiny formula: (p_high ^ p_low ^ id_high ^ id_low) < 8
+
+    #[test]
+    fn all_zeros_is_shiny() {
+        assert!(is_shiny(0, 0));
+    }
+
+    #[test]
+    fn xor_of_7_is_shiny() {
+        // p_high = 0x0007, rest zero → xor = 7 < 8
+        assert!(is_shiny(0x0007_0000, 0));
+    }
+
+    #[test]
+    fn xor_of_8_is_not_shiny() {
+        // p_high = 0x0008, rest zero → xor = 8, not < 8
+        assert!(!is_shiny(0x0008_0000, 0));
+    }
+
+    #[test]
+    fn xor_cancelled_by_ot_id_is_shiny() {
+        // p_high=0x0010, id_high=0x0010 → they cancel out, net xor = 0 < 8
+        assert!(is_shiny(0x0010_0000, 0x0010_0000));
+    }
+
+    #[test]
+    fn high_xor_is_not_shiny() {
+        assert!(!is_shiny(0x1234_5678, 0x0000_0000));
+    }
+}

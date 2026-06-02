@@ -178,3 +178,57 @@ pub fn location_name(loc: u8) -> &'static str {
         _    => "Unknown Location",
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── map_area_name: verified data points from the doc comment ──────────────
+
+    #[test]
+    fn route_1_verified() {
+        assert_eq!(map_area_name(3, 0x13), "Route 1");
+    }
+
+    #[test]
+    fn route_2_verified() {
+        assert_eq!(map_area_name(3, 0x14), "Route 2");
+    }
+
+    #[test]
+    fn viridian_forest_verified() {
+        assert_eq!(map_area_name(1, 0x00), "Viridian Forest");
+    }
+
+    #[test]
+    fn mt_moon_verified() {
+        assert_eq!(map_area_name(1, 0x01), "Mt. Moon");
+    }
+
+    #[test]
+    fn unknown_pair_returns_empty() {
+        assert_eq!(map_area_name(0xFF, 0xFF), "");
+    }
+
+    // ── location_name (MAPSEC) ────────────────────────────────────────────────
+
+    #[test]
+    fn pallet_town() {
+        assert_eq!(location_name(0x00), "Pallet Town");
+    }
+
+    #[test]
+    fn viridian_city() {
+        assert_eq!(location_name(0x01), "Viridian City");
+    }
+
+    #[test]
+    fn mapsec_none_returns_dash() {
+        assert_eq!(location_name(0xFF), "—");
+    }
+
+    #[test]
+    fn unknown_location() {
+        assert_eq!(location_name(0xFE), "Unknown Location");
+    }
+}

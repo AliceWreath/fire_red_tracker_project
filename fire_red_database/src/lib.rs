@@ -1287,3 +1287,86 @@ fn dump_encounters(client: &mut Client) -> serde_json::Value {
         })
     }).collect())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── nature_name ───────────────────────────────────────────────────────────
+
+    #[test]
+    fn nature_name_first_and_last() {
+        assert_eq!(nature_name(0),  "Hardy");
+        assert_eq!(nature_name(24), "Quirky");
+    }
+
+    #[test]
+    fn nature_name_wraps_at_25() {
+        assert_eq!(nature_name(25), "Hardy");
+        assert_eq!(nature_name(26), "Lonely");
+    }
+
+    #[test]
+    fn nature_name_known_values() {
+        assert_eq!(nature_name(1),  "Lonely");
+        assert_eq!(nature_name(10), "Timid");
+        assert_eq!(nature_name(20), "Calm");
+    }
+
+    #[test]
+    fn nature_name_large_personality() {
+        let expected = NATURES[(u32::MAX % 25) as usize];
+        assert_eq!(nature_name(u32::MAX), expected);
+    }
+
+    // ── is_leap ───────────────────────────────────────────────────────────────
+
+    #[test]
+    fn is_leap_divisible_by_400() {
+        assert!(is_leap(2000));
+        assert!(is_leap(1600));
+    }
+
+    #[test]
+    fn is_leap_divisible_by_4_not_100() {
+        assert!(is_leap(2024));
+        assert!(is_leap(2020));
+    }
+
+    #[test]
+    fn is_leap_divisible_by_100_not_400() {
+        assert!(!is_leap(1900));
+        assert!(!is_leap(2100));
+    }
+
+    #[test]
+    fn is_leap_not_divisible_by_4() {
+        assert!(!is_leap(2023));
+        assert!(!is_leap(2019));
+    }
+
+    // ── format_timestamp ─────────────────────────────────────────────────────
+
+    #[test]
+    fn format_timestamp_unix_epoch() {
+        assert_eq!(format_timestamp(0), "1970-01-01 00:00:00 UTC");
+    }
+
+    #[test]
+    fn format_timestamp_time_of_day() {
+        // 1 day + 1h 1m 1s = 86400 + 3661
+        assert_eq!(format_timestamp(90061), "1970-01-02 01:01:01 UTC");
+    }
+
+    #[test]
+    fn format_timestamp_known_date() {
+        // 2024-01-01 00:00:00 UTC = 1704067200
+        assert_eq!(format_timestamp(1704067200), "2024-01-01 00:00:00 UTC");
+    }
+
+    #[test]
+    fn format_timestamp_leap_day() {
+        // 2024-02-29 00:00:00 UTC = 1709164800
+        assert_eq!(format_timestamp(1709164800), "2024-02-29 00:00:00 UTC");
+    }
+}
