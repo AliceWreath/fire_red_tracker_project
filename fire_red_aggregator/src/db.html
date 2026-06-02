@@ -139,7 +139,7 @@ td.run-id { color: #5090e0; font-weight: 600; }
     <div class="page-header">
         <div class="page-title">Nuzlocke Database</div>
         <div class="status" id="status">Loading...</div>
-        <button class="clear-btn" onclick="clearAll()">✕ Clear All Records</button>
+        <button class="clear-btn" id="clear-btn" style="display:none" onclick="clearAll()">✕ Clear All Records</button>
         <button class="refresh-btn" onclick="loadData()">↺ Refresh</button>
     </div>
 
@@ -393,6 +393,9 @@ function statsColorNode(str, nature) {
     return wrap;
 }
 
+if (new URLSearchParams(window.location.search).has('manage')) {
+    document.getElementById('clear-btn').style.display = '';
+}
 loadData();
 </script>
 </body>
