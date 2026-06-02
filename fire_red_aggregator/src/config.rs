@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 // Types
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AggregatorConfig {
     /// TCP port to listen on for incoming tracker connections.
     #[serde(default = "default_listen_port")]

@@ -3,6 +3,7 @@
 //! The egui application state and rendering for the tracker's party panel and
 //! encounters child viewport.
 
+use crate::config::{TrackerConfig, save_config};
 use crate::game::is_shiny;
 use crate::textures::{
     PARTY_IMAGE_SIZE, ENCOUNTER_IMAGE_SIZE,
@@ -10,6 +11,7 @@ use crate::textures::{
 };
 use fire_red_party_monitor::get_is_clean;
 use std::collections::{HashMap, VecDeque};
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 /// Default target window size for the party panel, in logical pixels.
@@ -17,6 +19,28 @@ pub const PARTY_WINDOW: (f32, f32) = (400.0, 800.0);
 
 /// Default target window size for the encounters panel, in logical pixels.
 pub const ENCOUNTER_WINDOW: (f32, f32) = (600.0, 400.0);
+
+struct SettingsDraft {
+    rom:             String,
+    db:              String,
+    clean:           bool,
+    mode:            crate::config::ConfigMode,
+    aggregator_host: String,
+    aggregator_port: String,
+}
+
+impl SettingsDraft {
+    fn from_config(cfg: &TrackerConfig) -> Self {
+        Self {
+            rom:             cfg.rom.clone(),
+            db:              cfg.db.trim_start_matches("postgresql://").trim_start_matches("postgres://").to_string(),
+            clean:           cfg.clean,
+            mode:            cfg.mode.clone(),
+            aggregator_host: cfg.aggregator_host.clone(),
+            aggregator_port: cfg.aggregator_port.to_string(),
+        }
+    }
+}
 
 /// Top-level application state passed to [`eframe`].
 pub struct WindowInfo {
@@ -37,6 +61,9 @@ pub struct WindowInfo {
     /// Queue of texture request batches produced by the GUI and consumed by
     /// the network writer thread. `None` in standalone/server mode.
     pub texture_request_queue: Option<Arc<Mutex<VecDeque<Vec<u16>>>>>,
+    pub config_path:   PathBuf,
+    pub settings_open: bool,
+    settings:          SettingsDraft,
 }
 
 impl WindowInfo {
@@ -47,6 +74,8 @@ impl WindowInfo {
         pending_textures: Arc<Mutex<Vec<PendingTexture>>>,
         known_species: Arc<Mutex<std::collections::HashSet<u16>>>,
         texture_request_queue: Option<Arc<Mutex<VecDeque<Vec<u16>>>>>,
+        config_path: PathBuf,
+        config: &TrackerConfig,
     ) -> Self {
         Self {
             party_list,
@@ -56,6 +85,9 @@ impl WindowInfo {
             pending_textures,
             known_species,
             texture_request_queue,
+            config_path,
+            settings_open: false,
+            settings: SettingsDraft::from_config(config),
         }
     }
 }
@@ -214,6 +246,49 @@ impl eframe::App for WindowInfo {
     }
 }
 
+fn nature_mods(nature: &str) -> Option<(&'static str, &'static str)> {
+    match nature {
+        "Lonely"  => Some(("Atk", "Def")), "Brave"   => Some(("Atk", "Spe")),
+        "Adamant" => Some(("Atk", "SpA")), "Naughty" => Some(("Atk", "SpD")),
+        "Bold"    => Some(("Def", "Atk")), "Relaxed" => Some(("Def", "Spe")),
+        "Impish"  => Some(("Def", "SpA")), "Lax"     => Some(("Def", "SpD")),
+        "Timid"   => Some(("Spe", "Atk")), "Hasty"   => Some(("Spe", "Def")),
+        "Jolly"   => Some(("Spe", "SpA")), "Naive"   => Some(("Spe", "SpD")),
+        "Modest"  => Some(("SpA", "Atk")), "Mild"    => Some(("SpA", "Def")),
+        "Quiet"   => Some(("SpA", "Spe")), "Rash"    => Some(("SpA", "SpD")),
+        "Calm"    => Some(("SpD", "Atk")), "Gentle"  => Some(("SpD", "Def")),
+        "Sassy"   => Some(("SpD", "Spe")), "Careful" => Some(("SpD", "SpA")),
+        _         => None,
+    }
+}
+
+fn stat_row_job(
+    nature: &str,
+    hp: u16, atk: u16, def: u16, spe: u16, spa: u16, spd: u16,
+    base: egui::Color32,
+    size: f32,
+) -> egui::text::LayoutJob {
+    let mods    = nature_mods(nature);
+    let up_stat = mods.map(|(u, _)| u);
+    let dn_stat = mods.map(|(_, d)| d);
+    let stat_col = |label: &str| {
+        if up_stat == Some(label)  { egui::Color32::from_rgb(255, 153, 204) }
+        else if dn_stat == Some(label) { egui::Color32::from_rgb(158, 200, 255) }
+        else { base }
+    };
+    let sep = egui::text::TextFormat {
+        color: base, font_id: egui::FontId::proportional(size), ..Default::default()
+    };
+    let mut job = egui::text::LayoutJob::default();
+    for (i, (label, val)) in [("HP", hp), ("Atk", atk), ("Def", def), ("Spe", spe), ("SpA", spa), ("SpD", spd)].iter().enumerate() {
+        if i > 0 { job.append(" | ", 0.0, sep.clone()); }
+        job.append(&format!("{} {}", label, val), 0.0, egui::text::TextFormat {
+            color: stat_col(label), font_id: egui::FontId::proportional(size), ..Default::default()
+        });
+    }
+    job
+}
+
 /// Returns the display symbol and color for a gender byte (0=male, 1=female, 2=genderless).
 fn gender_label(gender: u8) -> (&'static str, egui::Color32) {
     match gender {
@@ -224,13 +299,102 @@ fn gender_label(gender: u8) -> (&'static str, egui::Color32) {
 }
 
 impl WindowInfo {
+    fn draw_settings(&mut self, ui: &mut egui::Ui) {
+        let s = &mut self.settings;
+        egui::Grid::new("tracker_settings_grid")
+            .num_columns(2)
+            .spacing([12.0, 8.0])
+            .min_col_width(110.0)
+            .show(ui, |ui| {
+                ui.label("ROM path:");
+                ui.horizontal(|ui| {
+                    ui.add(egui::TextEdit::singleline(&mut s.rom).desired_width(260.0).hint_text("path/to/firered.gba"));
+                    if ui.button("Browse…").clicked() {
+                        if let Some(path) = rfd::FileDialog::new().add_filter("GBA ROM", &["gba"]).pick_file() {
+                            s.rom = path.display().to_string();
+                        }
+                    }
+                });
+                ui.end_row();
+
+                ui.label("Database:");
+                ui.add(egui::TextEdit::singleline(&mut s.db).desired_width(300.0).hint_text("localhost/nuzlocke"));
+                ui.end_row();
+
+                ui.label("Clean ROM:");
+                ui.checkbox(&mut s.clean, "Enable ability name display");
+                ui.end_row();
+
+                ui.label("Default mode:");
+                ui.horizontal(|ui| {
+                    ui.selectable_value(&mut s.mode, crate::config::ConfigMode::Standalone, "Standalone");
+                    ui.selectable_value(&mut s.mode, crate::config::ConfigMode::Connected,  "Connected");
+                });
+                ui.end_row();
+
+                if s.mode == crate::config::ConfigMode::Connected {
+                    ui.label("Aggregator host:");
+                    ui.add(egui::TextEdit::singleline(&mut s.aggregator_host).desired_width(200.0));
+                    ui.end_row();
+
+                    ui.label("Aggregator port:");
+                    ui.add(egui::TextEdit::singleline(&mut s.aggregator_port).desired_width(80.0));
+                    ui.end_row();
+                }
+            });
+
+        ui.add_space(8.0);
+        let rom_ok  = !s.rom.trim().is_empty();
+        let port_ok = s.mode != crate::config::ConfigMode::Connected || s.aggregator_port.parse::<u16>().is_ok();
+        ui.horizontal(|ui| {
+            let saved = ui.add_enabled(rom_ok && port_ok, egui::Button::new("Save")).clicked();
+            if !rom_ok {
+                ui.label(egui::RichText::new("ROM path is required").color(egui::Color32::from_rgb(220, 80, 80)).small());
+            } else if !port_ok {
+                ui.label(egui::RichText::new("Invalid port").color(egui::Color32::from_rgb(220, 80, 80)).small());
+            }
+            if saved {
+                let db_raw = s.db.trim().to_string();
+                let db = if db_raw.starts_with("postgresql://") || db_raw.starts_with("postgres://") { db_raw } else { format!("postgresql://{}", db_raw) };
+                let cfg = TrackerConfig {
+                    rom:             s.rom.trim().to_string(),
+                    db,
+                    clean:           s.clean,
+                    mode:            s.mode.clone(),
+                    aggregator_host: s.aggregator_host.trim().to_string(),
+                    aggregator_port: s.aggregator_port.parse().unwrap_or(7878),
+                };
+                save_config(&cfg, &self.config_path);
+                self.settings_open = false;
+            }
+        });
+        ui.small("Changes take effect on next launch.");
+    }
+
     /// Draws the party panel.
     ///
     /// Renders badge summary, next gym info, then for each party member:
     /// sprite, nickname, level, HP (color-coded), met location, and ability
     /// (if `--clean` is active).
     pub fn draw_party(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Party");
+        ui.horizontal(|ui| {
+            ui.heading("Party");
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.button("⚙").on_hover_text("Settings").clicked() {
+                    self.settings_open = !self.settings_open;
+                }
+            });
+        });
+
+        if self.settings_open {
+            let mut open = self.settings_open;
+            egui::Window::new("⚙ Settings")
+                .collapsible(false)
+                .resizable(false)
+                .open(&mut open)
+                .show(ui.ctx(), |ui| { self.draw_settings(ui); });
+            self.settings_open = open;
+        }
 
         // ── Badge summary ─────────────────────────────────────────────────────
         if let Some(badge_state) = fire_red_badge::read_badge_state() {
@@ -337,19 +501,7 @@ impl WindowInfo {
                                 ))
                                 .color(dim),
                             );
-                            ui.label(
-                                egui::RichText::new(format!(
-                                    "HP {max} | Atk {atk} | Def {def} | Spe {spe} | SpA {spa} | SpD {spd}",
-                                    max = r.max_hp,
-                                    atk = r.attack,
-                                    def = r.defense,
-                                    spe = r.speed,
-                                    spa = r.sp_attack,
-                                    spd = r.sp_defense,
-                                ))
-                                .color(dim)
-                                .size(11.0),
-                            );
+                            ui.label(stat_row_job(&r.nature, r.max_hp, r.attack, r.defense, r.speed, r.sp_attack, r.sp_defense, dim, 11.0));
                             ui.label(
                                 egui::RichText::new(format!(
                                     "Died: {}",

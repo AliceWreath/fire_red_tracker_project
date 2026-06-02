@@ -19,7 +19,7 @@ impl Default for ConfigMode {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TrackerConfig {
     pub rom: String,
     pub db: String,

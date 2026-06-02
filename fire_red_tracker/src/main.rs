@@ -156,7 +156,9 @@ fn main() {
     let config_path = cli.config.as_deref()
         .map(std::path::PathBuf::from)
         .unwrap_or_else(config::default_config_path);
-    let cfg = config::load_or_prompt(&config_path);
+    let cfg             = config::load_or_prompt(&config_path);
+    let cfg_gui         = cfg.clone();
+    let config_path_gui = config_path.clone();
 
     // Mode: CLI subcommand wins; otherwise use what the config says.
     let mode = match cli.command {
@@ -408,7 +410,7 @@ fn main() {
                 .with_inner_size([PARTY_WINDOW.0, PARTY_WINDOW.1]),
             ..Default::default()
         },
-        Box::new(|cc| {
+        Box::new(move |cc| {
             Ok(Box::new(WindowInfo::new(
                 cc,
                 shared_party,
@@ -416,6 +418,8 @@ fn main() {
                 Arc::new(Mutex::new(Vec::new())),
                 Arc::new(Mutex::new(std::collections::HashSet::new())),
                 None,
+                config_path_gui,
+                &cfg_gui,
             )))
         }),
     );

@@ -189,7 +189,7 @@ const TABLES = {
             { key: 'shiny',     label: 'Shiny',     cls: row => row.shiny ? 'shiny' : 'no',      fmt: v => v ? '★' : '' },
             { key: 'gender',    label: '⚥',         fmt: v => v === 0 ? '♂' : v === 1 ? '♀' : '' },
             { key: 'soul_link', label: 'SoulLink',  cls: row => row.soul_link ? 'dead-yes' : 'no', fmt: v => v ? 'yes' : '' },
-            { key: 'stats',     label: 'Stats',     cls: 'mono' },
+            { key: 'stats',     label: 'Stats',     cls: 'mono', fmt: (v, row) => statsColorNode(v, row.nature) },
             { key: 'ivs',       label: 'IVs',       cls: 'mono' },
             { key: 'died_at',   label: 'Died',      cls: 'mono' },
         ],
@@ -323,17 +323,52 @@ function renderTable() {
     content.appendChild(wrap);
 }
 
+const DB_IV_LABELS   = ['HP', 'Atk', 'Def', 'Spe', 'SpA', 'SpD'];
+const DB_NATURE_MODS = {
+    'Lonely':  { up: 'Atk', down: 'Def' }, 'Brave':   { up: 'Atk', down: 'Spe' },
+    'Adamant': { up: 'Atk', down: 'SpA' }, 'Naughty': { up: 'Atk', down: 'SpD' },
+    'Bold':    { up: 'Def', down: 'Atk' }, 'Relaxed': { up: 'Def', down: 'Spe' },
+    'Impish':  { up: 'Def', down: 'SpA' }, 'Lax':     { up: 'Def', down: 'SpD' },
+    'Timid':   { up: 'Spe', down: 'Atk' }, 'Hasty':   { up: 'Spe', down: 'Def' },
+    'Jolly':   { up: 'Spe', down: 'SpA' }, 'Naive':   { up: 'Spe', down: 'SpD' },
+    'Modest':  { up: 'SpA', down: 'Atk' }, 'Mild':    { up: 'SpA', down: 'Def' },
+    'Quiet':   { up: 'SpA', down: 'Spe' }, 'Rash':    { up: 'SpA', down: 'SpD' },
+    'Calm':    { up: 'SpD', down: 'Atk' }, 'Gentle':  { up: 'SpD', down: 'Def' },
+    'Sassy':   { up: 'SpD', down: 'Spe' }, 'Careful': { up: 'SpD', down: 'SpA' },
+};
+
 function ivColorNode(str) {
     const wrap = document.createElement('span');
     if (!str) return wrap;
     const parts = String(str).split('/');
     for (let i = 0; i < parts.length; i++) {
-        if (i > 0) wrap.appendChild(document.createTextNode('/'));
+        if (i > 0) wrap.appendChild(document.createTextNode(' '));
+        const lbl = document.createElement('span');
+        lbl.style.color = 'rgba(200,200,200,0.45)';
+        lbl.textContent = (DB_IV_LABELS[i] || '?') + ':';
+        wrap.appendChild(lbl);
         const v = parseInt(parts[i], 10);
         const s = document.createElement('span');
         if (v === 31) s.style.color = '#ffd040';
         else if (v === 0) s.style.color = '#e06060';
         s.textContent = parts[i];
+        wrap.appendChild(s);
+    }
+    return wrap;
+}
+
+function statsColorNode(str, nature) {
+    const wrap = document.createElement('span');
+    if (!str) return wrap;
+    const mods  = DB_NATURE_MODS[nature] || {};
+    const parts = String(str).split('/');
+    for (let i = 0; i < parts.length; i++) {
+        if (i > 0) wrap.appendChild(document.createTextNode(' | '));
+        const lbl = DB_IV_LABELS[i] || '?';
+        const s = document.createElement('span');
+        if (lbl === mods.up)        s.style.color = '#ff99cc';
+        else if (lbl === mods.down) s.style.color = '#9ec8ff';
+        s.textContent = lbl + ' ' + parts[i];
         wrap.appendChild(s);
     }
     return wrap;

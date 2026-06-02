@@ -94,7 +94,8 @@ fn main() {
     let config_path = cli.config.as_deref()
         .map(std::path::PathBuf::from)
         .unwrap_or_else(config::default_config_path);
-    let cfg = config::load_or_prompt(&config_path);
+    let cfg     = config::load_or_prompt(&config_path);
+    let cfg_ref = cfg.clone();
 
     // db: CLI arg overrides config.
     let db = cli.db.or(cfg.db).map(|s| {
@@ -196,7 +197,7 @@ fn main() {
         let _ = eframe::run_native(
             "Fire Red Aggregator",
             options,
-            Box::new(move |cc| Ok(Box::new(AggregatorApp::new(cc, shared_slots)))),
+            Box::new(move |cc| Ok(Box::new(AggregatorApp::new(cc, shared_slots, config_path, &cfg_ref)))),
         );
     }
 }

@@ -113,6 +113,9 @@ html, body {
 .r-ivs   { font-family: monospace; color: #777; font-size: 10px; }
 .iv-p    { color: #ffd040; }
 .iv-z    { color: #e06060; }
+.iv-lbl  { color: rgba(200,200,200,0.45); }
+.nat-up  { color: #ff99cc; }
+.nat-dn  { color: #9ec8ff; }
 .r-time  { color: #555; font-size: 10px; margin-left: auto; white-space: nowrap; }
 .r-dead  { color: #e06060; font-size: 11px; font-weight: 600; }
 .r-soul  { color: #d060d0; font-size: 10px; }
@@ -303,7 +306,7 @@ function buildDeadSection(dead) {
         r.appendChild(el('span', 'r-nat',  row.nature));
         if (row.shiny)     r.appendChild(el('span', 'r-shiny', '★'));
         if (row.soul_link) r.appendChild(el('span', 'r-soul',  'soul link'));
-        else               r.appendChild(el('span', 'r-stats', row.stats));
+        else               r.appendChild(statsSpan(row.stats, row.nature));
         r.appendChild(ivSpan(row.ivs));
         r.appendChild(el('span', 'r-time', row.died_at));
         return r;
@@ -365,18 +368,56 @@ function el(tag, cls, txt) {
     return e;
 }
 
+const IV_STAT_LABELS = ['HP', 'Atk', 'Def', 'Spe', 'SpA', 'SpD'];
+
 function ivSpan(str) {
     const wrap = document.createElement('span');
     wrap.className = 'r-ivs';
     if (!str) return wrap;
     const parts = String(str).split('/');
     for (let i = 0; i < parts.length; i++) {
-        if (i > 0) wrap.appendChild(document.createTextNode('/'));
+        if (i > 0) wrap.appendChild(document.createTextNode(' '));
+        const lbl = document.createElement('span');
+        lbl.className = 'iv-lbl';
+        lbl.textContent = (IV_STAT_LABELS[i] || '?') + ':';
+        wrap.appendChild(lbl);
         const v = parseInt(parts[i], 10);
         const s = document.createElement('span');
         if (v === 31) s.className = 'iv-p';
         else if (v === 0) s.className = 'iv-z';
         s.textContent = parts[i];
+        wrap.appendChild(s);
+    }
+    return wrap;
+}
+
+const NATURE_MODS_H = {
+    'Lonely':  { up: 'Atk', down: 'Def' }, 'Brave':   { up: 'Atk', down: 'Spe' },
+    'Adamant': { up: 'Atk', down: 'SpA' }, 'Naughty': { up: 'Atk', down: 'SpD' },
+    'Bold':    { up: 'Def', down: 'Atk' }, 'Relaxed': { up: 'Def', down: 'Spe' },
+    'Impish':  { up: 'Def', down: 'SpA' }, 'Lax':     { up: 'Def', down: 'SpD' },
+    'Timid':   { up: 'Spe', down: 'Atk' }, 'Hasty':   { up: 'Spe', down: 'Def' },
+    'Jolly':   { up: 'Spe', down: 'SpA' }, 'Naive':   { up: 'Spe', down: 'SpD' },
+    'Modest':  { up: 'SpA', down: 'Atk' }, 'Mild':    { up: 'SpA', down: 'Def' },
+    'Quiet':   { up: 'SpA', down: 'Spe' }, 'Rash':    { up: 'SpA', down: 'SpD' },
+    'Calm':    { up: 'SpD', down: 'Atk' }, 'Gentle':  { up: 'SpD', down: 'Def' },
+    'Sassy':   { up: 'SpD', down: 'Spe' }, 'Careful': { up: 'SpD', down: 'SpA' },
+};
+
+function statsSpan(str, nature) {
+    const wrap = document.createElement('span');
+    wrap.className = 'r-stats';
+    if (!str) return wrap;
+    const mods  = NATURE_MODS_H[nature] || {};
+    const parts = String(str).split('/');
+    const labels = IV_STAT_LABELS;
+    for (let i = 0; i < parts.length; i++) {
+        if (i > 0) wrap.appendChild(document.createTextNode(' | '));
+        const lbl = labels[i] || '?';
+        const s = document.createElement('span');
+        if (lbl === mods.up)   s.className = 'nat-up';
+        else if (lbl === mods.down) s.className = 'nat-dn';
+        s.textContent = lbl + ' ' + parts[i];
         wrap.appendChild(s);
     }
     return wrap;

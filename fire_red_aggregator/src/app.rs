@@ -23,7 +23,9 @@
 //! is called automatically so both partners are shown as dead.
 
 use crate::client::{MonitorSlot, SharedSlots};
+use crate::config::{AggregatorConfig, save_config};
 use std::sync::Arc;
+use std::path::PathBuf;
 use egui::Ui;
 use fire_red_database::{CaughtPokemon, DeadPokemon};
 use fire_red_party_monitor::Pokemon;
@@ -79,6 +81,28 @@ impl SlotDbCache {
 // App struct
 // ---------------------------------------------------------------------------
 
+struct SettingsDraft {
+    listen_port_str: String,
+    db:              String,
+    db_enabled:      bool,
+    ws_port_str:     String,
+    ws_port_enabled: bool,
+}
+
+impl SettingsDraft {
+    fn from_config(cfg: &AggregatorConfig) -> Self {
+        Self {
+            listen_port_str: cfg.listen_port.to_string(),
+            db:              cfg.db.as_deref()
+                .map(|s| s.trim_start_matches("postgresql://").trim_start_matches("postgres://").to_string())
+                .unwrap_or_else(|| "localhost/nuzlocke".to_string()),
+            db_enabled:      cfg.db.is_some(),
+            ws_port_str:     cfg.ws_port.map(|p| p.to_string()).unwrap_or_else(|| "9090".to_string()),
+            ws_port_enabled: cfg.ws_port.is_some(),
+        }
+    }
+}
+
 /// The top-level eframe application for the multi-player aggregator view.
 pub struct AggregatorApp {
     live_slots:           SharedSlots,
@@ -91,10 +115,13 @@ pub struct AggregatorApp {
     frame_all_dead:            Vec<HashMap<u32, DeadPokemon>>,
     frame_live_soul_link_dead: Vec<HashSet<u32>>,
     frame_db_connected:        Vec<bool>,
+    config_path:   PathBuf,
+    settings_open: bool,
+    settings:      SettingsDraft,
 }
 
 impl AggregatorApp {
-    pub fn new(_cc: &eframe::CreationContext<'_>, live_slots: SharedSlots) -> Self {
+    pub fn new(_cc: &eframe::CreationContext<'_>, live_slots: SharedSlots, config_path: PathBuf, config: &AggregatorConfig) -> Self {
         Self {
             live_slots,
             slots:                     Vec::new(),
@@ -105,6 +132,9 @@ impl AggregatorApp {
             frame_all_dead:            Vec::new(),
             frame_live_soul_link_dead: Vec::new(),
             frame_db_connected:        Vec::new(),
+            config_path,
+            settings_open: false,
+            settings:      SettingsDraft::from_config(config),
         }
     }
 
@@ -425,15 +455,7 @@ impl AggregatorApp {
                         .color(dim),
                     );
                     if r.max_hp > 0 {
-                        ui.label(
-                            egui::RichText::new(format!(
-                                "HP {} | Atk {} | Def {} | Spe {} | SpA {} | SpD {}",
-                                r.max_hp, r.attack, r.defense, r.speed,
-                                r.sp_attack, r.sp_defense,
-                            ))
-                            .color(dim)
-                            .size(11.0),
-                        );
+                        ui.label(stat_row_job(&r.nature, r.max_hp, r.attack, r.defense, r.speed, r.sp_attack, r.sp_defense, dim, 11.0));
                     } else {
                         ui.label(
                             egui::RichText::new("Soul Link").color(dim).size(11.0),
@@ -461,15 +483,7 @@ impl AggregatorApp {
                         ))
                         .color(dim),
                     );
-                    ui.label(
-                        egui::RichText::new(format!(
-                            "HP {} | Atk {} | Def {} | Spe {} | SpA {} | SpD {}",
-                            pokemon.max_hp, pokemon.attack, pokemon.defense,
-                            pokemon.speed, pokemon.sp_attack, pokemon.sp_defense,
-                        ))
-                        .color(dim)
-                        .size(11.0),
-                    );
+                    ui.label(stat_row_job(nature, pokemon.max_hp, pokemon.attack, pokemon.defense, pokemon.speed, pokemon.sp_attack, pokemon.sp_defense, dim, 11.0));
                     if soul_link_dead {
                         ui.label(egui::RichText::new("Soul Link").color(dim).size(11.0));
                     }
@@ -491,6 +505,60 @@ impl AggregatorApp {
                 }
             });
         });
+    }
+
+    fn draw_settings(&mut self, ui: &mut egui::Ui) {
+        let s = &mut self.settings;
+        egui::Grid::new("settings_grid")
+            .num_columns(2)
+            .spacing([12.0, 8.0])
+            .min_col_width(130.0)
+            .show(ui, |ui| {
+                ui.label("Listen port:");
+                ui.add(egui::TextEdit::singleline(&mut s.listen_port_str).desired_width(80.0));
+                ui.end_row();
+
+                ui.checkbox(&mut s.db_enabled, "Database:");
+                ui.add_enabled_ui(s.db_enabled, |ui| {
+                    ui.add(egui::TextEdit::singleline(&mut s.db).desired_width(280.0).hint_text("localhost/nuzlocke"));
+                });
+                ui.end_row();
+
+                ui.checkbox(&mut s.ws_port_enabled, "WebSocket overlay:");
+                ui.add_enabled_ui(s.ws_port_enabled, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label("port:");
+                        ui.add(egui::TextEdit::singleline(&mut s.ws_port_str).desired_width(70.0));
+                    });
+                });
+                ui.end_row();
+            });
+
+        ui.add_space(8.0);
+        let port_ok = s.listen_port_str.trim().parse::<u16>().is_ok();
+        let ws_ok   = !s.ws_port_enabled || s.ws_port_str.trim().parse::<u16>().is_ok();
+        ui.horizontal(|ui| {
+            let saved = ui.add_enabled(port_ok && ws_ok, egui::Button::new("Save")).clicked();
+            if !port_ok {
+                ui.label(egui::RichText::new("Invalid listen port").color(egui::Color32::from_rgb(220, 80, 80)).small());
+            } else if !ws_ok {
+                ui.label(egui::RichText::new("Invalid WebSocket port").color(egui::Color32::from_rgb(220, 80, 80)).small());
+            }
+            if saved {
+                let db = if s.db_enabled {
+                    let raw = s.db.trim().to_string();
+                    Some(if raw.starts_with("postgresql://") || raw.starts_with("postgres://") { raw } else { format!("postgresql://{}", raw) })
+                } else { None };
+                let cfg = AggregatorConfig {
+                    listen_port: s.listen_port_str.trim().parse().unwrap_or(7878),
+                    db,
+                    ws_port: if s.ws_port_enabled { s.ws_port_str.trim().parse().ok() } else { None },
+                };
+                save_config(&cfg, &self.config_path);
+                self.settings_open = false;
+            }
+        });
+        ui.small("Changes take effect on next launch.");
     }
 
     /// Draws a labelled row of encounter sprites, skipping empty sections.
@@ -531,6 +599,17 @@ impl AggregatorApp {
 
 impl eframe::App for AggregatorApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        egui::Panel::top("top_bar").show_inside(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("Fire Red Aggregator").strong());
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.button("⚙ Settings").clicked() {
+                        self.settings_open = !self.settings_open;
+                    }
+                });
+            });
+        });
+
         let n = self.slots.len();
         if self.frame_states.len() < n { return; }
 
@@ -555,6 +634,20 @@ impl eframe::App for AggregatorApp {
                         db_connected[i], textures, frame_states,
                     );
                 });
+        }
+
+        // Settings modal window
+        if self.settings_open {
+            let mut open = self.settings_open;
+            egui::Window::new("⚙ Settings")
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .open(&mut open)
+                .show(ui.ctx(), |ui| {
+                    self.draw_settings(ui);
+                });
+            self.settings_open = open;
         }
     }
 
@@ -696,6 +789,50 @@ impl eframe::App for AggregatorApp {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/// Returns `(boosted_stat, dropped_stat)` label pairs for a nature, or `None` for neutral.
+fn nature_mods(nature: &str) -> Option<(&'static str, &'static str)> {
+    match nature {
+        "Lonely"  => Some(("Atk", "Def")), "Brave"   => Some(("Atk", "Spe")),
+        "Adamant" => Some(("Atk", "SpA")), "Naughty" => Some(("Atk", "SpD")),
+        "Bold"    => Some(("Def", "Atk")), "Relaxed" => Some(("Def", "Spe")),
+        "Impish"  => Some(("Def", "SpA")), "Lax"     => Some(("Def", "SpD")),
+        "Timid"   => Some(("Spe", "Atk")), "Hasty"   => Some(("Spe", "Def")),
+        "Jolly"   => Some(("Spe", "SpA")), "Naive"   => Some(("Spe", "SpD")),
+        "Modest"  => Some(("SpA", "Atk")), "Mild"    => Some(("SpA", "Def")),
+        "Quiet"   => Some(("SpA", "Spe")), "Rash"    => Some(("SpA", "SpD")),
+        "Calm"    => Some(("SpD", "Atk")), "Gentle"  => Some(("SpD", "Def")),
+        "Sassy"   => Some(("SpD", "Spe")), "Careful" => Some(("SpD", "SpA")),
+        _         => None,
+    }
+}
+
+fn stat_row_job(
+    nature: &str,
+    hp: u16, atk: u16, def: u16, spe: u16, spa: u16, spd: u16,
+    base: egui::Color32,
+    size: f32,
+) -> egui::text::LayoutJob {
+    let mods     = nature_mods(nature);
+    let up_stat  = mods.map(|(u, _)| u);
+    let dn_stat  = mods.map(|(_, d)| d);
+    let stat_col = |label: &str| {
+        if up_stat == Some(label)  { egui::Color32::from_rgb(255, 153, 204) }
+        else if dn_stat == Some(label) { egui::Color32::from_rgb(158, 200, 255) }
+        else { base }
+    };
+    let sep = egui::text::TextFormat {
+        color: base, font_id: egui::FontId::proportional(size), ..Default::default()
+    };
+    let mut job = egui::text::LayoutJob::default();
+    for (i, (label, val)) in [("HP", hp), ("Atk", atk), ("Def", def), ("Spe", spe), ("SpA", spa), ("SpD", spd)].iter().enumerate() {
+        if i > 0 { job.append(" | ", 0.0, sep.clone()); }
+        job.append(&format!("{} {}", label, val), 0.0, egui::text::TextFormat {
+            color: stat_col(label), font_id: egui::FontId::proportional(size), ..Default::default()
+        });
+    }
+    job
+}
 
 /// Returns the texture cache key for a given species and shininess.
 pub fn sprite_key(species: u16, shiny: bool) -> String {

@@ -124,8 +124,11 @@ html, body {
 .box-name { font-size: 9px; color: #ddd; font-weight: 600; text-align: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; width: 100%; }
 .box-nature { font-size: 8px; color: #aaa; text-align: center; }
 .box-ivs { font-size: 8px; color: #bbb; text-align: center; }
-.iv-p { color: #ffd040; }
-.iv-z { color: #e06060; }
+.iv-p     { color: #ffd040; }
+.iv-z     { color: #e06060; }
+.iv-label { color: rgba(200,200,200,0.45); }
+.nat-up   { color: #ff99cc; }
+.nat-down { color: #9ec8ff; }
 </style>
 </head>
 <body>
@@ -261,13 +264,7 @@ function renderParty(root, slot) {
             if (mon.soul_link_kill) {
                 content.appendChild(el('div', 'mon-sub', 'Soul Link'));
             } else if (mon.attack > 0) {
-                content.appendChild(el('div', 'mon-sub-sm',
-                    'HP ' + mon.max_hp +
-                    ' | Atk ' + mon.attack +
-                    ' | Def ' + mon.defense +
-                    ' | Spe ' + mon.speed +
-                    ' | SpA ' + mon.sp_attack +
-                    ' | SpD ' + mon.sp_defense));
+                content.appendChild(statRowEl('mon-sub-sm', mon.nature, mon.max_hp, mon.attack, mon.defense, mon.speed, mon.sp_attack, mon.sp_defense));
             }
             if (mon.died_at) {
                 content.appendChild(el('div', 'mon-sub-sm', 'Died: ' + mon.died_at));
@@ -278,13 +275,7 @@ function renderParty(root, slot) {
             const ratio = mon.max_hp > 0 ? mon.hp / mon.max_hp : 0;
             const cls   = ratio < 0.3 ? 'hp-low' : ratio < 0.8 ? 'hp-mid' : 'hp-high';
             content.appendChild(el('div', 'hp ' + cls, mon.hp + '/' + mon.max_hp));
-            content.appendChild(el('div', 'mon-sub-sm',
-                'HP ' + mon.max_hp +
-                ' | Atk ' + mon.attack +
-                ' | Def ' + mon.defense +
-                ' | Spe ' + mon.speed +
-                ' | SpA ' + mon.sp_attack +
-                ' | SpD ' + mon.sp_defense));
+            content.appendChild(statRowEl('mon-sub-sm', mon.nature, mon.max_hp, mon.attack, mon.defense, mon.speed, mon.sp_attack, mon.sp_defense));
             content.appendChild(el('div', 'exp', 'Exp: ' + mon.exp));
         }
 
@@ -350,16 +341,10 @@ function renderDead(root, slot) {
         if (mon.soul_link) {
             info.appendChild(el('div', 'mon-sub', 'Soul Link'));
         } else {
-            info.appendChild(el('div', 'mon-sub-sm',
-                'HP '  + mon.max_hp   +
-                ' | Atk ' + mon.attack   +
-                ' | Def ' + mon.defense  +
-                ' | Spe ' + mon.speed    +
-                ' | SpA ' + mon.sp_attack +
-                ' | SpD ' + mon.sp_defense));
+            info.appendChild(statRowEl('mon-sub-sm', mon.nature, mon.max_hp, mon.attack, mon.defense, mon.speed, mon.sp_attack, mon.sp_defense));
         }
 
-        info.appendChild(ivRowEl('mon-sub-sm', 'IV:', mon.iv_hp, mon.iv_atk, mon.iv_def, mon.iv_spe, mon.iv_spa, mon.iv_spd));
+        info.appendChild(ivRowEl('mon-sub-sm', 'IV:', mon.iv_hp, mon.iv_atk, mon.iv_def, mon.iv_spe, mon.iv_spa, mon.iv_spd, true));
 
         info.appendChild(el('div', 'mon-sub-sm',
             'EV: ' + mon.ev_hp + '/' + mon.ev_atk + '/' + mon.ev_def +
@@ -400,7 +385,7 @@ function renderCaught(root, slot) {
         info.appendChild(el('div', 'mon-sub',
             mon.species_name + ' — ' + mon.nature + (mon.shiny ? ' ★' : '')));
 
-        info.appendChild(ivRowEl('mon-sub-sm', 'IV:', mon.iv_hp, mon.iv_atk, mon.iv_def, mon.iv_spe, mon.iv_spa, mon.iv_spd));
+        info.appendChild(ivRowEl('mon-sub-sm', 'IV:', mon.iv_hp, mon.iv_atk, mon.iv_def, mon.iv_spe, mon.iv_spa, mon.iv_spd, true));
 
         info.appendChild(el('div', 'mon-sub-sm', 'Caught: ' + mon.caught_at));
         info.appendChild(el('div', 'mon-sub-sm', 'Location: ' + mon.met_location_name));
@@ -510,12 +495,50 @@ function ivEl(v) {
     return s;
 }
 
-function ivRowEl(cls, label, hp, atk, def, spe, spa, spd) {
+const IV_LABELS = ['HP', 'Atk', 'Def', 'Spe', 'SpA', 'SpD'];
+
+function ivRowEl(cls, label, hp, atk, def, spe, spa, spd, labeled) {
     const d = el('div', cls);
     if (label) d.appendChild(document.createTextNode(label + ' '));
-    for (let i = 0, vals = [hp, atk, def, spe, spa, spd]; i < vals.length; i++) {
-        if (i > 0) d.appendChild(document.createTextNode('/'));
+    const vals = [hp, atk, def, spe, spa, spd];
+    for (let i = 0; i < vals.length; i++) {
+        if (i > 0) d.appendChild(document.createTextNode(labeled ? ' ' : '/'));
+        if (labeled) {
+            const lbl = document.createElement('span');
+            lbl.className = 'iv-label';
+            lbl.textContent = IV_LABELS[i] + ':';
+            d.appendChild(lbl);
+        }
         d.appendChild(ivEl(vals[i]));
+    }
+    return d;
+}
+
+const NATURE_MODS = {
+    'Lonely':  { up: 'Atk', down: 'Def' }, 'Brave':   { up: 'Atk', down: 'Spe' },
+    'Adamant': { up: 'Atk', down: 'SpA' }, 'Naughty': { up: 'Atk', down: 'SpD' },
+    'Bold':    { up: 'Def', down: 'Atk' }, 'Relaxed': { up: 'Def', down: 'Spe' },
+    'Impish':  { up: 'Def', down: 'SpA' }, 'Lax':     { up: 'Def', down: 'SpD' },
+    'Timid':   { up: 'Spe', down: 'Atk' }, 'Hasty':   { up: 'Spe', down: 'Def' },
+    'Jolly':   { up: 'Spe', down: 'SpA' }, 'Naive':   { up: 'Spe', down: 'SpD' },
+    'Modest':  { up: 'SpA', down: 'Atk' }, 'Mild':    { up: 'SpA', down: 'Def' },
+    'Quiet':   { up: 'SpA', down: 'Spe' }, 'Rash':    { up: 'SpA', down: 'SpD' },
+    'Calm':    { up: 'SpD', down: 'Atk' }, 'Gentle':  { up: 'SpD', down: 'Def' },
+    'Sassy':   { up: 'SpD', down: 'Spe' }, 'Careful': { up: 'SpD', down: 'SpA' },
+};
+
+function statRowEl(cls, nature, hp, atk, def, spe, spa, spd) {
+    const d = el('div', cls);
+    const mods = NATURE_MODS[nature] || {};
+    const stats = [['HP', hp], ['Atk', atk], ['Def', def], ['Spe', spe], ['SpA', spa], ['SpD', spd]];
+    for (let i = 0; i < stats.length; i++) {
+        if (i > 0) d.appendChild(document.createTextNode(' | '));
+        const [lbl, val] = stats[i];
+        const s = document.createElement('span');
+        if (lbl === mods.up) s.className = 'nat-up';
+        else if (lbl === mods.down) s.className = 'nat-down';
+        s.textContent = lbl + ' ' + val;
+        d.appendChild(s);
     }
     return d;
 }
