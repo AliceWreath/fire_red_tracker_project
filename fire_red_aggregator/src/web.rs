@@ -575,14 +575,14 @@ impl BroadcastLoop {
                                     None
                                 } else {
                                     let mut found = None;
-                                    'outer: for j in 0..n {
+                                    'outer: for (j, (player_j, state_j)) in states.iter().enumerate().take(n) {
                                         if j == i { continue; }
-                                        if let Some(gs_j) = &states[j].1 {
+                                        if let Some(gs_j) = state_j {
                                             for p_j in &gs_j.party {
                                                 if p_j.box_mon.secure.misc.met_location == met {
                                                     found = Some(SoulLinkPartnerDto {
                                                         nickname: p_j.get_nickname_string(),
-                                                        player:   states[j].0.clone(),
+                                                        player:   player_j.clone(),
                                                     });
                                                     break 'outer;
                                                 }

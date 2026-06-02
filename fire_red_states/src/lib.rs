@@ -37,7 +37,7 @@ pub enum ClientMessage {
 ///   3 = BoxData
 #[derive(serde::Serialize, serde::Deserialize)]
 pub enum ServerMessage {
-    State(GameState),           // index 0 — do not reorder
+    State(Box<GameState>),      // index 0 — do not reorder
     Textures(Vec<SpriteData>),  // index 1 — do not reorder
     RunChanged(Option<u32>),    // index 2 — do not reorder
     BoxData(Vec<BoxEntry>),     // index 3 — do not reorder

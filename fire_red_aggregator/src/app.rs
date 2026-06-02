@@ -199,6 +199,7 @@ impl AggregatorApp {
     }
 
     /// Draws one complete player column (party + caught log + encounters).
+    #[allow(clippy::too_many_arguments)]
     fn draw_column(
         ui: &mut Ui,
         label: &str,
@@ -232,6 +233,7 @@ impl AggregatorApp {
     }
 
     /// Draws the scrollable party + caught log region.
+    #[allow(clippy::too_many_arguments)]
     fn draw_party_region(
         ui: &mut Ui,
         label: &str,
@@ -727,7 +729,7 @@ impl eframe::App for AggregatorApp {
                     .unwrap_or(0);
                 if met_loc == 0 { continue; }
 
-                for j in 0..n {
+                for (j, dead_j) in all_dead.iter().enumerate().take(n) {
                     if j == i { continue; }
 
                     let partner = self.db_caches[j].caught
@@ -737,7 +739,7 @@ impl eframe::App for AggregatorApp {
 
                     if let Some(p) = partner {
                         let key = (j, p.personality);
-                        let partner_already_dead = all_dead[j].contains_key(&p.personality);
+                        let partner_already_dead = dead_j.contains_key(&p.personality);
                         let already_propagated   = self.soul_link_propagated.contains(&key);
 
                         if !partner_already_dead && !already_propagated {
@@ -806,6 +808,7 @@ fn nature_mods(nature: &str) -> Option<(&'static str, &'static str)> {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn stat_row_job(
     nature: &str,
     hp: u16, atk: u16, def: u16, spe: u16, spa: u16, spd: u16,

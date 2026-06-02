@@ -130,7 +130,7 @@ pub fn handle_client(
         };
 
         let mut ws = write_stream.lock().unwrap_or_else(|e| e.into_inner());
-        if send_message(&mut ws, &ServerMessage::State(state)).is_err() {
+        if send_message(&mut ws, &ServerMessage::State(Box::new(state))).is_err() {
             println!("Client disconnected.");
             break;
         }

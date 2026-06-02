@@ -67,6 +67,7 @@ pub struct WindowInfo {
 }
 
 impl WindowInfo {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         _cc: &eframe::CreationContext<'_>,
         party_list: Arc<Mutex<Vec<fire_red_party_monitor::Pokemon>>>,
@@ -262,6 +263,7 @@ fn nature_mods(nature: &str) -> Option<(&'static str, &'static str)> {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn stat_row_job(
     nature: &str,
     hp: u16, atk: u16, def: u16, spe: u16, spa: u16, spd: u16,

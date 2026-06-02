@@ -185,6 +185,7 @@ fn decompress_pixels(data: &[u8]) -> Vec<u8> {
 /// * `command_queue`         - `EndRun`/`NewRun` commands forwarded to the tracker.
 /// * `run_changed`           - Set when the tracker confirms a run change.
 /// * `box_data`              - Updated when a BoxData message arrives (~5 s cadence).
+#[allow(clippy::too_many_arguments)]
 pub fn handle_tracker_connection(
     stream: TcpStream,
     state: Arc<Mutex<Option<GameState>>>,
@@ -243,7 +244,7 @@ pub fn handle_tracker_connection(
         match recv_message::<ServerMessage>(&mut read_stream) {
             Ok(ServerMessage::State(gs)) => {
                 *label.lock().unwrap_or_else(|e| e.into_inner()) = gs.player_name.clone();
-                *state.lock().unwrap_or_else(|e| e.into_inner()) = Some(gs);
+                *state.lock().unwrap_or_else(|e| e.into_inner()) = Some(*gs);
             }
             Ok(ServerMessage::Textures(sprites)) => {
                 let maybe_cache: Option<SpriteCache> =

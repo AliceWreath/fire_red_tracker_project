@@ -213,31 +213,27 @@ impl<T> __IncompleteArrayField<T> {
 impl WildPokemonHeaderROM {
     /// Reads a wild encounter header from the ROM buffer at `offset`.
     pub fn fill_header(buffer: &[u8], offset: usize) -> Self {
-        let mut index = offset;
-        let mut header = WildPokemonHeaderROM::default();
-
-        header.map_group = read_u8(buffer, index);   index += 1;
-        header.map_num   = read_u8(buffer, index);   index += 3; // skip 2-byte filler
-
-        header.land_mon_enounters_rom_ptr     = read_u32(buffer, index) & 0x07FFFFFF; index += 4;
-        header.water_mon_encounters_rom_ptr   = read_u32(buffer, index) & 0x07FFFFFF; index += 4;
-        header.rock_smash_encounters_rom_ptr  = read_u32(buffer, index) & 0x07FFFFFF; index += 4;
-        header.fishing_encounters_rom_ptr     = read_u32(buffer, index) & 0x07FFFFFF;
-
-        header
+        // layout: u8 map_group, u8 map_num, u16 filler, then four u32 pointers
+        WildPokemonHeaderROM {
+            map_group:                    read_u8(buffer, offset),
+            map_num:                      read_u8(buffer, offset + 1),
+            filler:                       Default::default(),
+            land_mon_enounters_rom_ptr:   read_u32(buffer, offset + 4)  & 0x07FFFFFF,
+            water_mon_encounters_rom_ptr:  read_u32(buffer, offset + 8)  & 0x07FFFFFF,
+            rock_smash_encounters_rom_ptr: read_u32(buffer, offset + 12) & 0x07FFFFFF,
+            fishing_encounters_rom_ptr:    read_u32(buffer, offset + 16) & 0x07FFFFFF,
+        }
     }
 }
 
 impl WildPokemonInfoROM {
     /// Reads encounter table metadata from the ROM buffer at `offset`.
     pub fn fill_pokemon_info(buffer: &[u8], offset: usize) -> Self {
-        let mut index = offset;
-        let mut info = WildPokemonInfoROM::default();
-
-        info.encounter_rate            = read_u8(buffer, index);  index += 4; // 1 byte rate + 3 pad
-        info.wild_pokemon_list_rom_ptr = read_u32(buffer, index) & 0x07FFFFFF;
-
-        info
+        // layout: u8 encounter_rate, u8[3] pad, u32 ptr
+        WildPokemonInfoROM {
+            encounter_rate:            read_u8(buffer, offset),
+            wild_pokemon_list_rom_ptr: read_u32(buffer, offset + 4) & 0x07FFFFFF,
+        }
     }
 
     /// Reads the encounter list for this table from the ROM buffer.
@@ -292,18 +288,15 @@ impl WildPokemon {
     /// Returns a default (zeroed) entry if the data looks malformed
     /// (min_level `0x15` with max_level `0` is a known sentinel pattern).
     pub fn fill_wild_pokemon(buffer: &[u8], offset: usize) -> Self {
-        let mut index = offset;
-        let mut mon = WildPokemon::default();
-
-        mon.min_level = read_u8(buffer, index);  index += 1;
-        mon.max_level = read_u8(buffer, index);  index += 1;
-        mon.species   = read_u16(buffer, index);
-
+        let mon = WildPokemon {
+            min_level: read_u8(buffer, offset),
+            max_level: read_u8(buffer, offset + 1),
+            species:   read_u16(buffer, offset + 2),
+        };
         // Known malformed-entry sentinel.
         if mon.min_level == 0x15 && mon.max_level == 0 {
             return WildPokemon::default();
         }
-
         mon
     }
 }
@@ -331,9 +324,11 @@ impl WildPokemonHeader {
     ///
     /// Only populates encounter tables whose ROM pointer is non-zero.
     pub fn fill_head(header_rom: &WildPokemonHeaderROM, buffer: &[u8]) -> Self {
-        let mut header = WildPokemonHeader::default();
-        header.map_group = header_rom.map_group;
-        header.map_num   = header_rom.map_num;
+        let mut header = WildPokemonHeader {
+            map_group: header_rom.map_group,
+            map_num:   header_rom.map_num,
+            ..Default::default()
+        };
 
         let fill = |ptr: c_uint, dest: &mut WildPokemonInfo| {
             if ptr != 0 {
@@ -363,9 +358,11 @@ impl WildPokemonHeaderFFI {
     /// responsible for ensuring the returned value is eventually dropped
     /// (the [`Drop`] impl handles deallocation).
     pub fn fill_head(header_rom: &WildPokemonHeaderROM, buffer: &[u8]) -> Self {
-        let mut header = WildPokemonHeaderFFI::default();
-        header.map_group = header_rom.map_group;
-        header.map_num   = header_rom.map_num;
+        let mut header = WildPokemonHeaderFFI {
+            map_group: header_rom.map_group,
+            map_num:   header_rom.map_num,
+            ..Default::default()
+        };
 
         let fill = |ptr: c_uint, dest: &mut *mut WildPokemonInfoFFI| {
             if ptr != 0 {
