@@ -172,7 +172,7 @@ const TABLES = {
             { key: 'nature',    label: 'Nature' },
             { key: 'shiny',     label: 'Shiny',    cls: row => row.shiny ? 'shiny' : 'no',   fmt: v => v ? '★' : '' },
             { key: 'gender',    label: '⚥',        fmt: v => v === 0 ? '♂' : v === 1 ? '♀' : '' },
-            { key: 'ivs',       label: 'IVs',      cls: 'mono' },
+            { key: 'ivs',       label: 'IVs',      cls: 'mono', fmt: v => ivColorNode(v) },
             { key: 'location',  label: 'Loc',      cls: 'mono' },
             { key: 'caught_at', label: 'Caught',   cls: 'mono' },
         ],
@@ -307,7 +307,9 @@ function renderTable() {
         for (const col of def.cols) {
             const td  = document.createElement('td');
             const val = row[col.key];
-            td.textContent = col.fmt ? col.fmt(val, row) : (val ?? '');
+            const fmtd = col.fmt ? col.fmt(val, row) : (val ?? '');
+            if (fmtd instanceof Node) td.appendChild(fmtd);
+            else td.textContent = fmtd;
             const cls = typeof col.cls === 'function' ? col.cls(row) : (col.cls || '');
             if (cls) td.className = cls;
             tr.appendChild(td);
@@ -319,6 +321,22 @@ function renderTable() {
     wrap.appendChild(table);
     content.innerHTML = '';
     content.appendChild(wrap);
+}
+
+function ivColorNode(str) {
+    const wrap = document.createElement('span');
+    if (!str) return wrap;
+    const parts = String(str).split('/');
+    for (let i = 0; i < parts.length; i++) {
+        if (i > 0) wrap.appendChild(document.createTextNode('/'));
+        const v = parseInt(parts[i], 10);
+        const s = document.createElement('span');
+        if (v === 31) s.style.color = '#ffd040';
+        else if (v === 0) s.style.color = '#e06060';
+        s.textContent = parts[i];
+        wrap.appendChild(s);
+    }
+    return wrap;
 }
 
 loadData();

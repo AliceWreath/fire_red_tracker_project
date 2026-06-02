@@ -124,6 +124,8 @@ html, body {
 .box-name { font-size: 9px; color: #ddd; font-weight: 600; text-align: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; width: 100%; }
 .box-nature { font-size: 8px; color: #aaa; text-align: center; }
 .box-ivs { font-size: 8px; color: #bbb; text-align: center; }
+.iv-p { color: #ffd040; }
+.iv-z { color: #e06060; }
 </style>
 </head>
 <body>
@@ -357,9 +359,7 @@ function renderDead(root, slot) {
                 ' | SpD ' + mon.sp_defense));
         }
 
-        info.appendChild(el('div', 'mon-sub-sm',
-            'IV: ' + mon.iv_hp + '/' + mon.iv_atk + '/' + mon.iv_def +
-            '/' + mon.iv_spe + '/' + mon.iv_spa + '/' + mon.iv_spd));
+        info.appendChild(ivRowEl('mon-sub-sm', 'IV:', mon.iv_hp, mon.iv_atk, mon.iv_def, mon.iv_spe, mon.iv_spa, mon.iv_spd));
 
         info.appendChild(el('div', 'mon-sub-sm',
             'EV: ' + mon.ev_hp + '/' + mon.ev_atk + '/' + mon.ev_def +
@@ -400,9 +400,7 @@ function renderCaught(root, slot) {
         info.appendChild(el('div', 'mon-sub',
             mon.species_name + ' — ' + mon.nature + (mon.shiny ? ' ★' : '')));
 
-        info.appendChild(el('div', 'mon-sub-sm',
-            'IV: ' + mon.iv_hp + '/' + mon.iv_atk + '/' + mon.iv_def +
-            '/' + mon.iv_spe + '/' + mon.iv_spa + '/' + mon.iv_spd));
+        info.appendChild(ivRowEl('mon-sub-sm', 'IV:', mon.iv_hp, mon.iv_atk, mon.iv_def, mon.iv_spe, mon.iv_spa, mon.iv_spd));
 
         info.appendChild(el('div', 'mon-sub-sm', 'Caught: ' + mon.caught_at));
         info.appendChild(el('div', 'mon-sub-sm', 'Location: ' + mon.met_location_name));
@@ -481,9 +479,7 @@ function renderBox(root, slot) {
             slot.appendChild(el('div', 'box-name', label + (mon.is_shiny ? ' ✨' : '') + (gs2.sym ? ' ' + gs2.sym : '')));
             if (!mon.is_egg) {
                 slot.appendChild(el('div', 'box-nature', mon.nature));
-                slot.appendChild(el('div', 'box-ivs',
-                    mon.iv_hp + '/' + mon.iv_atk + '/' + mon.iv_def +
-                    '/' + mon.iv_spe + '/' + mon.iv_spa + '/' + mon.iv_spd));
+                slot.appendChild(ivRowEl('box-ivs', null, mon.iv_hp, mon.iv_atk, mon.iv_def, mon.iv_spe, mon.iv_spa, mon.iv_spd));
             }
 
             grid.appendChild(slot);
@@ -504,6 +500,24 @@ function el(tag, cls, txt) {
     if (cls) e.className = cls;
     if (txt !== undefined) e.textContent = txt;
     return e;
+}
+
+function ivEl(v) {
+    const s = document.createElement('span');
+    if (v === 31) s.className = 'iv-p';
+    else if (v === 0) s.className = 'iv-z';
+    s.textContent = v;
+    return s;
+}
+
+function ivRowEl(cls, label, hp, atk, def, spe, spa, spd) {
+    const d = el('div', cls);
+    if (label) d.appendChild(document.createTextNode(label + ' '));
+    for (let i = 0, vals = [hp, atk, def, spe, spa, spd]; i < vals.length; i++) {
+        if (i > 0) d.appendChild(document.createTextNode('/'));
+        d.appendChild(ivEl(vals[i]));
+    }
+    return d;
 }
 </script>
 </body>
