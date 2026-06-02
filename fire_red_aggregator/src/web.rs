@@ -12,8 +12,8 @@
 use crate::app::is_shiny;
 use crate::client::{MonitorSlot, SharedSlots, SpriteCache, encode_png};
 use axum::{
-    extract::State,
-    http::StatusCode,
+    extract::{Path, State},
+    http::{header, StatusCode},
     response::{Html, IntoResponse},
     routing::{get, post},
     Router,
@@ -826,6 +826,32 @@ async fn clear_db(State(state): State<WebState>) -> impl IntoResponse {
     }
 }
 
+/// Returns the full current state as a JSON array of slot objects — same
+/// payload the WebSocket would push on the next tick.
+async fn api_state(State(state): State<WebState>) -> impl IntoResponse {
+    let json = state.tx.borrow().clone();
+    let body = if json.is_empty() { "[]".to_string() } else { json };
+    ([(header::CONTENT_TYPE, "application/json")], body)
+}
+
+/// Returns a single slot object by zero-based index, or 404 if out of range.
+async fn api_slot(
+    State(state): State<WebState>,
+    Path(index): Path<usize>,
+) -> impl IntoResponse {
+    let json = state.tx.borrow().clone();
+    let slots: serde_json::Value = serde_json::from_str(&json)
+        .unwrap_or(serde_json::Value::Array(vec![]));
+    match slots.get(index) {
+        Some(slot) => (
+            StatusCode::OK,
+            [(header::CONTENT_TYPE, "application/json")],
+            slot.to_string(),
+        ).into_response(),
+        None => (StatusCode::NOT_FOUND, "slot index out of range").into_response(),
+    }
+}
+
 async fn ws_handler(
     ws: axum::extract::ws::WebSocketUpgrade,
     State(state): State<WebState>,
@@ -927,6 +953,8 @@ pub fn run(live_slots: SharedSlots, port: u16, db_conn: Option<String>) {
             .route("/db", get(serve_db_viewer))
             .route("/db.json", get(serve_db_json))
             .route("/db/clear", post(clear_db))
+            .route("/api/state", get(api_state))
+            .route("/api/slot/:index", get(api_slot))
             .route("/history", get(serve_history))
             .route("/:index/party", get(serve_focused))
             .route("/:index/encounters", get(serve_focused))
