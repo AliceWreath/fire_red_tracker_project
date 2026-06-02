@@ -274,8 +274,8 @@ pub fn read_badge_state() -> Option<BadgeState> {
     // BADGE_FLAG_START (0x820) is 8-aligned so bit position for badge i is i.
     let bit_start = BADGE_FLAG_START % 8; // 0
     let mut badges = [false; NUM_BADGES];
-    for i in 0..NUM_BADGES {
-        badges[i] = (both >> (bit_start + i)) & 1 == 1;
+    for (i, badge) in badges.iter_mut().enumerate() {
+        *badge = (both >> (bit_start + i)) & 1 == 1;
     }
 
     // Step 5: find the first unearned badge to identify the next gym.

@@ -28,9 +28,9 @@ use std::sync::{Arc, Mutex};
 /// * `server_box`        — Shared PC box snapshot; sent once on connect then every 5 s.
 /// * `sprite_cache`      — Per-process sprite cache to amortise ROM decode cost.
 /// * `game_loaded`       — Set to `false` during reset/title screen to suppress
-///                         stale badge data from being sent to clients.
+///   stale badge data from being sent to clients.
 /// * `run_changed`       — Set to `true` when a `EndRun` or `NewRun` command is
-///                         processed so the game loop can reset encounter state.
+///   processed so the game loop can reset encounter state.
 pub fn handle_client(
     stream: TcpStream,
     server_party: Arc<Mutex<Vec<fire_red_party_monitor::Pokemon>>>,
@@ -79,7 +79,7 @@ pub fn handle_client(
 
                     if !sprites.is_empty() {
                         let mut ws = write_stream_clone.lock().unwrap_or_else(|e| e.into_inner());
-                        if send_message(&mut *ws, &ServerMessage::Textures(sprites)).is_err() {
+                        if send_message(&mut ws, &ServerMessage::Textures(sprites)).is_err() {
                             break;
                         }
                     }
@@ -88,7 +88,7 @@ pub fn handle_client(
                     fire_red_database::end_run();
                     run_changed.store(true, Ordering::Release);
                     let mut ws = write_stream_clone.lock().unwrap_or_else(|e| e.into_inner());
-                    if send_message(&mut *ws, &ServerMessage::RunChanged(None)).is_err() {
+                    if send_message(&mut ws, &ServerMessage::RunChanged(None)).is_err() {
                         break;
                     }
                 }
@@ -96,7 +96,7 @@ pub fn handle_client(
                     let id = fire_red_database::new_run("Unknown");
                     run_changed.store(true, Ordering::Release);
                     let mut ws = write_stream_clone.lock().unwrap_or_else(|e| e.into_inner());
-                    if send_message(&mut *ws, &ServerMessage::RunChanged(Some(id))).is_err() {
+                    if send_message(&mut ws, &ServerMessage::RunChanged(Some(id))).is_err() {
                         break;
                     }
                 }
@@ -130,7 +130,7 @@ pub fn handle_client(
         };
 
         let mut ws = write_stream.lock().unwrap_or_else(|e| e.into_inner());
-        if send_message(&mut *ws, &ServerMessage::State(state)).is_err() {
+        if send_message(&mut ws, &ServerMessage::State(state)).is_err() {
             println!("Client disconnected.");
             break;
         }
@@ -138,7 +138,7 @@ pub fn handle_client(
         // Send box snapshot on first tick and every 5 seconds thereafter.
         if last_box_send.elapsed() >= std::time::Duration::from_secs(5) {
             let entries = server_box.lock().unwrap_or_else(|e| e.into_inner()).clone();
-            if send_message(&mut *ws, &ServerMessage::BoxData(entries)).is_err() {
+            if send_message(&mut ws, &ServerMessage::BoxData(entries)).is_err() {
                 println!("Client disconnected.");
                 break;
             }

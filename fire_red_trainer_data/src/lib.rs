@@ -16,7 +16,6 @@
 mod trainer_data;
 
 use arc_swap::ArcSwap;
-use fire_red_memory;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 

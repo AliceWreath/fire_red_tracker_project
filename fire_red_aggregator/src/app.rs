@@ -689,11 +689,10 @@ impl eframe::App for AggregatorApp {
             let should_refresh = run_id_changed[i]
                 || now.duration_since(self.db_caches[i].last_refresh)
                     >= std::time::Duration::from_secs(1);
-            if should_refresh {
-                if let Some(db) = &self.slots[i].db {
-                    self.db_caches[i].caught = db.list_caught(&states[i].0);
-                    self.db_caches[i].last_refresh = now;
-                }
+            if should_refresh
+                && let Some(db) = &self.slots[i].db {
+                self.db_caches[i].caught = db.list_caught(&states[i].0);
+                self.db_caches[i].last_refresh = now;
             }
         }
 

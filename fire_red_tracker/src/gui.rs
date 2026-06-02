@@ -309,10 +309,10 @@ impl WindowInfo {
                 ui.label("ROM path:");
                 ui.horizontal(|ui| {
                     ui.add(egui::TextEdit::singleline(&mut s.rom).desired_width(260.0).hint_text("path/to/firered.gba"));
-                    if ui.button("Browse…").clicked() {
-                        if let Some(path) = rfd::FileDialog::new().add_filter("GBA ROM", &["gba"]).pick_file() {
-                            s.rom = path.display().to_string();
-                        }
+                    if ui.button("Browse…").clicked()
+                        && let Some(path) = rfd::FileDialog::new().add_filter("GBA ROM", &["gba"]).pick_file()
+                    {
+                        s.rom = path.display().to_string();
                     }
                 });
                 ui.end_row();

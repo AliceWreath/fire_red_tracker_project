@@ -42,7 +42,7 @@ pub fn format_timestamp(secs: u64) -> String {
 }
 
 fn is_leap(year: u32) -> bool {
-    (year % 4 == 0 && year % 100 != 0) || year % 400 == 0
+    (year.is_multiple_of(4) && !year.is_multiple_of(100)) || year.is_multiple_of(400)
 }
 
 fn unix_now() -> u64 {
@@ -979,7 +979,7 @@ impl DbReader {
             Some(id) => id,
             None => return vec![],
         };
-        query_caught(&mut *self.client.lock().unwrap_or_else(|e| e.into_inner()), run_id, player_name)
+        query_caught(&mut self.client.lock().unwrap_or_else(|e| e.into_inner()), run_id, player_name)
     }
 
     /// Returns `true` if the Pokemon with this personality is dead in the active run.
@@ -988,7 +988,7 @@ impl DbReader {
             Some(id) => id,
             None => return false,
         };
-        query_is_dead(&mut *self.client.lock().unwrap_or_else(|e| e.into_inner()), run_id, personality)
+        query_is_dead(&mut self.client.lock().unwrap_or_else(|e| e.into_inner()), run_id, personality)
     }
 
     /// Returns dead Pokemon for the active run belonging to `player_name`, keyed by personality.

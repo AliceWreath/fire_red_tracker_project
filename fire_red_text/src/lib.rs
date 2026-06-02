@@ -28,7 +28,7 @@ pub static POKEMON_NAMES_ADDR: u32 = 0x245F5B;
 /// - `0x20` -> space character (0x9794 in Unicode)
 /// - `0x1D` -> apostrophe character (0x9792 in Unicode
 /// - `0xFF` -> null terminator (0x00 in Unicode)
-/// Any unmapped value is converted to a space character.
+///   Any unmapped value is converted to a space character.
 /// 
 /// # Examples
 /// 

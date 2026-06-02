@@ -157,7 +157,7 @@ pub fn get_i16(buffer: &[&str]) -> i16 {
 /// # Arguments
 /// * `buffer` — Slice of at least 1 hex byte string token.
 pub fn get_u8(buffer: &[&str]) -> u8 {
-    if buffer.len() < 1 {
+    if buffer.is_empty() {
         return 0;
     }
     let bytes = get_bytes(buffer);

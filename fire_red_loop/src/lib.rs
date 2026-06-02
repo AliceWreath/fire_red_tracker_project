@@ -104,7 +104,7 @@ static THREAD_HANDLE: Mutex<Option<std::thread::JoinHandle<()>>> = Mutex::new(No
 /// * `-1` — null pointer or invalid UTF-8
 /// * See [`start_loop`] for other error codes.
 #[unsafe(no_mangle)]
-pub extern "C" fn c_start_loop(file_path: *const c_char, is_clean: bool) -> c_int {
+pub unsafe extern "C" fn c_start_loop(file_path: *const c_char, is_clean: bool) -> c_int {
     if file_path.is_null() {
         eprintln!("Must pass a path to the file!");
         return -1;
@@ -133,7 +133,7 @@ pub extern "C" fn c_start_loop(file_path: *const c_char, is_clean: bool) -> c_in
 ///
 /// * `file_path` — Path to the FireRed `.gba` ROM file.
 /// * `is_clean`  — When `true`, enables ability name display. Only reliable
-///                 on unmodified ("clean") ROMs.
+///   on unmodified ("clean") ROMs.
 ///
 /// # Returns
 ///
@@ -237,10 +237,9 @@ pub extern "C" fn stop_loop() {
     fire_red_memory::end_loop();
 
     let mut handle_slot = THREAD_HANDLE.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(handle) = handle_slot.take() {
-        if let Err(e) = handle.join() {
-            eprintln!("Error joining map-polling thread: {:?}", e);
-        }
+    if let Some(handle) = handle_slot.take()
+        && let Err(e) = handle.join() {
+        eprintln!("Error joining map-polling thread: {:?}", e);
     }
 }
 
@@ -376,7 +375,7 @@ pub fn get_area_pokemon_id_for_state(state: &FireRedState) -> WildPokemonHeader 
     let mut area_header = WildPokemonHeader::default();
     for header in get_wild_headers() {
         if header.map_group == state.map_group_id && header.map_num == state.map_name_id {
-            area_header = WildPokemonHeader::fill_head(header, &get_rom());
+            area_header = WildPokemonHeader::fill_head(header, get_rom());
         }
     }
     area_header
@@ -440,11 +439,10 @@ fn get_map_state_from_ewram() -> FireRedState {
         return FireRedState::default();
     }
 
-    let state = FireRedState {
+    FireRedState {
         map_group_id: ewram[offset],
         map_name_id:  ewram[offset + 1],
-    };
-    state
+    }
 }
 
 // ---------------------------------------------------------------------------

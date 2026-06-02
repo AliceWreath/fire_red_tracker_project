@@ -188,7 +188,7 @@ fn main() {
             println!("No runs found.");
         } else {
             let active = fire_red_database::active_run_id();
-            println!("{:<5} {:<12} {:<26} {}", "ID", "Player", "Started", "Deaths");
+            println!("{:<5} {:<12} {:<26} Deaths", "ID", "Player", "Started");
             println!("{}", "-".repeat(60));
             for (id, name, started_at, dead_count) in &runs {
                 let marker = if active == Some(*id) { " <active>" } else { "" };

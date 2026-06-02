@@ -31,7 +31,7 @@ use tokio::sync::watch;
 
 fn base64_encode(data: &[u8]) -> String {
     const CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::with_capacity((data.len() + 2) / 3 * 4);
+    let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
     for chunk in data.chunks(3) {
         let b0 = chunk[0] as u32;
         let b1 = if chunk.len() > 1 { chunk[1] as u32 } else { 0 };
@@ -278,7 +278,7 @@ impl BroadcastLoop {
                 .chain(enc.rock_smash_encounters.wild_pokemon_list.iter())
                 .chain(enc.fishing_encounters.wild_pokemon_list.iter());
             for w in all_enc {
-                let s = w.species as u16;
+                let s = w.species;
                 if s == 0 || s > 386 { continue; }
                 if !known.contains(&s) && !cache.contains_key(&(s, false)) {
                     needed.push(s);
@@ -314,10 +314,9 @@ impl BroadcastLoop {
             let mut cache = self.sprites.lock().unwrap_or_else(|e| e.into_inner());
             for pt in drained {
                 let key = (pt.species, pt.shiny);
-                if !cache.contains_key(&key) {
-                    if let Some(png) = encode_png(&pt.pixels, pt.width, pt.height) {
-                        cache.insert(key, png);
-                    }
+                if let std::collections::hash_map::Entry::Vacant(e) = cache.entry(key)
+                    && let Some(png) = encode_png(&pt.pixels, pt.width, pt.height) {
+                    e.insert(png);
                 }
             }
         }
@@ -357,10 +356,9 @@ impl BroadcastLoop {
         // If the tracker confirmed a run change, mark the DB reader dirty so
         // sync_player re-queries even though the player name hasn't changed.
         for slot in &slots {
-            if slot.run_changed.swap(false, std::sync::atomic::Ordering::AcqRel) {
-                if let Some(db) = &slot.db {
-                    db.mark_dirty();
-                }
+            if slot.run_changed.swap(false, std::sync::atomic::Ordering::AcqRel)
+                && let Some(db) = &slot.db {
+                db.mark_dirty();
             }
         }
 
@@ -376,13 +374,12 @@ impl BroadcastLoop {
         let now = Instant::now();
         for i in 0..n {
             let stale = now.duration_since(self.caches[i].last_refresh) >= Duration::from_secs(1);
-            if run_id_changed[i] || stale {
-                if let Some(db) = &slots[i].db {
-                    let label = &states[i].0;
-                    self.caches[i].caught      = db.list_caught(label);
-                    self.caches[i].encounters  = db.list_encounters(label);
-                    self.caches[i].last_refresh = now;
-                }
+            if (run_id_changed[i] || stale)
+                && let Some(db) = &slots[i].db {
+                let label = &states[i].0;
+                self.caches[i].caught      = db.list_caught(label);
+                self.caches[i].encounters  = db.list_encounters(label);
+                self.caches[i].last_refresh = now;
             }
         }
 
@@ -547,7 +544,7 @@ impl BroadcastLoop {
                         let badges: Vec<bool> = gs
                             .badge_state
                             .as_ref()
-                            .map(|b| b.badges.iter().copied().collect())
+                            .map(|b| b.badges.to_vec())
                             .unwrap_or_else(|| vec![false; 8]);
 
                         let next_gym = gs
@@ -646,7 +643,7 @@ impl BroadcastLoop {
                             .map(|w| EncounterMonDto {
                                 min_level: w.min_level,
                                 max_level: w.max_level,
-                                sprite:    self.sprite_uri(w.species as u16, false),
+                                sprite:    self.sprite_uri(w.species, false),
                             })
                             .collect();
                         if !land.is_empty() {
@@ -660,7 +657,7 @@ impl BroadcastLoop {
                             .map(|w| EncounterMonDto {
                                 min_level: w.min_level,
                                 max_level: w.max_level,
-                                sprite:    self.sprite_uri(w.species as u16, false),
+                                sprite:    self.sprite_uri(w.species, false),
                             })
                             .collect();
                         if !water_fish.is_empty() {
@@ -673,7 +670,7 @@ impl BroadcastLoop {
                             .map(|w| EncounterMonDto {
                                 min_level: w.min_level,
                                 max_level: w.max_level,
-                                sprite:    self.sprite_uri(w.species as u16, false),
+                                sprite:    self.sprite_uri(w.species, false),
                             })
                             .collect();
                         if !rock.is_empty() {
@@ -687,7 +684,7 @@ impl BroadcastLoop {
                 // dead_records and caches are already filtered by player_name in
                 // list_dead_with_records / list_caught, so no further filtering needed.
                 let mut dead_sorted: Vec<&DeadPokemon> = dead_records.values().collect();
-                dead_sorted.sort_by(|a, b| b.died_at.cmp(&a.died_at));
+                dead_sorted.sort_by_key(|b| std::cmp::Reverse(b.died_at));
                 let dead: Vec<DeadMonDto> = dead_sorted.iter().map(|dp| DeadMonDto {
                     nickname:     dp.nickname.clone(),
                     species_name: dp.species_name.clone(),
@@ -833,14 +830,13 @@ async fn handle_socket(
     // Send current state immediately so the browser isn't blank on connect.
     {
         let current = rx.borrow_and_update().clone();
-        if !current.is_empty() {
-            if ws_tx
+        if !current.is_empty()
+            && ws_tx
                 .send(axum::extract::ws::Message::Text(current))
                 .await
                 .is_err()
-            {
-                return;
-            }
+        {
+            return;
         }
     }
 

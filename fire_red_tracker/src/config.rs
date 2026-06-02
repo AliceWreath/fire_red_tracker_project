@@ -6,17 +6,12 @@ use std::sync::{Arc, Mutex};
 // Types
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub enum ConfigMode {
+    #[default]
     Standalone,
     Connected,
-}
-
-impl Default for ConfigMode {
-    fn default() -> Self {
-        ConfigMode::Standalone
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -73,10 +68,9 @@ pub fn load_or_prompt(path: &PathBuf) -> TrackerConfig {
 }
 
 pub fn save_config(config: &TrackerConfig, path: &PathBuf) {
-    if let Some(parent) = path.parent() {
-        if let Err(e) = std::fs::create_dir_all(parent) {
-            eprintln!("Warning: could not create config directory: {}", e);
-        }
+    if let Some(parent) = path.parent()
+        && let Err(e) = std::fs::create_dir_all(parent) {
+        eprintln!("Warning: could not create config directory: {}", e);
     }
     match toml::to_string_pretty(config) {
         Ok(content) => {
@@ -147,13 +141,12 @@ impl eframe::App for SetupApp {
                             .desired_width(280.0)
                             .hint_text("path/to/firered.gba"),
                     );
-                    if ui.button("Browse…").clicked() {
-                        if let Some(path) = rfd::FileDialog::new()
+                    if ui.button("Browse…").clicked()
+                        && let Some(path) = rfd::FileDialog::new()
                             .add_filter("GBA ROM", &["gba"])
                             .pick_file()
-                        {
-                            self.rom = path.display().to_string();
-                        }
+                    {
+                        self.rom = path.display().to_string();
                     }
                 });
                 ui.end_row();

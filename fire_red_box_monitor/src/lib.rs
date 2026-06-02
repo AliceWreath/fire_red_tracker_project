@@ -122,7 +122,7 @@ pub fn start_loop() {
 
     let handle = std::thread::spawn(move || {
         while RUNNING.load(Ordering::SeqCst) {
-            if let Err(_) = std::panic::catch_unwind(|| update_box_list()) {
+            if std::panic::catch_unwind(update_box_list).is_err() {
                 eprintln!("Panic occurred while updating box list.");
             }
             std::thread::sleep(SLEEP_TIMER);
@@ -138,10 +138,9 @@ pub fn start_loop() {
 pub fn end_loop() {
     RUNNING.store(false, Ordering::SeqCst);
     let mut handle_slot = THREAD_HANDLE.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(handle) = handle_slot.take() {
-        if let Err(e) = handle.join() {
-            eprintln!("Error joining box monitor thread: {:?}", e);
-        }
+    if let Some(handle) = handle_slot.take()
+        && let Err(e) = handle.join() {
+        eprintln!("Error joining box monitor thread: {:?}", e);
     }
 }
 
@@ -343,10 +342,9 @@ pub fn get_box_entries_positioned() -> Vec<(u8, u8, BoxPokemon)> {
         let slot_offset = slot * SLOT_SIZE;
         let slot_bytes = &box_data[slot_offset..slot_offset + SLOT_SIZE];
 
-        if let Some(mon) = BoxPokemon::from_bytes(slot_bytes, rom) {
-            if mon.checksum != 0 {
-                list.push((box_index, slot_index, mon));
-            }
+        if let Some(mon) = BoxPokemon::from_bytes(slot_bytes, rom)
+            && mon.checksum != 0 {
+            list.push((box_index, slot_index, mon));
         }
     }
 
@@ -393,10 +391,9 @@ pub fn get_box_entries_from_ram() -> Vec<BoxPokemon> {
         let slot_offset = slot * SLOT_SIZE;
         let slot_bytes = &box_data[slot_offset..slot_offset + SLOT_SIZE];
 
-        if let Some(mon) = BoxPokemon::from_bytes(slot_bytes, rom) {
-            if mon.checksum != 0 {
-                list.push(mon);
-            }
+        if let Some(mon) = BoxPokemon::from_bytes(slot_bytes, rom)
+            && mon.checksum != 0 {
+            list.push(mon);
         }
     }
 

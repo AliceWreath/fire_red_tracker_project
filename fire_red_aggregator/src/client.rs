@@ -125,7 +125,7 @@ impl MonitorSlot {
     /// * `addr`    - TCP address of the tracker server.
     /// * `db_path` - Optional path to this player's SQLite nuzlocke database.
     pub fn new(index: usize, addr: String, db_path: Option<String>) -> Self {
-        let db = db_path.as_deref().and_then(|s| fire_red_database::DbReader::open(s));
+        let db = db_path.as_deref().and_then(fire_red_database::DbReader::open);
         Self {
             label: Arc::new(Mutex::new(format!("Player {}", index + 1))),
             _addr: addr,
@@ -256,10 +256,9 @@ pub fn handle_tracker_connection(
                     if let Some(ref cache) = maybe_cache {
                         let key = (sprite.species, sprite.shiny);
                         let mut c = cache.lock().unwrap_or_else(|e| e.into_inner());
-                        if !c.contains_key(&key) {
-                            if let Some(png) = encode_png(&pixels, sprite.width, sprite.height) {
-                                c.insert(key, png);
-                            }
+                        if let std::collections::hash_map::Entry::Vacant(e) = c.entry(key)
+                            && let Some(png) = encode_png(&pixels, sprite.width, sprite.height) {
+                            e.insert(png);
                         }
                     }
                     pending.push(PendingTexture {

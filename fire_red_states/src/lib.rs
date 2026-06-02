@@ -144,7 +144,7 @@ pub enum Mode {
 /// ```
 pub fn send_message<T: serde::Serialize>(stream: &mut TcpStream, msg: &T) -> std::io::Result<()> {
     let encoded =
-        bincode::serialize(msg).map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+        bincode::serialize(msg).map_err(std::io::Error::other)?;
     let len = u32::try_from(encoded.len())
         .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidData, "message too large"))?;
     stream.write_all(&len.to_be_bytes())?;
@@ -188,7 +188,7 @@ pub fn recv_message<T: serde::de::DeserializeOwned>(stream: &mut TcpStream) -> s
     }
     let mut buf = vec![0u8; len];
     stream.read_exact(&mut buf)?;
-    bincode::deserialize(&buf).map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
+    bincode::deserialize(&buf).map_err(std::io::Error::other)
 }
 
 /*

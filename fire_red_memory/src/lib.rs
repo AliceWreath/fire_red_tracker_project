@@ -215,8 +215,8 @@ pub fn get_ewram() -> Arc<Vec<u8>> {
 /// Returns `Err` if either region fails after too many consecutive UDP
 /// failures, or if either region thread panics.
 fn update_memory() -> Result<(), &'static str> {
-    let iwram_thread = std::thread::spawn(|| update_ram_type::<Iwram>());
-    let ewram_thread = std::thread::spawn(|| update_ram_type::<Ewram>());
+    let iwram_thread = std::thread::spawn(update_ram_type::<Iwram>);
+    let ewram_thread = std::thread::spawn(update_ram_type::<Ewram>);
 
     let iwram = iwram_thread
         .join()

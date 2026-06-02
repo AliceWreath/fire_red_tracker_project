@@ -34,36 +34,36 @@ impl EncounterTracker {
     /// Called once per poll cycle while the game is loaded and state is
     /// initialized. Records first encounters and detects catches.
     pub fn tick(&mut self, current_state: FireRedState, thread_party: &Arc<Mutex<Vec<Pokemon>>>) {
-        if let Some(enemy) = crate::game::get_wild_enemy_pokemon() {
-            if enemy.box_mon.personality != self.last_enemy_personality {
-                self.last_enemy_personality = enemy.box_mon.personality;
+        if let Some(enemy) = crate::game::get_wild_enemy_pokemon()
+            && enemy.box_mon.personality != self.last_enemy_personality
+        {
+            self.last_enemy_personality = enemy.box_mon.personality;
 
-                let map_group = current_state.map_group_id;
-                let map_name  = current_state.map_name_id;
-                let now = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_secs())
-                    .unwrap_or(0);
+            let map_group = current_state.map_group_id;
+            let map_name  = current_state.map_name_id;
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
 
-                let is_first = fire_red_database::record_encounter(
-                    fire_red_database::Encounter {
-                        player_name:    String::new(), // populated from DbState::current_player
-                        map_group,
-                        map_name,
-                        species:        enemy.box_mon.secure.growth.species,
-                        species_name:   enemy.box_mon.secure.growth.species_string.clone(),
-                        level:          enemy.level,
-                        caught:         false,
-                        encountered_at: now,
-                    },
-                );
+            let is_first = fire_red_database::record_encounter(
+                fire_red_database::Encounter {
+                    player_name:    String::new(), // populated from DbState::current_player
+                    map_group,
+                    map_name,
+                    species:        enemy.box_mon.secure.growth.species,
+                    species_name:   enemy.box_mon.secure.growth.species_string.clone(),
+                    level:          enemy.level,
+                    caught:         false,
+                    encountered_at: now,
+                },
+            );
 
-                if is_first {
-                    self.enc_map             = (map_group, map_name);
-                    self.tracked_personality = Some(self.last_enemy_personality);
-                } else {
-                    self.tracked_personality = None;
-                }
+            if is_first {
+                self.enc_map             = (map_group, map_name);
+                self.tracked_personality = Some(self.last_enemy_personality);
+            } else {
+                self.tracked_personality = None;
             }
         }
 

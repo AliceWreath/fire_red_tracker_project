@@ -37,8 +37,6 @@ pub fn compress_pixels(data: &[u8]) -> Option<Vec<u8>> {
     encoder.finish().ok()
 }
 
-/// Decompresses zlib-compressed pixel data back to raw RGBA bytes.
-
 /// Extracts a pokemon sprite from the ROM, compresses it, and returns a
 /// [`SpriteData`] packet ready to send to a client.
 ///
@@ -100,7 +98,7 @@ pub fn load_texture_normal(
 pub fn make_placeholder(ctx: &egui::Context, species: u16) -> egui::TextureHandle {
     let w      = PARTY_IMAGE_SIZE.0 as usize;
     let h      = PARTY_IMAGE_SIZE.1 as usize;
-    let pixels = vec![255u8, 0, 0, 255].repeat(w * h);
+    let pixels = [255u8, 0, 0, 255].repeat(w * h);
     let image  = egui::ColorImage::from_rgba_unmultiplied([w, h], &pixels);
     ctx.load_texture(
         format!("pokemon_{}_placeholder", species),

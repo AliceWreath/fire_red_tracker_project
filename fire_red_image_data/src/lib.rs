@@ -9,12 +9,12 @@
 //! pipeline is:
 //! 
 //! 1. **Locate** the sprite / palette pointer via the ROM's indirection tables
-//!     ([`read_sprite_pointer`] / [`read_entity_pointer`]).
+//!    ([`read_sprite_pointer`] / [`read_entity_pointer`]).
 //! 2. **Decompress** the blob with [`decompress_lz77`].
 //! 3. **Decode tiles** from 4bpp GBA tile format into a flat palette-index
-//!     array with [`decode_4bpp_tiles`]
+//!    array with [`decode_4bpp_tiles`]
 //! 4. **Resolved palette** entires from 15-bit BGR555 to 8-bit-per-channel RGBA
-//!     with [`decode_palette`]
+//!    with [`decode_palette`]
 //! 5. **Assemble** the final [`ImageBuffer`] in [`get_pokemon_sprite`]
 //! 
 //! All pokemon front sprites in FireRed are 64x64 pixles (8x8 tiles of 8x8 pixels each),
@@ -85,7 +85,7 @@ fn read_entity_pointer(
             .ok_or("pointer address out of ROM bounds")?
             .try_into()?,
     );
-    if raw < ROM_BASE || raw >= 0x09000000 {
+    if !(ROM_BASE..0x09000000).contains(&raw) {
         return Err(format!("invalid {label} pointer: {raw:#010X}").into());
     }
     Ok(raw - ROM_BASE)
@@ -103,7 +103,7 @@ fn read_entity_pointer(
 fn read_table_pointer(rom: &[u8], header_offset: u32) -> Option<u32> {
     let o = header_offset as usize;
     let raw = u32::from_le_bytes(rom.get(o..o + 4)?.try_into().ok()?);
-    if raw < ROM_BASE || raw >= 0x09000000 {
+    if !(ROM_BASE..0x09000000).contains(&raw) {
         eprintln!(
             "invalid table pointer at {:#X}: {:#010X}",
             header_offset, raw
@@ -134,7 +134,7 @@ fn read_sprite_pointer(rom: &[u8], species: u16) -> Result<u32, Box<dyn std::err
             .ok_or("sprite pointer address out of ROM bounds")?
             .try_into()?,
     );
-    if raw < ROM_BASE || raw >= 0x09000000 {
+    if !(ROM_BASE..0x09000000).contains(&raw) {
         return Err("invalid sprite pointer".into());
     }
     Ok(raw - ROM_BASE)
@@ -309,8 +309,8 @@ pub fn decode_4bpp_tiles(
 /// 
 /// # Arguments
 /// * `rom`                 - Byte slice containing the palette data (may be the
-///                           full ROM or a decompressed palette blob; `offset`
-///                           selects the start).
+///   full ROM or a decompressed palette blob; `offset`
+///   selects the start).
 /// * `offset`              - Byte offset of the first palette entry within `rom`
 /// 
 /// # Errors 

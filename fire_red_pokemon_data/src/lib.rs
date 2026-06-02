@@ -182,7 +182,7 @@ impl<T> __IncompleteArrayField<T> {
     /// The caller must ensure the backing allocation is valid and contains
     /// at least as many `T` elements as will be accessed.
     pub unsafe fn as_ptr(&self) -> *const T {
-        unsafe { std::mem::transmute(self) }
+        self as *const __IncompleteArrayField<T> as *const T
     }
 
     /// Returns a raw mutable pointer to the start of the trailing array.
@@ -191,7 +191,7 @@ impl<T> __IncompleteArrayField<T> {
     ///
     /// Same requirements as [`as_ptr`](Self::as_ptr).
     pub unsafe fn as_mut_ptr(&mut self) -> *mut T {
-        unsafe { std::mem::transmute(self) }
+        self as *mut __IncompleteArrayField<T> as *mut T
     }
 
     /// Returns a slice over `len` elements of the trailing array.

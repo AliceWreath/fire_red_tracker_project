@@ -56,10 +56,9 @@ pub fn load_or_prompt(path: &PathBuf) -> AggregatorConfig {
 }
 
 pub fn save_config(config: &AggregatorConfig, path: &PathBuf) {
-    if let Some(parent) = path.parent() {
-        if let Err(e) = std::fs::create_dir_all(parent) {
-            eprintln!("Warning: could not create config directory: {}", e);
-        }
+    if let Some(parent) = path.parent()
+        && let Err(e) = std::fs::create_dir_all(parent) {
+        eprintln!("Warning: could not create config directory: {}", e);
     }
     match toml::to_string_pretty(config) {
         Ok(content) => {
