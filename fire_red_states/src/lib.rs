@@ -145,7 +145,7 @@ pub enum Mode {
 /// 
 /// Packet layout:
 /// 
-/// ```
+/// ```text
 /// [4-byte big-endian length][bincode-encoded message bytes]
 /// ```
 pub fn send_message<T: serde::Serialize>(stream: &mut TcpStream, msg: &T) -> std::io::Result<()> {

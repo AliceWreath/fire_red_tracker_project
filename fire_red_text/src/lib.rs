@@ -39,9 +39,9 @@ pub static POKEMON_NAMES_ADDR: u32 = 0x245F5B;
 /// ```
 pub fn char_gba_to_ascii(character: u8) -> char {
     if (0xBB..=0xD4).contains(&character) {
-        return char::from(0x41 + character - 0xBB);
+        return char::from(character - 0xBB + 0x41);
     } else if (0xD5..=0xEE).contains(&character) {
-        return char::from(0x61 + character - 0xD5);
+        return char::from(character - 0xD5 + 0x61);
     } else if character == 0x20 {
         return char::from_u32(0x9794).unwrap_or('♂');
     } else if character == 0x1D {
@@ -212,8 +212,8 @@ mod tests {
 
     #[test]
     fn decodes_pikachu() {
-        // "PIKA" in GBA encoding: P=0xCB, I=0xC6, K=0xC8, A=0xBB
-        let buf = [0xCB, 0xC6, 0xC8, 0xBB, 0xFF];
+        // "PIKA" in GBA encoding: P=0xCA, I=0xC3, K=0xC5, A=0xBB
+        let buf = [0xCA, 0xC3, 0xC5, 0xBB, 0xFF];
         assert_eq!(gba_string_to_ascii(&buf, 4, 0), "PIKA");
     }
 

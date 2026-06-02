@@ -403,7 +403,7 @@ mod tests {
         let ewram_len = (EWRAM_END - EWRAM_START + 1) as usize;
 
         start_loop();
-        std::thread::sleep(std::time::Duration::from_millis(30));
+        std::thread::sleep(std::time::Duration::from_millis(50));
 
         let iwram = get_iwram();
         let ewram = get_ewram();

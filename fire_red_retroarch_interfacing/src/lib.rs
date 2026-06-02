@@ -72,6 +72,7 @@ const BUFFER_SIZE: usize = 16_384;
 /// # Example
 ///
 /// ```
+/// use fire_red_retroarch_interfacing::generate_command;
 /// let cmd = generate_command(0x02024284, 4);
 /// assert_eq!(cmd, "READ_CORE_MEMORY 0x02024284 4");
 /// ```
