@@ -249,10 +249,6 @@ pub fn read_badge_state() -> Option<BadgeState> {
 
     // Step 2: validate the pointer falls within EWRAM.
     if save_block_base < EWRAM_BASE || save_block_base >= EWRAM_BASE + ewram.len() {
-        eprintln!(
-            "SaveBlock1 pointer 0x{:08X} is outside EWRAM — snapshot may not be ready.",
-            save_block_base
-        );
         return None;
     }
 

@@ -207,10 +207,6 @@ fn get_box_0_ewram_offset() -> Option<usize> {
 
     let ewram = fire_red_memory::get_ewram();
     if save_block_3_base < EWRAM_BASE || save_block_3_base >= EWRAM_BASE + ewram.len() {
-        eprintln!(
-            "SaveBlock3 pointer 0x{:08X} is outside EWRAM — snapshot may not be ready.",
-            save_block_3_base
-        );
         return None;
     }
     drop(ewram);
@@ -367,20 +363,11 @@ pub fn get_box_entries_from_ram() -> Vec<BoxPokemon> {
 
     let box_0_offset = match get_box_0_ewram_offset() {
         Some(offset) => offset,
-        None => {
-            eprintln!("Unable to determine box data location in EWRAM snapshot.");
-            return Vec::new();
-        }
+        None => return Vec::new(),
     };
 
     let end_offset = box_0_offset + TOTAL_BOX_BYTES;
     if ewram.len() < end_offset {
-        eprintln!(
-            "EWRAM snapshot too small for full box data: have {} bytes, need {} at offset 0x{:X}.",
-            ewram.len(),
-            TOTAL_BOX_BYTES,
-            box_0_offset,
-        );
         return Vec::new();
     }
 

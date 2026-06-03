@@ -160,15 +160,30 @@ pub fn start_loop() {
     LOADED_IWRAM.get_or_init(|| ArcSwap::from_pointee(Vec::new()));
     RUNNING.store(true, Ordering::SeqCst);
     std::thread::spawn(|| {
-        let mut last_err_print = std::time::Instant::now()
-            .checked_sub(std::time::Duration::from_secs(10))
+        let wait_interval = std::time::Duration::from_secs(5);
+        let mut connected = false;
+        let mut last_waiting_print = std::time::Instant::now()
+            .checked_sub(wait_interval)
             .unwrap_or_else(std::time::Instant::now);
+
         while RUNNING.load(Ordering::SeqCst) {
-            if let Err(e) = update_memory() {
-                let now = std::time::Instant::now();
-                if now.duration_since(last_err_print) >= std::time::Duration::from_secs(5) {
-                    eprintln!("RetroArch read failed: {}", e);
-                    last_err_print = now;
+            match update_memory() {
+                Ok(()) => {
+                    if !connected {
+                        println!("RetroArch connected.");
+                        connected = true;
+                    }
+                }
+                Err(_) => {
+                    if connected {
+                        println!("Lost connection to RetroArch. Waiting...");
+                        connected = false;
+                    }
+                    let now = std::time::Instant::now();
+                    if now.duration_since(last_waiting_print) >= wait_interval {
+                        println!("Waiting for RetroArch...");
+                        last_waiting_print = now;
+                    }
                 }
             }
             std::thread::sleep(SLEEP_DURATION);

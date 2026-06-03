@@ -437,7 +437,6 @@ fn get_map_state_from_ewram() -> FireRedState {
     let offset = MAP_GROUP_AND_NAME_ADDR - EWRAM_BASE;
 
     if ewram.len() < offset + 2 {
-        eprintln!("EWRAM too small: {} bytes, need {}", ewram.len(), offset + 2);
         return FireRedState::default();
     }
 
