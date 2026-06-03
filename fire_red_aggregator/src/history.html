@@ -125,6 +125,15 @@ html, body {
 .r-out-fled   { color: #808080; font-size: 11px; }
 .r-gm { color: #64a0ff; font-size: 11px; font-weight: bold; }
 .r-gf { color: #ff82b4; font-size: 11px; font-weight: bold; }
+.player-section { margin-bottom: 10px; }
+.player-heading {
+    font-size: 12px; font-weight: 700; color: #9eb8e0;
+    padding: 5px 0 4px; margin-bottom: 4px;
+    border-bottom: 1px solid rgba(255,255,255,0.06);
+    display: flex; align-items: center; gap: 6px;
+    cursor: pointer; user-select: none;
+}
+.player-body.closed { display: none; }
 </style>
 </head>
 <body>
@@ -215,9 +224,26 @@ function render(data) {
         const body = document.createElement('div');
         body.className = 'run-body';
 
-        body.appendChild(buildCaughtSection(caught));
-        body.appendChild(buildDeadSection(dead));
-        body.appendChild(buildEncountersSection(encounters));
+        const players = [...new Set([
+            ...caught.map(c => c.player),
+            ...dead.map(d => d.player),
+            ...encounters.map(e => e.player),
+        ])].filter(Boolean).sort();
+
+        if (players.length === 0) {
+            body.appendChild(buildCaughtSection(caught));
+            body.appendChild(buildDeadSection(dead));
+            body.appendChild(buildEncountersSection(encounters));
+        } else {
+            for (const player of players) {
+                body.appendChild(buildPlayerSection(
+                    player,
+                    caught.filter(c => c.player === player),
+                    dead.filter(d => d.player === player),
+                    encounters.filter(e => e.player === player),
+                ));
+            }
+        }
 
         hdr.onclick = () => {
             const open = body.classList.toggle('open');
@@ -236,6 +262,33 @@ function statEl(val, label, cls) {
     s.appendChild(el('div', 'stat-val ' + cls, String(val)));
     s.appendChild(el('div', 'stat-lbl', label));
     return s;
+}
+
+function buildPlayerSection(player, caught, dead, encounters) {
+    const div = document.createElement('div');
+    div.className = 'player-section';
+
+    const hdr = document.createElement('div');
+    hdr.className = 'player-heading';
+    hdr.appendChild(document.createTextNode(player));
+    const chev = el('span', 'chevron', '▶');
+    hdr.appendChild(chev);
+
+    const body = document.createElement('div');
+    body.className = 'player-body';
+    body.appendChild(buildCaughtSection(caught));
+    body.appendChild(buildDeadSection(dead));
+    body.appendChild(buildEncountersSection(encounters));
+
+    hdr.onclick = () => {
+        const closed = body.classList.toggle('closed');
+        chev.style.transform = closed ? '' : 'rotate(90deg)';
+    };
+    chev.style.transform = 'rotate(90deg)';
+
+    div.appendChild(hdr);
+    div.appendChild(body);
+    return div;
 }
 
 function buildCaughtSection(caught) {

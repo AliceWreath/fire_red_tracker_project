@@ -339,12 +339,14 @@ fn main() {
                     update_box_list();
                     *thread_box.lock().unwrap_or_else(|e| e.into_inner()) = build_box_entries();
                     fill_party_list(&thread_party);
+                    check_for_new_pokemon(&thread_party);
                     check_for_dead_pokemon(&thread_party);
                 }
 
                 if last_party_refresh.elapsed().as_secs() >= FORCE_PARTY_CHECK_INTERVAL {
                     last_party_refresh = std::time::Instant::now();
                     fill_party_list(&thread_party);
+                    check_for_new_pokemon(&thread_party);
                     check_for_dead_pokemon(&thread_party);
                 }
 
