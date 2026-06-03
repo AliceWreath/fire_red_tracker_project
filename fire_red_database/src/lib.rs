@@ -320,6 +320,16 @@ pub fn initialize(connection_string: &str) -> Result<(), String> {
 
         -- Migration: add human-readable location name resolved at catch time.
         ALTER TABLE caught_pokemon ADD COLUMN IF NOT EXISTS location_name TEXT NOT NULL DEFAULT '';
+
+        -- Data repair: fix species_name for NIDORAN♀ (29) and NIDORAN♂ (32) that were
+        -- stored without the gender symbol due to a bug in the GBA text decoder.
+        -- Only updates rows that don't already contain a gender symbol.
+        UPDATE encounters     SET species_name = 'NIDORAN♀' WHERE species = 29 AND species_name NOT LIKE '%♀%' AND species_name NOT LIKE '%♂%';
+        UPDATE encounters     SET species_name = 'NIDORAN♂' WHERE species = 32 AND species_name NOT LIKE '%♀%' AND species_name NOT LIKE '%♂%';
+        UPDATE caught_pokemon SET species_name = 'NIDORAN♀' WHERE species = 29 AND species_name NOT LIKE '%♀%' AND species_name NOT LIKE '%♂%';
+        UPDATE caught_pokemon SET species_name = 'NIDORAN♂' WHERE species = 32 AND species_name NOT LIKE '%♀%' AND species_name NOT LIKE '%♂%';
+        UPDATE dead_pokemon   SET species_name = 'NIDORAN♀' WHERE species = 29 AND species_name NOT LIKE '%♀%' AND species_name NOT LIKE '%♂%';
+        UPDATE dead_pokemon   SET species_name = 'NIDORAN♂' WHERE species = 32 AND species_name NOT LIKE '%♀%' AND species_name NOT LIKE '%♂%';
     ").map_err(|e| format!("Failed to create database schema: {e}"))?;
 
     DB.set(Mutex::new(DbState { client, run_id: None, current_player: String::new() }))
@@ -1247,7 +1257,9 @@ fn dump_runs(client: &mut Client) -> serde_json::Value {
 
 fn dump_caught(client: &mut Client) -> serde_json::Value {
     let rows = client.query(
-        "SELECT run_id, player_name, nickname, species_name, level, nature, is_shiny,
+        "SELECT run_id, player_name, nickname,
+                CASE WHEN species = 29 THEN 'NIDORAN♀' WHEN species = 32 THEN 'NIDORAN♂' ELSE species_name END,
+                level, nature, is_shiny,
                 location_name,
                 iv_hp, iv_attack, iv_defense, iv_speed, iv_sp_attack, iv_sp_defense,
                 caught_at, gender
@@ -1276,7 +1288,9 @@ fn dump_caught(client: &mut Client) -> serde_json::Value {
 
 fn dump_dead(client: &mut Client) -> serde_json::Value {
     let rows = client.query(
-        "SELECT run_id, player_name, nickname, species_name, level, nature, is_shiny,
+        "SELECT run_id, player_name, nickname,
+                CASE WHEN species = 29 THEN 'NIDORAN♀' WHEN species = 32 THEN 'NIDORAN♂' ELSE species_name END,
+                level, nature, is_shiny,
                 max_hp, attack, defense, speed, sp_attack, sp_defense,
                 iv_hp, iv_attack, iv_defense, iv_speed, iv_sp_attack, iv_sp_defense,
                 (max_hp = 0) AS soul_link,
@@ -1309,7 +1323,9 @@ fn dump_dead(client: &mut Client) -> serde_json::Value {
 
 fn dump_encounters(client: &mut Client) -> serde_json::Value {
     let rows = client.query(
-        "SELECT run_id, player_name, map_group, map_name, species_name, level, caught, encountered_at
+        "SELECT run_id, player_name, map_group, map_name,
+                CASE WHEN species = 29 THEN 'NIDORAN♀' WHEN species = 32 THEN 'NIDORAN♂' ELSE species_name END,
+                level, caught, encountered_at
          FROM encounters ORDER BY encountered_at ASC",
         &[],
     ).unwrap_or_default();
