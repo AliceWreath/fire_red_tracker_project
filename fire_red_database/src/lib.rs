@@ -321,6 +321,21 @@ pub fn initialize(connection_string: &str) -> Result<(), String> {
         -- Migration: add human-readable location name resolved at catch time.
         ALTER TABLE caught_pokemon ADD COLUMN IF NOT EXISTS location_name TEXT NOT NULL DEFAULT '';
 
+        -- Data repair: assign caught_pokemon records with a blank player_name to the
+        -- correct player, using the encounters table as the source of truth.
+        -- Only runs for single-player runs (one distinct player in encounters) where
+        -- the assignment is unambiguous.
+        UPDATE caught_pokemon cp
+        SET player_name = sub.player_name
+        FROM (
+            SELECT run_id, MIN(player_name) AS player_name
+            FROM encounters
+            WHERE player_name != ''
+            GROUP BY run_id
+            HAVING COUNT(DISTINCT player_name) = 1
+        ) sub
+        WHERE cp.run_id = sub.run_id AND cp.player_name = '';
+
         -- Data repair: fix species_name for NIDORAN♀ (29) and NIDORAN♂ (32) that were
         -- stored without the gender symbol due to a bug in the GBA text decoder.
         -- Only updates rows that don't already contain a gender symbol.

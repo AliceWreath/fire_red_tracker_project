@@ -235,11 +235,20 @@ function render(data) {
             body.appendChild(buildDeadSection(dead));
             body.appendChild(buildEncountersSection(encounters));
         } else {
-            for (const player of players) {
+            // Records written before player-name tracking was fixed have an
+            // empty player field.  Assign them to the first player so they are
+            // at least visible (the DB migration will fix this permanently on
+            // next tracker restart).
+            const unassignedCaught = caught.filter(c => !c.player);
+            const unassignedDead   = dead.filter(d => !d.player);
+
+            for (let pi = 0; pi < players.length; pi++) {
+                const player = players[pi];
+                const isFirst = pi === 0;
                 body.appendChild(buildPlayerSection(
                     player,
-                    caught.filter(c => c.player === player),
-                    dead.filter(d => d.player === player),
+                    caught.filter(c => c.player === player).concat(isFirst ? unassignedCaught : []),
+                    dead.filter(d => d.player === player).concat(isFirst ? unassignedDead : []),
                     encounters.filter(e => e.player === player),
                 ));
             }
