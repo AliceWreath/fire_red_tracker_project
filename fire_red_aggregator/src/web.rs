@@ -208,6 +208,7 @@ struct MemberDto {
     gender:            u8,
     ability:           String,
     held_item:         String,
+    held_item_id:      u16,
     growth_rate:       String,
     /// Base64 PNG data URI for the sprite, e.g. `data:image/png;base64,...`.
     /// `None` while the sprite is still in transit from the tracker server.
@@ -634,6 +635,7 @@ impl BroadcastLoop {
                                     gender:            p.box_mon.gender,
                                     ability:           p.box_mon.ability_string.clone(),
                                     held_item:         p.box_mon.secure.growth.held_item_string.clone(),
+                                    held_item_id:      p.box_mon.secure.growth.held_item,
                                     growth_rate:       p.box_mon.secure.growth.growth_rate_string.clone(),
                                     sprite,
                                 }
