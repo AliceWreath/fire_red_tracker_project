@@ -131,9 +131,11 @@ pub unsafe extern "C" fn c_start_loop(file_path: *const c_char, is_clean: bool) 
 ///
 /// # Arguments
 ///
-/// * `file_path` — Path to the FireRed `.gba` ROM file.
-/// * `is_clean`  — When `true`, enables ability name display. Only reliable
-///   on unmodified ("clean") ROMs.
+/// * `file_path` — Path to the FireRed `.gba` ROM file. Point this at the
+///   actual ROM you are playing — including a randomized ROM — so that
+///   ability lookups read from the correct base stats table.
+/// * `_is_clean` — Kept for C-ABI and config compatibility; no longer used
+///   internally. Ability names are always resolved from the ROM.
 ///
 /// # Returns
 ///
@@ -142,7 +144,7 @@ pub unsafe extern "C" fn c_start_loop(file_path: *const c_char, is_clean: bool) 
 /// * `-2` — ROM failed to load (I/O or format error).
 /// * `-3` — Wild-encounter headers could not be located in the ROM.
 /// * `-4` — A loop is already running.
-pub fn start_loop(file_path: &str, is_clean: bool) -> c_int {
+pub fn start_loop(file_path: &str, _is_clean: bool) -> c_int {
     // Prevent multiple concurrent loops.
     if RUNNING.swap(true, Ordering::SeqCst) {
         return -4;
@@ -189,7 +191,7 @@ pub fn start_loop(file_path: &str, is_clean: bool) -> c_int {
     std::thread::sleep(std::time::Duration::from_millis(600));
 
     // Initialize subsystems that read from the EWRAM snapshot.
-    initialize_static_party(is_clean);
+    initialize_static_party();
     fire_red_trainer_data::initialize_static_trainer_data();
 
     // Start the per-subsystem polling threads.

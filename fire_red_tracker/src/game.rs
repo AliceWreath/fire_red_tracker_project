@@ -179,18 +179,30 @@ pub fn check_for_new_pokemon(thread_party: &Arc<Mutex<Vec<Pokemon>>>) {
             .map(|d| d.as_secs())
             .unwrap_or(0);
 
+        let location_name = map_state_from_ewram()
+            .map(|s| {
+                let n = fire_red_location_names::map_area_name(s.map_group_id, s.map_name_id);
+                if n.is_empty() {
+                    format!("{}\u{B7}{}", s.map_group_id, s.map_name_id)
+                } else {
+                    n.to_string()
+                }
+            })
+            .unwrap_or_default();
+
         fire_red_database::mark_caught(fire_red_database::CaughtPokemon {
-            player_name:  String::new(), // populated from DbState::current_player by mark_caught
+            player_name:   String::new(), // populated from DbState::current_player by mark_caught
             personality,
             ot_id,
-            nickname:     pokemon.box_mon.nickname_string.clone(),
+            nickname:      pokemon.box_mon.nickname_string.clone(),
             species,
-            species_name: growth.species_string.clone(),
-            is_shiny:     is_shiny(personality, ot_id),
-            nature:       fire_red_database::nature_name(personality).to_string(),
-            level:        pokemon.level,
-            met_location: misc.met_location,
-            gender:       pokemon.box_mon.gender,
+            species_name:  growth.species_string.clone(),
+            is_shiny:      is_shiny(personality, ot_id),
+            nature:        fire_red_database::nature_name(personality).to_string(),
+            level:         pokemon.level,
+            met_location:  misc.met_location,
+            location_name,
+            gender:        pokemon.box_mon.gender,
             ivs: fire_red_database::IVs {
                 hp:         iv.hp_iv,
                 attack:     iv.attack_iv,

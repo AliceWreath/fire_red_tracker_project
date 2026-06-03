@@ -142,12 +142,16 @@ pub struct CaughtPokemon {
     pub species_name: String,
     pub is_shiny:     bool,
     pub nature:       String,
-    pub level:        u8,
-    pub met_location: u8,
-    pub ivs:          IVs,
-    pub caught_at:    u64,
+    pub level:         u8,
+    pub met_location:  u8,
+    /// Human-readable location name resolved at catch time from the current map
+    /// (group, map_name) coordinates. Empty for records created before this field
+    /// was added.
+    pub location_name: String,
+    pub ivs:           IVs,
+    pub caught_at:     u64,
     /// `0` = male, `1` = female, `2` = genderless.
-    pub gender:       u8,
+    pub gender:        u8,
 }
 
 // ---------------------------------------------------------------------------
@@ -313,6 +317,9 @@ pub fn initialize(connection_string: &str) -> Result<(), String> {
         -- Migration: add gender column (0=male 1=female 2=genderless, default genderless).
         ALTER TABLE caught_pokemon ADD COLUMN IF NOT EXISTS gender INTEGER NOT NULL DEFAULT 2;
         ALTER TABLE dead_pokemon   ADD COLUMN IF NOT EXISTS gender INTEGER NOT NULL DEFAULT 2;
+
+        -- Migration: add human-readable location name resolved at catch time.
+        ALTER TABLE caught_pokemon ADD COLUMN IF NOT EXISTS location_name TEXT NOT NULL DEFAULT '';
     ").map_err(|e| format!("Failed to create database schema: {e}"))?;
 
     DB.set(Mutex::new(DbState { client, run_id: None, current_player: String::new() }))
@@ -354,7 +361,7 @@ fn query_caught(client: &mut Client, run_id: u32, player_name: &str) -> Vec<Caug
             "SELECT player_name, personality, ot_id, nickname, species, species_name,
                     is_shiny, nature, level, met_location,
                     iv_hp, iv_attack, iv_defense, iv_speed, iv_sp_attack, iv_sp_defense,
-                    caught_at, gender
+                    caught_at, gender, location_name
              FROM caught_pokemon
              WHERE run_id = $1 AND player_name = $2
              ORDER BY caught_at ASC",
@@ -372,7 +379,8 @@ fn query_caught(client: &mut Client, run_id: u32, player_name: &str) -> Vec<Caug
             is_shiny:     row.get(6),
             nature:       row.get(7),
             level:        row.get::<_, i32>(8) as u8,
-            met_location: row.get::<_, i32>(9) as u8,
+            met_location:  row.get::<_, i32>(9) as u8,
+            location_name: row.get::<_, String>(18),
             ivs: IVs {
                 hp:         row.get::<_, i32>(10) as u8,
                 attack:     row.get::<_, i32>(11) as u8,
@@ -727,8 +735,8 @@ pub fn mark_caught(pokemon: CaughtPokemon) {
             run_id, player_name, personality, ot_id, nickname, species, species_name,
             is_shiny, nature, level, met_location,
             iv_hp, iv_attack, iv_defense, iv_speed, iv_sp_attack, iv_sp_defense,
-            caught_at, gender
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
+            caught_at, gender, location_name
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
         ON CONFLICT (run_id, personality) DO NOTHING",
         &[
             &(active as i32),
@@ -750,6 +758,7 @@ pub fn mark_caught(pokemon: CaughtPokemon) {
             &(pokemon.ivs.sp_defense as i32),
             &(pokemon.caught_at as i64),
             &(pokemon.gender as i32),
+            &pokemon.location_name,
         ],
     ).expect("Failed to insert caught pokemon");
 }
@@ -1239,7 +1248,7 @@ fn dump_runs(client: &mut Client) -> serde_json::Value {
 fn dump_caught(client: &mut Client) -> serde_json::Value {
     let rows = client.query(
         "SELECT run_id, player_name, nickname, species_name, level, nature, is_shiny,
-                met_location,
+                location_name,
                 iv_hp, iv_attack, iv_defense, iv_speed, iv_sp_attack, iv_sp_defense,
                 caught_at, gender
          FROM caught_pokemon ORDER BY caught_at ASC",
@@ -1255,7 +1264,7 @@ fn dump_caught(client: &mut Client) -> serde_json::Value {
             "level":     row.get::<_, i32>(4),
             "nature":    row.get::<_, String>(5),
             "shiny":     row.get::<_, bool>(6),
-            "location":  row.get::<_, i32>(7),
+            "location":  row.get::<_, String>(7),
             "ivs":       format!("{}/{}/{}/{}/{}/{}",
                 row.get::<_, i32>(8),  row.get::<_, i32>(9),  row.get::<_, i32>(10),
                 row.get::<_, i32>(11), row.get::<_, i32>(12), row.get::<_, i32>(13)),

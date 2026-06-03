@@ -143,42 +143,6 @@ function gSym(g) {
     return '';
 }
 
-// met_location byte → name (MAPSEC constants, FireRed USA Rev 1)
-const MAPSEC = {
-    0:'Pallet Town', 1:'Viridian City', 2:'Pewter City', 3:'Cerulean City',
-    4:'Lavender Town', 5:'Vermilion City', 6:'Celadon City', 7:'Fuchsia City',
-    8:'Saffron City', 9:'Cinnabar Island', 10:'Indigo Plateau',
-    11:'Viridian Forest', 12:'Mt. Moon', 13:'S.S. Anne',
-    14:'Underground Path', 15:'Underground Path', 16:"Diglett's Cave",
-    17:'Victory Road', 18:'Rocket Hideout', 19:'Silph Co.',
-    20:'Pokémon Mansion', 21:'Safari Zone', 22:'Pokémon League',
-    23:'Rock Tunnel', 24:'Power Plant', 25:'Seafoam Islands',
-    26:'Pokémon Tower', 27:'Cerulean Cave', 28:'Mt. Ember',
-    29:'Berry Forest', 30:'Icefall Cave', 31:'Lost Cave',
-    32:'Pattern Bush', 33:'Altering Cave', 34:'Tanoby Ruins',
-    35:'Monean Chamber', 36:'Liptoo Chamber', 37:'Weepth Chamber',
-    38:'Dilford Chamber', 39:'Scufib Chamber', 40:'Rixy Chamber',
-    41:'Viapois Chamber', 42:'Three Isle Path', 43:'Navel Rock',
-    44:'Birth Island',
-    45:'Route 1',  46:'Route 2',  47:'Route 3',  48:'Route 4',
-    49:'Route 5',  50:'Route 6',  51:'Route 7',  52:'Route 8',
-    53:'Route 9',  54:'Route 10', 55:'Route 11', 56:'Route 12',
-    57:'Route 13', 58:'Route 14', 59:'Route 15', 60:'Route 16',
-    61:'Route 17', 62:'Route 18', 63:'Route 19', 64:'Route 20',
-    65:'Route 21', 66:'Route 22', 67:'Route 23', 68:'Route 24',
-    69:'Route 25',
-    70:'One Island', 71:'Two Island', 72:'Three Island', 73:'Four Island',
-    74:'Five Island', 75:'Six Island', 76:'Seven Island',
-    77:'Treasure Beach', 78:'Kindle Road', 79:'Cape Brink',
-    80:'Bond Bridge', 81:'Three Isle Port',
-    82:'Sevii Isle 6', 83:'Sevii Isle 7', 84:'Sevii Isle 8',
-    85:'Sevii Isle 9', 86:'Resort Gorgeous', 87:'Water Path',
-    88:'Ruin Valley', 89:'Trainer Tower', 90:'Canyon Entrance',
-    91:'Sevault Canyon', 92:'Tanoby Chambers',
-    255:'—',
-};
-function locName(n) { return MAPSEC[n] || 'Location ' + n; }
-
 async function loadData() {
     document.getElementById('status').textContent = 'Loading...';
     try {
@@ -286,7 +250,7 @@ function buildCaughtSection(caught) {
         r.appendChild(el('span', 'r-lv',   'Lv' + row.level));
         r.appendChild(el('span', 'r-nat',  row.nature));
         if (row.shiny) r.appendChild(el('span', 'r-shiny', '★'));
-        r.appendChild(el('span', 'r-loc',  locName(row.location)));
+        r.appendChild(el('span', 'r-loc',  row.location || '—'));
         r.appendChild(ivSpan(row.ivs));
         r.appendChild(el('span', 'r-time', row.caught_at));
         return r;

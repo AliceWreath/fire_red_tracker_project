@@ -116,26 +116,16 @@ static PARTY_DATA: OnceLock<ArcSwap<Party>> = OnceLock::new();
 /// Controls the background polling loop.
 static RUNNING: AtomicBool = AtomicBool::new(false);
 
-/// Whether to populate ROM-derived metadata (ability name strings etc.).
-static IS_CLEAN: AtomicBool = AtomicBool::new(false);
-
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
-/// Initializes the global party state and configures ROM-derived metadata.
-///
-/// # Parameters
-///
-/// * `is_clean` — When `true`, ability names and other ROM strings are
-///   resolved and stored on each pokemon. When `false`, only raw numeric
-///   IDs are populated (faster).
+/// Initializes the global party state.
 ///
 /// # Returns
 ///
 /// A reference to the global [`ArcSwap`] containing the current [`Party`].
-pub fn initialize_static_party(is_clean: bool) -> &'static ArcSwap<Party> {
-    IS_CLEAN.store(is_clean, Ordering::SeqCst);
+pub fn initialize_static_party() -> &'static ArcSwap<Party> {
     PARTY_DATA.get_or_init(|| {
         ArcSwap::from_pointee(Party::from_ewram(
             &fire_red_memory::get_ewram(),
@@ -169,11 +159,6 @@ pub fn update_party() {
     let ewram = fire_red_memory::get_ewram();
     let rom = fire_red_rom_buffer::get_rom();
     get_static_party().store(Arc::new(Party::from_ewram(&ewram, rom)));
-}
-
-/// Returns whether ROM-derived metadata population is enabled.
-pub fn get_is_clean() -> bool {
-    IS_CLEAN.load(Ordering::SeqCst)
 }
 
 /// Starts the background party polling loop.
@@ -449,6 +434,10 @@ impl Default for BoxPokemon {
 
 impl BoxPokemon {
     /// Resolves and fills ability information from the ROM base stat table.
+    ///
+    /// Works with any ROM the user provides — including randomized ROMs — as
+    /// long as the base stats and ability name tables are at the standard
+    /// FireRed offsets (Universal Pokémon Randomizer keeps these in place).
     pub fn fill_ability(&mut self, rom_buffer: &[u8]) {
         if self.secure.growth.species == 0 {
             self.ability = 0;
@@ -460,9 +449,7 @@ impl BoxPokemon {
             self.secure.growth.species,
             self.secure.misc.iv_egg_ability.ability_number,
         );
-        if get_is_clean() {
-            self.ability_string = get_ability_string_from_id(rom_buffer, self.ability);
-        }
+        self.ability_string = get_ability_string_from_id(rom_buffer, self.ability);
     }
 
     /// Parses a [`BoxPokemon`] from a raw byte slice.

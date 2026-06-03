@@ -163,14 +163,6 @@ impl eframe::App for SetupApp {
                 });
                 ui.end_row();
 
-                // Clean ROM
-                ui.label("Clean ROM:");
-                ui.vertical(|ui| {
-                    ui.checkbox(&mut self.clean, "Enable ability name display");
-                    ui.small("Only reliable on unmodified ROMs");
-                });
-                ui.end_row();
-
                 // Mode
                 ui.label("Default mode:");
                 ui.horizontal(|ui| {

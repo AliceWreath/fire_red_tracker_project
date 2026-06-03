@@ -296,6 +296,7 @@ function render(slots) {
                     if (mon.died_at) {
                         content.appendChild(el('div', 'mon-sub-sm', 'Died: ' + mon.died_at));
                     }
+                    if (mon.ability) content.appendChild(el('div', 'mon-sub-sm', 'Ability: ' + mon.ability));
                 } else {
                     content.appendChild(el('div', 'mon-sub',
                         mon.species_name + ' — ' + mon.nature + (mon.shiny ? ' ★' : '')));
@@ -304,6 +305,7 @@ function render(slots) {
                     content.appendChild(el('div', 'hp ' + cls, mon.hp + '/' + mon.max_hp));
                     content.appendChild(statRowEl('mon-sub-sm', mon.nature, mon.max_hp, mon.attack, mon.defense, mon.speed, mon.sp_attack, mon.sp_defense));
                     content.appendChild(el('div', 'exp', 'Exp: ' + mon.exp));
+                    if (mon.ability) content.appendChild(el('div', 'mon-sub-sm', 'Ability: ' + mon.ability));
                 }
 
                 inner.appendChild(content);

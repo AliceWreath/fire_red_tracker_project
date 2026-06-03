@@ -15,8 +15,9 @@ pub struct Cli {
     #[arg(long, value_name = "FILE")]
     pub config: Option<String>,
 
-    /// Enable ability name display (only reliable on unmodified ROMs).
-    #[arg(long, default_value_t = false)]
+    /// Accepted for backward compatibility; no longer has any effect.
+    /// Ability names are now always resolved from the provided ROM file.
+    #[arg(long, default_value_t = false, hide = true)]
     pub clean: bool,
 
     /// Override the database connection string stored in the config file.

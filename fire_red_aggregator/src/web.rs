@@ -206,6 +206,7 @@ struct MemberDto {
     sp_defense:        u16,
     /// `0` = male, `1` = female, `2` = genderless.
     gender:            u8,
+    ability:           String,
     /// Base64 PNG data URI for the sprite, e.g. `data:image/png;base64,...`.
     /// `None` while the sprite is still in transit from the tracker server.
     sprite:            Option<String>,
@@ -629,6 +630,7 @@ impl BroadcastLoop {
                                     sp_attack,
                                     sp_defense,
                                     gender:            p.box_mon.gender,
+                                    ability:           p.box_mon.ability_string.clone(),
                                     sprite,
                                 }
                             })
@@ -725,7 +727,11 @@ impl BroadcastLoop {
                     nature:       cp.nature.clone(),
                     shiny:        cp.is_shiny,
                     caught_at:         fire_red_database::format_timestamp(cp.caught_at),
-                    met_location_name: fire_red_location_names::location_name(cp.met_location).to_string(),
+                    met_location_name: if cp.location_name.is_empty() {
+                        fire_red_location_names::location_name(cp.met_location).to_string()
+                    } else {
+                        cp.location_name.clone()
+                    },
                     gender:            cp.gender,
                     iv_hp:        cp.ivs.hp,
                     iv_atk:       cp.ivs.attack,

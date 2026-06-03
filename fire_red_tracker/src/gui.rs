@@ -9,7 +9,6 @@ use crate::textures::{
     PARTY_IMAGE_SIZE, ENCOUNTER_IMAGE_SIZE,
     PendingTexture, load_texture, load_texture_normal, make_placeholder,
 };
-use fire_red_party_monitor::get_is_clean;
 use fire_red_states::MAX_NATIONAL_DEX_FIRERED;
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
@@ -24,7 +23,6 @@ pub const ENCOUNTER_WINDOW: (f32, f32) = (600.0, 400.0);
 struct SettingsDraft {
     rom:             String,
     db:              String,
-    clean:           bool,
     mode:            crate::config::ConfigMode,
     aggregator_host: String,
     aggregator_port: String,
@@ -35,7 +33,6 @@ impl SettingsDraft {
         Self {
             rom:             cfg.rom.clone(),
             db:              cfg.db.trim_start_matches("postgresql://").trim_start_matches("postgres://").to_string(),
-            clean:           cfg.clean,
             mode:            cfg.mode.clone(),
             aggregator_host: cfg.aggregator_host.clone(),
             aggregator_port: cfg.aggregator_port.to_string(),
@@ -324,10 +321,6 @@ impl WindowInfo {
                 ui.add(egui::TextEdit::singleline(&mut s.db).desired_width(300.0).hint_text("localhost/nuzlocke"));
                 ui.end_row();
 
-                ui.label("Clean ROM:");
-                ui.checkbox(&mut s.clean, "Enable ability name display");
-                ui.end_row();
-
                 ui.label("Default mode:");
                 ui.horizontal(|ui| {
                     ui.selectable_value(&mut s.mode, crate::config::ConfigMode::Standalone, "Standalone");
@@ -362,7 +355,7 @@ impl WindowInfo {
                 let cfg = TrackerConfig {
                     rom:             s.rom.trim().to_string(),
                     db,
-                    clean:           s.clean,
+                    clean:           false,
                     mode:            s.mode.clone(),
                     aggregator_host: s.aggregator_host.trim().to_string(),
                     aggregator_port: s.aggregator_port.parse().unwrap_or(7878),
@@ -377,8 +370,7 @@ impl WindowInfo {
     /// Draws the party panel.
     ///
     /// Renders badge summary, next gym info, then for each party member:
-    /// sprite, nickname, level, HP (color-coded), met location, and ability
-    /// (if `--clean` is active).
+    /// sprite, nickname, level, HP (color-coded), met location, and ability.
     pub fn draw_party(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             ui.heading("Party");
@@ -561,7 +553,7 @@ impl WindowInfo {
                             ),
                         ));
 
-                        if get_is_clean() {
+                        if !pokemon.box_mon.ability_string.is_empty() {
                             ui.label(format!("Ability: {}", pokemon.box_mon.ability_string));
                         }
                     }
