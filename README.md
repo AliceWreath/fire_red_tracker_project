@@ -17,13 +17,12 @@ A real-time Pokémon FireRed party and encounter monitor built in Rust. It reads
 
 ## What it does
 
-- **Party panel** — shows each Pokémon's sprite (shiny-aware), nickname, level, HP (colour-coded), experience, caught location, and badge progress in real time.
+- **Party panel** — shows each Pokémon's sprite (shiny-aware), nickname, level, HP (colour-coded), experience, caught location, ability, and badge progress in real time.
 - **Encounters panel** — shows the wild Pokémon available in the current area, split by type: grass, water/fishing, and Rock Smash. Updates automatically when the player moves to a new map.
 - **Badge tracker** — displays obtained badges as coloured dots and shows the next gym leader's name, city, and highest Pokémon level.
 - **First-encounter tracking** — records the first wild Pokémon encountered in each area (Nuzlocke rule). Encounters are ignored until the player receives their first Pokéballs; once obtained, tracking continues even if all balls are later used. If the first encounter in an area is a species the player has already encountered elsewhere in the run, it is skipped as a duplicate. Catches are flagged automatically when the Pokémon appears in the player's party.
 - **Reset detection** — clears stale party, encounter, and badge data when a soft reset or title screen is detected.
 - **Soul Link detection** — in aggregator mode, Pokémon caught in the same location across two or more players' games are automatically linked and labelled in purple.
-- **Clean ROM mode** — pass `--clean` to also display ability data (only reliable on unmodified ROMs).
 
 ---
 
@@ -34,8 +33,11 @@ Runs locally. Reads the ROM and polls RetroArch on the same machine. Displays a 
 
 ```
 tracker firered.gba
-tracker firered.gba --clean
+tracker firered.gba --new-run             # start a fresh run (ignores the most recent active run)
+tracker firered.gba --run-id 3            # resume a specific run by its numeric ID
+tracker firered.gba --list-runs           # print all stored runs and exit
 tracker firered.gba --scan-balls-pocket   # locate bag balls pocket offset (run with balls in bag)
+tracker firered.gba --update              # check GitHub for a newer release and self-update
 ```
 
 ### Connected
@@ -54,6 +56,7 @@ A separate binary for Soul Link / co-op runs. **Listens** for incoming tracker c
 ```
 aggregator
 aggregator --listen-port 7878
+aggregator --update              # check GitHub for a newer release and self-update
 ```
 
 The window width scales as trackers connect. Soul Link matches (Pokémon sharing the same caught location across players) are highlighted automatically. If a tracker disconnects, its slot shows as disconnected and its last known data is preserved; when it reconnects it reuses the same slot.
@@ -150,6 +153,8 @@ A **Soul Link** is a Nuzlocke variant played with a partner: each player's catch
 | `fire_red_image_data` | Extracts and decodes Pokémon front sprites from the ROM: pointer resolution → LZ77 decompression → 4bpp tile decode → BGR555 palette → RGBA image. |
 | `fire_red_pokemon_data` | Wild encounter table types (`WildPokemonHeader`, `WildPokemonInfo`, `WildPokemon`). Parses encounter data from ROM and provides both safe Rust and FFI-compatible representations. |
 | `fire_red_get_values` | Low-level byte parsing utilities. Three families: `get_*` for RetroArch hex-token buffers (LE), `read_*` for raw byte slices (LE), `read_*_raw` for raw byte slices (BE). |
+| `fire_red_location_names` | Human-readable location name lookup for FireRed USA Rev 1. Exposes two functions: `map_area_name(group, map)` converts live `(map_group, map_name)` pairs to display strings for the encounter panel; `location_name(loc)` converts a MAPSEC `met_location` byte to a named location for the party panel. Constants derived from the pret/firered-leafgreen decomp. |
+| `fire_red_map_data` | `#[repr(C)]` structs mirroring the in-memory layout of FireRed map data (`MapHeader`, `MapLayout`, `MapEvents`, `WarpEvent`, `CoordEvent`, `BgEvent`, `MapConnections`, `MapConnection`, `ObjectEventTemplate`). Each type has a `fill_*` builder method for deserialising from RetroArch `READ_CORE_MEMORY` hex-token buffers, plus helpers for generating follow-up read commands. **In progress — not yet integrated into the main loop.** |
 | `fire_red_states` | Shared types and length-prefixed bincode TCP message protocol: `GameState`, `ServerMessage`, `ClientMessage`, `SpriteData`, `Mode`. Used by both tracker and aggregator. |
 | `fire_red_database` | PostgreSQL persistence layer. Manages runs, encounters, caught Pokémon, and deaths. Provides both a write API (used by the tracker process) and a read-only `DbReader` (used by the aggregator). |
 | `fire_red_retroarch_interfacing` | Sends `READ_CORE_MEMORY` commands to RetroArch over UDP and parses the whitespace-tokenised responses. |
@@ -196,6 +201,9 @@ A **Soul Link** is a Nuzlocke variant played with a partner: each player's catch
 | `tokio` | Async runtime backing the axum WebSocket server |
 | `serde_json` | JSON serialisation of game state pushed to WebSocket clients |
 | `futures-util` | Stream/sink utilities for bidirectional axum WebSocket handling |
+| `rfd` | Native file-picker dialogs used in the first-run config setup wizard |
+| `self_update` | GitHub release auto-updater; powers the `--update` flag on both binaries |
+| `once_cell` | Lazy static initialisation for shared name buffers and ROM data |
 
 ---
 
@@ -457,5 +465,6 @@ The web overlay also hosts **End Run** and **New Run** buttons. Clicking either 
 Personal project built for Nuzlocke and Soul Link runs. The codebase is functional but not hardened for general distribution:
 
 - ROM scanning and all hardcoded addresses are calibrated for **FireRed USA (Rev 1)**. Other regional releases or ROM hacks will likely require address adjustments. If the balls pocket offset is wrong for a different revision, run `tracker <rom> --scan-balls-pocket` with at least one ball in the bag to locate the correct `BALLS_POCKET_SAVE_BLOCK_OFFSET` in `fire_red_tracker/src/game.rs`. Note that bag item quantities are XOR-encrypted in RAM; the scanner checks item IDs only.
-- The `--clean` ability feature reads from ROM base-stat tables and is only reliable on unmodified ROMs.
+- Ability data is read from ROM base-stat tables and is only reliable on unmodified ROMs.
+- The `fire_red_map_data` crate is in progress and not yet integrated into the main loop.
 - The `WildPokemonHeaderFFI` and `AreaEncountersStringArrays` FFI types are partially implemented; the C-callable interface helpers are in progress pending a stable API design.
