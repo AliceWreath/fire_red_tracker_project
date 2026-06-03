@@ -286,8 +286,23 @@ fn main() {
             let mut old_party_size     = get_party_size();
             let mut last_party_refresh = std::time::Instant::now();
             let mut state_initialized  = false;
-            let mut player_name_set    = false;
             let mut enc_tracker        = encounter::EncounterTracker::new();
+
+            // Set player name before the startup party scan so records written
+            // to caught_pokemon have the correct player attribution. The trainer
+            // data has been initialised from EWRAM at this point, so this
+            // succeeds for any loaded save. For a brand-new game the name may
+            // still be blank; the main loop will set it on the first iteration
+            // where the trainer name becomes available.
+            let mut player_name_set = {
+                let name = get_trainer_name();
+                if !name.trim().is_empty() {
+                    fire_red_database::set_player_name(&name);
+                    true
+                } else {
+                    false
+                }
+            };
 
             fill_party_list(&thread_party);
             check_for_new_pokemon(&thread_party);
