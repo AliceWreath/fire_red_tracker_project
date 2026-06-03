@@ -185,7 +185,6 @@ pub fn get_from_retroarch(
             if e.kind() == std::io::ErrorKind::TimedOut
                 || e.kind() == std::io::ErrorKind::WouldBlock =>
         {
-            eprintln!("Timeout waiting for RetroArch response: {}", e);
             None
         }
         Err(e) => {

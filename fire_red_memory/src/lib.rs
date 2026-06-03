@@ -160,9 +160,16 @@ pub fn start_loop() {
     LOADED_IWRAM.get_or_init(|| ArcSwap::from_pointee(Vec::new()));
     RUNNING.store(true, Ordering::SeqCst);
     std::thread::spawn(|| {
+        let mut last_err_print = std::time::Instant::now()
+            .checked_sub(std::time::Duration::from_secs(10))
+            .unwrap_or_else(std::time::Instant::now);
         while RUNNING.load(Ordering::SeqCst) {
             if let Err(e) = update_memory() {
-                eprintln!("{}", e);
+                let now = std::time::Instant::now();
+                if now.duration_since(last_err_print) >= std::time::Duration::from_secs(5) {
+                    eprintln!("RetroArch read failed: {}", e);
+                    last_err_print = now;
+                }
             }
             std::thread::sleep(SLEEP_DURATION);
         }
@@ -261,15 +268,8 @@ fn read_chunk(start: u32, chunk_start: u32, chunk_size: u32) -> Option<(u32, Vec
             // +2 for the "READ_CORE_MEMORY <addr>" prefix tokens.
             (chunk_size + 2) as usize,
         ) else {
-            eprintln!(
-                "Failed to read memory at offset 0x{:08X} (attempt {}/{})",
-                start + chunk_start,
-                retries + 1,
-                MAX_RETRIES,
-            );
             retries += 1;
             if retries >= MAX_RETRIES {
-                eprintln!("Too many consecutive failures at 0x{:08X}, aborting chunk.", start + chunk_start);
                 return None;
             }
             std::thread::sleep(RETRY_BACKOFF * retries);
@@ -278,17 +278,12 @@ fn read_chunk(start: u32, chunk_start: u32, chunk_size: u32) -> Option<(u32, Vec
 
         // Validate response header
 if ret[0] != "READ_CORE_MEMORY" {
-    eprintln!("Unexpected response type: {}", ret[0]);
     retries += 1;
     continue;
 }
 
 let response_addr = u32::from_str_radix(ret[1].trim(), 16).ok();
 if response_addr != Some(start + chunk_start) {
-    eprintln!(
-        "Address mismatch: expected 0x{:08X}, got {:?}",
-        start + chunk_start, response_addr
-    );
     retries += 1;
     continue;
 }
@@ -298,13 +293,11 @@ let Some(bytes) = ret.iter().skip(2)
     .map(|s| u8::from_str_radix(s.trim(), 16).ok())
     .collect::<Option<Vec<u8>>>()
 else {
-    eprintln!("Malformed hex in response at 0x{:08X}", start + chunk_start);
     retries += 1;
     continue;
 };
 
 if bytes.len() < chunk_size as usize {
-    eprintln!("Short read at 0x{:08X}", start + chunk_start);
     retries += 1;
     continue;
 }
