@@ -167,7 +167,13 @@ pub fn check_for_new_pokemon(thread_party: &Arc<Mutex<Vec<Pokemon>>>) {
         let species = pokemon.box_mon.secure.growth.species;
         if species == 0 || species > MAX_NATIONAL_DEX_FIRERED { continue; }
         let personality = pokemon.box_mon.personality;
-        if fire_red_database::is_caught(personality) { continue; }
+        if fire_red_database::is_caught(personality) {
+            let nickname = &pokemon.box_mon.nickname_string;
+            if !nickname.is_empty() {
+                fire_red_database::update_caught_nickname(personality, nickname);
+            }
+            continue;
+        }
 
         let ot_id    = pokemon.box_mon.ot_id;
         let growth   = &pokemon.box_mon.secure.growth;

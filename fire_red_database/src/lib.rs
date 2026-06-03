@@ -788,6 +788,23 @@ pub fn mark_caught(pokemon: CaughtPokemon) {
     ).expect("Failed to insert caught pokemon");
 }
 
+/// Updates the nickname of a caught Pokémon if it has changed.
+///
+/// No-op if the Pokémon is not registered, the run is not active, or the
+/// nickname matches what is already stored.
+pub fn update_caught_nickname(personality: u32, nickname: &str) {
+    let mut state = db().lock().unwrap_or_else(|e| e.into_inner());
+    let active = match state.run_id {
+        Some(id) => id,
+        None => return,
+    };
+    let _ = state.client.execute(
+        "UPDATE caught_pokemon SET nickname = $1
+         WHERE run_id = $2 AND personality = $3 AND nickname != $1",
+        &[&nickname, &(active as i32), &(personality as i64)],
+    );
+}
+
 /// Returns `true` if a Pokemon with this personality has been caught in the active run.
 pub fn is_caught(personality: u32) -> bool {
     let mut state = db().lock().unwrap_or_else(|e| e.into_inner());
