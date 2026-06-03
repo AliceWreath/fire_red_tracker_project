@@ -18,36 +18,35 @@ pub static LAST_POKEMON_ID_NUMBER: size_t = 0x019B;
 pub static POKEMON_NAMES_ADDR: u32 = 0x245F5B;
 
 /// Converts a single pokemon firered/gba text byte into a Unicode character.
-/// 
+///
 /// The FireRed games use a custom text encoding instead of ASCII.
-/// 
+///
 /// # Supported mappings
-/// 
-/// - `0xBB..=0xD4` -> 'A-Z'
-/// - '0xD5..=0xEE' -> 'a-z'
-/// - `0x20` -> space character (0x9794 in Unicode)
-/// - `0x1D` -> apostrophe character (0x9792 in Unicode
-/// - `0xFF` -> null terminator (0x00 in Unicode)
-///   Any unmapped value is converted to a space character.
-/// 
-/// # Examples
-/// 
-/// ```ignore
-/// assert_eq!(char_=gba_to_ascii(0xBB), 'A');
-/// assert_eq!(char_gba_to_ascii(0xD5), 'a');
-/// assert_eq!(char_gba_to_ascii(0xFF), '\0');
-/// ```
+///
+/// - `0xBB..=0xD4` → 'A'–'Z'
+/// - `0xD5..=0xEE` → 'a'–'z'
+/// - `0xB5`        → '♂'  (used in Pokémon names, e.g. NIDORAN♂)
+/// - `0xB6`        → '♀'  (used in Pokémon names, e.g. NIDORAN♀)
+/// - `0x1D`        → '♀'  (used in battle/UI text)
+/// - `0x20`        → '♂'  (used in battle/UI text)
+/// - `0xFF`        → '\0' (null terminator)
+///
+/// Any other byte maps to a space character.
 pub fn char_gba_to_ascii(character: u8) -> char {
     if (0xBB..=0xD4).contains(&character) {
         return char::from(character - 0xBB + 0x41);
     } else if (0xD5..=0xEE).contains(&character) {
         return char::from(character - 0xD5 + 0x61);
+    } else if character == 0xB5 {
+        return '♂';
+    } else if character == 0xB6 {
+        return '♀';
     } else if character == 0x20 {
-        return char::from_u32(0x9794).unwrap_or('♂');
+        return '♂';
     } else if character == 0x1D {
-        return char::from_u32(0x9792).unwrap_or('♀');
+        return '♀';
     } else if character == 0xFF {
-        return '\0'
+        return '\0';
     }
     ' '
 }
@@ -206,6 +205,33 @@ mod tests {
     fn unmapped_byte_becomes_space() {
         assert_eq!(char_gba_to_ascii(0x00), ' ');
         assert_eq!(char_gba_to_ascii(0x42), ' ');
+    }
+
+    #[test]
+    fn gender_symbols_in_names() {
+        // 0xB5/0xB6 are the gender bytes used in Pokémon name table entries
+        // (e.g. NIDORAN♂ and NIDORAN♀).
+        assert_eq!(char_gba_to_ascii(0xB5), '♂');
+        assert_eq!(char_gba_to_ascii(0xB6), '♀');
+    }
+
+    #[test]
+    fn nidoran_names_are_distinct() {
+        // NIDORAN♀  = C8 C3 BE C9 CC BB C8 B6 FF
+        // NIDORAN♂  = C8 C3 BE C9 CC BB C8 B5 FF
+        let nidoran_f = [0xC8u8, 0xC3, 0xBE, 0xC9, 0xCC, 0xBB, 0xC8, 0xB6, 0xFF];
+        let nidoran_m = [0xC8u8, 0xC3, 0xBE, 0xC9, 0xCC, 0xBB, 0xC8, 0xB5, 0xFF];
+        let name_f: String = nidoran_f.iter().copied()
+            .take_while(|&b| b != 0xFF)
+            .map(char_gba_to_ascii)
+            .collect();
+        let name_m: String = nidoran_m.iter().copied()
+            .take_while(|&b| b != 0xFF)
+            .map(char_gba_to_ascii)
+            .collect();
+        assert_eq!(name_f, "NIDORAN♀");
+        assert_eq!(name_m, "NIDORAN♂");
+        assert_ne!(name_f, name_m);
     }
 
     // ── gba_string_to_ascii ───────────────────────────────────────────────────
