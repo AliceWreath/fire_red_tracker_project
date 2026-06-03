@@ -207,6 +207,8 @@ struct MemberDto {
     /// `0` = male, `1` = female, `2` = genderless.
     gender:            u8,
     ability:           String,
+    held_item:         String,
+    growth_rate:       String,
     /// Base64 PNG data URI for the sprite, e.g. `data:image/png;base64,...`.
     /// `None` while the sprite is still in transit from the tracker server.
     sprite:            Option<String>,
@@ -631,6 +633,8 @@ impl BroadcastLoop {
                                     sp_defense,
                                     gender:            p.box_mon.gender,
                                     ability:           p.box_mon.ability_string.clone(),
+                                    held_item:         p.box_mon.secure.growth.held_item_string.clone(),
+                                    growth_rate:       p.box_mon.secure.growth.growth_rate_string.clone(),
                                     sprite,
                                 }
                             })
@@ -795,12 +799,14 @@ const FOCUSED_HTML:  &str = include_str!("focused.html");
 const DBVIEWER_HTML: &str = include_str!("db.html");
 const HISTORY_HTML:  &str = include_str!("history.html");
 
-async fn serve_html() -> Html<&'static str> {
-    Html(OVERLAY_HTML)
+const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+async fn serve_html() -> Html<String> {
+    Html(OVERLAY_HTML.replace("__VERSION__", VERSION))
 }
 
-async fn serve_focused() -> Html<&'static str> {
-    Html(FOCUSED_HTML)
+async fn serve_focused() -> Html<String> {
+    Html(FOCUSED_HTML.replace("__VERSION__", VERSION))
 }
 
 async fn serve_db_viewer() -> Html<&'static str> {

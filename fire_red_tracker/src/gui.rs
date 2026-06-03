@@ -556,6 +556,16 @@ impl WindowInfo {
                         if !pokemon.box_mon.ability_string.is_empty() {
                             ui.label(format!("Ability: {}", pokemon.box_mon.ability_string));
                         }
+
+                        let item_str = &pokemon.box_mon.secure.growth.held_item_string;
+                        if !item_str.is_empty() && item_str != "None" {
+                            ui.label(format!("Held: {}", item_str));
+                        }
+
+                        let growth = &pokemon.box_mon.secure.growth.growth_rate_string;
+                        if !growth.is_empty() {
+                            ui.label(format!("Growth: {}", growth));
+                        }
                     }
                 });
             });

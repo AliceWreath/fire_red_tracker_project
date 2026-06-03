@@ -1,6 +1,6 @@
 [package]
 name = "fire_red_tracker"
-version = "0.8.17"
+version = "0.8.22"
 edition = "2024"
 
 [dependencies]

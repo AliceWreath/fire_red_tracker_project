@@ -170,9 +170,15 @@ html, body {
 .gender-f { color: #ff82b4; font-size: 12px; font-weight: bold; }
 .nat-up   { color: #ff99cc; }
 .nat-down { color: #9ec8ff; }
+#version-badge {
+    position: fixed; top: 4px; right: 6px;
+    font-size: 10px; color: rgba(255,255,255,0.35);
+    pointer-events: none; z-index: 9999;
+}
 </style>
 </head>
 <body>
+<div id="version-badge">v__VERSION__</div>
 <div id="root"></div>
 <script>
 const READONLY = !new URLSearchParams(window.location.search).has('manage');
@@ -297,6 +303,8 @@ function render(slots) {
                         content.appendChild(el('div', 'mon-sub-sm', 'Died: ' + mon.died_at));
                     }
                     if (mon.ability) content.appendChild(el('div', 'mon-sub-sm', 'Ability: ' + mon.ability));
+                    if (mon.held_item && mon.held_item !== 'None') content.appendChild(el('div', 'mon-sub-sm', 'Held: ' + mon.held_item));
+                    if (mon.growth_rate) content.appendChild(el('div', 'mon-sub-sm', 'Growth: ' + mon.growth_rate));
                 } else {
                     content.appendChild(el('div', 'mon-sub',
                         mon.species_name + ' — ' + mon.nature + (mon.shiny ? ' ★' : '')));
@@ -306,6 +314,8 @@ function render(slots) {
                     content.appendChild(statRowEl('mon-sub-sm', mon.nature, mon.max_hp, mon.attack, mon.defense, mon.speed, mon.sp_attack, mon.sp_defense));
                     content.appendChild(el('div', 'exp', 'Exp: ' + mon.exp));
                     if (mon.ability) content.appendChild(el('div', 'mon-sub-sm', 'Ability: ' + mon.ability));
+                    if (mon.held_item && mon.held_item !== 'None') content.appendChild(el('div', 'mon-sub-sm', 'Held: ' + mon.held_item));
+                    if (mon.growth_rate) content.appendChild(el('div', 'mon-sub-sm', 'Growth: ' + mon.growth_rate));
                 }
 
                 inner.appendChild(content);

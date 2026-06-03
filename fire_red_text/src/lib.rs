@@ -23,6 +23,13 @@ pub static POKEMON_NAMES_ADDR: u32 = 0x245F5B;
 ///
 /// # Supported mappings
 ///
+/// - `0xA1..=0xAA` → '0'–'9'
+/// - `0xAB`        → '!'
+/// - `0xAC`        → '?'
+/// - `0xAD`        → '.'
+/// - `0xAE`        → '-'
+/// - `0xB1`        → '\'' (apostrophe, e.g. KING'S ROCK)
+/// - `0xB7`        → ','
 /// - `0xBB..=0xD4` → 'A'–'Z'
 /// - `0xD5..=0xEE` → 'a'–'z'
 /// - `0xB5`        → '♂'  (used in Pokémon names, e.g. NIDORAN♂)
@@ -33,22 +40,23 @@ pub static POKEMON_NAMES_ADDR: u32 = 0x245F5B;
 ///
 /// Any other byte maps to a space character.
 pub fn char_gba_to_ascii(character: u8) -> char {
-    if (0xBB..=0xD4).contains(&character) {
-        return char::from(character - 0xBB + 0x41);
-    } else if (0xD5..=0xEE).contains(&character) {
-        return char::from(character - 0xD5 + 0x61);
-    } else if character == 0xB5 {
-        return '♂';
-    } else if character == 0xB6 {
-        return '♀';
-    } else if character == 0x20 {
-        return '♂';
-    } else if character == 0x1D {
-        return '♀';
-    } else if character == 0xFF {
-        return '\0';
+    match character {
+        0xA1..=0xAA => char::from(character - 0xA1 + b'0'),
+        0xAB => '!',
+        0xAC => '?',
+        0xAD => '.',
+        0xAE => '-',
+        0xB1 => '\'',
+        0xB7 => ',',
+        0xBB..=0xD4 => char::from(character - 0xBB + b'A'),
+        0xD5..=0xEE => char::from(character - 0xD5 + b'a'),
+        0xB5 => '♂',
+        0xB6 => '♀',
+        0x20 => '♂',
+        0x1D => '♀',
+        0xFF => '\0',
+        _ => ' ',
     }
-    ' '
 }
 
 /// Retrieves the nmame of a pokemon from the cached name repository by its species ID.
@@ -199,6 +207,15 @@ mod tests {
     #[test]
     fn null_terminator() {
         assert_eq!(char_gba_to_ascii(0xFF), '\0');
+    }
+
+    #[test]
+    fn digit_range() {
+        assert_eq!(char_gba_to_ascii(0xA1), '0');
+        assert_eq!(char_gba_to_ascii(0xAA), '9');
+        // spot-check a few in between
+        assert_eq!(char_gba_to_ascii(0xA2), '1');
+        assert_eq!(char_gba_to_ascii(0xA5), '4');
     }
 
     #[test]

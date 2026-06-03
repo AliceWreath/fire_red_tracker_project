@@ -56,11 +56,25 @@ const ABILITY_NAMES_ADDR: u32 = 0x24FCB0;
 /// Byte stride between entries in the ability name table.
 const ABILITY_NAMES_STRIDE: u32 = 13;
 
+/// ROM address of the item data table.
+const ITEM_DATA_ADDR: u32 = 0x3DB098;
+
+/// Size in bytes of a single item data entry.
+const ITEM_ENTRY_SIZE: u32 = 44;
+
+/// Length of the item name field within an item data entry.
+const ITEM_NAME_LENGTH: usize = 14;
+
 /// ROM address of the base stat table.
 const BASE_STATS_ADDR: u32 = 0x2547F4;
 
 /// Size in bytes of a single base stat table entry.
 const BASE_STATS_ENTRY_SIZE: u32 = 28;
+
+/// Byte offset of the growth rate within a base stat entry.
+///
+/// Values: 0=Medium Fast, 1=Erratic, 2=Fluctuating, 3=Medium Slow, 4=Fast, 5=Slow.
+const GROWTH_RATE_OFFSET: u32 = 0x13;
 
 /// Byte offset of ability slot 1 within a base stat entry.
 const ABILITY_1_OFFSET: u32 = 0x16;
@@ -315,6 +329,53 @@ pub fn get_ability_string_from_id(rom_buffer: &[u8], id: u8) -> String {
     fire_red_text::gba_string_to_ascii(&name_bytes, name_bytes.len(), 0)
 }
 
+/// Returns the growth rate name for a species from the FireRed ROM base stat table.
+///
+/// Returns an empty string for species ID 0 or if the offset is out of range.
+pub fn get_growth_rate_name(rom_buffer: &[u8], species: u16) -> &'static str {
+    if species == 0 {
+        return "";
+    }
+    let entry_addr = (BASE_STATS_ADDR + (species as u32 * BASE_STATS_ENTRY_SIZE)) as usize;
+    let offset = entry_addr + GROWTH_RATE_OFFSET as usize;
+    if offset >= rom_buffer.len() {
+        return "";
+    }
+    match rom_buffer[offset] {
+        0 => "Medium Fast",
+        1 => "Erratic",
+        2 => "Fluctuating",
+        3 => "Medium Slow",
+        4 => "Fast",
+        5 => "Slow",
+        _ => "",
+    }
+}
+
+/// Resolves a held item name string from the FireRed ROM item data table.
+///
+/// Returns `"None"` for item ID 0 and `"???"` if the offset is out of range.
+pub fn get_item_string_from_id(rom_buffer: &[u8], id: u16) -> String {
+    if id == 0 {
+        return String::from("None");
+    }
+    let offset = (ITEM_DATA_ADDR + (id as u32 * ITEM_ENTRY_SIZE)) as usize;
+    if offset + ITEM_NAME_LENGTH > rom_buffer.len() {
+        return String::from("???");
+    }
+    let name_bytes: Vec<u8> = rom_buffer[offset..]
+        .iter()
+        .copied()
+        .take_while(|&b| b != 0xFF)
+        .take(ITEM_NAME_LENGTH)
+        .collect();
+    let name = fire_red_text::gba_string_to_ascii(&name_bytes, name_bytes.len(), 0)
+        .trim_matches('\0')
+        .trim()
+        .to_string();
+    if name.is_empty() { format!("Item #{}", id) } else { name }
+}
+
 /// Returns the gender for a Pokémon as a `u8`: `0` = male, `1` = female,
 /// `2` = genderless.
 ///
@@ -452,6 +513,18 @@ impl BoxPokemon {
         self.ability_string = get_ability_string_from_id(rom_buffer, self.ability);
     }
 
+    /// Resolves and fills the held item name from the ROM item data table.
+    pub fn fill_item_string(&mut self, rom_buffer: &[u8]) {
+        self.secure.growth.held_item_string =
+            get_item_string_from_id(rom_buffer, self.secure.growth.held_item);
+    }
+
+    /// Resolves and fills the growth rate name from the ROM base stat table.
+    pub fn fill_growth_rate(&mut self, rom_buffer: &[u8]) {
+        self.secure.growth.growth_rate_string =
+            get_growth_rate_name(rom_buffer, self.secure.growth.species).to_string();
+    }
+
     /// Parses a [`BoxPokemon`] from a raw byte slice.
     ///
     /// Returns `None` if:
@@ -538,6 +611,8 @@ impl BoxPokemon {
             gender,
         };
         ret.fill_ability(rom_buffer);
+        ret.fill_item_string(rom_buffer);
+        ret.fill_growth_rate(rom_buffer);
         Some(ret)
     }
 }
@@ -741,6 +816,10 @@ pub struct GrowthSubstruct {
     pub unknown: [u8; 2],
     /// Human-readable species name resolved from the species ID.
     pub species_string: String,
+    /// Human-readable held item name resolved from the item ID.
+    pub held_item_string: String,
+    /// Growth rate name resolved from the base stats table.
+    pub growth_rate_string: String,
 }
 
 impl GrowthSubstruct {
@@ -754,7 +833,7 @@ impl GrowthSubstruct {
         let unknown = [read_u8(buffer, i), read_u8(buffer, i + 1)];
         let species_string = fire_red_text::get_pokemon_name_by_number(species as usize)
             .unwrap_or_else(|e| e);
-        Self { species, held_item, experience, pp_bonuses, friendship, unknown, species_string }
+        Self { species, held_item, experience, pp_bonuses, friendship, unknown, species_string, held_item_string: String::new(), growth_rate_string: String::new() }
     }
 }
 
