@@ -288,16 +288,15 @@ pub extern "C" fn stop_loop() {
 
 /// Returns a snapshot of the current [`FireRedState`] (map group + name IDs).
 ///
-/// # Panics
-///
-/// Panics if called before [`start_loop`] has initialized `STATE`.
+/// Returns `FireRedState::default()` (both IDs zero) if called before
+/// [`start_loop`] has initialized `STATE`. This is safe — callers that read
+/// the position before the game loop is ready simply see `(0, 0)`.
 #[unsafe(no_mangle)]
 pub fn get_value() -> FireRedState {
-    let state = STATE
-        .get()
-        .expect("get_value called before start_loop")
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
+    let Some(mutex) = STATE.get() else {
+        return FireRedState::default();
+    };
+    let state = mutex.lock().unwrap_or_else(|e| e.into_inner());
     FireRedState {
         map_group_id: state.map_group_id,
         map_name_id:  state.map_name_id,
