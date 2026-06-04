@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Zone Alert</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body {
+    background: transparent;
+    font-family: 'Segoe UI', Tahoma, sans-serif;
+    color: #fff;
+    text-shadow: 0 1px 3px rgba(0,0,0,0.9);
+    width: 100%; height: 100%;
+    overflow: hidden;
+}
+#zone-toast {
+    position: fixed; top: 12px; left: 12px;
+    background: rgba(10, 10, 30, 0.93);
+    border: 1px solid rgba(100, 160, 255, 0.35);
+    border-radius: 8px; padding: 10px 16px;
+    max-width: 340px; min-width: 220px;
+    box-shadow: 0 4px 18px rgba(0,0,0,0.7);
+    z-index: 9998; pointer-events: none;
+    opacity: 0; transition: opacity 0.4s ease;
+}
+#zone-toast.visible { opacity: 1; }
+.zt-zone   { font-size: 13px; font-weight: bold; color: #8ecfff; margin-bottom: 4px; }
+.zt-status { font-size: 11px; color: #e0b060; font-weight: 600; margin-bottom: 3px; }
+.zt-prev   { font-size: 11px; color: #bbb; }
+.zt-prev-caught { color: #60e060; font-weight: 600; }
+.zt-prev-failed { color: #e06060; font-weight: 600; }
+</style>
+</head>
+<body>
+<div id="zone-toast">
+  <div class="zt-zone"   id="zt-zone-name"></div>
+  <div class="zt-status">No first encounter yet this run.</div>
+  <div class="zt-prev"   id="zt-prev-line"></div>
+</div>
+<script>
+// Player slot index from URL: /zone-alert or /zone-alert?slot=1
+const params      = new URLSearchParams(window.location.search);
+const playerIndex = parseInt(params.get('slot') || '0');
+
+let _lastZoneKey = '';
+let _toastTimer  = null;
+
+function showZoneToast(zoneName, prevEnc) {
+    const toast  = document.getElementById('zone-toast');
+    const zoneEl = document.getElementById('zt-zone-name');
+    const prevEl = document.getElementById('zt-prev-line');
+
+    zoneEl.textContent = 'Entering new zone: ' + zoneName;
+
+    prevEl.textContent = '';
+    prevEl.className   = 'zt-prev';
+    if (prevEnc) {
+        const action = prevEnc.caught ? 'caught' : 'encountered but failed to catch';
+        const cls    = prevEnc.caught ? 'zt-prev-caught' : 'zt-prev-failed';
+        prevEl.appendChild(document.createTextNode('Previous run: you ' + action + ' '));
+        const span = document.createElement('span');
+        span.className   = cls;
+        span.textContent = prevEnc.species_name + ' (Lv.' + prevEnc.level + ')';
+        prevEl.appendChild(span);
+    } else {
+        prevEl.textContent = 'No encounter recorded here on your previous run.';
+    }
+
+    if (_toastTimer) clearTimeout(_toastTimer);
+    toast.classList.add('visible');
+    _toastTimer = setTimeout(() => toast.classList.remove('visible'), 8000);
+}
+
+function handleState(slots) {
+    const slot = slots[playerIndex];
+    if (!slot || !slot.connected || slot.active_run_id == null) return;
+
+    const mg  = slot.current_map_group || 0;
+    const mn  = slot.current_map_name  || 0;
+    const key = mg + '/' + mn;
+
+    const hasWildEncounters = slot.encounters && slot.encounters.length > 0;
+    if (key !== _lastZoneKey && hasWildEncounters) {
+        _lastZoneKey = key;
+        const alreadyEncountered = (slot.db_encounters || [])
+            .some(e => e.map_group === mg && e.map_name === mn);
+        if (!alreadyEncountered) {
+            const prevEnc = (slot.prev_run_encounters || [])
+                .find(e => e.map_group === mg && e.map_name === mn) || null;
+            showZoneToast(slot.current_zone_name || key, prevEnc);
+        }
+    } else if (!hasWildEncounters) {
+        _lastZoneKey = '';
+    }
+}
+
+let ws;
+function connect() {
+    ws = new WebSocket('ws://' + location.host + '/ws');
+    ws.onmessage = e => handleState(JSON.parse(e.data));
+    ws.onclose   = () => setTimeout(connect, 2000);
+}
+connect();
+</script>
+</body>
+</html>

@@ -135,11 +135,32 @@ html, body {
     background: rgba(0,0,0,0.45); border-radius: 4px; padding: 1px 5px;
     pointer-events: none; z-index: 9999;
 }
+#zone-toast {
+    position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%);
+    background: rgba(10, 10, 30, 0.93);
+    border: 1px solid rgba(100, 160, 255, 0.35);
+    border-radius: 8px; padding: 10px 16px;
+    max-width: 340px; min-width: 220px;
+    box-shadow: 0 4px 18px rgba(0,0,0,0.7);
+    z-index: 9998; pointer-events: none;
+    opacity: 0; transition: opacity 0.4s ease;
+}
+#zone-toast.visible { opacity: 1; }
+.zt-zone { font-size: 13px; font-weight: bold; color: #8ecfff; margin-bottom: 4px; }
+.zt-status { font-size: 11px; color: #e0b060; font-weight: 600; margin-bottom: 3px; }
+.zt-prev { font-size: 11px; color: #bbb; }
+.zt-prev-caught { color: #60e060; font-weight: 600; }
+.zt-prev-failed { color: #e06060; font-weight: 600; }
 </style>
 </head>
 <body>
 <div id="version-badge">v__VERSION__</div>
 <div id="root"></div>
+<div id="zone-toast">
+  <div class="zt-zone" id="zt-zone-name"></div>
+  <div class="zt-status">No first encounter yet this run.</div>
+  <div class="zt-prev" id="zt-prev-line"></div>
+</div>
 <script>
 // Parse /{playerIndex}/{section} from the URL path
 const parts = window.location.pathname.split('/').filter(Boolean);
@@ -147,6 +168,36 @@ const playerIndex = parseInt(parts[0]);
 const section = parts[1]; // 'party' or 'encounters'
 
 const READONLY = !new URLSearchParams(window.location.search).has('manage');
+
+// --- Zone-entry toast state ---
+let _lastZoneKey = '';
+let _toastTimer  = null;
+
+function showZoneToast(zoneName, prevEnc) {
+    const toast    = document.getElementById('zone-toast');
+    const zoneEl   = document.getElementById('zt-zone-name');
+    const prevEl   = document.getElementById('zt-prev-line');
+
+    zoneEl.textContent = 'Entering new zone: ' + zoneName;
+
+    prevEl.textContent = '';
+    prevEl.className   = 'zt-prev';
+    if (prevEnc) {
+        const action = prevEnc.caught ? 'caught' : 'encountered but failed to catch';
+        const cls    = prevEnc.caught ? 'zt-prev-caught' : 'zt-prev-failed';
+        prevEl.textContent = 'Previous run: you ' + action + ' ';
+        const span = document.createElement('span');
+        span.className   = cls;
+        span.textContent = prevEnc.species_name + ' (Lv.' + prevEnc.level + ')';
+        prevEl.appendChild(span);
+    } else {
+        prevEl.textContent = 'No encounter recorded here on your previous run.';
+    }
+
+    if (_toastTimer) clearTimeout(_toastTimer);
+    toast.classList.add('visible');
+    _toastTimer = setTimeout(() => toast.classList.remove('visible'), 8000);
+}
 
 let ws;
 function connect() {
@@ -165,6 +216,31 @@ function render(slots) {
     const slot = slots[playerIndex];
     const root = document.getElementById('root');
     root.innerHTML = '';
+
+    // Zone-entry toast: fire when the player steps into an unencountered wild area
+    if (slot && slot.connected && slot.active_run_id != null) {
+        const mg  = slot.current_map_group || 0;
+        const mn  = slot.current_map_name  || 0;
+        const key = mg + '/' + mn;
+        // Only trigger on an actual zone change into a real wild area
+        const hasWildEncounters = slot.encounters && slot.encounters.length > 0;
+        if (key !== _lastZoneKey && hasWildEncounters) {
+            _lastZoneKey = key;
+            // Check if this run already has a first encounter here
+            const alreadyEncountered = (slot.db_encounters || [])
+                .some(e => e.map_group === mg && e.map_name === mn);
+            if (!alreadyEncountered) {
+                // Look up what happened here on the previous run
+                const prevEnc = (slot.prev_run_encounters || [])
+                    .find(e => e.map_group === mg && e.map_name === mn) || null;
+                const zoneName = slot.current_zone_name || key;
+                showZoneToast(zoneName, prevEnc);
+            }
+        } else if (!hasWildEncounters) {
+            // Not in a wild area — reset so re-entering the same zone re-triggers
+            _lastZoneKey = '';
+        }
+    }
 
     const hd = el('div', 'heading');
     hd.appendChild(document.createTextNode(slot ? slot.label : 'Player ' + (playerIndex + 1)));

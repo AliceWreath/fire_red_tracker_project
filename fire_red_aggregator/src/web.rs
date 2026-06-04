@@ -66,27 +66,35 @@ struct DbEncounterDto {
     level:          u8,
     caught:         bool,
     encountered_at: String,
-    /// Formatted map area string. Full name lookup is a future improvement;
-    /// currently "G·N" where G=map_group and N=map_name.
     area:           String,
     sprite:         Option<String>,
+    map_group:      u8,
+    map_name:       u8,
 }
 
 #[derive(serde::Serialize, Clone)]
 struct SlotDto {
-    label:          String,
-    connected:      bool,
-    db_connected:   bool,
-    active_run_id:  Option<u32>,
-    run_summary:    Option<RunSummaryDto>,
-    db_encounters:  Vec<DbEncounterDto>,
-    badges:         Vec<bool>,
-    next_gym:       Option<GymDto>,
-    party:          Vec<MemberDto>,
-    encounters:     Vec<EncounterGroupDto>,
-    dead:           Vec<DeadMonDto>,
-    caught:         Vec<CaughtMonDto>,
-    box_pokemon:    Vec<BoxMonDto>,
+    label:               String,
+    connected:           bool,
+    db_connected:        bool,
+    active_run_id:       Option<u32>,
+    run_summary:         Option<RunSummaryDto>,
+    db_encounters:       Vec<DbEncounterDto>,
+    badges:              Vec<bool>,
+    next_gym:            Option<GymDto>,
+    party:               Vec<MemberDto>,
+    encounters:          Vec<EncounterGroupDto>,
+    dead:                Vec<DeadMonDto>,
+    caught:              Vec<CaughtMonDto>,
+    box_pokemon:         Vec<BoxMonDto>,
+    /// map_group of the current wild-encounter zone (0 if no encounter area).
+    current_map_group:   u8,
+    /// map_name of the current wild-encounter zone (0 if no encounter area).
+    current_map_name:    u8,
+    /// Human-readable name for the current zone, empty when not in a wild area.
+    current_zone_name:   String,
+    /// Encounters from the most recently completed run, for cross-run hints.
+    prev_run_encounters: Vec<DbEncounterDto>,
 }
 
 #[derive(serde::Serialize, Clone)]
@@ -226,17 +234,19 @@ struct MemberDto {
 // ---------------------------------------------------------------------------
 
 struct SlotCache {
-    caught:       Vec<CaughtPokemon>,
-    encounters:   Vec<fire_red_database::Encounter>,
-    last_refresh: Instant,
+    caught:           Vec<CaughtPokemon>,
+    encounters:       Vec<fire_red_database::Encounter>,
+    prev_encounters:  Vec<fire_red_database::Encounter>,
+    last_refresh:     Instant,
 }
 
 impl SlotCache {
     fn new() -> Self {
         Self {
-            caught:       Vec::new(),
-            encounters:   Vec::new(),
-            last_refresh: Instant::now() - Duration::from_secs(60),
+            caught:          Vec::new(),
+            encounters:      Vec::new(),
+            prev_encounters: Vec::new(),
+            last_refresh:    Instant::now() - Duration::from_secs(60),
         }
     }
 }
@@ -388,9 +398,10 @@ impl BroadcastLoop {
             if (run_id_changed[i] || stale)
                 && let Some(db) = &slots[i].db {
                 let label = &states[i].0;
-                self.caches[i].caught      = db.list_caught(label);
-                self.caches[i].encounters  = db.list_encounters(label);
-                self.caches[i].last_refresh = now;
+                self.caches[i].caught           = db.list_caught(label);
+                self.caches[i].encounters       = db.list_encounters(label);
+                self.caches[i].prev_encounters  = db.list_prev_run_encounters();
+                self.caches[i].last_refresh     = now;
             }
         }
 
@@ -545,7 +556,9 @@ impl BroadcastLoop {
                                 n.to_string()
                             }
                         },
-                        sprite:         self.sprite_uri(enc.species, false),
+                        sprite:    self.sprite_uri(enc.species, false),
+                        map_group: enc.map_group,
+                        map_name:  enc.map_name,
                     })
                     .collect();
 
@@ -780,7 +793,37 @@ impl BroadcastLoop {
                     })
                     .collect();
 
-                SlotDto { label: label.clone(), connected, db_connected, active_run_id, run_summary, db_encounters, badges, next_gym, party, encounters, dead, caught, box_pokemon }
+                // Current wild-encounter zone from live game state
+                let (current_map_group, current_map_name) = match state {
+                    Some(gs) => (gs.encounters.map_group, gs.encounters.map_num),
+                    None => (0u8, 0u8),
+                };
+                let current_zone_name =
+                    fire_red_location_names::map_area_name(current_map_group, current_map_name)
+                        .to_string();
+
+                // Encounters from the previous completed run for cross-run hints
+                let prev_run_encounters: Vec<DbEncounterDto> = self.caches[i].prev_encounters.iter()
+                    .map(|enc| DbEncounterDto {
+                        species_name:   enc.species_name.clone(),
+                        level:          enc.level,
+                        caught:         enc.caught,
+                        encountered_at: fire_red_database::format_timestamp(enc.encountered_at),
+                        area: {
+                            let n = fire_red_location_names::map_area_name(enc.map_group, enc.map_name);
+                            if n.is_empty() {
+                                format!("{}\u{B7}{}", enc.map_group, enc.map_name)
+                            } else {
+                                n.to_string()
+                            }
+                        },
+                        sprite:    self.sprite_uri(enc.species, false),
+                        map_group: enc.map_group,
+                        map_name:  enc.map_name,
+                    })
+                    .collect();
+
+                SlotDto { label: label.clone(), connected, db_connected, active_run_id, run_summary, db_encounters, badges, next_gym, party, encounters, dead, caught, box_pokemon, current_map_group, current_map_name, current_zone_name, prev_run_encounters }
             })
             .collect();
 
@@ -808,10 +851,11 @@ struct WebState {
 // Axum handlers
 // ---------------------------------------------------------------------------
 
-const OVERLAY_HTML:  &str = include_str!("overlay.html");
-const FOCUSED_HTML:  &str = include_str!("focused.html");
-const DBVIEWER_HTML: &str = include_str!("db.html");
-const HISTORY_HTML:  &str = include_str!("history.html");
+const OVERLAY_HTML:     &str = include_str!("overlay.html");
+const FOCUSED_HTML:     &str = include_str!("focused.html");
+const DBVIEWER_HTML:    &str = include_str!("db.html");
+const HISTORY_HTML:     &str = include_str!("history.html");
+const ZONE_ALERT_HTML:  &str = include_str!("zone_alert.html");
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -829,6 +873,10 @@ async fn serve_db_viewer() -> Html<&'static str> {
 
 async fn serve_history() -> Html<&'static str> {
     Html(HISTORY_HTML)
+}
+
+async fn serve_zone_alert() -> Html<&'static str> {
+    Html(ZONE_ALERT_HTML)
 }
 
 async fn serve_db_json(State(state): State<WebState>) -> axum::Json<serde_json::Value> {
@@ -982,6 +1030,7 @@ pub fn run(live_slots: SharedSlots, port: u16, db_conn: Option<String>) {
             .route("/api/state", get(api_state))
             .route("/api/slot/:index", get(api_slot))
             .route("/history", get(serve_history))
+            .route("/zone-alert", get(serve_zone_alert))
             .route("/:index/party", get(serve_focused))
             .route("/:index/encounters", get(serve_focused))
             .route("/:index/dead", get(serve_focused))

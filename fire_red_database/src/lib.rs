@@ -1181,6 +1181,49 @@ impl DbReader {
             .collect()
     }
 
+    /// Returns encounters from the most recently completed run, for cross-run comparison.
+    pub fn list_prev_run_encounters(&self) -> Vec<Encounter> {
+        let current_run_id = *self.run_id.lock().unwrap_or_else(|e| e.into_inner());
+        let mut client = self.client.lock().unwrap_or_else(|e| e.into_inner());
+
+        let prev_run_id: Option<u32> = if let Some(cid) = current_run_id {
+            client.query_opt(
+                "SELECT id FROM runs WHERE ended_at IS NOT NULL AND id != $1 ORDER BY id DESC LIMIT 1",
+                &[&(cid as i32)],
+            )
+        } else {
+            client.query_opt(
+                "SELECT id FROM runs WHERE ended_at IS NOT NULL ORDER BY id DESC LIMIT 1",
+                &[],
+            )
+        }
+        .ok()
+        .flatten()
+        .map(|row| row.get::<_, i32>(0) as u32);
+
+        let Some(prev_id) = prev_run_id else { return vec![] };
+
+        client
+            .query(
+                "SELECT player_name, map_group, map_name, species, species_name, level, caught, encountered_at
+                 FROM encounters WHERE run_id = $1 ORDER BY encountered_at ASC",
+                &[&(prev_id as i32)],
+            )
+            .unwrap_or_default()
+            .iter()
+            .map(|row| Encounter {
+                player_name:    row.get(0),
+                map_group:      row.get::<_, i32>(1) as u8,
+                map_name:       row.get::<_, i32>(2) as u8,
+                species:        row.get::<_, i32>(3) as u16,
+                species_name:   row.get(4),
+                level:          row.get::<_, i32>(5) as u8,
+                caught:         row.get(6),
+                encountered_at: row.get::<_, i64>(7) as u64,
+            })
+            .collect()
+    }
+
     /// Returns a summary of the tracked run: player name, start/end times,
     /// death count, and catch count. Returns `None` if no run is tracked yet.
     pub fn run_summary(&self) -> Option<(u32, String, u64, Option<u64>, usize, usize)> {
