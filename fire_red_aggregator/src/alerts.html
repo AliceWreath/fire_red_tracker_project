@@ -13,59 +13,38 @@ html, body {
     width: 100%; height: 100%;
     overflow: hidden;
 }
-#zone-toast {
-    position: fixed; top: 12px; left: 12px;
-    background: rgba(10, 10, 30, 0.93);
-    border: 1px solid rgba(100, 160, 255, 0.35);
+/* Shared position and chrome for all alert toasts */
+#zone-toast, #death-toast, #shiny-toast, #wipe-toast {
+    position: fixed; top: 12px; left: 50%; transform: translateX(-50%);
     border-radius: 8px; padding: 10px 16px;
     max-width: 340px; min-width: 220px;
-    box-shadow: 0 4px 18px rgba(0,0,0,0.7);
-    z-index: 9998; pointer-events: none;
-    opacity: 0; transition: opacity 0.4s ease;
-}
-#zone-toast.visible { opacity: 1; }
-.zt-zone   { font-size: 13px; font-weight: bold; color: #8ecfff; margin-bottom: 4px; }
-.zt-status { font-size: 11px; color: #e0b060; font-weight: 600; margin-bottom: 3px; }
-.zt-prev   { font-size: 11px; color: #bbb; }
-.zt-prev-caught { color: #60e060; font-weight: 600; }
-.zt-prev-failed { color: #e06060; font-weight: 600; }
-.zt-cap-warn { font-size: 11px; color: #ffaa33; font-weight: 600; margin-top: 3px; }
-#death-toast {
-    position: fixed; top: 12px; left: 50%; transform: translateX(-50%);
-    background: rgba(40, 5, 5, 0.95);
-    border: 1px solid rgba(255, 80, 80, 0.5);
-    border-radius: 8px; padding: 10px 16px;
-    max-width: 300px; min-width: 180px;
     box-shadow: 0 4px 18px rgba(0,0,0,0.8);
     z-index: 9998; pointer-events: none;
     opacity: 0; transition: opacity 0.4s ease;
 }
-#death-toast.visible { opacity: 1; }
+#zone-toast.visible, #death-toast.visible, #shiny-toast.visible, #wipe-toast.visible {
+    opacity: 1;
+}
+/* Per-toast colours */
+#zone-toast  { background: rgba(10, 10, 30, 0.93); border: 1px solid rgba(100, 160, 255, 0.35); }
+#death-toast { background: rgba(40,  5,  5, 0.95); border: 1px solid rgba(255,  80,  80, 0.5);  }
+#shiny-toast { background: rgba(30, 25,  5, 0.96); border: 1px solid rgba(255, 210,  50, 0.6);  }
+#wipe-toast  { background: rgba(60,  0,  0, 0.97); border: 1px solid #cc2222; text-align: center; transition: opacity 0.5s ease; z-index: 9999; }
+/* Zone toast content */
+.zt-zone        { font-size: 13px; font-weight: bold; color: #8ecfff; margin-bottom: 4px; }
+.zt-status      { font-size: 11px; color: #e0b060; font-weight: 600; margin-bottom: 3px; }
+.zt-prev        { font-size: 11px; color: #bbb; }
+.zt-prev-caught { color: #60e060; font-weight: 600; }
+.zt-prev-failed { color: #e06060; font-weight: 600; }
+.zt-cap-warn    { font-size: 11px; color: #ffaa33; font-weight: 600; margin-top: 3px; }
+/* Death toast content */
 .dt-label { font-size: 12px; font-weight: bold; color: #ff5555; margin-bottom: 3px; }
 .dt-name  { font-size: 13px; font-weight: bold; color: #ffaaaa; }
 .dt-sub   { font-size: 11px; color: #cc8888; margin-top: 2px; }
-#shiny-toast {
-    position: fixed; bottom: 80px; left: 50%; transform: translateX(-50%);
-    background: rgba(30, 25, 5, 0.96);
-    border: 1px solid rgba(255, 210, 50, 0.6);
-    border-radius: 8px; padding: 10px 16px;
-    max-width: 300px; min-width: 180px;
-    box-shadow: 0 4px 18px rgba(0,0,0,0.8);
-    z-index: 9997; pointer-events: none;
-    opacity: 0; transition: opacity 0.4s ease;
-}
-#shiny-toast.visible { opacity: 1; }
+/* Shiny toast content */
 .st-label { font-size: 13px; font-weight: bold; color: #ffd700; margin-bottom: 3px; }
 .st-name  { font-size: 12px; color: #ffe98a; }
-#wipe-toast {
-    position: fixed; top: 0; left: 0; right: 0;
-    background: rgba(60, 0, 0, 0.97);
-    border-bottom: 2px solid #cc2222;
-    padding: 12px 16px; text-align: center;
-    z-index: 9996; pointer-events: none;
-    opacity: 0; transition: opacity 0.5s ease;
-}
-#wipe-toast.visible { opacity: 1; }
+/* Wipe toast content */
 .wt-label { font-size: 15px; font-weight: bold; color: #ff4444; margin-bottom: 4px; }
 .wt-sub   { font-size: 11px; color: #cc8888; }
 </style>
@@ -152,6 +131,10 @@ function showShinyToast(enc) {
 }
 
 function showWipeToast(party) {
+    // Dismiss any active death toast so it doesn't linger behind the wipe banner.
+    if (_deathTimer) { clearTimeout(_deathTimer); _deathTimer = null; }
+    document.getElementById('death-toast').classList.remove('visible');
+
     const toast = document.getElementById('wipe-toast');
     document.getElementById('wt-sub').textContent =
         party.map(m => m.nickname).join(', ') + ' all fainted';

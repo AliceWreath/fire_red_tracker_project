@@ -664,7 +664,11 @@ pub fn mark_dead(pokemon: DeadPokemon) {
         Some(id) => id,
         None => return,
     };
-    let player = state.current_player.clone();
+    let player       = pg_safe(&state.current_player);
+    let ot_name      = pg_safe(&pokemon.ot_name);
+    let nickname     = pg_safe(&pokemon.nickname);
+    let spec_name    = pg_safe(&pokemon.species_name);
+    let ability_name = pg_safe(&pokemon.ability_name);
     state.client.execute(
         "INSERT INTO dead_pokemon (
             run_id, player_name, personality, ot_id, ot_name, nickname,
@@ -683,13 +687,13 @@ pub fn mark_dead(pokemon: DeadPokemon) {
         ) ON CONFLICT (run_id, personality) DO NOTHING",
         &[
             &(active as i32),
-            &player,  // $2 = player_name
+            &player,       // $2 = player_name
             &(pokemon.personality as i64),
             &(pokemon.ot_id as i64),
-            &pokemon.ot_name,
-            &pokemon.nickname,
+            &ot_name,
+            &nickname,
             &(pokemon.species as i32),
-            &pokemon.species_name,
+            &spec_name,
             &pokemon.is_shiny,
             &pokemon.nature,
             &(pokemon.level as i32),
@@ -722,7 +726,7 @@ pub fn mark_dead(pokemon: DeadPokemon) {
             &(pokemon.evs.sp_defense as i32),
             &(pokemon.held_item as i32),
             &(pokemon.ability as i32),
-            &pokemon.ability_name,
+            &ability_name,
             &(pokemon.friendship as i32),
             &(pokemon.met_location as i32),
             &(pokemon.died_at as i64),
@@ -767,6 +771,14 @@ pub fn get_dead_pokemon(personality: u32) -> Option<DeadPokemon> {
 // Public API — catch tracking
 // ---------------------------------------------------------------------------
 
+/// Strips null bytes from a string so it is safe to insert into PostgreSQL.
+///
+/// GBA text encoding uses 0x00 as a padding byte. PostgreSQL rejects strings
+/// containing null bytes with `invalid byte sequence for encoding "UTF8": 0x00`.
+fn pg_safe(s: &str) -> String {
+    s.replace('\0', "")
+}
+
 /// Records a Pokemon as caught in the active run.
 ///
 /// No-op if this personality is already recorded (deduplicates on reconnect).
@@ -776,7 +788,9 @@ pub fn mark_caught(pokemon: CaughtPokemon) {
         Some(id) => id,
         None => return,
     };
-    let player = state.current_player.clone();
+    let player    = pg_safe(&state.current_player);
+    let nickname  = pg_safe(&pokemon.nickname);
+    let spec_name = pg_safe(&pokemon.species_name);
     state.client.execute(
         "INSERT INTO caught_pokemon (
             run_id, player_name, personality, ot_id, nickname, species, species_name,
@@ -791,9 +805,9 @@ pub fn mark_caught(pokemon: CaughtPokemon) {
             &player,
             &(pokemon.personality as i64),
             &(pokemon.ot_id as i64),
-            &pokemon.nickname,
+            &nickname,
             &(pokemon.species as i32),
-            &pokemon.species_name,
+            &spec_name,
             &pokemon.is_shiny,
             &pokemon.nature,
             &(pokemon.level as i32),
@@ -905,7 +919,8 @@ pub fn record_encounter(encounter: Encounter) -> bool {
         Some(id) => id,
         None => return false,
     };
-    let player = state.current_player.clone();
+    let player    = pg_safe(&state.current_player);
+    let spec_name = pg_safe(&encounter.species_name);
     let rows = state.client.execute(
         "INSERT INTO encounters (
             run_id, player_name, map_group, map_name, species, species_name, level, caught, encountered_at, is_shiny
@@ -917,7 +932,7 @@ pub fn record_encounter(encounter: Encounter) -> bool {
             &(encounter.map_group as i32),
             &(encounter.map_name as i32),
             &(encounter.species as i32),
-            &encounter.species_name,
+            &spec_name,
             &(encounter.level as i32),
             &(encounter.encountered_at as i64),
             &encounter.is_shiny,
