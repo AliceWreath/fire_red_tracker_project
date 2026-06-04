@@ -1043,6 +1043,7 @@ pub fn run(live_slots: SharedSlots, port: u16, db_conn: Option<String>) {
             .route("/api/slot/:index", get(api_slot))
             .route("/history", get(serve_history))
             .route("/zone-alert", get(serve_zone_alert))
+            .route("/:index/zone-alert", get(serve_zone_alert))
             .route("/:index/routes", get(serve_routes))
             .route("/:index/party", get(serve_focused))
             .route("/:index/encounters", get(serve_focused))

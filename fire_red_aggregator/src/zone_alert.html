@@ -59,9 +59,11 @@ html, body {
   <div class="dt-sub"  id="dt-sub"></div>
 </div>
 <script>
-// Player slot index from URL: /zone-alert or /zone-alert?slot=1
-const params      = new URLSearchParams(window.location.search);
-const playerIndex = parseInt(params.get('slot') || '0');
+// Player slot index — path takes priority (/0/zone-alert), falls back to ?slot=N, then 0
+const _pathParts  = window.location.pathname.split('/').filter(Boolean);
+const _pathIndex  = parseInt(_pathParts[0]);
+const _params     = new URLSearchParams(window.location.search);
+const playerIndex = !isNaN(_pathIndex) ? _pathIndex : parseInt(_params.get('slot') || '0');
 
 let _lastZoneKey = '';
 let _toastTimer  = null;
