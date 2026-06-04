@@ -36,6 +36,10 @@ impl EncounterTracker {
         self.has_received_balls     = false;
     }
 
+    pub fn has_received_balls(&self) -> bool {
+        self.has_received_balls
+    }
+
     /// Called once per poll cycle while the game is loaded and state is
     /// initialized. Records first encounters and detects catches.
     pub fn tick(&mut self, current_state: FireRedState, thread_party: &Arc<Mutex<Vec<Pokemon>>>) {

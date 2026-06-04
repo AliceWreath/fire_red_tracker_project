@@ -55,7 +55,11 @@ pub fn fill_party_list(thread_party: &Arc<Mutex<Vec<Pokemon>>>) {
 /// Checks the current party for any Pokemon with zero HP and marks them dead.
 ///
 /// Skips Pokemon that are already recorded to avoid double-entries.
-pub fn check_for_dead_pokemon(thread_party: &Arc<Mutex<Vec<Pokemon>>>) {
+/// Skips the entire check when `has_received_balls` is `false` — deaths before
+/// Pokéballs are obtainable (e.g. losing to the rival in Oak's lab) are not
+/// Nuzlocke deaths, mirroring how encounters are ignored before balls arrive.
+pub fn check_for_dead_pokemon(thread_party: &Arc<Mutex<Vec<Pokemon>>>, has_received_balls: bool) {
+    if !has_received_balls { return; }
     let party = thread_party.lock().unwrap_or_else(|e| e.into_inner());
     for pokemon in party.iter() {
         if pokemon.hp != 0 { continue; }

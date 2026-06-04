@@ -50,7 +50,7 @@ use cli::{Cli, Command};
 use colored::Colorize;
 use fire_red_loop::*;
 use fire_red_states::*;
-use game::{check_for_dead_pokemon, check_for_new_pokemon, fill_party_list, game_is_loaded, is_shiny, map_state_from_ewram, scan_for_balls_pocket};
+use game::{check_for_dead_pokemon, check_for_new_pokemon, fill_party_list, game_is_loaded, has_pokeballs, is_shiny, map_state_from_ewram, scan_for_balls_pocket};
 use gui::{WindowInfo, PARTY_WINDOW};
 use server::handle_client;
 use std::collections::HashMap;
@@ -306,7 +306,7 @@ fn main() {
 
             fill_party_list(&thread_party);
             check_for_new_pokemon(&thread_party);
-            check_for_dead_pokemon(&thread_party);
+            check_for_dead_pokemon(&thread_party, has_pokeballs());
 
             loop {
                 if !game_is_loaded() {
@@ -355,14 +355,14 @@ fn main() {
                     *thread_box.lock().unwrap_or_else(|e| e.into_inner()) = build_box_entries();
                     fill_party_list(&thread_party);
                     check_for_new_pokemon(&thread_party);
-                    check_for_dead_pokemon(&thread_party);
+                    check_for_dead_pokemon(&thread_party, enc_tracker.has_received_balls());
                 }
 
                 if last_party_refresh.elapsed().as_secs() >= FORCE_PARTY_CHECK_INTERVAL {
                     last_party_refresh = std::time::Instant::now();
                     fill_party_list(&thread_party);
                     check_for_new_pokemon(&thread_party);
-                    check_for_dead_pokemon(&thread_party);
+                    check_for_dead_pokemon(&thread_party, enc_tracker.has_received_balls());
                 }
 
                 if thread_run_changed.swap(false, Ordering::AcqRel) {
