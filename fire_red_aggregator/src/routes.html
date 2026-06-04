@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Route Completion</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body {
+    background: rgba(15,15,15,0.92);
+    font-family: 'Segoe UI', Tahoma, sans-serif;
+    color: #fff;
+    text-shadow: 0 1px 3px rgba(0,0,0,0.9);
+    padding: 10px;
+}
+h2 { font-size: 14px; font-weight: bold; color: #ccc; margin-bottom: 8px; border-bottom: 1px solid rgba(255,255,255,0.15); padding-bottom: 4px; }
+.region { margin-bottom: 14px; }
+.region-title { font-size: 11px; font-weight: 600; color: #aaa; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 5px; }
+.zone-grid { display: flex; flex-wrap: wrap; gap: 4px; }
+.zone-card {
+    font-size: 10px; font-weight: 600;
+    padding: 4px 8px; border-radius: 5px;
+    border: 1px solid transparent;
+    white-space: nowrap;
+}
+.zone-unvisited { background: rgba(80,80,80,0.4);  border-color: rgba(120,120,120,0.3); color: #999; }
+.zone-caught    { background: rgba(20,80,20,0.55);  border-color: rgba(60,180,60,0.4);  color: #88ee88; }
+.zone-failed    { background: rgba(80,15,15,0.55);  border-color: rgba(180,50,50,0.4);  color: #ee8888; }
+.disconnected { font-size: 12px; color: #e06060; padding: 6px 0; }
+#header { font-size: 13px; font-weight: bold; margin-bottom: 10px; display: flex; align-items: center; gap: 8px; }
+.run-ind { font-size: 10px; color: #60e060; font-weight: normal; }
+.legend { display: flex; gap: 8px; font-size: 10px; margin-bottom: 10px; }
+.leg { display: flex; align-items: center; gap: 4px; }
+.leg-dot { width: 10px; height: 10px; border-radius: 3px; flex-shrink: 0; }
+.leg-caught  { background: #226622; border: 1px solid #44aa44; }
+.leg-failed  { background: #661111; border: 1px solid #aa3333; }
+.leg-unvisit { background: #444;    border: 1px solid #666; }
+.summary { font-size: 11px; color: #bbb; margin-bottom: 8px; }
+.summary span { font-weight: bold; }
+.caught-count  { color: #88ee88; }
+.failed-count  { color: #ee8888; }
+.pending-count { color: #aaaaaa; }
+</style>
+</head>
+<body>
+<div id="header">
+  <span id="hd-label">Routes</span>
+  <span class="run-ind" id="hd-run"></span>
+</div>
+<div class="legend">
+  <div class="leg"><div class="leg-dot leg-caught"></div> Caught</div>
+  <div class="leg"><div class="leg-dot leg-failed"></div> Failed / Fled</div>
+  <div class="leg"><div class="leg-dot leg-unvisit"></div> Not yet visited</div>
+</div>
+<div class="summary" id="summary"></div>
+<div id="root"></div>
+<script>
+const params      = new URLSearchParams(window.location.search);
+const playerIndex = parseInt(
+    window.location.pathname.split('/').filter(Boolean)[0] || params.get('slot') || '0'
+);
+
+// All Nuzlocke-relevant wild zones, grouped.
+// Format: { group, map, name }
+const ZONE_LIST = [
+    // ── Kanto Routes ─────────────────────────────────────────
+    { g: 3, m: 0x13, name: 'Route 1' },
+    { g: 3, m: 0x14, name: 'Route 2' },
+    { g: 3, m: 0x15, name: 'Route 3' },
+    { g: 3, m: 0x16, name: 'Route 4' },
+    { g: 3, m: 0x17, name: 'Route 5' },
+    { g: 3, m: 0x18, name: 'Route 6' },
+    { g: 3, m: 0x19, name: 'Route 7' },
+    { g: 3, m: 0x1A, name: 'Route 8' },
+    { g: 3, m: 0x1B, name: 'Route 9' },
+    { g: 3, m: 0x1C, name: 'Route 10' },
+    { g: 3, m: 0x1D, name: 'Route 11' },
+    { g: 3, m: 0x1E, name: 'Route 12' },
+    { g: 3, m: 0x1F, name: 'Route 13' },
+    { g: 3, m: 0x20, name: 'Route 14' },
+    { g: 3, m: 0x21, name: 'Route 15' },
+    { g: 3, m: 0x22, name: 'Route 16' },
+    { g: 3, m: 0x23, name: 'Route 17' },
+    { g: 3, m: 0x24, name: 'Route 18' },
+    { g: 3, m: 0x25, name: 'Route 19' },
+    { g: 3, m: 0x26, name: 'Route 20' },
+    { g: 3, m: 0x27, name: 'Route 21 (N)' },
+    { g: 3, m: 0x28, name: 'Route 21 (S)' },
+    { g: 3, m: 0x29, name: 'Route 22' },
+    { g: 3, m: 0x2A, name: 'Route 23' },
+    { g: 3, m: 0x2B, name: 'Route 24' },
+    { g: 3, m: 0x2C, name: 'Route 25' },
+    // ── Kanto Wild Areas ─────────────────────────────────────
+    { g: 1, m: 0x00, name: 'Viridian Forest' },
+    { g: 1, m: 0x01, name: 'Mt. Moon 1F' },
+    { g: 1, m: 0x02, name: 'Mt. Moon B1F' },
+    { g: 1, m: 0x03, name: 'Mt. Moon B2F' },
+    { g: 1, m: 0x25, name: "Diglett's Cave" },
+    { g: 1, m: 0x51, name: 'Rock Tunnel 1F' },
+    { g: 1, m: 0x52, name: 'Rock Tunnel B1F' },
+    { g: 1, m: 0x58, name: 'Pokemon Tower 1F' },
+    { g: 1, m: 0x59, name: 'Pokemon Tower 2F' },
+    { g: 1, m: 0x5A, name: 'Pokemon Tower 3F' },
+    { g: 1, m: 0x5B, name: 'Pokemon Tower 4F' },
+    { g: 1, m: 0x5C, name: 'Pokemon Tower 5F' },
+    { g: 1, m: 0x5D, name: 'Pokemon Tower 6F' },
+    { g: 1, m: 0x5E, name: 'Pokemon Tower 7F' },
+    { g: 1, m: 0x5F, name: 'Power Plant' },
+    { g: 1, m: 0x3F, name: 'Safari Zone (Center)' },
+    { g: 1, m: 0x40, name: 'Safari Zone (East)' },
+    { g: 1, m: 0x41, name: 'Safari Zone (North)' },
+    { g: 1, m: 0x42, name: 'Safari Zone (West)' },
+    { g: 1, m: 0x3B, name: 'Pokemon Mansion 1F' },
+    { g: 1, m: 0x3C, name: 'Pokemon Mansion 2F' },
+    { g: 1, m: 0x3D, name: 'Pokemon Mansion 3F' },
+    { g: 1, m: 0x3E, name: 'Pokemon Mansion B1F' },
+    { g: 1, m: 0x53, name: 'Seafoam Islands 1F' },
+    { g: 1, m: 0x54, name: 'Seafoam Islands B1F' },
+    { g: 1, m: 0x55, name: 'Seafoam Islands B2F' },
+    { g: 1, m: 0x56, name: 'Seafoam Islands B3F' },
+    { g: 1, m: 0x57, name: 'Seafoam Islands B4F' },
+    { g: 1, m: 0x27, name: 'Victory Road 1F' },
+    { g: 1, m: 0x28, name: 'Victory Road 2F' },
+    { g: 1, m: 0x29, name: 'Victory Road 3F' },
+    { g: 1, m: 0x48, name: 'Cerulean Cave 1F' },
+    { g: 1, m: 0x49, name: 'Cerulean Cave 2F' },
+    { g: 1, m: 0x4A, name: 'Cerulean Cave B1F' },
+    // ── Sevii Islands ─────────────────────────────────────────
+    { g: 3, m: 0x2D, name: 'Kindle Road' },
+    { g: 3, m: 0x2E, name: 'Treasure Beach' },
+    { g: 3, m: 0x2F, name: 'Cape Brink' },
+    { g: 3, m: 0x30, name: 'Bond Bridge' },
+    { g: 3, m: 0x37, name: 'Water Labyrinth' },
+    { g: 3, m: 0x38, name: 'Five Island Meadow' },
+    { g: 3, m: 0x3B, name: 'Green Path' },
+    { g: 3, m: 0x3C, name: 'Water Path' },
+    { g: 3, m: 0x3D, name: 'Ruin Valley' },
+    { g: 3, m: 0x40, name: 'Sevault Canyon' },
+    { g: 3, m: 0x41, name: 'Tanoby Ruins' },
+    { g: 1, m: 0x61, name: 'Mt. Ember (Exterior)' },
+    { g: 1, m: 0x62, name: 'Mt. Ember Summit Path 1F' },
+    { g: 1, m: 0x63, name: 'Mt. Ember Summit Path 2F' },
+    { g: 1, m: 0x64, name: 'Mt. Ember Summit Path 3F' },
+    { g: 1, m: 0x65, name: 'Mt. Ember Summit' },
+    { g: 1, m: 0x67, name: 'Mt. Ember Ruby Path 1F' },
+    { g: 1, m: 0x68, name: 'Mt. Ember Ruby Path B1F' },
+    { g: 1, m: 0x69, name: 'Mt. Ember Ruby Path B2F' },
+    { g: 1, m: 0x6A, name: 'Mt. Ember Ruby Path B3F' },
+    { g: 1, m: 0x6D, name: 'Berry Forest' },
+    { g: 1, m: 0x6F, name: 'Icefall Cave 1F' },
+    { g: 1, m: 0x70, name: 'Icefall Cave B1F' },
+    { g: 1, m: 0x71, name: 'Icefall Cave (Back)' },
+    { g: 1, m: 0x73, name: 'Dotted Hole 1F' },
+    { g: 1, m: 0x74, name: 'Dotted Hole B1F' },
+    { g: 1, m: 0x75, name: 'Dotted Hole B2F' },
+    { g: 1, m: 0x76, name: 'Dotted Hole B3F' },
+    { g: 1, m: 0x77, name: 'Dotted Hole B4F' },
+    { g: 1, m: 0x79, name: 'Pattern Bush' },
+    { g: 1, m: 0x7A, name: 'Altering Cave' },
+    { g: 2, m: 0x0D, name: 'Lost Cave Room 1' },
+    { g: 2, m: 0x0E, name: 'Lost Cave Room 2' },
+    { g: 2, m: 0x0F, name: 'Lost Cave Room 3' },
+    { g: 2, m: 0x10, name: 'Lost Cave Room 4' },
+    { g: 2, m: 0x11, name: 'Lost Cave Room 5' },
+    { g: 2, m: 0x12, name: 'Lost Cave Room 6' },
+    { g: 2, m: 0x13, name: 'Lost Cave Room 7' },
+    { g: 2, m: 0x14, name: 'Lost Cave Room 8' },
+    { g: 2, m: 0x15, name: 'Lost Cave Room 9' },
+    { g: 2, m: 0x16, name: 'Lost Cave Room 10' },
+    { g: 2, m: 0x17, name: 'Lost Cave Room 11' },
+    { g: 2, m: 0x18, name: 'Lost Cave Room 12' },
+    { g: 2, m: 0x19, name: 'Lost Cave Room 13' },
+    { g: 2, m: 0x1A, name: 'Lost Cave Room 14' },
+    { g: 2, m: 0x1B, name: 'Monean Chamber' },
+    { g: 2, m: 0x1C, name: 'Liptoo Chamber' },
+    { g: 2, m: 0x1D, name: 'Weepth Chamber' },
+    { g: 2, m: 0x1E, name: 'Dilford Chamber' },
+    { g: 2, m: 0x1F, name: 'Scufib Chamber' },
+    { g: 2, m: 0x20, name: 'Rixy Chamber' },
+    { g: 2, m: 0x21, name: 'Viapois Chamber' },
+    { g: 2, m: 0x22, name: 'Dunsparce Tunnel' },
+];
+
+const REGIONS = [
+    { title: 'Kanto Routes',      filter: z => z.g === 3 && z.m <= 0x2C },
+    { title: 'Kanto Wild Areas',  filter: z => z.g === 1 && z.m <= 0x4A },
+    { title: 'Sevii Islands',     filter: z => (z.g === 3 && z.m > 0x2C) || (z.g === 1 && z.m > 0x4A) || z.g === 2 },
+];
+
+function render(slots) {
+    const slot = slots[playerIndex];
+    const root = document.getElementById('root');
+    root.innerHTML = '';
+
+    document.getElementById('hd-label').textContent = slot ? (slot.label || ('Player ' + (playerIndex + 1))) : ('Player ' + (playerIndex + 1));
+    const runEl = document.getElementById('hd-run');
+    if (slot && slot.db_connected) {
+        runEl.textContent = slot.active_run_id != null ? '● Run #' + slot.active_run_id : '● No active run';
+        runEl.style.color = slot.active_run_id != null ? '#60e060' : '#e09040';
+    } else {
+        runEl.textContent = '';
+    }
+
+    if (!slot || !slot.connected) {
+        root.appendChild(Object.assign(document.createElement('div'), { className: 'disconnected', textContent: '⚠ Disconnected' }));
+        return;
+    }
+
+    // Build a lookup map from zone key to encounter record
+    const encMap = {};
+    for (const e of (slot.db_encounters || [])) {
+        encMap[e.map_group + '/' + e.map_name] = e;
+    }
+
+    let nCaught = 0, nFailed = 0, nPending = 0;
+    for (const z of ZONE_LIST) {
+        const rec = encMap[z.g + '/' + z.m];
+        if (!rec)          nPending++;
+        else if (rec.caught) nCaught++;
+        else               nFailed++;
+    }
+
+    const sumEl = document.getElementById('summary');
+    sumEl.innerHTML =
+        '<span class="caught-count">' + nCaught  + ' caught</span> · ' +
+        '<span class="failed-count">' + nFailed  + ' failed</span> · ' +
+        '<span class="pending-count">' + nPending + ' not yet visited</span>';
+
+    for (const region of REGIONS) {
+        const zones = ZONE_LIST.filter(region.filter);
+        if (!zones.length) continue;
+
+        const sec   = document.createElement('div');
+        sec.className = 'region';
+        const title = document.createElement('div');
+        title.className   = 'region-title';
+        title.textContent = region.title;
+        sec.appendChild(title);
+
+        const grid = document.createElement('div');
+        grid.className = 'zone-grid';
+
+        for (const z of zones) {
+            const rec = encMap[z.g + '/' + z.m];
+            let cls;
+            if (!rec)            cls = 'zone-card zone-unvisited';
+            else if (rec.caught) cls = 'zone-card zone-caught';
+            else                 cls = 'zone-card zone-failed';
+
+            const card = document.createElement('div');
+            card.className   = cls;
+            card.textContent = z.name;
+            if (rec) card.title = rec.species_name + ' Lv.' + rec.level + (rec.caught ? ' ✓' : ' ✗') + ' — ' + rec.encountered_at;
+            grid.appendChild(card);
+        }
+
+        sec.appendChild(grid);
+        root.appendChild(sec);
+    }
+}
+
+let ws;
+function connect() {
+    ws = new WebSocket('ws://' + location.host + '/ws');
+    ws.onmessage = e => render(JSON.parse(e.data));
+    ws.onclose   = () => setTimeout(connect, 2000);
+}
+connect();
+</script>
+</body>
+</html>

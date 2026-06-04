@@ -227,6 +227,11 @@ struct MemberDto {
     /// Base64 PNG data URI for the sprite, e.g. `data:image/png;base64,...`.
     /// `None` while the sprite is still in transit from the tracker server.
     sprite:            Option<String>,
+    /// Unique personality value — used by the overlay to detect death transitions.
+    personality:       u32,
+    /// Status condition bitmask (Gen III encoding):
+    /// bits 0-2 = sleep turns, bit 3 = PSN, bit 4 = BRN, bit 5 = FRZ, bit 6 = PAR, bit 7 = TOX.
+    status:            u32,
 }
 
 // ---------------------------------------------------------------------------
@@ -663,6 +668,8 @@ impl BroadcastLoop {
                                     ev_spa:            p.box_mon.secure.ev_condition.sp_attack_ev,
                                     ev_spd:            p.box_mon.secure.ev_condition.sp_defense_ev,
                                     sprite,
+                                    personality,
+                                    status:            p.status,
                                 }
                             })
                             .collect();
@@ -856,6 +863,7 @@ const FOCUSED_HTML:     &str = include_str!("focused.html");
 const DBVIEWER_HTML:    &str = include_str!("db.html");
 const HISTORY_HTML:     &str = include_str!("history.html");
 const ZONE_ALERT_HTML:  &str = include_str!("zone_alert.html");
+const ROUTES_HTML:      &str = include_str!("routes.html");
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -877,6 +885,10 @@ async fn serve_history() -> Html<&'static str> {
 
 async fn serve_zone_alert() -> Html<&'static str> {
     Html(ZONE_ALERT_HTML)
+}
+
+async fn serve_routes() -> Html<&'static str> {
+    Html(ROUTES_HTML)
 }
 
 async fn serve_db_json(State(state): State<WebState>) -> axum::Json<serde_json::Value> {
@@ -1031,6 +1043,7 @@ pub fn run(live_slots: SharedSlots, port: u16, db_conn: Option<String>) {
             .route("/api/slot/:index", get(api_slot))
             .route("/history", get(serve_history))
             .route("/zone-alert", get(serve_zone_alert))
+            .route("/:index/routes", get(serve_routes))
             .route("/:index/party", get(serve_focused))
             .route("/:index/encounters", get(serve_focused))
             .route("/:index/dead", get(serve_focused))

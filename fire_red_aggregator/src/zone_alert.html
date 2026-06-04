@@ -29,6 +29,21 @@ html, body {
 .zt-prev   { font-size: 11px; color: #bbb; }
 .zt-prev-caught { color: #60e060; font-weight: 600; }
 .zt-prev-failed { color: #e06060; font-weight: 600; }
+.zt-cap-warn { font-size: 11px; color: #ffaa33; font-weight: 600; margin-top: 3px; }
+#death-toast {
+    position: fixed; top: 12px; left: 50%; transform: translateX(-50%);
+    background: rgba(40, 5, 5, 0.95);
+    border: 1px solid rgba(255, 80, 80, 0.5);
+    border-radius: 8px; padding: 10px 16px;
+    max-width: 300px; min-width: 180px;
+    box-shadow: 0 4px 18px rgba(0,0,0,0.8);
+    z-index: 9998; pointer-events: none;
+    opacity: 0; transition: opacity 0.4s ease;
+}
+#death-toast.visible { opacity: 1; }
+.dt-label { font-size: 12px; font-weight: bold; color: #ff5555; margin-bottom: 3px; }
+.dt-name  { font-size: 13px; font-weight: bold; color: #ffaaaa; }
+.dt-sub   { font-size: 11px; color: #cc8888; margin-top: 2px; }
 </style>
 </head>
 <body>
@@ -36,6 +51,12 @@ html, body {
   <div class="zt-zone"   id="zt-zone-name"></div>
   <div class="zt-status">No first encounter yet this run.</div>
   <div class="zt-prev"   id="zt-prev-line"></div>
+  <div class="zt-cap-warn" id="zt-cap-warn" style="display:none"></div>
+</div>
+<div id="death-toast">
+  <div class="dt-label">FAINTED</div>
+  <div class="dt-name" id="dt-name"></div>
+  <div class="dt-sub"  id="dt-sub"></div>
 </div>
 <script>
 // Player slot index from URL: /zone-alert or /zone-alert?slot=1
@@ -45,10 +66,11 @@ const playerIndex = parseInt(params.get('slot') || '0');
 let _lastZoneKey = '';
 let _toastTimer  = null;
 
-function showZoneToast(zoneName, prevEnc) {
+function showZoneToast(zoneName, prevEnc, capWarn) {
     const toast  = document.getElementById('zone-toast');
     const zoneEl = document.getElementById('zt-zone-name');
     const prevEl = document.getElementById('zt-prev-line');
+    const capEl  = document.getElementById('zt-cap-warn');
 
     zoneEl.textContent = 'Entering new zone: ' + zoneName;
 
@@ -66,14 +88,45 @@ function showZoneToast(zoneName, prevEnc) {
         prevEl.textContent = 'No encounter recorded here on your previous run.';
     }
 
+    if (capWarn) {
+        capEl.textContent   = '⚠ Encounters here reach Lv.' + capWarn + ' — at or above level cap';
+        capEl.style.display = '';
+    } else {
+        capEl.style.display = 'none';
+    }
+
     if (_toastTimer) clearTimeout(_toastTimer);
     toast.classList.add('visible');
     _toastTimer = setTimeout(() => toast.classList.remove('visible'), 8000);
 }
 
+let _deathPartyState = {};
+let _deathTimer      = null;
+
+function showDeathToast(mon) {
+    const toast = document.getElementById('death-toast');
+    document.getElementById('dt-name').textContent =
+        mon.nickname + (mon.nickname !== mon.species_name ? ' (' + mon.species_name + ')' : '');
+    document.getElementById('dt-sub').textContent =
+        'Lv.' + mon.level + ' — ' + mon.nature + (mon.shiny ? ' ★' : '') +
+        (mon.soul_link_kill ? ' · Soul Link' : '');
+    if (_deathTimer) clearTimeout(_deathTimer);
+    toast.classList.add('visible');
+    _deathTimer = setTimeout(() => toast.classList.remove('visible'), 8000);
+}
+
 function handleState(slots) {
     const slot = slots[playerIndex];
     if (!slot || !slot.connected || slot.active_run_id == null) return;
+
+    // Death detection
+    const next = {};
+    for (const mon of (slot.party || [])) {
+        if (mon.personality == null) continue;
+        next[mon.personality] = mon.dead;
+        if (mon.dead && _deathPartyState[mon.personality] === false) showDeathToast(mon);
+    }
+    _deathPartyState = next;
 
     const mg  = slot.current_map_group || 0;
     const mn  = slot.current_map_name  || 0;
@@ -87,7 +140,13 @@ function handleState(slots) {
         if (!alreadyEncountered) {
             const prevEnc = (slot.prev_run_encounters || [])
                 .find(e => e.map_group === mg && e.map_name === mn) || null;
-            showZoneToast(slot.current_zone_name || key, prevEnc);
+            let capWarn = null;
+            if (slot.next_gym) {
+                const cap     = slot.next_gym.max_level;
+                const allMons = (slot.encounters || []).flatMap(g => g.mons);
+                if (allMons.some(m => m.max_level >= cap)) capWarn = cap;
+            }
+            showZoneToast(slot.current_zone_name || key, prevEnc, capWarn);
         }
     } else if (!hasWildEncounters) {
         _lastZoneKey = '';
