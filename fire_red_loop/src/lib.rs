@@ -239,13 +239,18 @@ pub fn start_loop(file_path: &str, _is_clean: bool) -> c_int {
     let handle = std::thread::spawn(move || {
         while RUNNING.load(Ordering::SeqCst) {
             let current_state = get_map_state_from_ewram();
-            let mut state = STATE
-                .get()
-                .expect("STATE not initialized")
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
-            state.map_group_id = current_state.map_group_id;
-            state.map_name_id  = current_state.map_name_id;
+            {
+                // Scope the guard so it is dropped before the sleep.
+                // Previously the guard was held for the full SLEEP_DURATION,
+                // which caused get_value() callers to block for up to 333 ms.
+                let mut state = STATE
+                    .get()
+                    .expect("STATE not initialized")
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
+                state.map_group_id = current_state.map_group_id;
+                state.map_name_id  = current_state.map_name_id;
+            } // MutexGuard dropped here
             std::thread::sleep(std::time::Duration::from_millis(SLEEP_DURATION));
         }
     });

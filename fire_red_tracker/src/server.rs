@@ -111,9 +111,22 @@ pub fn handle_client(
         .unwrap_or_else(std::time::Instant::now);
 
     loop {
+        // Read the true player position and trainer name before acquiring any
+        // shared locks. get_value() acquires the STATE mutex; if it were called
+        // while holding server_encounters it would block the game thread for up
+        // to SLEEP_DURATION (333 ms) every tick.
+        let pos         = fire_red_loop::get_value();
+        let player_name = fire_red_loop::get_trainer_name();
+        let badge_state = if game_loaded.load(Ordering::Acquire) {
+            fire_red_badge::read_badge_state()
+        } else {
+            None
+        };
+
         let state = {
             let party      = server_party.lock().unwrap_or_else(|e| e.into_inner());
             let encounters = server_encounters.lock().unwrap_or_else(|e| e.into_inner());
+
             // Only resolve a zone name when the encounter header actually contains
             // pokemon — the default WildPokemonHeader (map_group=0, map_num=0)
             // is returned for all non-encounter maps and must not be looked up.
@@ -137,21 +150,11 @@ pub fn handle_client(
                 String::new()
             };
 
-            // Read the true player position directly from the loop's EWRAM
-            // snapshot. This differs from encounters.map_group/map_num on
-            // randomized ROMs where the encounter slot key does not match the
-            // physical map position.
-            let pos = fire_red_loop::get_value();
-
             GameState {
                 party:             party.clone(),
                 encounters:        encounters.clone(),
-                player_name:       fire_red_loop::get_trainer_name(),
-                badge_state: if game_loaded.load(Ordering::Acquire) {
-                    fire_red_badge::read_badge_state()
-                } else {
-                    None
-                },
+                player_name,
+                badge_state,
                 zone_name,
                 current_map_group: pos.map_group_id,
                 current_map_name:  pos.map_name_id,
