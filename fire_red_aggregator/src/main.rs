@@ -46,6 +46,10 @@ struct Cli {
     #[arg(long = "ws-port", value_name = "PORT")]
     ws_port: Option<u16>,
 
+    /// Open the configuration editor and exit.
+    #[arg(long)]
+    config_editor: bool,
+
     /// Check GitHub for a newer release and replace this binary if one is found.
     #[arg(long)]
     update: bool,
@@ -64,6 +68,7 @@ fn do_update() {
         .repo_owner("AliceWreath")
         .repo_name("fire_red_tracker_project")
         .bin_name("fire_red_aggregator")
+        .identifier("fire_red_aggregator")
         .show_download_progress(true)
         .current_version(env!("CARGO_PKG_VERSION"))
         .build()
@@ -94,6 +99,12 @@ fn main() {
     let config_path = cli.config.as_deref()
         .map(std::path::PathBuf::from)
         .unwrap_or_else(config::default_config_path);
+
+    if cli.config_editor {
+        config::run_config_editor(&config_path);
+        return;
+    }
+
     let cfg     = config::load_or_prompt(&config_path);
     let cfg_ref = cfg.clone();
 

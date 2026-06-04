@@ -97,6 +97,7 @@ struct SetupApp {
     aggregator_port:  String,
     result:           Arc<Mutex<Option<TrackerConfig>>>,
     should_close:     bool,
+    heading:          &'static str,
 }
 
 impl SetupApp {
@@ -110,6 +111,25 @@ impl SetupApp {
             aggregator_port: "7878".to_string(),
             result,
             should_close:    false,
+            heading:         "First-Run Setup",
+        }
+    }
+
+    fn from_existing(result: Arc<Mutex<Option<TrackerConfig>>>, cfg: &TrackerConfig) -> Self {
+        let db_display = cfg.db
+            .trim_start_matches("postgresql://")
+            .trim_start_matches("postgres://")
+            .to_string();
+        Self {
+            rom:             cfg.rom.clone(),
+            db:              db_display,
+            clean:           cfg.clean,
+            mode:            cfg.mode.clone(),
+            aggregator_host: cfg.aggregator_host.clone(),
+            aggregator_port: cfg.aggregator_port.to_string(),
+            result,
+            should_close:    false,
+            heading:         "Edit Config",
         }
     }
 }
@@ -123,7 +143,7 @@ impl eframe::App for SetupApp {
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         ui.add_space(8.0);
-        ui.heading("FireRed Tracker — First-Run Setup");
+        ui.heading(format!("FireRed Tracker — {}", self.heading));
         ui.label("These settings will be saved to your config file for future runs.");
         ui.separator();
         ui.add_space(4.0);
@@ -239,23 +259,65 @@ impl eframe::App for SetupApp {
 }
 
 fn show_setup_dialog() -> TrackerConfig {
+    run_setup_window(None)
+}
+
+fn show_config_editor_from(existing: &TrackerConfig) -> TrackerConfig {
+    run_setup_window(Some(existing))
+}
+
+fn run_setup_window(existing: Option<&TrackerConfig>) -> TrackerConfig {
     let result: Arc<Mutex<Option<TrackerConfig>>> = Arc::new(Mutex::new(None));
     let result_for_app = result.clone();
 
+    let app: SetupApp = match existing {
+        Some(cfg) => SetupApp::from_existing(result_for_app, cfg),
+        None      => SetupApp::new(result_for_app),
+    };
+
+    let title = if existing.is_some() {
+        "FireRed Tracker — Edit Config"
+    } else {
+        "FireRed Tracker — Setup"
+    };
+
     let _ = eframe::run_native(
-        "FireRed Tracker — Setup",
+        title,
         eframe::NativeOptions {
             viewport: egui::ViewportBuilder::default()
-                .with_title("FireRed Tracker — First-Run Setup")
+                .with_title(title)
                 .with_inner_size([520.0, 300.0])
                 .with_resizable(false),
             ..Default::default()
         },
-        Box::new(move |_cc| Ok(Box::new(SetupApp::new(result_for_app)))),
+        Box::new(move |_cc| Ok(Box::new(app))),
     );
 
     result.lock().unwrap().take().unwrap_or_else(|| {
         println!("Setup cancelled.");
         std::process::exit(0);
     })
+}
+
+/// Open the config editor window, pre-filled with the existing config if the
+/// file exists, then save the result. Called by `--config-editor`.
+pub fn run_config_editor(path: &PathBuf) {
+    let existing: Option<TrackerConfig> = if path.exists() {
+        let content = std::fs::read_to_string(path).unwrap_or_else(|e| {
+            eprintln!("Failed to read config file {}: {}", path.display(), e);
+            std::process::exit(1);
+        });
+        Some(toml::from_str(&content).unwrap_or_else(|e| {
+            eprintln!("Failed to parse config file {}: {}", path.display(), e);
+            std::process::exit(1);
+        }))
+    } else {
+        None
+    };
+
+    let new_cfg = match existing {
+        Some(ref cfg) => show_config_editor_from(cfg),
+        None          => show_setup_dialog(),
+    };
+    save_config(&new_cfg, path);
 }

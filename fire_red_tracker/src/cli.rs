@@ -36,6 +36,10 @@ pub struct Cli {
     #[arg(long, default_value_t = false)]
     pub list_runs: bool,
 
+    /// Open the configuration editor and exit.
+    #[arg(long, default_value_t = false)]
+    pub config_editor: bool,
+
     /// Check GitHub for a newer release and replace this binary if one is found.
     #[arg(long, default_value_t = false)]
     pub update: bool,

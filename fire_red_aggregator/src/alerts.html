@@ -208,10 +208,16 @@ function handleState(slots) {
     }
 
     // Wipe / blackout detection
+    // Guard: require at least 2 caught Pokémon before auto-ending. The
+    // starter is always caught entry #1 immediately at game start. Entry #2
+    // only exists after the player has caught a second Pokémon (first wild
+    // catch, trade, or second gift), which means the nuzlocke is fully
+    // underway. This prevents a pre-ball blackout from ending the run.
     const party = slot.party || [];
+    const runActive = slot.caught && slot.caught.length >= 2;
     if (party.length > 0 && slot.active_run_id != null) {
         const allDead = party.every(m => m.dead);
-        if (allDead && _hadAlive && !_wipeEndSent) {
+        if (allDead && _hadAlive && !_wipeEndSent && runActive) {
             _wipeEndSent = true;
             showWipeToast(party);
             if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ cmd: 'end_run' }));

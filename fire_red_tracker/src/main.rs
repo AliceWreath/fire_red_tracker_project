@@ -50,7 +50,7 @@ use cli::{Cli, Command};
 use colored::Colorize;
 use fire_red_loop::*;
 use fire_red_states::*;
-use game::{check_for_dead_pokemon, check_for_new_pokemon, fill_party_list, game_is_loaded, has_pokeballs, is_shiny, map_state_from_ewram, scan_for_balls_pocket};
+use game::{check_for_dead_pokemon, check_for_new_pokemon, fill_party_list, game_is_loaded, is_shiny, map_state_from_ewram, scan_for_balls_pocket};
 use gui::{WindowInfo, PARTY_WINDOW};
 use server::handle_client;
 use std::collections::HashMap;
@@ -157,6 +157,12 @@ fn main() {
     let config_path = cli.config.as_deref()
         .map(std::path::PathBuf::from)
         .unwrap_or_else(config::default_config_path);
+
+    if cli.config_editor {
+        config::run_config_editor(&config_path);
+        return;
+    }
+
     let cfg             = config::load_or_prompt(&config_path);
     let cfg_gui         = cfg.clone();
     let config_path_gui = config_path.clone();
@@ -305,9 +311,17 @@ fn main() {
                 }
             };
 
+            // Seed the enc_tracker latch from the database. If encounters
+            // already exist for this run the player had balls at some point,
+            // so deaths should be recorded immediately on resume without
+            // waiting for a new wild encounter. DB-based seeding avoids the
+            // EWRAM false-positives that has_pokeballs() can produce at
+            // startup from stale memory.
+            enc_tracker.seed_from_db();
+
             fill_party_list(&thread_party);
             check_for_new_pokemon(&thread_party);
-            check_for_dead_pokemon(&thread_party, has_pokeballs());
+            check_for_dead_pokemon(&thread_party, enc_tracker.has_received_balls());
 
             loop {
                 if !game_is_loaded() {

@@ -977,6 +977,24 @@ pub fn species_encountered(species: u16) -> bool {
         .unwrap_or(false)
 }
 
+/// Returns `true` if any encounters have been recorded for the active run.
+/// Used at startup to seed the pre-ball latch: if the run already has
+/// encounters the player must have had balls at some point this run.
+pub fn has_any_encounters() -> bool {
+    let mut state = db().lock().unwrap_or_else(|e| e.into_inner());
+    let active = match state.run_id {
+        Some(id) => id,
+        None => return false,
+    };
+    state.client
+        .query_one(
+            "SELECT EXISTS(SELECT 1 FROM encounters WHERE run_id = $1)",
+            &[&(active as i32)],
+        )
+        .map(|row| row.get::<_, bool>(0))
+        .unwrap_or(false)
+}
+
 /// Returns `true` if an encounter has already been recorded for this area by the current player.
 pub fn has_encounter(map_group: u8, map_name: u8) -> bool {
     let mut state = db().lock().unwrap_or_else(|e| e.into_inner());

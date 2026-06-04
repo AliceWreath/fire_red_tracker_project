@@ -36,6 +36,17 @@ impl EncounterTracker {
         self.has_received_balls     = false;
     }
 
+    /// Seeds the latch from the database. If any encounters have been recorded
+    /// for the active run the player must have had balls at some point, so we
+    /// treat the pre-ball phase as over. This is more reliable than reading
+    /// the bag directly, which can return false positives from stale EWRAM
+    /// data at startup.
+    pub fn seed_from_db(&mut self) {
+        if fire_red_database::has_any_encounters() {
+            self.has_received_balls = true;
+        }
+    }
+
     pub fn has_received_balls(&self) -> bool {
         self.has_received_balls
     }
