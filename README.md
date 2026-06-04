@@ -1,6 +1,6 @@
 # Fire Red Tracker
 
-A real-time Pokémon FireRed party and encounter monitor built in Rust. It reads live game state from a running RetroArch instance using the mGBA core, displays the player's current party and wild encounter table in a native GUI, and supports multi-player Soul Link / Nuzlocke runs through a networked aggregator.
+A real-time Pokémon FireRed Nuzlocke and Soul Link tracker built in Rust. It reads live game state from a running RetroArch instance via the mGBA core, tracks first encounters, deaths, catches, and shiny encounters across runs, and feeds a set of OBS Browser Source overlays through a WebSocket aggregator server.
 
 ---
 
@@ -17,13 +17,31 @@ A real-time Pokémon FireRed party and encounter monitor built in Rust. It reads
 
 ## What it does
 
-- **Party panel** — shows each Pokémon's sprite (shiny-aware), nickname, level, HP (colour-coded), experience, caught location, ability, and badge progress in real time.
-- **Encounters panel** — shows the wild Pokémon available in the current area, split by type: grass, water/fishing, and Rock Smash. Updates automatically when the player moves to a new map.
-- **Badge tracker** — displays obtained badges as coloured dots and shows the next gym leader's name, city, and highest Pokémon level.
-- **First-encounter tracking** — records the first wild Pokémon encountered in each area (Nuzlocke rule). Encounters are ignored until the player receives their first Pokéballs; once obtained, tracking continues even if all balls are later used. If the first encounter in an area is a species the player has already encountered elsewhere in the run, it is skipped as a duplicate. Catches are flagged automatically when the Pokémon appears in the player's party.
-- **Zone-entry alert** — when the player enters a wild area where no first encounter has been recorded yet this run, a toast notification appears showing the zone name, that no encounter has occurred yet, and what was caught (or fled) in that zone on the most recently completed run.
-- **Reset detection** — clears stale party, encounter, and badge data when a soft reset or title screen is detected.
-- **Soul Link detection** — in aggregator mode, Pokémon caught in the same location across two or more players' games are automatically linked and labelled in purple.
+### Party panel
+Shows each Pokémon's sprite (shiny-aware), nickname, level, nature, HP (colour-coded), experience, ability, held item, growth rate, stat EVs, and IVs in real time.
+
+- **Level cap indicator** — the level value turns orange-red when a Pokémon is at or above the next gym leader's highest Pokémon level.
+- **Status conditions** — SLP / PSN / BRN / FRZ / PAR / TOX badges appear inline next to the level, each with a distinct colour, read directly from the Gen III status bitmask.
+- **XP to next level** — shows the exact experience needed to reach the next level, computed using the Pokémon's growth rate (all six Gen III curves: Fast, Medium Fast, Medium Slow, Slow, Erratic, Fluctuating).
+
+### Encounter tracking
+- **Encounters panel** — shows the wild Pokémon available in the current map area, split by encounter type (grass, water/fishing, Rock Smash). Updates when the player moves to a new map.
+- **First-encounter recording** — records the first wild Pokémon encountered per area per run (Nuzlocke rule). Encounters are ignored until Pokéballs have been obtained; tracking continues even after all balls are used. Duplicate species are skipped. Catches are detected automatically when the Pokémon joins the party.
+- **Shiny detection** — the Gen III shiny formula (`p_high ^ p_low ^ id_high ^ id_low < 8`) is evaluated when an encounter is recorded. Shiny encounters are flagged in the database and trigger a shiny alert toast.
+- **Route completion board** — a grid showing every Nuzlocke-relevant zone colour-coded as caught (green), failed/fled (red), or not yet visited (grey), grouped by region. Available at `/:index/routes`.
+
+### Alerts overlay
+A dedicated transparent OBS source (`/:index/alerts`) that shows timed toast notifications for all run-critical events:
+
+- **Zone-entry** — fires when entering a wild area with no first encounter yet this run. Includes the zone name, a note that no encounter has been recorded, what was caught or fled in that zone on the most recently completed run, and a level-cap warning if any encounter in the zone matches or exceeds the next gym's cap.
+- **Faint** — fires when a party member's HP reaches zero. Shows nickname, species, level, and nature.
+- **Shiny encounter** — fires when a new encounter is recorded with the shiny flag set. Shows species, level, and zone name. Stays visible for 10 seconds.
+- **Party wipe / blackout** — fires when every party member is dead simultaneously. Displays a full-width "PARTY WIPED" banner and automatically sends `end_run` to close the active run.
+
+### Run management
+- **Badge tracker** — displays obtained badges as coloured dots and shows the next gym leader's name, city, and highest level.
+- **Reset detection** — clears stale party, encounter, and badge data on soft reset or title screen.
+- **Soul Link detection** — Pokémon caught in the same location across two or more connected players are automatically linked and shown in purple.
 
 ---
 
@@ -73,7 +91,7 @@ aggregator --db postgresql://user:pass@host/nuzlocke
 When a database is connected the aggregator:
 
 - Tracks the active **Nuzlocke run** (start time, player name, end time). Multiple runs are stored; the most recent active run is used.
-- Records every **first encounter** per map area: species, level, whether it was caught or fled.
+- Records every **first encounter** per map area: species, level, shiny flag, and whether it was caught or fled.
 - Records every **caught Pokémon** (species, nickname, IVs, met location, timestamp).
 - Records every **death** (full stats snapshot, timestamp).
 - Automatically propagates **Soul Link deaths** — when one partner faints, the other is immediately marked dead in the database.
@@ -118,11 +136,13 @@ The following pages are available:
 | `http://localhost:PORT/1/dead` | Player 2's dead Pokémon log |
 | `http://localhost:PORT/1/caught` | Player 2's caught Pokémon log |
 | `http://localhost:PORT/1/box` | Player 2's PC box contents |
-| `http://localhost:PORT/alerts` | Alerts overlay — transparent OBS source; shows all event toasts (zone entry, death, shiny, wipe) |
-| `http://localhost:PORT/0/alerts` | Alerts overlay for Player 1 (path form) |
-| `http://localhost:PORT/1/alerts` | Alerts overlay for Player 2 |
+| `http://localhost:PORT/0/routes` | Player 1's route completion board — all Nuzlocke zones colour-coded caught / failed / unvisited |
+| `http://localhost:PORT/1/routes` | Player 2's route completion board |
+| `http://localhost:PORT/0/alerts` | Player 1's alerts overlay — transparent OBS source for zone, death, shiny, and wipe toasts |
+| `http://localhost:PORT/1/alerts` | Player 2's alerts overlay |
+| `http://localhost:PORT/history` | Run history — all past runs with expandable catch / death / encounter logs |
 
-The full overlay and per-player pages can all be added as separate Browser Sources in OBS and positioned independently.
+The per-player pages can all be added as separate Browser Sources in OBS and positioned independently. The alerts overlay is fully transparent when idle — nothing appears until an event fires.
 
 > **ROM paths with spaces** can be quoted: `tracker "My ROMs/fire red.gba"`
 
@@ -130,7 +150,7 @@ The full overlay and per-player pages can all be added as separate Browser Sourc
 
 ## Soul Link / Nuzlocke context
 
-In a **Nuzlocke** run, the player may only catch the first Pokémon encountered in each new area, and any Pokémon that faints is considered dead and must be released. The encounter panel makes it easy to see at a glance which Pokémon are available before stepping into grass. The first-encounter tracker automatically records the area's encounter and updates it to "caught" when the Pokémon appears in the party.
+In a **Nuzlocke** run, the player may only catch the first Pokémon encountered in each new area, and any Pokémon that faints is considered dead and must be released. The encounter panel shows which Pokémon are available before stepping into grass. The first-encounter tracker records the area's encounter automatically and updates it to "caught" when the Pokémon joins the party. The route completion board gives an at-a-glance view of all zones in the run: which have been completed, which were failed, and which haven't been entered yet. The alerts overlay fires toasts for zone entries, faints, shiny encounters, and party wipes so nothing goes unnoticed — even when looking away from the game.
 
 A **Soul Link** is a Nuzlocke variant played with a partner: each player's catches are paired with their partner's catch from the same route. If one linked Pokémon faints, both must be released. The aggregator automates this in two layers:
 
@@ -160,7 +180,7 @@ A **Soul Link** is a Nuzlocke variant played with a partner: each player's catch
 | `fire_red_location_names` | Human-readable location name lookup for FireRed USA Rev 1. Exposes two functions: `map_area_name(group, map)` converts live `(map_group, map_name)` pairs to display strings for the encounter panel; `location_name(loc)` converts a MAPSEC `met_location` byte to a named location for the party panel. Covers all Kanto wild areas, all Sevii Island wild areas, and all routes including the Route 21 North/South split. Constants sourced from the FireRed/LeafGreen map groups document and cross-checked in-game. |
 | `fire_red_map_data` | `#[repr(C)]` structs mirroring the in-memory layout of FireRed map data (`MapHeader`, `MapLayout`, `MapEvents`, `WarpEvent`, `CoordEvent`, `BgEvent`, `MapConnections`, `MapConnection`, `ObjectEventTemplate`). Each type has a `fill_*` builder method for deserialising from RetroArch `READ_CORE_MEMORY` hex-token buffers, plus helpers for generating follow-up read commands. **In progress — not yet integrated into the main loop.** |
 | `fire_red_states` | Shared types and length-prefixed bincode TCP message protocol: `GameState`, `ServerMessage`, `ClientMessage`, `SpriteData`, `Mode`. Used by both tracker and aggregator. |
-| `fire_red_database` | PostgreSQL persistence layer. Manages runs, encounters, caught Pokémon, and deaths. Provides both a write API (used by the tracker process) and a read-only `DbReader` (used by the aggregator). |
+| `fire_red_database` | PostgreSQL persistence layer. Manages runs, encounters (including shiny flag and caught status), caught Pokémon, and deaths. Provides a write API used by the tracker and a read-only `DbReader` used by the aggregator, which also exposes previous-run encounter data for cross-run hints. |
 | `fire_red_retroarch_interfacing` | Sends `READ_CORE_MEMORY` commands to RetroArch over UDP and parses the whitespace-tokenised responses. |
 | `fire_red_rom_buffer` | Global ROM buffer. Loaded once from disk via `fill_rom` and shared as a `&'static [u8]` across all crates for the process lifetime. |
 | `fire_red_scanner` | Scans the ROM binary with heuristic validation to locate the `WildMonHeader` table offset, which varies between ROM revisions. |
@@ -181,7 +201,7 @@ A **Soul Link** is a Nuzlocke variant played with a partner: each player's catch
 | `main.rs` | Entry point, thread spawning, mode dispatch |
 | `cli.rs` | `Cli` and `Command` structs (clap definitions) |
 | `config.rs` | Config file load/save, first-run setup dialog |
-| `encounter.rs` | `EncounterTracker` — wild battle detection via personality change, balls-gate latch, duplicate species check, catch detection via party membership |
+| `encounter.rs` | `EncounterTracker` — wild battle detection via personality change, balls-gate latch, duplicate species check, shiny detection (Gen III formula), catch detection via party membership |
 | `game.rs` | `is_shiny`, `fill_party_list`, `map_state_from_ewram`, `game_is_loaded`, `has_pokeballs`, `scan_for_balls_pocket` |
 | `textures.rs` | `PendingTexture`, sprite compression, `build_sprite_data` |
 | `gui.rs` | `WindowInfo`, `eframe::App` impl, party panel, encounters viewport |
@@ -231,6 +251,7 @@ The tracker monitors `gEnemyParty[0]` at `0x0202402C` to detect wild battles. Fi
 - When the personality value at `gEnemyParty[0]` changes, a new wild battle has started.
 - Wild Pokémon receive the player's OT ID (via `CreateWildMon` → `OT_ID_PLAYER_ID`). Comparing the enemy's `ot_id` against the lead party member's `ot_id` distinguishes wild encounters from trainer battles.
 - Only the **first encounter per map area** is recorded (Nuzlocke rule). Subsequent encounters in the same area are silently ignored.
+- **Shiny detection** — `(p_high ^ p_low ^ id_high ^ id_low) < 8` is evaluated against the wild Pokémon's personality and OT ID at the moment of first-encounter recording. The result is stored in the `encounters` table and surfaced in the overlay.
 - **Catch detection** watches the player's party for the exact personality value of the tracked wild Pokémon. No timer is needed — the next battle (personality change) implicitly closes any unresolved encounter as "failed/fled".
 
 ---
@@ -456,11 +477,13 @@ The aggregator window shows both players side by side as soon as each tracker co
 ```
 
 Then in OBS add Browser Sources for whichever pages you need:
-- `http://localhost:9090/` — full side-by-side overlay
-- `http://localhost:9090/0/party` and `http://localhost:9090/1/party` — per-player party panels
+- `http://localhost:9090/0/party` and `http://localhost:9090/1/party` — per-player party panels (level cap highlight, status conditions, XP to next level)
+- `http://localhost:9090/0/encounters` and `http://localhost:9090/1/encounters` — current area encounter table
 - `http://localhost:9090/0/dead` and `http://localhost:9090/1/dead` — death logs
+- `http://localhost:9090/0/routes` and `http://localhost:9090/1/routes` — route completion board
+- `http://localhost:9090/0/alerts` and `http://localhost:9090/1/alerts` — transparent alerts overlay (add on top of everything else; invisible when idle)
 
-The web overlay also hosts **End Run** and **New Run** buttons. Clicking either button sends the command to every connected tracker simultaneously, so both players' runs are managed together.
+The `?manage` query parameter on any focused page enables **End Run** and **New Run** buttons. Clicking either button applies to all connected trackers simultaneously. The party wipe detector in the alerts overlay also ends the run automatically.
 
 ---
 
@@ -469,6 +492,7 @@ The web overlay also hosts **End Run** and **New Run** buttons. Clicking either 
 Personal project built for Nuzlocke and Soul Link runs. The codebase is functional but not hardened for general distribution:
 
 - ROM scanning and all hardcoded addresses are calibrated for **FireRed USA (Rev 1)**. Other regional releases or ROM hacks will likely require address adjustments. If the balls pocket offset is wrong for a different revision, run `tracker <rom> --scan-balls-pocket` with at least one ball in the bag to locate the correct `BALLS_POCKET_SAVE_BLOCK_OFFSET` in `fire_red_tracker/src/game.rs`. Note that bag item quantities are XOR-encrypted in RAM; the scanner checks item IDs only.
+- Map area names (`map_area_name` in `fire_red_location_names`) are sourced from the FireRed/LeafGreen map groups document and cross-checked in-game for a subset of locations. All Kanto routes, major caves, and Sevii Island wild areas are covered. Individual dungeon floors (e.g. which floor of Rock Tunnel a given personality came from) have been confirmed for Diglett's Cave and inferred for the rest; verify with `READ_CORE_MEMORY 0x2031DBC 2` when entering each floor in-game.
 - Ability data is read from ROM base-stat tables and is only reliable on unmodified ROMs.
 - The `fire_red_map_data` crate is in progress and not yet integrated into the main loop.
 - The `WildPokemonHeaderFFI` and `AreaEncountersStringArrays` FFI types are partially implemented; the C-callable interface helpers are in progress pending a stable API design.
