@@ -217,8 +217,8 @@ fn validate_map_groups_table(rom: &[u8], offset: usize, known_pairs: &[(u8, u8)]
 /// * `Some(offset)` — ROM byte offset of `gMapGroupsAndMaps`.
 /// * `None`         — Table could not be located.
 pub fn find_map_groups_table(rom: &[u8], known_pairs: &[(u8, u8)]) -> Option<usize> {
-    if known_pairs.len() < 2 {
-        eprintln!("find_map_groups_table: need at least 2 known (group, map) pairs");
+    if known_pairs.is_empty() {
+        eprintln!("find_map_groups_table: no known (group, map) pairs supplied");
         return None;
     }
 

@@ -194,10 +194,12 @@ pub fn start_loop(file_path: &str, _is_clean: bool) -> c_int {
     // hardcoded lookup table if the scan fails.
     println!("Scanning for gMapGroupsAndMaps...");
     {
-        let mut seen_groups = std::collections::HashSet::new();
+        // Take up to 20 pairs from across the encounter list. More pairs means
+        // stronger validation; group diversity is not required — the 3-level
+        // pointer chain check is discriminating enough on its own.
         let known_pairs: Vec<(u8, u8)> = get_pokemon_header_list()
             .iter()
-            .filter(|h| seen_groups.insert(h.map_group))
+            .take(20)
             .map(|h| (h.map_group, h.map_num))
             .collect();
 
@@ -422,7 +424,12 @@ pub fn get_map_header_from_rom(group: u8, map: u8) -> Option<MapHeader> {
 pub fn get_area_name_for(group: u8, map: u8) -> &'static str {
     if let Some(header) = get_map_header_from_rom(group, map) {
         let name = fire_red_location_names::location_name(header.name_index);
-        if !name.is_empty() && name != "Unknown Location" && name != "—" {
+        // Accept any ROM-derived name except the two sentinel values:
+        // "—" = MAPSEC_NONE (interior with no banner)
+        // "Unknown Location" = MAPSEC value not in our table
+        // In both cases fall through to the hardcoded lookup or the
+        // caller's formatted fallback.
+        if name != "—" && name != "Unknown Location" {
             return name;
         }
     }

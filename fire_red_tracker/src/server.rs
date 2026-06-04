@@ -114,23 +114,47 @@ pub fn handle_client(
         let state = {
             let party      = server_party.lock().unwrap_or_else(|e| e.into_inner());
             let encounters = server_encounters.lock().unwrap_or_else(|e| e.into_inner());
-            let zone_name  = fire_red_loop::get_area_name_for(
-                encounters.map_group,
-                encounters.map_num,
-            ).to_string();
+            // Only resolve a zone name when the encounter header actually contains
+            // pokemon — the default WildPokemonHeader (map_group=0, map_num=0)
+            // is returned for all non-encounter maps and must not be looked up.
+            let has_encounters =
+                !encounters.land_mon_encounters.wild_pokemon_list.is_empty()
+                || !encounters.water_mon_encounters.wild_pokemon_list.is_empty()
+                || !encounters.rock_smash_encounters.wild_pokemon_list.is_empty()
+                || !encounters.fishing_encounters.wild_pokemon_list.is_empty();
+
+            let zone_name = if has_encounters {
+                let name = fire_red_loop::get_area_name_for(
+                    encounters.map_group,
+                    encounters.map_num,
+                );
+                if !name.is_empty() {
+                    name.to_string()
+                } else {
+                    format!("{}\u{00B7}{}", encounters.map_group, encounters.map_num)
+                }
+            } else {
+                String::new()
+            };
+
+            // Read the true player position directly from the loop's EWRAM
+            // snapshot. This differs from encounters.map_group/map_num on
+            // randomized ROMs where the encounter slot key does not match the
+            // physical map position.
+            let pos = fire_red_loop::get_value();
+
             GameState {
-                party:       party.clone(),
-                encounters:  encounters.clone(),
-                player_name: fire_red_loop::get_trainer_name(),
-                // Only read badge state when the game is fully loaded.
-                // During a reset or title screen this returns None so clients
-                // clear their badge display rather than showing stale data.
+                party:             party.clone(),
+                encounters:        encounters.clone(),
+                player_name:       fire_red_loop::get_trainer_name(),
                 badge_state: if game_loaded.load(Ordering::Acquire) {
                     fire_red_badge::read_badge_state()
                 } else {
                     None
                 },
                 zone_name,
+                current_map_group: pos.map_group_id,
+                current_map_name:  pos.map_name_id,
             }
         };
 

@@ -109,9 +109,16 @@ pub struct GameState {
 
     /// Human-readable name for the current wild-encounter zone, resolved by the
     /// tracker from the ROM's `gMapGroupsAndMaps` table. Empty when the current
-    /// map has no wild encounters. Appended last to preserve bincode field order
-    /// with older tracker/aggregator pairs during a rolling upgrade window.
+    /// map has no wild encounters.
     pub zone_name: String,
+
+    /// Actual player map-group ID read directly from EWRAM (0x02031DBC[0]).
+    /// This is the true map position and is independent of the encounter header,
+    /// so it must be used — not `encounters.map_group` — to key zone transitions.
+    pub current_map_group: u8,
+
+    /// Actual player map-name ID read directly from EWRAM (0x02031DBC[1]).
+    pub current_map_name: u8,
 }
 
 /// Network operating mode for the tracker.

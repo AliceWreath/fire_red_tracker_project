@@ -13,9 +13,9 @@ html, body {
     width: 100%; height: 100%;
     overflow: hidden;
 }
-/* Shared position and chrome for all alert toasts */
+/* Shared position and chrome for all alert toasts — top-left */
 #zone-toast, #death-toast, #shiny-toast, #wipe-toast {
-    position: fixed; top: 12px; left: 50%; transform: translateX(-50%);
+    position: fixed; top: 12px; left: 12px;
     border-radius: 8px; padding: 10px 16px;
     max-width: 340px; min-width: 220px;
     box-shadow: 0 4px 18px rgba(0,0,0,0.8);
@@ -52,7 +52,7 @@ html, body {
 <body>
 <div id="zone-toast">
   <div class="zt-zone"   id="zt-zone-name"></div>
-  <div class="zt-status">No first encounter yet this run.</div>
+  <div class="zt-status" id="zt-status"></div>
   <div class="zt-prev"   id="zt-prev-line"></div>
   <div class="zt-cap-warn" id="zt-cap-warn" style="display:none"></div>
 </div>
@@ -70,7 +70,7 @@ html, body {
   <div class="wt-sub"  id="wt-sub"></div>
 </div>
 <script>
-// Player slot index — path takes priority (/0/zone-alert), falls back to ?slot=N, then 0
+// Player slot index — path takes priority (/0/alerts), falls back to ?slot=N, then 0
 const _pathParts  = window.location.pathname.split('/').filter(Boolean);
 const _pathIndex  = parseInt(_pathParts[0]);
 const _params     = new URLSearchParams(window.location.search);
@@ -79,33 +79,60 @@ const playerIndex = !isNaN(_pathIndex) ? _pathIndex : parseInt(_params.get('slot
 let _lastZoneKey = '';
 let _toastTimer  = null;
 
-function showZoneToast(zoneName, prevEnc, capWarn) {
+// Shows the zone-entry toast.
+// alreadyEncountered — true if this area already has a recorded encounter this run.
+// thisRunEnc         — the db_encounters entry for this area (if already encountered).
+// prevEnc            — the prev_run_encounters entry for this area (if any).
+// capWarn            — the next gym max level if encounters reach it, else null.
+function showZoneToast(zoneName, alreadyEncountered, thisRunEnc, prevEnc, capWarn) {
     const toast  = document.getElementById('zone-toast');
     const zoneEl = document.getElementById('zt-zone-name');
+    const statEl = document.getElementById('zt-status');
     const prevEl = document.getElementById('zt-prev-line');
     const capEl  = document.getElementById('zt-cap-warn');
 
-    zoneEl.textContent = 'Entering new zone: ' + zoneName;
+    zoneEl.textContent = 'Entering area: ' + zoneName;
 
+    // Clear dynamic children before repopulating.
+    statEl.textContent = '';
     prevEl.textContent = '';
     prevEl.className   = 'zt-prev';
-    if (prevEnc) {
-        const action = prevEnc.caught ? 'caught' : 'encountered but failed to catch';
-        const cls    = prevEnc.caught ? 'zt-prev-caught' : 'zt-prev-failed';
-        prevEl.appendChild(document.createTextNode('Previous run: you ' + action + ' '));
-        const span = document.createElement('span');
-        span.className   = cls;
-        span.textContent = prevEnc.species_name + ' (Lv.' + prevEnc.level + ')';
-        prevEl.appendChild(span);
-    } else {
-        prevEl.textContent = 'No encounter recorded here on your previous run.';
-    }
+    capEl.style.display = 'none';
 
-    if (capWarn) {
-        capEl.textContent   = '⚠ Encounters here reach Lv.' + capWarn + ' — at or above level cap';
-        capEl.style.display = '';
+    if (alreadyEncountered && thisRunEnc) {
+        // Already had the encounter here — show what happened.
+        statEl.className = 'zt-status';
+        const caught  = thisRunEnc.caught;
+        const label   = caught ? 'Caught' : 'Encountered';
+        const cls     = caught ? 'zt-prev-caught' : 'zt-prev-failed';
+        const span    = document.createElement('span');
+        span.className   = cls;
+        span.textContent = label + ': ' + thisRunEnc.species_name + ' (Lv.' + thisRunEnc.level + ')';
+        statEl.appendChild(span);
+        if (!caught) {
+            statEl.appendChild(document.createTextNode(' — not caught'));
+        }
     } else {
-        capEl.style.display = 'none';
+        // No encounter here yet this run.
+        statEl.className = 'zt-status';
+        statEl.textContent = 'No first encounter yet this run.';
+
+        if (prevEnc) {
+            const action = prevEnc.caught ? 'caught' : 'encountered but failed to catch';
+            const cls    = prevEnc.caught ? 'zt-prev-caught' : 'zt-prev-failed';
+            prevEl.appendChild(document.createTextNode('Previous run: you ' + action + ' '));
+            const span = document.createElement('span');
+            span.className   = cls;
+            span.textContent = prevEnc.species_name + ' (Lv.' + prevEnc.level + ')';
+            prevEl.appendChild(span);
+        } else {
+            prevEl.textContent = 'No encounter recorded here on your previous run.';
+        }
+
+        if (capWarn) {
+            capEl.textContent   = '⚠ Encounters here reach Lv.' + capWarn + ' — at or above level cap';
+            capEl.style.display = '';
+        }
     }
 
     if (_toastTimer) clearTimeout(_toastTimer);
@@ -201,19 +228,25 @@ function handleState(slots) {
     const hasWildEncounters = slot.encounters && slot.encounters.length > 0;
     if (key !== _lastZoneKey && hasWildEncounters) {
         _lastZoneKey = key;
-        const alreadyEncountered = (slot.db_encounters || [])
-            .some(e => e.map_group === mg && e.map_name === mn);
-        if (!alreadyEncountered) {
-            const prevEnc = (slot.prev_run_encounters || [])
-                .find(e => e.map_group === mg && e.map_name === mn) || null;
-            let capWarn = null;
-            if (slot.next_gym) {
-                const cap     = slot.next_gym.max_level;
-                const allMons = (slot.encounters || []).flatMap(g => g.mons);
-                if (allMons.some(m => m.max_level >= cap)) capWarn = cap;
-            }
-            showZoneToast(slot.current_zone_name || key, prevEnc, capWarn);
+
+        // Find this run's encounter record for this area (if any).
+        const thisRunEnc = (slot.db_encounters || [])
+            .find(e => e.map_group === mg && e.map_name === mn) || null;
+        const alreadyEncountered = thisRunEnc !== null;
+
+        // Find the previous run's record for cross-run hints.
+        const prevEnc = (slot.prev_run_encounters || [])
+            .find(e => e.map_group === mg && e.map_name === mn) || null;
+
+        // Level-cap warning — only relevant when no encounter has happened yet.
+        let capWarn = null;
+        if (!alreadyEncountered && slot.next_gym) {
+            const cap     = slot.next_gym.max_level;
+            const allMons = (slot.encounters || []).flatMap(g => g.mons);
+            if (allMons.some(m => m.max_level >= cap)) capWarn = cap;
         }
+
+        showZoneToast(slot.current_zone_name || key, alreadyEncountered, thisRunEnc, prevEnc, capWarn);
     } else if (!hasWildEncounters) {
         _lastZoneKey = '';
     }

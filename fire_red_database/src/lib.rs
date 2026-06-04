@@ -1204,7 +1204,7 @@ impl DbReader {
     }
 
     /// Returns encounters from the most recently completed run, for cross-run comparison.
-    pub fn list_prev_run_encounters(&self) -> Vec<Encounter> {
+    pub fn list_prev_run_encounters(&self, player_name: &str) -> Vec<Encounter> {
         let current_run_id = *self.run_id.lock().unwrap_or_else(|e| e.into_inner());
         let mut client = self.client.lock().unwrap_or_else(|e| e.into_inner());
 
@@ -1228,8 +1228,8 @@ impl DbReader {
         client
             .query(
                 "SELECT player_name, map_group, map_name, species, species_name, level, caught, encountered_at, is_shiny
-                 FROM encounters WHERE run_id = $1 ORDER BY encountered_at ASC",
-                &[&(prev_id as i32)],
+                 FROM encounters WHERE run_id = $1 AND player_name = $2 ORDER BY encountered_at ASC",
+                &[&(prev_id as i32), &player_name],
             )
             .unwrap_or_default()
             .iter()

@@ -406,7 +406,7 @@ impl BroadcastLoop {
                 let label = &states[i].0;
                 self.caches[i].caught           = db.list_caught(label);
                 self.caches[i].encounters       = db.list_encounters(label);
-                self.caches[i].prev_encounters  = db.list_prev_run_encounters();
+                self.caches[i].prev_encounters  = db.list_prev_run_encounters(label);
                 self.caches[i].last_refresh     = now;
             }
         }
@@ -802,9 +802,11 @@ impl BroadcastLoop {
                     })
                     .collect();
 
-                // Current wild-encounter zone from live game state
+                // True player position from EWRAM, not from the encounter header.
+                // On randomized ROMs the encounter slot key may differ from the
+                // physical map position; always use the EWRAM-derived value.
                 let (current_map_group, current_map_name) = match state {
-                    Some(gs) => (gs.encounters.map_group, gs.encounters.map_num),
+                    Some(gs) => (gs.current_map_group, gs.current_map_name),
                     None => (0u8, 0u8),
                 };
                 let current_zone_name = match state {
