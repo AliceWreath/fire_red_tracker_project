@@ -21,6 +21,7 @@
 /// | Route 22        | 3     | 0x29 |
 /// | Viridian Forest | 1     | 0x00 |
 /// | Mt. Moon        | 1     | 0x01 |
+/// | Diglett's Cave  | 1     | 0x25 |
 ///
 /// Route 10 is split into North (0x1C) and South (0x1D), which accounts for
 /// the +1 offset seen between routes 2 and 22.  All entries marked with `?`
@@ -30,13 +31,7 @@ pub fn map_area_name(group: u8, map: u8) -> &'static str {
         // ── Group 1: forest / cave overworld sections ─────────────────────
         (1, 0x00) => "Viridian Forest",   // verified
         (1, 0x01) => "Mt. Moon",          // verified
-        (1, 0x02) => "Rock Tunnel",       // ?
-        (1, 0x03) => "Safari Zone",       // ?
-        (1, 0x04) => "Seafoam Islands",   // ?
-        (1, 0x05) => "Victory Road",      // ?
-        (1, 0x06) => "Cerulean Cave",     // ?
-        (1, 0x07) => "Power Plant",       // ?
-        (1, 0x08) => "Pokémon Tower",     // ?
+        (1, 0x25) => "Diglett's Cave",    // verified
 
         // ── Group 3: Kanto outdoor routes ─────────────────────────────────
         // Routes 1–9 (verified: Route 1 = 0x13, Route 2 = 0x14)
@@ -203,6 +198,11 @@ mod tests {
     #[test]
     fn mt_moon_verified() {
         assert_eq!(map_area_name(1, 0x01), "Mt. Moon");
+    }
+
+    #[test]
+    fn digletts_cave_verified() {
+        assert_eq!(map_area_name(1, 0x25), "Diglett's Cave");
     }
 
     #[test]
