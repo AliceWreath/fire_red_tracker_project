@@ -121,13 +121,11 @@ fn do_update() {
         "Checking for updates (current version: v{})...",
         env!("CARGO_PKG_VERSION")
     );
-    let target = self_update::get_target();
-    let asset_name = format!("fire_red_tracker-{}.tar.gz", target);
     let result = self_update::backends::github::Update::configure()
         .repo_owner("AliceWreath")
         .repo_name("fire_red_tracker_project")
         .bin_name("fire_red_tracker")
-        .asset_name(&asset_name)
+        .identifier("fire_red_tracker")
         .show_download_progress(true)
         .current_version(env!("CARGO_PKG_VERSION"))
         .build()
