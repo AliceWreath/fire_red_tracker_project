@@ -114,6 +114,10 @@ pub fn handle_client(
         let state = {
             let party      = server_party.lock().unwrap_or_else(|e| e.into_inner());
             let encounters = server_encounters.lock().unwrap_or_else(|e| e.into_inner());
+            let zone_name  = fire_red_loop::get_area_name_for(
+                encounters.map_group,
+                encounters.map_num,
+            ).to_string();
             GameState {
                 party:       party.clone(),
                 encounters:  encounters.clone(),
@@ -126,6 +130,7 @@ pub fn handle_client(
                 } else {
                     None
                 },
+                zone_name,
             }
         };
 

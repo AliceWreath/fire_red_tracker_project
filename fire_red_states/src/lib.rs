@@ -106,6 +106,12 @@ pub struct GameState {
 
     /// Current collected badges
     pub badge_state: Option<fire_red_badge::BadgeState>,
+
+    /// Human-readable name for the current wild-encounter zone, resolved by the
+    /// tracker from the ROM's `gMapGroupsAndMaps` table. Empty when the current
+    /// map has no wild encounters. Appended last to preserve bincode field order
+    /// with older tracker/aggregator pairs during a rolling upgrade window.
+    pub zone_name: String,
 }
 
 /// Network operating mode for the tracker.

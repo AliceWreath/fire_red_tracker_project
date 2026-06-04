@@ -807,9 +807,11 @@ impl BroadcastLoop {
                     Some(gs) => (gs.encounters.map_group, gs.encounters.map_num),
                     None => (0u8, 0u8),
                 };
-                let current_zone_name =
-                    fire_red_location_names::map_area_name(current_map_group, current_map_name)
-                        .to_string();
+                let current_zone_name = match state {
+                    Some(gs) if !gs.zone_name.is_empty() => gs.zone_name.clone(),
+                    _ => fire_red_location_names::map_area_name(current_map_group, current_map_name)
+                        .to_string(),
+                };
 
                 // Encounters from the previous completed run for cross-run hints
                 let prev_run_encounters: Vec<DbEncounterDto> = self.caches[i].prev_encounters.iter()
