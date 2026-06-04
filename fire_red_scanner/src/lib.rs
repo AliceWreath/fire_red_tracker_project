@@ -132,6 +132,114 @@ fn validate_table(rom: &[u8], start: usize) -> bool {
     false
 }
 
+// ---------------------------------------------------------------------------
+// gMapGroupsAndMaps scanner
+// ---------------------------------------------------------------------------
+
+/// Converts a GBA ROM bus address to a byte offset within the ROM buffer.
+///
+/// Returns `None` if `ptr` is zero or outside the ROM address range
+/// `0x08000000..=0x09FFFFFF`.
+fn rom_ptr_to_offset(ptr: u32) -> Option<usize> {
+    if ptr != 0 && (0x08000000..=0x09FFFFFF).contains(&ptr) {
+        Some((ptr - 0x08000000) as usize)
+    } else {
+        None
+    }
+}
+
+/// Validates a candidate ROM offset as `gMapGroupsAndMaps` by following two
+/// levels of pointers for each known `(group, map)` pair and checking that the
+/// destination looks like a [`MapHeader`].
+///
+/// A `MapHeader` is expected to begin with three non-null ROM pointers (footer,
+/// events, scripts) followed by a fourth that may be zero (connections).
+fn validate_map_groups_table(rom: &[u8], offset: usize, known_pairs: &[(u8, u8)]) -> bool {
+    for &(group, map) in known_pairs {
+        // Level 1: table[group] → pointer to the group's map-header pointer array.
+        let l1 = offset + group as usize * 4;
+        if l1 + 4 > rom.len() {
+            return false;
+        }
+        let group_offset = match rom_ptr_to_offset(read_u32(rom, l1)) {
+            Some(o) => o,
+            None    => return false,
+        };
+
+        // Level 2: group_array[map] → pointer to the MapHeader.
+        let l2 = group_offset + map as usize * 4;
+        if l2 + 4 > rom.len() {
+            return false;
+        }
+        let map_offset = match rom_ptr_to_offset(read_u32(rom, l2)) {
+            Some(o) => o,
+            None    => return false,
+        };
+
+        // Level 3: MapHeader — first three pointer fields must be valid and non-null;
+        // the fourth (connections) is allowed to be zero.
+        if map_offset + 16 > rom.len() {
+            return false;
+        }
+        let footer  = read_u32(rom, map_offset);
+        let events  = read_u32(rom, map_offset + 4);
+        let scripts = read_u32(rom, map_offset + 8);
+        let conns   = read_u32(rom, map_offset + 12);
+
+        if rom_ptr_to_offset(footer).is_none()
+            || rom_ptr_to_offset(events).is_none()
+            || rom_ptr_to_offset(scripts).is_none()
+            || !is_valid_gba_ptr(conns)
+        {
+            return false;
+        }
+    }
+    true
+}
+
+/// Scans a FireRed ROM for the `gMapGroupsAndMaps` pointer table.
+///
+/// Uses known valid `(map_group, map_num)` pairs as anchors: for each
+/// candidate offset the scanner follows
+/// `table[group]` → `group_array[map]` → `MapHeader`
+/// for every pair and rejects the candidate if any level fails pointer
+/// validation. Passing pairs from at least two different groups greatly
+/// reduces false-positive risk.
+///
+/// # Arguments
+///
+/// * `rom`         — Complete ROM byte buffer.
+/// * `known_pairs` — At least two valid `(map_group, map_num)` pairs, ideally
+///   from different groups. Pairs from the wild-encounter header table work well.
+///
+/// # Returns
+///
+/// * `Some(offset)` — ROM byte offset of `gMapGroupsAndMaps`.
+/// * `None`         — Table could not be located.
+pub fn find_map_groups_table(rom: &[u8], known_pairs: &[(u8, u8)]) -> Option<usize> {
+    if known_pairs.len() < 2 {
+        eprintln!("find_map_groups_table: need at least 2 known (group, map) pairs");
+        return None;
+    }
+
+    let mut i = 0;
+    while i + 4 <= rom.len() {
+        // Fast pre-check: candidate must start with a valid non-null ROM pointer.
+        if rom_ptr_to_offset(read_u32(rom, i)).is_some()
+            && validate_map_groups_table(rom, i, known_pairs)
+        {
+            return Some(i);
+        }
+        i += 4; // ROM pointers are always 4-byte aligned.
+    }
+
+    None
+}
+
+// ---------------------------------------------------------------------------
+// Wild encounter header scanner
+// ---------------------------------------------------------------------------
+
 /// Scans a FireRed ROM for the wild encounter header table
 /// 
 /// The ROM is scanned in 4-byte aligned increments searching for a sequence

@@ -12,7 +12,6 @@ bincode.workspace                        = true
 serde.workspace                          = true
 serde-big-array.workspace                = true
 fire_red_get_values.workspace            = true
-fire_red_retroarch_interfacing.workspace = true
 fire_red_text.workspace                  = true
 fire_red_rom_buffer.workspace            = true
 fire_red_memory.workspace                = true

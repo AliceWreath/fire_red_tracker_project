@@ -197,7 +197,7 @@ pub fn check_for_new_pokemon(thread_party: &Arc<Mutex<Vec<Pokemon>>>) {
 
         let location_name = map_state_from_ewram()
             .map(|s| {
-                let n = fire_red_location_names::map_area_name(s.map_group_id, s.map_name_id);
+                let n = fire_red_loop::get_area_name_for(s.map_group_id, s.map_name_id);
                 if n.is_empty() {
                     format!("{}\u{B7}{}", s.map_group_id, s.map_name_id)
                 } else {

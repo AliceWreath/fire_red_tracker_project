@@ -39,8 +39,9 @@ use std::os::raw::c_int;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 use fire_red_pokemon_data::*;
-use fire_red_scanner::find_wild_headers;
-use fire_red_map_data::CurrentMapGroupAndName;
+use fire_red_scanner::{find_wild_headers, find_map_groups_table};
+use fire_red_map_data::{CurrentMapGroupAndName, MapHeader};
+use fire_red_get_values::read_u32;
 
 // ---------------------------------------------------------------------------
 // State
@@ -73,6 +74,11 @@ const EWRAM_BASE: usize = 0x02000000;
 
 /// GBA address of the two-byte packed (map_group, map_name) field.
 const MAP_GROUP_AND_NAME_ADDR: usize = 0x02031DBC;
+
+/// ROM byte offset of `gMapGroupsAndMaps`, located by [`find_map_groups_table`]
+/// at startup. `None` (unset) if the scan failed; callers fall back to the
+/// hardcoded lookup table in that case.
+static MAP_GROUPS_TABLE: OnceLock<usize> = OnceLock::new();
 
 /// Shared [`FireRedState`] updated by the background thread and read by callers.
 /// Initialized once on the first call to [`start_loop`].
@@ -182,6 +188,29 @@ pub fn start_loop(file_path: &str, _is_clean: bool) -> c_int {
     // Build all ROM-derived caches that subsystems read at runtime.
     fill_static_pokemon_header_list(get_rom(), start_wild_header_offset);
     fill_static_name_repo(get_rom(), fire_red_text::POKEMON_NAMES_ADDR as usize);
+
+    // Locate gMapGroupsAndMaps using one pair per distinct group from the wild
+    // encounter headers. This is non-fatal: zone names fall back to the
+    // hardcoded lookup table if the scan fails.
+    println!("Scanning for gMapGroupsAndMaps...");
+    {
+        let mut seen_groups = std::collections::HashSet::new();
+        let known_pairs: Vec<(u8, u8)> = get_pokemon_header_list()
+            .iter()
+            .filter(|h| seen_groups.insert(h.map_group))
+            .map(|h| (h.map_group, h.map_num))
+            .collect();
+
+        match find_map_groups_table(get_rom(), &known_pairs) {
+            Some(offset) => {
+                println!("Found gMapGroupsAndMaps at ROM offset 0x{:08X}", offset);
+                MAP_GROUPS_TABLE.get_or_init(|| offset);
+            }
+            None => {
+                eprintln!("Warning: gMapGroupsAndMaps not found — zone names will use fallback");
+            }
+        }
+    }
 
     // Start the EWRAM/IWRAM snapshot loop FIRST so that the buffers are
     // populated before the party, trainer, and box monitors try to read them.
@@ -353,6 +382,60 @@ pub fn update_box_list() {
 /// from the ROM at startup.
 fn get_wild_headers() -> &'static Vec<WildPokemonHeaderROM> {
     get_pokemon_header_list()
+}
+
+/// Reads the [`MapHeader`] for a given `(group, map)` pair directly from the
+/// ROM via the `gMapGroupsAndMaps` pointer table.
+///
+/// Returns `None` if the map groups table was not found at startup, if either
+/// pointer in the chain falls outside the ROM, or if the ROM buffer is too
+/// short to hold the header.
+pub fn get_map_header_from_rom(group: u8, map: u8) -> Option<MapHeader> {
+    let table_offset = MAP_GROUPS_TABLE.get().copied()?;
+    let rom = get_rom();
+
+    // Follow table[group] → ROM pointer to the group's map-header array.
+    let group_ptr = read_u32(rom, table_offset + group as usize * 4);
+    if !(0x08000000..=0x09FFFFFF).contains(&group_ptr) {
+        return None;
+    }
+    let group_offset = (group_ptr - 0x08000000) as usize;
+
+    // Follow group_array[map] → ROM pointer to the MapHeader.
+    let map_ptr = read_u32(rom, group_offset + map as usize * 4);
+    if !(0x08000000..=0x09FFFFFF).contains(&map_ptr) {
+        return None;
+    }
+    let map_offset = (map_ptr - 0x08000000) as usize;
+
+    if map_offset + 28 > rom.len() {
+        return None;
+    }
+    Some(MapHeader::fill_from_bytes(rom, map_offset))
+}
+
+/// Returns the human-readable zone name for a given `(group, map)` pair,
+/// using the ROM's `MapHeader.name_index` (MAPSEC) when available.
+///
+/// Falls back to the hardcoded `map_area_name` lookup if the ROM table has
+/// not been initialized or the pointer chain is invalid for the given pair.
+pub fn get_area_name_for(group: u8, map: u8) -> &'static str {
+    if let Some(header) = get_map_header_from_rom(group, map) {
+        let name = fire_red_location_names::location_name(header.name_index);
+        if !name.is_empty() && name != "Unknown Location" && name != "—" {
+            return name;
+        }
+    }
+    fire_red_location_names::map_area_name(group, map)
+}
+
+/// Returns the human-readable zone name for the player's current map.
+///
+/// Reads the current `(map_group, map_name_id)` from [`STATE`] and delegates
+/// to [`get_area_name_for`].
+pub fn get_area_name() -> &'static str {
+    let state = get_value();
+    get_area_name_for(state.map_group_id, state.map_name_id)
 }
 
 /// Returns the [`WildPokemonHeader`] for the player's current map.
