@@ -149,6 +149,7 @@ pub struct CaughtPokemon {
     /// was added.
     pub location_name: String,
     pub ivs:           IVs,
+    pub evs:           EVs,
     pub caught_at:     u64,
     /// `0` = male, `1` = female, `2` = genderless.
     pub gender:        u8,
@@ -336,6 +337,14 @@ pub fn initialize(connection_string: &str) -> Result<(), String> {
         ) sub
         WHERE cp.run_id = sub.run_id AND cp.player_name = '';
 
+        -- Migration: add EV columns to caught_pokemon.
+        ALTER TABLE caught_pokemon ADD COLUMN IF NOT EXISTS ev_hp        INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE caught_pokemon ADD COLUMN IF NOT EXISTS ev_attack    INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE caught_pokemon ADD COLUMN IF NOT EXISTS ev_defense   INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE caught_pokemon ADD COLUMN IF NOT EXISTS ev_speed     INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE caught_pokemon ADD COLUMN IF NOT EXISTS ev_sp_attack INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE caught_pokemon ADD COLUMN IF NOT EXISTS ev_sp_defense INTEGER NOT NULL DEFAULT 0;
+
         -- Data repair: fix species_name for NIDORAN♀ (29) and NIDORAN♂ (32) that were
         -- stored without the gender symbol due to a bug in the GBA text decoder.
         -- Only updates rows that don't already contain a gender symbol.
@@ -386,7 +395,8 @@ fn query_caught(client: &mut Client, run_id: u32, player_name: &str) -> Vec<Caug
             "SELECT player_name, personality, ot_id, nickname, species, species_name,
                     is_shiny, nature, level, met_location,
                     iv_hp, iv_attack, iv_defense, iv_speed, iv_sp_attack, iv_sp_defense,
-                    caught_at, gender, location_name
+                    caught_at, gender, location_name,
+                    ev_hp, ev_attack, ev_defense, ev_speed, ev_sp_attack, ev_sp_defense
              FROM caught_pokemon
              WHERE run_id = $1 AND player_name = $2
              ORDER BY caught_at ASC",
@@ -413,6 +423,14 @@ fn query_caught(client: &mut Client, run_id: u32, player_name: &str) -> Vec<Caug
                 speed:      row.get::<_, i32>(13) as u8,
                 sp_attack:  row.get::<_, i32>(14) as u8,
                 sp_defense: row.get::<_, i32>(15) as u8,
+            },
+            evs: EVs {
+                hp:         row.get::<_, i32>(19) as u8,
+                attack:     row.get::<_, i32>(20) as u8,
+                defense:    row.get::<_, i32>(21) as u8,
+                speed:      row.get::<_, i32>(22) as u8,
+                sp_attack:  row.get::<_, i32>(23) as u8,
+                sp_defense: row.get::<_, i32>(24) as u8,
             },
             caught_at: row.get::<_, i64>(16) as u64,
             gender:    row.get::<_, i32>(17) as u8,
@@ -760,8 +778,9 @@ pub fn mark_caught(pokemon: CaughtPokemon) {
             run_id, player_name, personality, ot_id, nickname, species, species_name,
             is_shiny, nature, level, met_location,
             iv_hp, iv_attack, iv_defense, iv_speed, iv_sp_attack, iv_sp_defense,
+            ev_hp, ev_attack, ev_defense, ev_speed, ev_sp_attack, ev_sp_defense,
             caught_at, gender, location_name
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26)
         ON CONFLICT (run_id, personality) DO NOTHING",
         &[
             &(active as i32),
@@ -781,6 +800,12 @@ pub fn mark_caught(pokemon: CaughtPokemon) {
             &(pokemon.ivs.speed as i32),
             &(pokemon.ivs.sp_attack as i32),
             &(pokemon.ivs.sp_defense as i32),
+            &(pokemon.evs.hp as i32),
+            &(pokemon.evs.attack as i32),
+            &(pokemon.evs.defense as i32),
+            &(pokemon.evs.speed as i32),
+            &(pokemon.evs.sp_attack as i32),
+            &(pokemon.evs.sp_defense as i32),
             &(pokemon.caught_at as i64),
             &(pokemon.gender as i32),
             &pokemon.location_name,
@@ -802,6 +827,36 @@ pub fn update_caught_nickname(personality: u32, nickname: &str) {
         "UPDATE caught_pokemon SET nickname = $1
          WHERE run_id = $2 AND personality = $3 AND nickname != $1",
         &[&nickname, &(active as i32), &(personality as i64)],
+    );
+}
+
+/// Updates the EVs of a caught Pokémon if any have changed.
+///
+/// No-op if the Pokémon is not registered, the run is not active, or all EVs
+/// match what is already stored.
+pub fn update_caught_evs(personality: u32, evs: &EVs) {
+    let mut state = db().lock().unwrap_or_else(|e| e.into_inner());
+    let active = match state.run_id {
+        Some(id) => id,
+        None => return,
+    };
+    let _ = state.client.execute(
+        "UPDATE caught_pokemon
+         SET ev_hp = $1, ev_attack = $2, ev_defense = $3,
+             ev_speed = $4, ev_sp_attack = $5, ev_sp_defense = $6
+         WHERE run_id = $7 AND personality = $8
+           AND (ev_hp != $1 OR ev_attack != $2 OR ev_defense != $3
+             OR ev_speed != $4 OR ev_sp_attack != $5 OR ev_sp_defense != $6)",
+        &[
+            &(evs.hp as i32),
+            &(evs.attack as i32),
+            &(evs.defense as i32),
+            &(evs.speed as i32),
+            &(evs.sp_attack as i32),
+            &(evs.sp_defense as i32),
+            &(active as i32),
+            &(personality as i64),
+        ],
     );
 }
 
@@ -1294,6 +1349,7 @@ fn dump_caught(client: &mut Client) -> serde_json::Value {
                 level, nature, is_shiny,
                 location_name,
                 iv_hp, iv_attack, iv_defense, iv_speed, iv_sp_attack, iv_sp_defense,
+                ev_hp, ev_attack, ev_defense, ev_speed, ev_sp_attack, ev_sp_defense,
                 caught_at, gender
          FROM caught_pokemon ORDER BY caught_at ASC",
         &[],
@@ -1312,8 +1368,11 @@ fn dump_caught(client: &mut Client) -> serde_json::Value {
             "ivs":       format!("{}/{}/{}/{}/{}/{}",
                 row.get::<_, i32>(8),  row.get::<_, i32>(9),  row.get::<_, i32>(10),
                 row.get::<_, i32>(11), row.get::<_, i32>(12), row.get::<_, i32>(13)),
-            "caught_at": format_timestamp(row.get::<_, i64>(14) as u64),
-            "gender":    row.get::<_, i32>(15),
+            "evs":       format!("{}/{}/{}/{}/{}/{}",
+                row.get::<_, i32>(14), row.get::<_, i32>(15), row.get::<_, i32>(16),
+                row.get::<_, i32>(17), row.get::<_, i32>(18), row.get::<_, i32>(19)),
+            "caught_at": format_timestamp(row.get::<_, i64>(20) as u64),
+            "gender":    row.get::<_, i32>(21),
         })
     }).collect())
 }
@@ -1325,6 +1384,7 @@ fn dump_dead(client: &mut Client) -> serde_json::Value {
                 level, nature, is_shiny,
                 max_hp, attack, defense, speed, sp_attack, sp_defense,
                 iv_hp, iv_attack, iv_defense, iv_speed, iv_sp_attack, iv_sp_defense,
+                ev_hp, ev_attack, ev_defense, ev_speed, ev_sp_attack, ev_sp_defense,
                 (max_hp = 0) AS soul_link,
                 died_at, gender
          FROM dead_pokemon ORDER BY died_at ASC",
@@ -1346,9 +1406,12 @@ fn dump_dead(client: &mut Client) -> serde_json::Value {
             "ivs":       format!("{}/{}/{}/{}/{}/{}",
                 row.get::<_, i32>(13), row.get::<_, i32>(14), row.get::<_, i32>(15),
                 row.get::<_, i32>(16), row.get::<_, i32>(17), row.get::<_, i32>(18)),
-            "soul_link": row.get::<_, bool>(19),
-            "died_at":   format_timestamp(row.get::<_, i64>(20) as u64),
-            "gender":    row.get::<_, i32>(21),
+            "evs":       format!("{}/{}/{}/{}/{}/{}",
+                row.get::<_, i32>(19), row.get::<_, i32>(20), row.get::<_, i32>(21),
+                row.get::<_, i32>(22), row.get::<_, i32>(23), row.get::<_, i32>(24)),
+            "soul_link": row.get::<_, bool>(25),
+            "died_at":   format_timestamp(row.get::<_, i64>(26) as u64),
+            "gender":    row.get::<_, i32>(27),
         })
     }).collect())
 }

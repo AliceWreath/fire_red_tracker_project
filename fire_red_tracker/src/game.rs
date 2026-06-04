@@ -172,6 +172,15 @@ pub fn check_for_new_pokemon(thread_party: &Arc<Mutex<Vec<Pokemon>>>) {
             if !nickname.is_empty() {
                 fire_red_database::update_caught_nickname(personality, nickname);
             }
+            let ev = &pokemon.box_mon.secure.ev_condition;
+            fire_red_database::update_caught_evs(personality, &fire_red_database::EVs {
+                hp:         ev.hp_ev,
+                attack:     ev.attack_ev,
+                defense:    ev.defense_ev,
+                speed:      ev.speed_ev,
+                sp_attack:  ev.sp_attack_ev,
+                sp_defense: ev.sp_defense_ev,
+            });
             continue;
         }
 
@@ -179,6 +188,7 @@ pub fn check_for_new_pokemon(thread_party: &Arc<Mutex<Vec<Pokemon>>>) {
         let growth   = &pokemon.box_mon.secure.growth;
         let misc     = &pokemon.box_mon.secure.misc;
         let iv       = &misc.iv_egg_ability;
+        let ev       = &pokemon.box_mon.secure.ev_condition;
 
         let caught_at = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -216,6 +226,14 @@ pub fn check_for_new_pokemon(thread_party: &Arc<Mutex<Vec<Pokemon>>>) {
                 speed:      iv.speed_iv,
                 sp_attack:  iv.sp_attack_iv,
                 sp_defense: iv.sp_def_iv,
+            },
+            evs: fire_red_database::EVs {
+                hp:         ev.hp_ev,
+                attack:     ev.attack_ev,
+                defense:    ev.defense_ev,
+                speed:      ev.speed_ev,
+                sp_attack:  ev.sp_attack_ev,
+                sp_defense: ev.sp_defense_ev,
             },
             caught_at,
         });

@@ -180,6 +180,7 @@ const TABLES = {
             { key: 'shiny',     label: 'Shiny',    cls: row => row.shiny ? 'shiny' : 'no',   fmt: v => v ? '★' : '' },
             { key: 'gender',    label: '⚥',        fmt: v => v === 0 ? '♂' : v === 1 ? '♀' : '' },
             { key: 'ivs',       label: 'IVs',      cls: 'mono', fmt: v => ivColorNode(v) },
+            { key: 'evs',       label: 'EVs',      cls: 'mono', fmt: v => evColorNode(v) },
             { key: 'location',  label: 'Loc',      cls: 'mono' },
             { key: 'caught_at', label: 'Caught',   cls: 'mono' },
         ],
@@ -197,7 +198,8 @@ const TABLES = {
             { key: 'gender',    label: '⚥',         fmt: v => v === 0 ? '♂' : v === 1 ? '♀' : '' },
             { key: 'soul_link', label: 'SoulLink',  cls: row => row.soul_link ? 'dead-yes' : 'no', fmt: v => v ? 'yes' : '' },
             { key: 'stats',     label: 'Stats',     cls: 'mono', fmt: (v, row) => statsColorNode(v, row.nature) },
-            { key: 'ivs',       label: 'IVs',       cls: 'mono' },
+            { key: 'ivs',       label: 'IVs',       cls: 'mono', fmt: v => ivColorNode(v) },
+            { key: 'evs',       label: 'EVs',       cls: 'mono', fmt: v => evColorNode(v) },
             { key: 'died_at',   label: 'Died',      cls: 'mono' },
         ],
     },
@@ -370,6 +372,25 @@ function ivColorNode(str) {
         const s = document.createElement('span');
         if (v === 31) s.style.color = '#ffd040';
         else if (v === 0) s.style.color = '#e06060';
+        s.textContent = parts[i];
+        wrap.appendChild(s);
+    }
+    return wrap;
+}
+
+function evColorNode(str) {
+    const wrap = document.createElement('span');
+    if (!str) return wrap;
+    const parts = String(str).split('/');
+    for (let i = 0; i < parts.length; i++) {
+        if (i > 0) wrap.appendChild(document.createTextNode(' '));
+        const lbl = document.createElement('span');
+        lbl.style.color = 'rgba(200,200,200,0.45)';
+        lbl.textContent = (DB_IV_LABELS[i] || '?') + ':';
+        wrap.appendChild(lbl);
+        const v = parseInt(parts[i], 10);
+        const s = document.createElement('span');
+        if (v === 252) s.style.color = '#ffd040';
         s.textContent = parts[i];
         wrap.appendChild(s);
     }

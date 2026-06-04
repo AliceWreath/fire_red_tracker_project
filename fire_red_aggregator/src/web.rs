@@ -210,6 +210,12 @@ struct MemberDto {
     held_item:         String,
     held_item_id:      u16,
     growth_rate:       String,
+    ev_hp:             u8,
+    ev_atk:            u8,
+    ev_def:            u8,
+    ev_spe:            u8,
+    ev_spa:            u8,
+    ev_spd:            u8,
     /// Base64 PNG data URI for the sprite, e.g. `data:image/png;base64,...`.
     /// `None` while the sprite is still in transit from the tracker server.
     sprite:            Option<String>,
@@ -637,6 +643,12 @@ impl BroadcastLoop {
                                     held_item:         p.box_mon.secure.growth.held_item_string.clone(),
                                     held_item_id:      p.box_mon.secure.growth.held_item,
                                     growth_rate:       p.box_mon.secure.growth.growth_rate_string.clone(),
+                                    ev_hp:             p.box_mon.secure.ev_condition.hp_ev,
+                                    ev_atk:            p.box_mon.secure.ev_condition.attack_ev,
+                                    ev_def:            p.box_mon.secure.ev_condition.defense_ev,
+                                    ev_spe:            p.box_mon.secure.ev_condition.speed_ev,
+                                    ev_spa:            p.box_mon.secure.ev_condition.sp_attack_ev,
+                                    ev_spd:            p.box_mon.secure.ev_condition.sp_defense_ev,
                                     sprite,
                                 }
                             })

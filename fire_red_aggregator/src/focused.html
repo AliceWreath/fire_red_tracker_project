@@ -279,6 +279,7 @@ function renderParty(root, slot) {
             if (mon.ability) content.appendChild(el('div', 'mon-sub-sm', 'Ability: ' + mon.ability));
             if (mon.held_item && mon.held_item !== 'None') content.appendChild(el('div', 'mon-sub-sm', 'Held: ' + mon.held_item));
             if (mon.growth_rate) content.appendChild(el('div', 'mon-sub-sm', 'Growth: ' + mon.growth_rate));
+            if (mon.ev_hp != null) content.appendChild(evRowEl('mon-sub-sm', mon.ev_hp, mon.ev_atk, mon.ev_def, mon.ev_spe, mon.ev_spa, mon.ev_spd));
         } else {
             content.appendChild(el('div', 'mon-sub',
                 mon.species_name + ' — ' + mon.nature + (mon.shiny ? ' ★' : '')));
@@ -290,6 +291,7 @@ function renderParty(root, slot) {
             if (mon.ability) content.appendChild(el('div', 'mon-sub-sm', 'Ability: ' + mon.ability));
             if (mon.held_item && mon.held_item !== 'None') content.appendChild(el('div', 'mon-sub-sm', 'Held: ' + mon.held_item));
             if (mon.growth_rate) content.appendChild(el('div', 'mon-sub-sm', 'Growth: ' + mon.growth_rate));
+            if (mon.ev_hp != null) content.appendChild(evRowEl('mon-sub-sm', mon.ev_hp, mon.ev_atk, mon.ev_def, mon.ev_spe, mon.ev_spa, mon.ev_spd));
         }
 
         inner.appendChild(content);
@@ -509,6 +511,20 @@ function ivEl(v) {
 }
 
 const IV_LABELS = ['HP', 'Atk', 'Def', 'Spe', 'SpA', 'SpD'];
+
+function evRowEl(cls, hp, atk, def, spe, spa, spd) {
+    const d = el('div', cls);
+    const stats = [['HP', hp], ['Atk', atk], ['Def', def], ['Spe', spe], ['SpA', spa], ['SpD', spd]];
+    for (let i = 0; i < stats.length; i++) {
+        if (i > 0) d.appendChild(document.createTextNode(' | '));
+        const [lbl, val] = stats[i];
+        const s = document.createElement('span');
+        if (val === 252) s.style.color = '#ffd040';
+        s.textContent = lbl + ' ' + val;
+        d.appendChild(s);
+    }
+    return d;
+}
 
 function ivRowEl(cls, label, hp, atk, def, spe, spa, spd, labeled) {
     const d = el('div', cls);
