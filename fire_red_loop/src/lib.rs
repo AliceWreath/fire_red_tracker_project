@@ -33,13 +33,14 @@
 
 use fire_red_party_monitor::*;
 use fire_red_rom_buffer::*;
-use std::ffi::{CStr, c_uchar};
+use std::ffi::{CStr, CString, c_uchar};
 use std::os::raw::c_char;
 use std::os::raw::c_int;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 use fire_red_pokemon_data::*;
 use fire_red_scanner::find_wild_headers;
+use fire_red_map_data::CurrentMapGroupAndName;
 
 // ---------------------------------------------------------------------------
 // State
@@ -506,5 +507,157 @@ impl std::fmt::Display for AreaEncountersStringVectors {
             }
         }
         Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// C-ABI helpers — StringArray construction and teardown
+// ---------------------------------------------------------------------------
+
+/// Converts a `Vec<String>` into a heap-allocated [`StringArray`] of C strings.
+///
+/// Strings containing interior null bytes are silently dropped. Returns a
+/// zeroed default if the resulting list is empty.
+fn strings_to_string_array(strings: Vec<String>) -> StringArray {
+    let mut c_strs: Vec<*mut c_char> = strings
+        .into_iter()
+        .filter_map(|s| CString::new(s).ok())
+        .map(|cs| cs.into_raw())
+        .collect();
+
+    if c_strs.is_empty() {
+        return StringArray::default();
+    }
+
+    let len  = c_strs.len();
+    let cap  = c_strs.capacity();
+    let data = c_strs.as_mut_ptr();
+    std::mem::forget(c_strs);
+    StringArray { data, len, cap }
+}
+
+/// Frees all C strings in a [`StringArray`] and their backing pointer array.
+///
+/// # Safety
+///
+/// `arr` must have been produced by [`strings_to_string_array`]. All contained
+/// `*mut c_char` pointers must have been allocated by `CString::into_raw`.
+unsafe fn free_string_array(arr: StringArray) {
+    if arr.data.is_null() || arr.len == 0 {
+        return;
+    }
+    let ptrs = unsafe { Vec::from_raw_parts(arr.data, arr.len, arr.cap) };
+    for p in ptrs {
+        if !p.is_null() {
+            unsafe { drop(CString::from_raw(p)); }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// C-ABI entry points — area encounter strings
+// ---------------------------------------------------------------------------
+
+/// Returns the wild-encounter pokemon name strings for the current map as a
+/// heap-allocated [`AreaEncountersStringArrays`].
+///
+/// The caller **must** free the returned pointer with
+/// [`free_area_encounters_string_arrays`]. Returns `NULL` if the start loop
+/// has not been called.
+#[unsafe(no_mangle)]
+pub extern "C" fn get_area_pokemon_strings_ffi() -> *mut AreaEncountersStringArrays {
+    let vecs = get_area_pokemon_strings();
+    let arrays = Box::new(AreaEncountersStringArrays {
+        land:       strings_to_string_array(vecs.land),
+        water:      strings_to_string_array(vecs.water),
+        rock_smash: strings_to_string_array(vecs.rock),
+        fishing:    strings_to_string_array(vecs.fishing),
+    });
+    Box::into_raw(arrays)
+}
+
+/// Frees an [`AreaEncountersStringArrays`] returned by
+/// [`get_area_pokemon_strings_ffi`].
+///
+/// # Safety
+///
+/// `ptr` must be a non-null pointer returned by `get_area_pokemon_strings_ffi`
+/// and must not have already been freed.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn free_area_encounters_string_arrays(ptr: *mut AreaEncountersStringArrays) {
+    if ptr.is_null() {
+        return;
+    }
+    unsafe {
+        let land       = std::ptr::read(&(*ptr).land);
+        let water      = std::ptr::read(&(*ptr).water);
+        let rock_smash = std::ptr::read(&(*ptr).rock_smash);
+        let fishing    = std::ptr::read(&(*ptr).fishing);
+        free_string_array(land);
+        free_string_array(water);
+        free_string_array(rock_smash);
+        free_string_array(fishing);
+        drop(Box::from_raw(ptr));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// C-ABI entry points — wild pokemon header FFI
+// ---------------------------------------------------------------------------
+
+/// Returns the [`WildPokemonHeaderFFI`] for the player's current map as a
+/// heap-allocated pointer.
+///
+/// Returns `NULL` if no encounter header exists for the current map (e.g. towns
+/// or maps with no wild encounters). The caller **must** free the returned
+/// pointer with [`free_wild_pokemon_header_ffi`].
+///
+/// # Safety requirements for the caller
+///
+/// The returned pointer is valid until `free_wild_pokemon_header_ffi` is called.
+/// Do not free the inner `*mut WildPokemonInfoFFI` fields independently.
+#[unsafe(no_mangle)]
+pub extern "C" fn get_area_pokemon_header_ffi() -> *mut WildPokemonHeaderFFI {
+    let state = get_value();
+    for header in get_wild_headers() {
+        if header.map_group == state.map_group_id && header.map_num == state.map_name_id {
+            let ffi = WildPokemonHeaderFFI::fill_head(header, get_rom());
+            return Box::into_raw(Box::new(ffi));
+        }
+    }
+    std::ptr::null_mut()
+}
+
+/// Frees a [`WildPokemonHeaderFFI`] returned by [`get_area_pokemon_header_ffi`].
+///
+/// Also frees all inner `*mut WildPokemonInfoFFI` allocations via the
+/// `WildPokemonHeaderFFI` `Drop` implementation.
+///
+/// # Safety
+///
+/// `ptr` must be a non-null pointer returned by `get_area_pokemon_header_ffi`
+/// and must not have already been freed.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn free_wild_pokemon_header_ffi(ptr: *mut WildPokemonHeaderFFI) {
+    if ptr.is_null() {
+        return;
+    }
+    unsafe { drop(Box::from_raw(ptr)); }
+}
+
+// ---------------------------------------------------------------------------
+// C-ABI entry point — current map position (fire_red_map_data integration)
+// ---------------------------------------------------------------------------
+
+/// Returns the current map group and name IDs as a [`CurrentMapGroupAndName`].
+///
+/// Reads from the live [`FireRedState`] snapshot maintained by the polling
+/// thread. Returns a zeroed struct if called before [`start_loop`].
+#[unsafe(no_mangle)]
+pub extern "C" fn c_get_current_map_position() -> CurrentMapGroupAndName {
+    let state = get_value();
+    CurrentMapGroupAndName {
+        group: state.map_group_id,
+        name:  state.map_name_id,
     }
 }

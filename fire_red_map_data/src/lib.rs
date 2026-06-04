@@ -317,6 +317,21 @@ impl BgEvent {
         self
     }
 
+    /// Reads a [`BgEvent`] from a raw byte buffer at `offset`.
+    ///
+    /// Bytes are read sequentially: x(2) y(2) elevation(1) kind(1) script_ptr(4) hidden_items(4).
+    pub fn fill_from_bytes(buffer: &[u8], offset: usize) -> Self {
+        let o = offset;
+        Self {
+            x:            read_u16(buffer, o),
+            y:            read_u16(buffer, o + 2),
+            elevation:    read_u8 (buffer, o + 4),
+            kind:         read_u8 (buffer, o + 5),
+            script_ptr:   read_u32(buffer, o + 6),
+            hidden_items: read_u32(buffer, o + 10),
+        }
+    }
+
     /// Returns a `READ_CORE_MEMORY` command string that follows `script_ptr`
     /// to read the first byte of the event's script.
     pub fn generate_get_script_command(self) -> String {
@@ -348,6 +363,21 @@ impl CoordEvent {
         self
     }
 
+    /// Reads a [`CoordEvent`] from a raw byte buffer at `offset`.
+    ///
+    /// Bytes are read sequentially: x(2) y(2) elevation(1) trigger(2) index(2) script_ptr(4).
+    pub fn fill_from_bytes(buffer: &[u8], offset: usize) -> Self {
+        let o = offset;
+        Self {
+            x:          read_u16(buffer, o),
+            y:          read_u16(buffer, o + 2),
+            elevation:  read_u8 (buffer, o + 4),
+            trigger:    read_u16(buffer, o + 5),
+            index:      read_u16(buffer, o + 7),
+            script_ptr: read_u32(buffer, o + 9),
+        }
+    }
+
     /// Returns a `READ_CORE_MEMORY` command string that reads the first byte
     /// of this coordinate event's script
     pub fn generate_get_script_command(self) -> String {
@@ -377,6 +407,21 @@ impl WarpEvent {
         self.map_group = get_u8(&[buffer[index]]);
 
         self
+    }
+
+    /// Reads a [`WarpEvent`] from a raw byte buffer at `offset`.
+    ///
+    /// Bytes are read sequentially: x(2) y(2) elevation(1) warp_id(1) map_num(1) map_group(1).
+    pub fn fill_from_bytes(buffer: &[u8], offset: usize) -> Self {
+        let o = offset;
+        Self {
+            x:         read_i16(buffer, o),
+            y:         read_i16(buffer, o + 2),
+            elevation: read_u8 (buffer, o + 4),
+            warp_id:   read_u8 (buffer, o + 5),
+            map_num:   read_u8 (buffer, o + 6),
+            map_group: read_u8 (buffer, o + 7),
+        }
     }
 }
 
@@ -418,6 +463,30 @@ impl ObjectEventTemplate {
         self
     }
 
+    /// Reads an [`ObjectEventTemplate`] from a raw byte buffer at `offset`.
+    ///
+    /// Bytes are read sequentially: local_id(1) graphics_id(1) in_connection(1)
+    /// x(2) y(2) elevation(1) movement_type(1) movement_range_x(2) movement_range_y(2)
+    /// trainer_type(2) trainer_range_berry_tree_id(2) script_ptr(4) flag_id(2).
+    pub fn fill_from_bytes(buffer: &[u8], offset: usize) -> Self {
+        let o = offset;
+        Self {
+            local_id:                    read_u8 (buffer, o),
+            graphics_id:                 read_u8 (buffer, o + 1),
+            in_connection:               read_u8 (buffer, o + 2),
+            x:                           read_i16(buffer, o + 3),
+            y:                           read_i16(buffer, o + 5),
+            elevation:                   read_u8 (buffer, o + 7),
+            movement_type:               read_u8 (buffer, o + 8),
+            movement_range_x:            read_u16(buffer, o + 9),
+            movement_range_y:            read_u16(buffer, o + 11),
+            trainer_type:                read_u16(buffer, o + 13),
+            trainer_range_berry_tree_id: read_u16(buffer, o + 15),
+            script_ptr:                  read_u32(buffer, o + 17),
+            flag_id:                     read_u16(buffer, o + 21),
+        }
+    }
+
     /// Returns a `READ_CORE_MEMORY` command string that reads the first byte
     /// of this object's interaction script.
     pub fn generate_get_script_command(self) -> String {
@@ -439,6 +508,16 @@ impl MapConnections {
         self.map_connection_ptr = get_u32(&buffer[index..index + 4]);
         self
     }
+
+    /// Reads a [`MapConnections`] header from a raw byte buffer at `offset`.
+    ///
+    /// Bytes are read sequentially: count(4) map_connection_ptr(4).
+    pub fn fill_from_bytes(buffer: &[u8], offset: usize) -> Self {
+        Self {
+            count:               read_i32(buffer, offset),
+            map_connection_ptr:  read_u32(buffer, offset + 4),
+        }
+    }
 }
 
 impl MapConnection {
@@ -459,6 +538,19 @@ impl MapConnection {
         self.map_number = get_u8(&[buffer[index]]);
         self
     }
+
+    /// Reads a [`MapConnection`] from a raw byte buffer at `offset`.
+    ///
+    /// Bytes are read sequentially: direction(1) offset(4) map_group(1) map_number(1).
+    pub fn fill_from_bytes(buffer: &[u8], offset: usize) -> Self {
+        let o = offset;
+        Self {
+            direction:  read_u8 (buffer, o),
+            offset:     read_u32(buffer, o + 1),
+            map_group:  read_u8 (buffer, o + 5),
+            map_number: read_u8 (buffer, o + 6),
+        }
+    }
 }
 
 impl MapScripts {
@@ -472,6 +564,11 @@ impl MapScripts {
         let index = 2;
         self.scripts = get_u8(&[buffer[index]]);
         self
+    }
+
+    /// Reads the first script-table byte from a raw byte buffer at `offset`.
+    pub fn fill_from_bytes(buffer: &[u8], offset: usize) -> Self {
+        Self { scripts: read_u8(buffer, offset) }
     }
 }
 
@@ -501,6 +598,25 @@ impl MapEvents {
         index += 4;
         self.bg_event_pointer = get_u32(&buffer[index..index + 4]);
         self
+    }
+
+    /// Reads a [`MapEvents`] from a raw byte buffer at `offset`.
+    ///
+    /// Bytes are read sequentially: object_event_count(1) warp_count(1) coord_event_count(1)
+    /// bg_event_count(1) object_event_template_ptr(4) warp_event_pointer(4)
+    /// coord_event_pointer(4) bg_event_pointer(4).
+    pub fn fill_from_bytes(buffer: &[u8], offset: usize) -> Self {
+        let o = offset;
+        Self {
+            object_event_count:           read_u8 (buffer, o),
+            warp_count:                   read_u8 (buffer, o + 1),
+            coord_event_count:            read_u8 (buffer, o + 2),
+            bg_event_count:               read_u8 (buffer, o + 3),
+            object_event_template_ptr:    read_u32(buffer, o + 4),
+            warp_event_pointer:           read_u32(buffer, o + 8),
+            coord_event_pointer:          read_u32(buffer, o + 12),
+            bg_event_pointer:             read_u32(buffer, o + 16),
+        }
     }
 }
 
@@ -540,6 +656,24 @@ impl MapLayout {
             self.border_ptr,
             std::mem::size_of::<c_ushort>()
         )
+    }
+
+    /// Reads a [`MapLayout`] from a raw byte buffer at `offset`.
+    ///
+    /// Bytes are read sequentially: width(4) height(4) border_ptr(4) map_ptr(4)
+    /// tileset_ptr(4) secondary_tileset_ptr(4) border_width(1) border_height(1).
+    pub fn fill_from_bytes(buffer: &[u8], offset: usize) -> Self {
+        let o = offset;
+        Self {
+            width:                  read_i32(buffer, o),
+            height:                 read_i32(buffer, o + 4),
+            border_ptr:             read_u32(buffer, o + 8),
+            map_ptr:                read_u32(buffer, o + 12),
+            tileset_ptr:            read_u32(buffer, o + 16),
+            secondary_tileset_ptr:  read_u32(buffer, o + 20),
+            border_width:           read_u8 (buffer, o + 24),
+            border_height:          read_u8 (buffer, o + 25),
+        }
     }
 
     /// Returns a `READ_CORE_MEMORY` command string that reads one `u16` metatile
@@ -615,6 +749,48 @@ impl MapHeader {
         self.allow_escape = (byte & 4) == 4;
         self.allow_running = (byte & 2) == 2;
         self.show_map_name = (byte & 1) == 1;
+    }
+
+    /// Reads a [`MapHeader`] from a raw byte buffer at `offset`.
+    ///
+    /// Bytes are read sequentially matching the 28-byte GBA map header layout.
+    /// Byte 25 (relative to `offset`) is a bitfield:
+    /// bit 2 = allow_escape, bit 1 = allow_running, bit 0 = show_map_name.
+    pub fn fill_from_bytes(buffer: &[u8], offset: usize) -> Self {
+        let o = offset;
+        let flags = read_u8(buffer, o + 25);
+        Self {
+            footer_offset_ptr:                   read_u32(buffer, o),
+            event_offset_ptr:                    read_u32(buffer, o + 4),
+            script_offset_ptr:                   read_u32(buffer, o + 8),
+            connections_offset_ptr:              read_u32(buffer, o + 12),
+            music_id:                            read_u16(buffer, o + 16),
+            footer_id:                           read_u8 (buffer, o + 18),
+            footer_id_cont:                      read_u8 (buffer, o + 19),
+            name_index:                          read_u8 (buffer, o + 20),
+            cave_type:                           read_u8 (buffer, o + 21),
+            weather_type:                        read_u8 (buffer, o + 22),
+            trainer_battle_background_override:  read_u8 (buffer, o + 23),
+            allow_bicycle:                       read_u8 (buffer, o + 24),
+            allow_escape:                        (flags & 4) == 4,
+            allow_running:                       (flags & 2) == 2,
+            show_map_name:                       (flags & 1) == 1,
+            floor_number:                        read_u8 (buffer, o + 26),
+            battle_background_override:          read_u8 (buffer, o + 27),
+        }
+    }
+}
+
+impl CurrentMapGroupAndName {
+    /// Reads the two-byte `(group, name)` field from a raw byte buffer at `offset`.
+    ///
+    /// Matches the layout of `gMapHeader` current-position bytes in EWRAM at
+    /// `0x02031DBC` (bus address). Subtract `0x02000000` to get the EWRAM offset.
+    pub fn fill_from_bytes(buffer: &[u8], offset: usize) -> Self {
+        Self {
+            group: read_u8(buffer, offset),
+            name:  read_u8(buffer, offset + 1),
+        }
     }
 }
 
