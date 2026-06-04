@@ -21,6 +21,7 @@ A real-time Pokémon FireRed party and encounter monitor built in Rust. It reads
 - **Encounters panel** — shows the wild Pokémon available in the current area, split by type: grass, water/fishing, and Rock Smash. Updates automatically when the player moves to a new map.
 - **Badge tracker** — displays obtained badges as coloured dots and shows the next gym leader's name, city, and highest Pokémon level.
 - **First-encounter tracking** — records the first wild Pokémon encountered in each area (Nuzlocke rule). Encounters are ignored until the player receives their first Pokéballs; once obtained, tracking continues even if all balls are later used. If the first encounter in an area is a species the player has already encountered elsewhere in the run, it is skipped as a duplicate. Catches are flagged automatically when the Pokémon appears in the player's party.
+- **Zone-entry alert** — when the player enters a wild area where no first encounter has been recorded yet this run, a toast notification appears showing the zone name, that no encounter has occurred yet, and what was caught (or fled) in that zone on the most recently completed run.
 - **Reset detection** — clears stale party, encounter, and badge data when a soft reset or title screen is detected.
 - **Soul Link detection** — in aggregator mode, Pokémon caught in the same location across two or more players' games are automatically linked and labelled in purple.
 
@@ -117,6 +118,8 @@ The following pages are available:
 | `http://localhost:PORT/1/dead` | Player 2's dead Pokémon log |
 | `http://localhost:PORT/1/caught` | Player 2's caught Pokémon log |
 | `http://localhost:PORT/1/box` | Player 2's PC box contents |
+| `http://localhost:PORT/zone-alert` | Zone-entry alert overlay — transparent, shows a toast when entering an unencountered wild area |
+| `http://localhost:PORT/zone-alert?slot=1` | Zone-entry alert for Player 2 |
 
 The full overlay and per-player pages can all be added as separate Browser Sources in OBS and positioned independently.
 
@@ -153,7 +156,7 @@ A **Soul Link** is a Nuzlocke variant played with a partner: each player's catch
 | `fire_red_image_data` | Extracts and decodes Pokémon front sprites from the ROM: pointer resolution → LZ77 decompression → 4bpp tile decode → BGR555 palette → RGBA image. |
 | `fire_red_pokemon_data` | Wild encounter table types (`WildPokemonHeader`, `WildPokemonInfo`, `WildPokemon`). Parses encounter data from ROM and provides both safe Rust and FFI-compatible representations. |
 | `fire_red_get_values` | Low-level byte parsing utilities. Three families: `get_*` for RetroArch hex-token buffers (LE), `read_*` for raw byte slices (LE), `read_*_raw` for raw byte slices (BE). |
-| `fire_red_location_names` | Human-readable location name lookup for FireRed USA Rev 1. Exposes two functions: `map_area_name(group, map)` converts live `(map_group, map_name)` pairs to display strings for the encounter panel; `location_name(loc)` converts a MAPSEC `met_location` byte to a named location for the party panel. Constants derived from the pret/firered-leafgreen decomp. |
+| `fire_red_location_names` | Human-readable location name lookup for FireRed USA Rev 1. Exposes two functions: `map_area_name(group, map)` converts live `(map_group, map_name)` pairs to display strings for the encounter panel; `location_name(loc)` converts a MAPSEC `met_location` byte to a named location for the party panel. Covers all Kanto wild areas, all Sevii Island wild areas, and all routes including the Route 21 North/South split. Constants sourced from the FireRed/LeafGreen map groups document and cross-checked in-game. |
 | `fire_red_map_data` | `#[repr(C)]` structs mirroring the in-memory layout of FireRed map data (`MapHeader`, `MapLayout`, `MapEvents`, `WarpEvent`, `CoordEvent`, `BgEvent`, `MapConnections`, `MapConnection`, `ObjectEventTemplate`). Each type has a `fill_*` builder method for deserialising from RetroArch `READ_CORE_MEMORY` hex-token buffers, plus helpers for generating follow-up read commands. **In progress — not yet integrated into the main loop.** |
 | `fire_red_states` | Shared types and length-prefixed bincode TCP message protocol: `GameState`, `ServerMessage`, `ClientMessage`, `SpriteData`, `Mode`. Used by both tracker and aggregator. |
 | `fire_red_database` | PostgreSQL persistence layer. Manages runs, encounters, caught Pokémon, and deaths. Provides both a write API (used by the tracker process) and a read-only `DbReader` (used by the aggregator). |

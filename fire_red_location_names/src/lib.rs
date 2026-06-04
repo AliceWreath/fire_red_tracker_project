@@ -12,57 +12,157 @@
 /// the MAPSEC value.  Returns `""` for unknown pairs — callers should fall back
 /// to a formatted `"G·N"` string in that case.
 ///
-/// # Verified data points (FireRed USA Rev 1, from `READ_CORE_MEMORY 0x2031DBC 2`)
+/// All values sourced from the FireRed/LeafGreen map groups document and
+/// cross-checked against `READ_CORE_MEMORY 0x2031DBC 2` for in-game entries
+/// marked "verified".  Note: Route 21 is split North/South (not Route 10),
+/// which is why Route 22 lands at 0x29.
 ///
-/// | Location        | group | map  |
-/// |-----------------|-------|------|
-/// | Route 1         | 3     | 0x13 |
-/// | Route 2         | 3     | 0x14 |
-/// | Route 22        | 3     | 0x29 |
-/// | Viridian Forest | 1     | 0x00 |
-/// | Mt. Moon        | 1     | 0x01 |
-/// | Diglett's Cave  | 1     | 0x25 |
-///
-/// Route 10 is split into North (0x1C) and South (0x1D), which accounts for
-/// the +1 offset seen between routes 2 and 22.  All entries marked with `?`
-/// are inferred from that pattern and should be verified in-game.
+/// | Location             | group | map  | notes    |
+/// |----------------------|-------|------|----------|
+/// | Viridian Forest      | 1     | 0x00 | verified |
+/// | Mt. Moon 1F          | 1     | 0x01 | verified |
+/// | S.S. Anne (Exterior) | 1     | 0x04 | verified |
+/// | S.S. Anne 1F         | 1     | 0x05 | verified |
+/// | Diglett's Cave       | 1     | 0x25 | verified |
+/// | Route 1              | 3     | 0x13 | verified |
+/// | Route 2              | 3     | 0x14 | verified |
+/// | Route 22             | 3     | 0x29 | verified |
+/// | Route 21 (N)         | 3     | 0x27 | from doc |
+/// | Route 21 (S)         | 3     | 0x28 | from doc |
 pub fn map_area_name(group: u8, map: u8) -> &'static str {
     match (group, map) {
-        // ── Group 1: forest / cave overworld sections ─────────────────────
-        (1, 0x00) => "Viridian Forest",   // verified
-        (1, 0x01) => "Mt. Moon",          // verified
-        (1, 0x25) => "Diglett's Cave",    // verified
+        // ── Group 1: caves and multi-floor dungeons ───────────────────────
+        (1, 0x00) => "Viridian Forest",
+        (1, 0x01) => "Mt. Moon 1F",
+        (1, 0x02) => "Mt. Moon B1F",
+        (1, 0x03) => "Mt. Moon B2F",
+        (1, 0x04) => "S.S. Anne (Exterior)",   // no wild encounters
+        (1, 0x05) => "S.S. Anne 1F",           // no wild encounters
+        (1, 0x1F) => "Underground Path (N-S)", // no wild encounters
+        (1, 0x22) => "Underground Path (E-W)", // no wild encounters
+        (1, 0x24) => "Diglett's Cave (N Entrance)",
+        (1, 0x25) => "Diglett's Cave",
+        (1, 0x26) => "Diglett's Cave (S Entrance)",
+        (1, 0x27) => "Victory Road 1F",
+        (1, 0x28) => "Victory Road 2F",
+        (1, 0x29) => "Victory Road 3F",
+        (1, 0x3B) => "Pokemon Mansion 1F",
+        (1, 0x3C) => "Pokemon Mansion 2F",
+        (1, 0x3D) => "Pokemon Mansion 3F",
+        (1, 0x3E) => "Pokemon Mansion B1F",
+        (1, 0x3F) => "Safari Zone (Center)",
+        (1, 0x40) => "Safari Zone (East)",
+        (1, 0x41) => "Safari Zone (North)",
+        (1, 0x42) => "Safari Zone (West)",
+        (1, 0x48) => "Cerulean Cave 1F",
+        (1, 0x49) => "Cerulean Cave 2F",
+        (1, 0x4A) => "Cerulean Cave B1F",
+        (1, 0x51) => "Rock Tunnel 1F",
+        (1, 0x52) => "Rock Tunnel B1F",
+        (1, 0x53) => "Seafoam Islands 1F",
+        (1, 0x54) => "Seafoam Islands B1F",
+        (1, 0x55) => "Seafoam Islands B2F",
+        (1, 0x56) => "Seafoam Islands B3F",
+        (1, 0x57) => "Seafoam Islands B4F",
+        (1, 0x58) => "Pokemon Tower 1F",
+        (1, 0x59) => "Pokemon Tower 2F",
+        (1, 0x5A) => "Pokemon Tower 3F",
+        (1, 0x5B) => "Pokemon Tower 4F",
+        (1, 0x5C) => "Pokemon Tower 5F",
+        (1, 0x5D) => "Pokemon Tower 6F",
+        (1, 0x5E) => "Pokemon Tower 7F",
+        (1, 0x5F) => "Power Plant",
+        // Sevii – Mt. Ember
+        (1, 0x60) => "Mt. Ember Ruby Path B4F",
+        (1, 0x61) => "Mt. Ember (Exterior)",
+        (1, 0x62) => "Mt. Ember Summit Path 1F",
+        (1, 0x63) => "Mt. Ember Summit Path 2F",
+        (1, 0x64) => "Mt. Ember Summit Path 3F",
+        (1, 0x65) => "Mt. Ember Summit",
+        (1, 0x66) => "Mt. Ember Ruby Path B5F",
+        (1, 0x67) => "Mt. Ember Ruby Path 1F",
+        (1, 0x68) => "Mt. Ember Ruby Path B1F",
+        (1, 0x69) => "Mt. Ember Ruby Path B2F",
+        (1, 0x6A) => "Mt. Ember Ruby Path B3F",
+        // Sevii – Berry Forest / Icefall Cave
+        (1, 0x6D) => "Berry Forest",
+        (1, 0x6E) => "Icefall Cave (Entrance)",
+        (1, 0x6F) => "Icefall Cave 1F",
+        (1, 0x70) => "Icefall Cave B1F",
+        (1, 0x71) => "Icefall Cave (Back)",
+        // Sevii – Dotted Hole / Pattern Bush / Altering Cave
+        (1, 0x73) => "Dotted Hole 1F",
+        (1, 0x74) => "Dotted Hole B1F",
+        (1, 0x75) => "Dotted Hole B2F",
+        (1, 0x76) => "Dotted Hole B3F",
+        (1, 0x77) => "Dotted Hole B4F",
+        (1, 0x79) => "Pattern Bush",
+        (1, 0x7A) => "Altering Cave",
+
+        // ── Group 2: Sevii special areas ──────────────────────────────────
+        (2, 0x0C) => "Lost Cave (Entrance)",
+        (2, 0x0D) => "Lost Cave Room 1",
+        (2, 0x0E) => "Lost Cave Room 2",
+        (2, 0x0F) => "Lost Cave Room 3",
+        (2, 0x10) => "Lost Cave Room 4",
+        (2, 0x11) => "Lost Cave Room 5",
+        (2, 0x12) => "Lost Cave Room 6",
+        (2, 0x13) => "Lost Cave Room 7",
+        (2, 0x14) => "Lost Cave Room 8",
+        (2, 0x15) => "Lost Cave Room 9",
+        (2, 0x16) => "Lost Cave Room 10",
+        (2, 0x17) => "Lost Cave Room 11",
+        (2, 0x18) => "Lost Cave Room 12",
+        (2, 0x19) => "Lost Cave Room 13",
+        (2, 0x1A) => "Lost Cave Room 14",
+        (2, 0x1B) => "Monean Chamber",
+        (2, 0x1C) => "Liptoo Chamber",
+        (2, 0x1D) => "Weepth Chamber",
+        (2, 0x1E) => "Dilford Chamber",
+        (2, 0x1F) => "Scufib Chamber",
+        (2, 0x20) => "Rixy Chamber",
+        (2, 0x21) => "Viapois Chamber",
+        (2, 0x22) => "Dunsparce Tunnel",
 
         // ── Group 3: Kanto outdoor routes ─────────────────────────────────
-        // Routes 1–9 (verified: Route 1 = 0x13, Route 2 = 0x14)
-        (3, 0x13) => "Route 1",           // verified
-        (3, 0x14) => "Route 2",           // verified
-        (3, 0x15) => "Route 3",           // ?
-        (3, 0x16) => "Route 4",           // ?
-        (3, 0x17) => "Route 5",           // ?
-        (3, 0x18) => "Route 6",           // ?
-        (3, 0x19) => "Route 7",           // ?
-        (3, 0x1A) => "Route 8",           // ?
-        (3, 0x1B) => "Route 9",           // ?
-        // Route 10 is split — accounts for the +1 offset at Route 22
-        (3, 0x1C) => "Route 10 (N)",      // ?
-        (3, 0x1D) => "Route 10 (S)",      // ?
-        // Routes 11–25 (inferred; Route 22 = 0x29 verified)
-        (3, 0x1E) => "Route 11",          // ?
-        (3, 0x1F) => "Route 12",          // ?
-        (3, 0x20) => "Route 13",          // ?
-        (3, 0x21) => "Route 14",          // ?
-        (3, 0x22) => "Route 15",          // ?
-        (3, 0x23) => "Route 16",          // ?
-        (3, 0x24) => "Route 17",          // ?
-        (3, 0x25) => "Route 18",          // ?
-        (3, 0x26) => "Route 19",          // ?
-        (3, 0x27) => "Route 20",          // ?
-        (3, 0x28) => "Route 21",          // ?
-        (3, 0x29) => "Route 22",          // verified
-        (3, 0x2A) => "Route 23",          // ?
-        (3, 0x2B) => "Route 24",          // ?
-        (3, 0x2C) => "Route 25",          // ?
+        (3, 0x13) => "Route 1",
+        (3, 0x14) => "Route 2",
+        (3, 0x15) => "Route 3",
+        (3, 0x16) => "Route 4",
+        (3, 0x17) => "Route 5",
+        (3, 0x18) => "Route 6",
+        (3, 0x19) => "Route 7",
+        (3, 0x1A) => "Route 8",
+        (3, 0x1B) => "Route 9",
+        (3, 0x1C) => "Route 10",
+        (3, 0x1D) => "Route 11",
+        (3, 0x1E) => "Route 12",
+        (3, 0x1F) => "Route 13",
+        (3, 0x20) => "Route 14",
+        (3, 0x21) => "Route 15",
+        (3, 0x22) => "Route 16",
+        (3, 0x23) => "Route 17",
+        (3, 0x24) => "Route 18",
+        (3, 0x25) => "Route 19",
+        (3, 0x26) => "Route 20",
+        (3, 0x27) => "Route 21 (N)",
+        (3, 0x28) => "Route 21 (S)",
+        (3, 0x29) => "Route 22",
+        (3, 0x2A) => "Route 23",
+        (3, 0x2B) => "Route 24",
+        (3, 0x2C) => "Route 25",
+        // Sevii outdoor wild areas
+        (3, 0x2D) => "Kindle Road",
+        (3, 0x2E) => "Treasure Beach",
+        (3, 0x2F) => "Cape Brink",
+        (3, 0x30) => "Bond Bridge",
+        (3, 0x37) => "Water Labyrinth",
+        (3, 0x38) => "Five Island Meadow",
+        (3, 0x3B) => "Green Path",
+        (3, 0x3C) => "Water Path",
+        (3, 0x3D) => "Ruin Valley",
+        (3, 0x40) => "Sevault Canyon",
+        (3, 0x41) => "Tanoby Ruins",
 
         _ => "",
     }
@@ -178,57 +278,61 @@ pub fn location_name(loc: u8) -> &'static str {
 mod tests {
     use super::*;
 
-    // ── map_area_name: verified data points from the doc comment ──────────────
+    // ── map_area_name: in-game verified ───────────────────────────────────────
 
     #[test]
-    fn route_1_verified() {
-        assert_eq!(map_area_name(3, 0x13), "Route 1");
-    }
+    fn viridian_forest_verified()  { assert_eq!(map_area_name(1, 0x00), "Viridian Forest"); }
+    #[test]
+    fn mt_moon_verified()          { assert_eq!(map_area_name(1, 0x01), "Mt. Moon 1F"); }
+    #[test]
+    fn ss_anne_ext_verified()      { assert_eq!(map_area_name(1, 0x04), "S.S. Anne (Exterior)"); }
+    #[test]
+    fn ss_anne_1f_verified()       { assert_eq!(map_area_name(1, 0x05), "S.S. Anne 1F"); }
+    #[test]
+    fn digletts_cave_verified()    { assert_eq!(map_area_name(1, 0x25), "Diglett's Cave"); }
+    #[test]
+    fn route_1_verified()          { assert_eq!(map_area_name(3, 0x13), "Route 1"); }
+    #[test]
+    fn route_2_verified()          { assert_eq!(map_area_name(3, 0x14), "Route 2"); }
+    #[test]
+    fn route_22_verified()         { assert_eq!(map_area_name(3, 0x29), "Route 22"); }
+
+    // ── map_area_name: route 10/21 split correction ───────────────────────────
 
     #[test]
-    fn route_2_verified() {
-        assert_eq!(map_area_name(3, 0x14), "Route 2");
-    }
+    fn route_10_is_single()        { assert_eq!(map_area_name(3, 0x1C), "Route 10"); }
+    #[test]
+    fn route_11_correct()          { assert_eq!(map_area_name(3, 0x1D), "Route 11"); }
+    #[test]
+    fn route_21_north()            { assert_eq!(map_area_name(3, 0x27), "Route 21 (N)"); }
+    #[test]
+    fn route_21_south()            { assert_eq!(map_area_name(3, 0x28), "Route 21 (S)"); }
+
+    // ── map_area_name: key wild areas from doc ────────────────────────────────
 
     #[test]
-    fn viridian_forest_verified() {
-        assert_eq!(map_area_name(1, 0x00), "Viridian Forest");
-    }
-
+    fn rock_tunnel_1f()            { assert_eq!(map_area_name(1, 0x51), "Rock Tunnel 1F"); }
     #[test]
-    fn mt_moon_verified() {
-        assert_eq!(map_area_name(1, 0x01), "Mt. Moon");
-    }
-
+    fn cerulean_cave_b1f()         { assert_eq!(map_area_name(1, 0x4A), "Cerulean Cave B1F"); }
     #[test]
-    fn digletts_cave_verified() {
-        assert_eq!(map_area_name(1, 0x25), "Diglett's Cave");
-    }
-
+    fn power_plant()               { assert_eq!(map_area_name(1, 0x5F), "Power Plant"); }
     #[test]
-    fn unknown_pair_returns_empty() {
-        assert_eq!(map_area_name(0xFF, 0xFF), "");
-    }
+    fn safari_zone_center()        { assert_eq!(map_area_name(1, 0x3F), "Safari Zone (Center)"); }
+    #[test]
+    fn berry_forest()              { assert_eq!(map_area_name(1, 0x6D), "Berry Forest"); }
+    #[test]
+    fn dunsparce_tunnel()          { assert_eq!(map_area_name(2, 0x22), "Dunsparce Tunnel"); }
+    #[test]
+    fn unknown_pair_returns_empty(){ assert_eq!(map_area_name(0xFF, 0xFF), ""); }
 
     // ── location_name (MAPSEC) ────────────────────────────────────────────────
 
     #[test]
-    fn pallet_town() {
-        assert_eq!(location_name(0x00), "Pallet Town");
-    }
-
+    fn pallet_town()               { assert_eq!(location_name(0x00), "Pallet Town"); }
     #[test]
-    fn viridian_city() {
-        assert_eq!(location_name(0x01), "Viridian City");
-    }
-
+    fn viridian_city()             { assert_eq!(location_name(0x01), "Viridian City"); }
     #[test]
-    fn mapsec_none_returns_dash() {
-        assert_eq!(location_name(0xFF), "—");
-    }
-
+    fn mapsec_none_returns_dash()  { assert_eq!(location_name(0xFF), "—"); }
     #[test]
-    fn unknown_location() {
-        assert_eq!(location_name(0xFE), "Unknown Location");
-    }
+    fn unknown_location()          { assert_eq!(location_name(0xFE), "Unknown Location"); }
 }
