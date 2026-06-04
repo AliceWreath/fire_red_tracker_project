@@ -44,6 +44,30 @@ html, body {
 .dt-label { font-size: 12px; font-weight: bold; color: #ff5555; margin-bottom: 3px; }
 .dt-name  { font-size: 13px; font-weight: bold; color: #ffaaaa; }
 .dt-sub   { font-size: 11px; color: #cc8888; margin-top: 2px; }
+#shiny-toast {
+    position: fixed; bottom: 80px; left: 50%; transform: translateX(-50%);
+    background: rgba(30, 25, 5, 0.96);
+    border: 1px solid rgba(255, 210, 50, 0.6);
+    border-radius: 8px; padding: 10px 16px;
+    max-width: 300px; min-width: 180px;
+    box-shadow: 0 4px 18px rgba(0,0,0,0.8);
+    z-index: 9997; pointer-events: none;
+    opacity: 0; transition: opacity 0.4s ease;
+}
+#shiny-toast.visible { opacity: 1; }
+.st-label { font-size: 13px; font-weight: bold; color: #ffd700; margin-bottom: 3px; }
+.st-name  { font-size: 12px; color: #ffe98a; }
+#wipe-toast {
+    position: fixed; top: 0; left: 0; right: 0;
+    background: rgba(60, 0, 0, 0.97);
+    border-bottom: 2px solid #cc2222;
+    padding: 12px 16px; text-align: center;
+    z-index: 9996; pointer-events: none;
+    opacity: 0; transition: opacity 0.5s ease;
+}
+#wipe-toast.visible { opacity: 1; }
+.wt-label { font-size: 15px; font-weight: bold; color: #ff4444; margin-bottom: 4px; }
+.wt-sub   { font-size: 11px; color: #cc8888; }
 </style>
 </head>
 <body>
@@ -57,6 +81,14 @@ html, body {
   <div class="dt-label">FAINTED</div>
   <div class="dt-name" id="dt-name"></div>
   <div class="dt-sub"  id="dt-sub"></div>
+</div>
+<div id="shiny-toast">
+  <div class="st-label">✨ SHINY ENCOUNTER!</div>
+  <div class="st-name" id="st-name"></div>
+</div>
+<div id="wipe-toast">
+  <div class="wt-label">PARTY WIPED — RUN ENDED</div>
+  <div class="wt-sub"  id="wt-sub"></div>
 </div>
 <script>
 // Player slot index — path takes priority (/0/zone-alert), falls back to ?slot=N, then 0
@@ -102,8 +134,31 @@ function showZoneToast(zoneName, prevEnc, capWarn) {
     _toastTimer = setTimeout(() => toast.classList.remove('visible'), 8000);
 }
 
-let _deathPartyState = {};
-let _deathTimer      = null;
+let _deathPartyState    = {};
+let _deathTimer         = null;
+let _seenEncounterKeys  = null;
+let _shinyTimer         = null;
+let _hadAlive           = true;
+let _wipeEndSent        = false;
+let _wipeTimer          = null;
+
+function showShinyToast(enc) {
+    const toast = document.getElementById('shiny-toast');
+    document.getElementById('st-name').textContent =
+        enc.species_name + ' Lv.' + enc.level + ' — ' + enc.area;
+    if (_shinyTimer) clearTimeout(_shinyTimer);
+    toast.classList.add('visible');
+    _shinyTimer = setTimeout(() => toast.classList.remove('visible'), 10000);
+}
+
+function showWipeToast(party) {
+    const toast = document.getElementById('wipe-toast');
+    document.getElementById('wt-sub').textContent =
+        party.map(m => m.nickname).join(', ') + ' all fainted';
+    if (_wipeTimer) clearTimeout(_wipeTimer);
+    toast.classList.add('visible');
+    _wipeTimer = setTimeout(() => toast.classList.remove('visible'), 12000);
+}
 
 function showDeathToast(mon) {
     const toast = document.getElementById('death-toast');
@@ -129,6 +184,32 @@ function handleState(slots) {
         if (mon.dead && _deathPartyState[mon.personality] === false) showDeathToast(mon);
     }
     _deathPartyState = next;
+
+    // Shiny encounter detection
+    const encKeys = new Set((slot.db_encounters || []).map(e => e.map_group + '/' + e.map_name));
+    if (_seenEncounterKeys === null) {
+        _seenEncounterKeys = encKeys;
+    } else {
+        for (const enc of (slot.db_encounters || [])) {
+            const k = enc.map_group + '/' + enc.map_name;
+            if (!_seenEncounterKeys.has(k) && enc.is_shiny) showShinyToast(enc);
+        }
+        _seenEncounterKeys = encKeys;
+    }
+
+    // Wipe / blackout detection
+    const party = slot.party || [];
+    if (party.length > 0 && slot.active_run_id != null) {
+        const allDead = party.every(m => m.dead);
+        if (allDead && _hadAlive && !_wipeEndSent) {
+            _wipeEndSent = true;
+            showWipeToast(party);
+            if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ cmd: 'end_run' }));
+        }
+        if (!allDead) { _hadAlive = true; _wipeEndSent = false; }
+        else if (_hadAlive && allDead) _hadAlive = false;
+    }
+    if (slot.active_run_id == null) _wipeEndSent = false;
 
     const mg  = slot.current_map_group || 0;
     const mn  = slot.current_map_name  || 0;

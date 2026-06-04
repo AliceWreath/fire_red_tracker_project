@@ -128,6 +128,7 @@ pub struct Encounter {
     /// `false` until updated to `true` if the Pokémon was successfully caught.
     pub caught: bool,
     pub encountered_at: u64,
+    pub is_shiny: bool,
 }
 
 /// Snapshot of a Pokemon at the moment it first joined the party.
@@ -321,6 +322,9 @@ pub fn initialize(connection_string: &str) -> Result<(), String> {
 
         -- Migration: add human-readable location name resolved at catch time.
         ALTER TABLE caught_pokemon ADD COLUMN IF NOT EXISTS location_name TEXT NOT NULL DEFAULT '';
+
+        -- Migration: record whether a first encounter was shiny.
+        ALTER TABLE encounters ADD COLUMN IF NOT EXISTS is_shiny BOOLEAN NOT NULL DEFAULT FALSE;
 
         -- Data repair: assign caught_pokemon records with a blank player_name to the
         -- correct player, using the encounters table as the source of truth.
@@ -904,8 +908,8 @@ pub fn record_encounter(encounter: Encounter) -> bool {
     let player = state.current_player.clone();
     let rows = state.client.execute(
         "INSERT INTO encounters (
-            run_id, player_name, map_group, map_name, species, species_name, level, caught, encountered_at
-         ) VALUES ($1, $2, $3, $4, $5, $6, $7, FALSE, $8)
+            run_id, player_name, map_group, map_name, species, species_name, level, caught, encountered_at, is_shiny
+         ) VALUES ($1, $2, $3, $4, $5, $6, $7, FALSE, $8, $9)
          ON CONFLICT (run_id, player_name, map_group, map_name) DO NOTHING",
         &[
             &(active as i32),
@@ -916,6 +920,7 @@ pub fn record_encounter(encounter: Encounter) -> bool {
             &encounter.species_name,
             &(encounter.level as i32),
             &(encounter.encountered_at as i64),
+            &encounter.is_shiny,
         ],
     ).unwrap_or(0);
     rows == 1
@@ -985,7 +990,7 @@ pub fn list_encounters() -> Vec<Encounter> {
     let player = state.current_player.clone();
     state.client
         .query(
-            "SELECT player_name, map_group, map_name, species, species_name, level, caught, encountered_at
+            "SELECT player_name, map_group, map_name, species, species_name, level, caught, encountered_at, is_shiny
              FROM encounters
              WHERE run_id = $1 AND player_name = $2
              ORDER BY encountered_at ASC",
@@ -1002,6 +1007,7 @@ pub fn list_encounters() -> Vec<Encounter> {
             level:          row.get::<_, i32>(5) as u8,
             caught:         row.get(6),
             encountered_at: row.get::<_, i64>(7) as u64,
+            is_shiny:       row.get(8),
         })
         .collect()
 }
@@ -1162,7 +1168,7 @@ impl DbReader {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .query(
-                "SELECT player_name, map_group, map_name, species, species_name, level, caught, encountered_at
+                "SELECT player_name, map_group, map_name, species, species_name, level, caught, encountered_at, is_shiny
                  FROM encounters WHERE run_id = $1 AND player_name = $2 ORDER BY encountered_at ASC",
                 &[&(run_id as i32), &player_name],
             )
@@ -1177,6 +1183,7 @@ impl DbReader {
                 level:          row.get::<_, i32>(5) as u8,
                 caught:         row.get(6),
                 encountered_at: row.get::<_, i64>(7) as u64,
+                is_shiny:       row.get(8),
             })
             .collect()
     }
@@ -1205,7 +1212,7 @@ impl DbReader {
 
         client
             .query(
-                "SELECT player_name, map_group, map_name, species, species_name, level, caught, encountered_at
+                "SELECT player_name, map_group, map_name, species, species_name, level, caught, encountered_at, is_shiny
                  FROM encounters WHERE run_id = $1 ORDER BY encountered_at ASC",
                 &[&(prev_id as i32)],
             )
@@ -1220,6 +1227,7 @@ impl DbReader {
                 level:          row.get::<_, i32>(5) as u8,
                 caught:         row.get(6),
                 encountered_at: row.get::<_, i64>(7) as u64,
+                is_shiny:       row.get(8),
             })
             .collect()
     }

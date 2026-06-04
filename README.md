@@ -118,8 +118,9 @@ The following pages are available:
 | `http://localhost:PORT/1/dead` | Player 2's dead Pokémon log |
 | `http://localhost:PORT/1/caught` | Player 2's caught Pokémon log |
 | `http://localhost:PORT/1/box` | Player 2's PC box contents |
-| `http://localhost:PORT/zone-alert` | Zone-entry alert overlay — transparent, shows a toast when entering an unencountered wild area |
-| `http://localhost:PORT/zone-alert?slot=1` | Zone-entry alert for Player 2 |
+| `http://localhost:PORT/alerts` | Alerts overlay — transparent OBS source; shows all event toasts (zone entry, death, shiny, wipe) |
+| `http://localhost:PORT/0/alerts` | Alerts overlay for Player 1 (path form) |
+| `http://localhost:PORT/1/alerts` | Alerts overlay for Player 2 |
 
 The full overlay and per-player pages can all be added as separate Browser Sources in OBS and positioned independently.
 

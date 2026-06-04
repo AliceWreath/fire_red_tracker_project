@@ -64,6 +64,14 @@ impl EncounterTracker {
                 .map(|d| d.as_secs())
                 .unwrap_or(0);
 
+            let personality = enemy.box_mon.personality;
+            let ot_id       = enemy.box_mon.ot_id;
+            let p_high      = (personality >> 16) as u16;
+            let p_low       = personality as u16;
+            let id_high     = (ot_id >> 16) as u16;
+            let id_low      = ot_id as u16;
+            let is_shiny    = (p_high ^ p_low ^ id_high ^ id_low) < 8;
+
             let is_first = fire_red_database::record_encounter(
                 fire_red_database::Encounter {
                     player_name:    String::new(), // populated from DbState::current_player
@@ -74,6 +82,7 @@ impl EncounterTracker {
                     level:          enemy.level,
                     caught:         false,
                     encountered_at: now,
+                    is_shiny,
                 },
             );
 

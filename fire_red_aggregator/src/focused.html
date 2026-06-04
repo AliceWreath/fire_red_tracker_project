@@ -135,37 +135,6 @@ html, body {
     background: rgba(0,0,0,0.45); border-radius: 4px; padding: 1px 5px;
     pointer-events: none; z-index: 9999;
 }
-#zone-toast {
-    position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%);
-    background: rgba(10, 10, 30, 0.93);
-    border: 1px solid rgba(100, 160, 255, 0.35);
-    border-radius: 8px; padding: 10px 16px;
-    max-width: 340px; min-width: 220px;
-    box-shadow: 0 4px 18px rgba(0,0,0,0.7);
-    z-index: 9998; pointer-events: none;
-    opacity: 0; transition: opacity 0.4s ease;
-}
-#zone-toast.visible { opacity: 1; }
-.zt-zone { font-size: 13px; font-weight: bold; color: #8ecfff; margin-bottom: 4px; }
-.zt-status { font-size: 11px; color: #e0b060; font-weight: 600; margin-bottom: 3px; }
-.zt-prev { font-size: 11px; color: #bbb; }
-.zt-prev-caught { color: #60e060; font-weight: 600; }
-.zt-prev-failed { color: #e06060; font-weight: 600; }
-.zt-cap-warn { font-size: 11px; color: #ffaa33; font-weight: 600; margin-top: 3px; }
-#death-toast {
-    position: fixed; top: 12px; left: 50%; transform: translateX(-50%);
-    background: rgba(40, 5, 5, 0.95);
-    border: 1px solid rgba(255, 80, 80, 0.5);
-    border-radius: 8px; padding: 10px 16px;
-    max-width: 300px; min-width: 180px;
-    box-shadow: 0 4px 18px rgba(0,0,0,0.8);
-    z-index: 9997; pointer-events: none;
-    opacity: 0; transition: opacity 0.4s ease;
-}
-#death-toast.visible { opacity: 1; }
-.dt-label { font-size: 12px; font-weight: bold; color: #ff5555; margin-bottom: 3px; }
-.dt-name  { font-size: 13px; font-weight: bold; color: #ffaaaa; }
-.dt-sub   { font-size: 11px; color: #cc8888; margin-top: 2px; }
 .lv-cap   { color: #ff6633 !important; font-weight: bold; }
 .status-badge {
     display: inline-block; font-size: 9px; font-weight: bold;
@@ -178,22 +147,12 @@ html, body {
 .status-frz { background: #336688; color: #aaddff; }
 .status-par { background: #887700; color: #ffee88; }
 .status-tox { background: #550077; color: #dd99ff; }
+.exp-next { font-size: 10px; color: #888; font-weight: 500; margin-top: 1px; }
 </style>
 </head>
 <body>
 <div id="version-badge">v__VERSION__</div>
 <div id="root"></div>
-<div id="zone-toast">
-  <div class="zt-zone" id="zt-zone-name"></div>
-  <div class="zt-status">No first encounter yet this run.</div>
-  <div class="zt-prev" id="zt-prev-line"></div>
-  <div class="zt-cap-warn" id="zt-cap-warn" style="display:none"></div>
-</div>
-<div id="death-toast">
-  <div class="dt-label">FAINTED</div>
-  <div class="dt-name" id="dt-name"></div>
-  <div class="dt-sub"  id="dt-sub"></div>
-</div>
 <script>
 // Parse /{playerIndex}/{section} from the URL path
 const parts = window.location.pathname.split('/').filter(Boolean);
@@ -202,74 +161,31 @@ const section = parts[1]; // 'party' or 'encounters'
 
 const READONLY = !new URLSearchParams(window.location.search).has('manage');
 
-// --- Zone-entry toast state ---
-let _lastZoneKey  = '';
-let _zoneTimer    = null;
-
-function showZoneToast(zoneName, prevEnc, capWarn) {
-    const toast   = document.getElementById('zone-toast');
-    const zoneEl  = document.getElementById('zt-zone-name');
-    const prevEl  = document.getElementById('zt-prev-line');
-    const capEl   = document.getElementById('zt-cap-warn');
-
-    zoneEl.textContent = 'Entering new zone: ' + zoneName;
-
-    prevEl.textContent = '';
-    prevEl.className   = 'zt-prev';
-    if (prevEnc) {
-        const action = prevEnc.caught ? 'caught' : 'encountered but failed to catch';
-        const cls    = prevEnc.caught ? 'zt-prev-caught' : 'zt-prev-failed';
-        prevEl.textContent = 'Previous run: you ' + action + ' ';
-        const span = document.createElement('span');
-        span.className   = cls;
-        span.textContent = prevEnc.species_name + ' (Lv.' + prevEnc.level + ')';
-        prevEl.appendChild(span);
-    } else {
-        prevEl.textContent = 'No encounter recorded here on your previous run.';
+// --- XP to next level helpers ---
+function expForLevel(growthRate, n) {
+    if (n <= 1) return 0;
+    const n3 = n * n * n;
+    switch (growthRate) {
+        case 'Fast':        return Math.floor(4 * n3 / 5);
+        case 'Medium Fast': return n3;
+        case 'Medium Slow': return Math.max(0, Math.floor(6 * n3 / 5) - 15 * n * n + 100 * n - 140);
+        case 'Slow':        return Math.floor(5 * n3 / 4);
+        case 'Erratic':
+            if (n <= 50)      return Math.floor(n3 * (100 - n) / 50);
+            if (n <= 68)      return Math.floor(n3 * (150 - n) / 100);
+            if (n <= 98)      return Math.floor(n3 * Math.floor((1911 - 10 * n) / 3) / 500);
+            return              Math.floor(n3 * (160 - n) / 100);
+        case 'Fluctuating':
+            if (n <= 15)      return Math.floor(n3 * (Math.floor((n + 1) / 3) + 24) / 50);
+            if (n <= 35)      return Math.floor(n3 * (n + 14) / 50);
+            return              Math.floor(n3 * (Math.floor(n / 2) + 32) / 50);
+        default: return n3;
     }
-
-    if (capWarn) {
-        capEl.textContent = '⚠ Encounters here reach Lv.' + capWarn + ' — at or above level cap';
-        capEl.style.display = '';
-    } else {
-        capEl.style.display = 'none';
-    }
-
-    if (_zoneTimer) clearTimeout(_zoneTimer);
-    toast.classList.add('visible');
-    _zoneTimer = setTimeout(() => toast.classList.remove('visible'), 8000);
 }
 
-// --- Death toast state ---
-let _deathPartyState = {}; // personality -> was_dead
-let _deathTimer      = null;
-
-function showDeathToast(mon) {
-    const toast  = document.getElementById('death-toast');
-    document.getElementById('dt-name').textContent =
-        mon.nickname + (mon.nickname !== mon.species_name ? ' (' + mon.species_name + ')' : '');
-    document.getElementById('dt-sub').textContent =
-        'Lv.' + mon.level + ' — ' + mon.nature + (mon.shiny ? ' ★' : '') +
-        (mon.soul_link_kill ? ' · Soul Link' : '');
-
-    if (_deathTimer) clearTimeout(_deathTimer);
-    toast.classList.add('visible');
-    _deathTimer = setTimeout(() => toast.classList.remove('visible'), 8000);
-}
-
-function checkDeaths(slot) {
-    if (!slot || !slot.party) return;
-    const next = {};
-    for (const mon of slot.party) {
-        const key = mon.personality;
-        if (key == null) continue;
-        next[key] = mon.dead;
-        if (mon.dead && _deathPartyState[key] === false) {
-            showDeathToast(mon);
-        }
-    }
-    // Remove keys no longer in party (switched / released)
-    _deathPartyState = next;
+function expToNext(growthRate, level, exp) {
+    if (level >= 100) return null;
+    return expForLevel(growthRate, level + 1) - exp;
 }
 
 let ws;
@@ -289,37 +205,6 @@ function render(slots) {
     const slot = slots[playerIndex];
     const root = document.getElementById('root');
     root.innerHTML = '';
-
-    // Death detection
-    checkDeaths(slot);
-
-    // Zone-entry toast: fire when the player steps into an unencountered wild area
-    if (slot && slot.connected && slot.active_run_id != null) {
-        const mg  = slot.current_map_group || 0;
-        const mn  = slot.current_map_name  || 0;
-        const key = mg + '/' + mn;
-        const hasWildEncounters = slot.encounters && slot.encounters.length > 0;
-        if (key !== _lastZoneKey && hasWildEncounters) {
-            _lastZoneKey = key;
-            const alreadyEncountered = (slot.db_encounters || [])
-                .some(e => e.map_group === mg && e.map_name === mn);
-            if (!alreadyEncountered) {
-                const prevEnc = (slot.prev_run_encounters || [])
-                    .find(e => e.map_group === mg && e.map_name === mn) || null;
-                const zoneName = slot.current_zone_name || key;
-                // Level cap warning: highest encounter level >= next gym cap
-                let capWarn = null;
-                if (slot.next_gym) {
-                    const cap = slot.next_gym.max_level;
-                    const allMons = (slot.encounters || []).flatMap(g => g.mons);
-                    if (allMons.some(m => m.max_level >= cap)) capWarn = cap;
-                }
-                showZoneToast(zoneName, prevEnc, capWarn);
-            }
-        } else if (!hasWildEncounters) {
-            _lastZoneKey = '';
-        }
-    }
 
     const hd = el('div', 'heading');
     hd.appendChild(document.createTextNode(slot ? slot.label : 'Player ' + (playerIndex + 1)));
@@ -447,6 +332,8 @@ function renderParty(root, slot) {
             content.appendChild(el('div', 'hp ' + cls, mon.hp + '/' + mon.max_hp));
             content.appendChild(statRowEl('mon-sub-sm', mon.nature, mon.max_hp, mon.attack, mon.defense, mon.speed, mon.sp_attack, mon.sp_defense));
             content.appendChild(el('div', 'exp', 'Exp: ' + mon.exp));
+            const toNext = expToNext(mon.growth_rate, mon.level, mon.exp);
+            if (toNext !== null) content.appendChild(el('div', 'exp-next', toNext.toLocaleString() + ' to next level'));
             if (mon.ability) content.appendChild(el('div', 'mon-sub-sm', 'Ability: ' + mon.ability));
             if (mon.held_item && mon.held_item !== 'None') content.appendChild(el('div', 'mon-sub-sm', 'Held: ' + mon.held_item));
             if (mon.growth_rate) content.appendChild(el('div', 'mon-sub-sm', 'Growth: ' + mon.growth_rate));

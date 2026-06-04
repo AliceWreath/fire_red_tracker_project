@@ -65,6 +65,7 @@ struct DbEncounterDto {
     species_name:   String,
     level:          u8,
     caught:         bool,
+    is_shiny:       bool,
     encountered_at: String,
     area:           String,
     sprite:         Option<String>,
@@ -552,6 +553,7 @@ impl BroadcastLoop {
                         species_name:   enc.species_name.clone(),
                         level:          enc.level,
                         caught:         enc.caught,
+                        is_shiny:       enc.is_shiny,
                         encountered_at: fire_red_database::format_timestamp(enc.encountered_at),
                         area: {
                             let n = fire_red_location_names::map_area_name(enc.map_group, enc.map_name);
@@ -561,7 +563,7 @@ impl BroadcastLoop {
                                 n.to_string()
                             }
                         },
-                        sprite:    self.sprite_uri(enc.species, false),
+                        sprite:    self.sprite_uri(enc.species, enc.is_shiny),
                         map_group: enc.map_group,
                         map_name:  enc.map_name,
                     })
@@ -815,6 +817,7 @@ impl BroadcastLoop {
                         species_name:   enc.species_name.clone(),
                         level:          enc.level,
                         caught:         enc.caught,
+                        is_shiny:       enc.is_shiny,
                         encountered_at: fire_red_database::format_timestamp(enc.encountered_at),
                         area: {
                             let n = fire_red_location_names::map_area_name(enc.map_group, enc.map_name);
@@ -824,7 +827,7 @@ impl BroadcastLoop {
                                 n.to_string()
                             }
                         },
-                        sprite:    self.sprite_uri(enc.species, false),
+                        sprite:    self.sprite_uri(enc.species, enc.is_shiny),
                         map_group: enc.map_group,
                         map_name:  enc.map_name,
                     })
@@ -862,7 +865,7 @@ const OVERLAY_HTML:     &str = include_str!("overlay.html");
 const FOCUSED_HTML:     &str = include_str!("focused.html");
 const DBVIEWER_HTML:    &str = include_str!("db.html");
 const HISTORY_HTML:     &str = include_str!("history.html");
-const ZONE_ALERT_HTML:  &str = include_str!("zone_alert.html");
+const ALERTS_HTML:      &str = include_str!("alerts.html");
 const ROUTES_HTML:      &str = include_str!("routes.html");
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -883,8 +886,8 @@ async fn serve_history() -> Html<&'static str> {
     Html(HISTORY_HTML)
 }
 
-async fn serve_zone_alert() -> Html<&'static str> {
-    Html(ZONE_ALERT_HTML)
+async fn serve_alerts() -> Html<&'static str> {
+    Html(ALERTS_HTML)
 }
 
 async fn serve_routes() -> Html<&'static str> {
@@ -1042,8 +1045,8 @@ pub fn run(live_slots: SharedSlots, port: u16, db_conn: Option<String>) {
             .route("/api/state", get(api_state))
             .route("/api/slot/:index", get(api_slot))
             .route("/history", get(serve_history))
-            .route("/zone-alert", get(serve_zone_alert))
-            .route("/:index/zone-alert", get(serve_zone_alert))
+            .route("/alerts", get(serve_alerts))
+            .route("/:index/alerts", get(serve_alerts))
             .route("/:index/routes", get(serve_routes))
             .route("/:index/party", get(serve_focused))
             .route("/:index/encounters", get(serve_focused))
