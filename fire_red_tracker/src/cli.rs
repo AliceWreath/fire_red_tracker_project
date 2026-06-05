@@ -60,6 +60,12 @@ pub struct Cli {
     #[arg(long, value_name = "N")]
     pub preferred_player: Option<u8>,
 
+    /// Apply the [test] section from the config file on top of normal settings,
+    /// and always start a new run (implies --new-run).
+    /// Explicit flags (--db, --preferred-player, connect host/port) still win.
+    #[arg(long, default_value_t = false)]
+    pub test: bool,
+
     /// Override the operating mode for this run only.
     #[command(subcommand)]
     pub command: Option<Command>,

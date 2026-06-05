@@ -15,9 +15,22 @@ pub struct AggregatorConfig {
     pub db: Option<String>,
     /// WebSocket overlay port (optional — omit for GUI window mode).
     pub ws_port: Option<u16>,
+    /// When true, behaves as if `--test` is always passed. Can still be overridden per-run.
+    #[serde(default)]
+    pub default_test: bool,
+    /// Settings applied when `--test` is passed (overrides base config; explicit CLI flags still win).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub test: Option<AggregatorTestOverrides>,
 }
 
 fn default_listen_port() -> u16 { 7878 }
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct AggregatorTestOverrides {
+    pub listen_port: Option<u16>,
+    pub db:          Option<String>,
+    pub ws_port:     Option<u16>,
+}
 
 // ---------------------------------------------------------------------------
 // Config path
@@ -85,6 +98,8 @@ struct SetupApp {
     result:          Arc<Mutex<Option<AggregatorConfig>>>,
     should_close:    bool,
     heading:         &'static str,
+    default_test:    bool,
+    test:            Option<AggregatorTestOverrides>,
 }
 
 impl SetupApp {
@@ -98,6 +113,8 @@ impl SetupApp {
             result,
             should_close:    false,
             heading:         "First-Run Setup",
+            default_test:    false,
+            test:            None,
         }
     }
 
@@ -124,6 +141,8 @@ impl SetupApp {
             result,
             should_close:    false,
             heading:         "Edit Config",
+            default_test:    cfg.default_test,
+            test:            cfg.test.clone(),
         }
     }
 }
@@ -215,9 +234,11 @@ impl eframe::App for SetupApp {
                 let ws_port = if self.ws_port_enabled { ws_parse.ok() } else { None };
 
                 *self.result.lock().unwrap() = Some(AggregatorConfig {
-                    listen_port: listen_parse.unwrap_or(7878),
+                    listen_port:  listen_parse.unwrap_or(7878),
                     db,
                     ws_port,
+                    default_test: self.default_test,
+                    test:         self.test.clone(),
                 });
                 self.should_close = true;
             }

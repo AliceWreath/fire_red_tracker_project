@@ -27,6 +27,8 @@ struct SettingsDraft {
     aggregator_host:  String,
     aggregator_port:  String,
     preferred_player: String,
+    default_test:     bool,
+    test:             Option<crate::config::TrackerTestOverrides>,
 }
 
 impl SettingsDraft {
@@ -38,6 +40,8 @@ impl SettingsDraft {
             aggregator_host:  cfg.aggregator_host.clone(),
             aggregator_port:  cfg.aggregator_port.to_string(),
             preferred_player: cfg.preferred_player.map(|n| n.to_string()).unwrap_or_default(),
+            default_test:     cfg.default_test,
+            test:             cfg.test.clone(),
         }
     }
 }
@@ -343,6 +347,10 @@ impl WindowInfo {
                     ui.add(egui::TextEdit::singleline(&mut s.preferred_player).desired_width(60.0).hint_text("1, 2, …"));
                     ui.end_row();
                 }
+
+                ui.checkbox(&mut s.default_test, "Default to test mode:");
+                ui.small("Uses [test] config overrides on every launch (same as always passing --test).");
+                ui.end_row();
             });
 
         ui.add_space(8.0);
@@ -370,6 +378,8 @@ impl WindowInfo {
                     aggregator_host:  s.aggregator_host.trim().to_string(),
                     aggregator_port:  s.aggregator_port.parse().unwrap_or(7878),
                     preferred_player: player_parse,
+                    default_test:     s.default_test,
+                    test:             s.test.clone(),
                 };
                 save_config(&cfg, &self.config_path);
                 self.settings_open = false;

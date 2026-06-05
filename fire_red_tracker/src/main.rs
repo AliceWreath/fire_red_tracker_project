@@ -167,20 +167,32 @@ fn main() {
     let cfg_gui         = cfg.clone();
     let config_path_gui = config_path.clone();
 
-    // Mode: CLI subcommand wins; otherwise use what the config says.
+    // test section: applied on top of base config, below explicit CLI flags.
+    let use_test = cli.test || cfg.default_test;
+    let test_ov  = if use_test { cfg.test.clone() } else { None };
+    let test     = test_ov.as_ref();
+    if use_test {
+        println!("Test mode active — using [test] config overrides and starting a new run.");
+    }
+
+    // Mode: CLI subcommand wins; otherwise use what the config says (with test overrides).
     let mode = match cli.command {
         Some(Command::Connect { host, port }) => Mode::Connected { host, port },
         None => match cfg.mode {
             config::ConfigMode::Standalone => Mode::Standalone,
             config::ConfigMode::Connected  => Mode::Connected {
-                host: cfg.aggregator_host.clone(),
-                port: cfg.aggregator_port,
+                host: test.and_then(|t| t.aggregator_host.clone())
+                    .unwrap_or_else(|| cfg.aggregator_host.clone()),
+                port: test.and_then(|t| t.aggregator_port)
+                    .unwrap_or(cfg.aggregator_port),
             },
         },
     };
 
-    // db: CLI arg overrides config.
-    let db_raw = cli.db.unwrap_or(cfg.db);
+    // Priority: base config → [test] overrides → explicit CLI flags.
+    let db_raw = cli.db
+        .or_else(|| test.and_then(|t| t.db.clone()))
+        .unwrap_or(cfg.db);
     let db_conn = if db_raw.starts_with("postgresql://") || db_raw.starts_with("postgres://") {
         db_raw
     } else {
@@ -216,7 +228,9 @@ fn main() {
 
     // Initialize the nuzlocke run before the game thread starts so that
     // is_dead() / mark_dead() always have a valid active run ID.
-    match (cli.run_id, cli.new_run) {
+    // test mode implies --new-run so test sessions never pollute production history.
+    let new_run = cli.new_run || use_test;
+    match (cli.run_id, new_run) {
         (Some(id), _) => {
             if !fire_red_database::resume_run(id) {
                 eprintln!("Error: run #{} not found. Use --list-runs to see available runs.", id);
@@ -238,7 +252,9 @@ fn main() {
     let rom_path            = cli.rom.unwrap_or(cfg.rom);
     let do_scan_balls       = cli.scan_balls_pocket;
     let do_scan_sec_key     = cli.scan_security_key;
-    let preferred_player    = cli.preferred_player.or(cfg.preferred_player);
+    let preferred_player = cli.preferred_player
+        .or_else(|| test.and_then(|t| t.preferred_player))
+        .or(cfg.preferred_player);
 
     let game_loaded:  Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
     let run_changed:  Arc<AtomicBool> = Arc::new(AtomicBool::new(false));

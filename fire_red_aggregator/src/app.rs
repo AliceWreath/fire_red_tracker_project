@@ -87,6 +87,8 @@ struct SettingsDraft {
     db_enabled:      bool,
     ws_port_str:     String,
     ws_port_enabled: bool,
+    default_test:    bool,
+    test:            Option<crate::config::AggregatorTestOverrides>,
 }
 
 impl SettingsDraft {
@@ -99,6 +101,8 @@ impl SettingsDraft {
             db_enabled:      cfg.db.is_some(),
             ws_port_str:     cfg.ws_port.map(|p| p.to_string()).unwrap_or_else(|| "9090".to_string()),
             ws_port_enabled: cfg.ws_port.is_some(),
+            default_test:    cfg.default_test,
+            test:            cfg.test.clone(),
         }
     }
 }
@@ -534,6 +538,10 @@ impl AggregatorApp {
                     });
                 });
                 ui.end_row();
+
+                ui.checkbox(&mut s.default_test, "Default to test mode:");
+                ui.small("Uses [test] config overrides on every launch (same as always passing --test).");
+                ui.end_row();
             });
 
         ui.add_space(8.0);
@@ -552,9 +560,11 @@ impl AggregatorApp {
                     Some(if raw.starts_with("postgresql://") || raw.starts_with("postgres://") { raw } else { format!("postgresql://{}", raw) })
                 } else { None };
                 let cfg = AggregatorConfig {
-                    listen_port: s.listen_port_str.trim().parse().unwrap_or(7878),
+                    listen_port:  s.listen_port_str.trim().parse().unwrap_or(7878),
                     db,
-                    ws_port: if s.ws_port_enabled { s.ws_port_str.trim().parse().ok() } else { None },
+                    ws_port:      if s.ws_port_enabled { s.ws_port_str.trim().parse().ok() } else { None },
+                    default_test: s.default_test,
+                    test:         s.test.clone(),
                 };
                 save_config(&cfg, &self.config_path);
                 self.settings_open = false;

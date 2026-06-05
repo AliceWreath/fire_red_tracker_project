@@ -53,6 +53,11 @@ struct Cli {
     /// Check GitHub for a newer release and replace this binary if one is found.
     #[arg(long)]
     update: bool,
+
+    /// Apply the [test] section from the config file on top of normal settings.
+    /// Explicit flags (--db, --listen-port, --ws-port) still override the test section.
+    #[arg(long)]
+    test: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -108,17 +113,32 @@ fn main() {
     let cfg     = config::load_or_prompt(&config_path);
     let cfg_ref = cfg.clone();
 
-    // db: CLI arg overrides config.
-    let db = cli.db.or(cfg.db).map(|s| {
-        if s.starts_with("postgresql://") || s.starts_with("postgres://") {
-            s
-        } else {
-            format!("postgresql://{}", s)
-        }
-    });
+    // test section: applied on top of base config, below explicit CLI flags.
+    let use_test = cli.test || cfg.default_test;
+    let test_ov  = if use_test { cfg.test.clone() } else { None };
+    let test     = test_ov.as_ref();
+    if use_test {
+        println!("Test mode active — using [test] config overrides.");
+    }
 
-    let listen_port = cli.listen_port.unwrap_or(cfg.listen_port);
-    let ws_port     = cli.ws_port.or(cfg.ws_port);
+    // Priority: base config → [test] overrides → explicit CLI flags.
+    let db = cli.db
+        .or_else(|| test.and_then(|t| t.db.clone()))
+        .or(cfg.db)
+        .map(|s| {
+            if s.starts_with("postgresql://") || s.starts_with("postgres://") {
+                s
+            } else {
+                format!("postgresql://{}", s)
+            }
+        });
+
+    let listen_port = cli.listen_port
+        .or_else(|| test.and_then(|t| t.listen_port))
+        .unwrap_or(cfg.listen_port);
+    let ws_port = cli.ws_port
+        .or_else(|| test.and_then(|t| t.ws_port))
+        .or(cfg.ws_port);
 
     // Shared slot list — grown as trackers connect.
     let shared_slots: SharedSlots = Arc::new(std::sync::Mutex::new(Vec::new()));

@@ -51,6 +51,7 @@ html, body {
     overflow: hidden;
 }
 .lv { font-size: 11px; color: #ccc; font-weight: 500; }
+.lv-cap { color: #ff6633 !important; font-weight: bold; }
 .hp-row {
     display: flex;
     align-items: center;
@@ -132,6 +133,8 @@ function render(slots) {
     root.innerHTML = '';
     if (!slot || !slot.party) return;
 
+    const cap = slot.next_gym ? slot.next_gym.max_level : null;
+
     for (const mon of slot.party) {
         const row = document.createElement('div');
         row.className = 'mon' + (mon.dead ? ' dead' : '');
@@ -153,7 +156,8 @@ function render(slots) {
         nameEl.textContent = mon.nickname || mon.species_name;
         nameRow.appendChild(nameEl);
         const lvEl = document.createElement('span');
-        lvEl.className = 'lv';
+        const atCap = cap !== null && mon.level >= cap;
+        lvEl.className = atCap ? 'lv lv-cap' : 'lv';
         lvEl.textContent = 'Lv' + mon.level;
         nameRow.appendChild(lvEl);
         const sb = statusBadge(mon.status);

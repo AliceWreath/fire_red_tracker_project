@@ -30,10 +30,24 @@ pub struct TrackerConfig {
     /// Leave unset to let the aggregator assign order by connection time.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub preferred_player: Option<u8>,
+    /// When true, behaves as if `--test` is always passed. Can still be overridden per-run.
+    #[serde(default)]
+    pub default_test: bool,
+    /// Settings applied when `--test` is passed (overrides base config; explicit CLI flags still win).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub test: Option<TrackerTestOverrides>,
 }
 
 fn default_aggregator_host() -> String { "127.0.0.1".to_string() }
 fn default_aggregator_port() -> u16 { 7878 }
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct TrackerTestOverrides {
+    pub db:               Option<String>,
+    pub aggregator_host:  Option<String>,
+    pub aggregator_port:  Option<u16>,
+    pub preferred_player: Option<u8>,
+}
 
 // ---------------------------------------------------------------------------
 // Config path
@@ -103,6 +117,8 @@ struct SetupApp {
     result:           Arc<Mutex<Option<TrackerConfig>>>,
     should_close:     bool,
     heading:          &'static str,
+    default_test:     bool,
+    test:             Option<TrackerTestOverrides>,
 }
 
 impl SetupApp {
@@ -118,6 +134,8 @@ impl SetupApp {
             result,
             should_close:     false,
             heading:          "First-Run Setup",
+            default_test:     false,
+            test:             None,
         }
     }
 
@@ -137,6 +155,8 @@ impl SetupApp {
             result,
             should_close:     false,
             heading:          "Edit Config",
+            default_test:     cfg.default_test,
+            test:             cfg.test.clone(),
         }
     }
 }
@@ -258,6 +278,8 @@ impl eframe::App for SetupApp {
                     aggregator_host:  self.aggregator_host.trim().to_string(),
                     aggregator_port:  port_parse.unwrap_or(7878),
                     preferred_player: player_parse,
+                    default_test:     self.default_test,
+                    test:             self.test.clone(),
                 };
 
                 *self.result.lock().unwrap() = Some(config);
