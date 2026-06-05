@@ -204,6 +204,8 @@ pub fn handle_tracker_connection(
     };
     let mut read_stream = stream;
 
+    let _ = send_message(&mut write_stream, &ClientMessage::Hello(env!("CARGO_PKG_VERSION").to_string()));
+
     let connected        = Arc::new(AtomicBool::new(true));
     let connected_writer = connected.clone();
     let writer_queue     = texture_request_queue.clone();

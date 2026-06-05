@@ -42,7 +42,7 @@ html, body {
 .mon { padding: 4px 0; border-bottom: 1px solid rgba(255,255,255,0.08); }
 .mon.dead { background: rgba(90,0,0,0.45); border-radius: 4px; padding: 4px 5px; }
 .mon-inner { display: flex; align-items: flex-start; gap: 6px; }
-.mon-sprite { width: 48px; height: 48px; image-rendering: pixelated; flex-shrink: 0; }
+.mon-sprite { width: 64px; height: 64px; image-rendering: pixelated; flex-shrink: 0; filter: drop-shadow(0 2px 4px rgba(0,0,0,0.9)) drop-shadow(0 0 6px rgba(255,255,255,0.35)); }
 .mon.dead .mon-sprite { filter: grayscale(100%) brightness(0.5); }
 .mon-content { flex: 1; min-width: 0; }
 .mon-name-row { display: flex; align-items: center; gap: 5px; font-weight: bold; font-size: 14px; }
@@ -61,7 +61,7 @@ html, body {
 .enc-heading { font-size: 11px; color: #ccc; font-style: italic; font-weight: 600; margin-bottom: 3px; }
 .enc-row { display: flex; flex-wrap: wrap; gap: 4px; }
 .enc-mon { display: flex; flex-direction: column; align-items: center; gap: 1px; }
-.enc-sprite { width: 40px; height: 40px; image-rendering: pixelated; }
+.enc-sprite { width: 52px; height: 52px; image-rendering: pixelated; filter: drop-shadow(0 2px 4px rgba(0,0,0,0.9)) drop-shadow(0 0 6px rgba(255,255,255,0.35)); }
 .enc-lv { font-size: 9px; color: #bbb; font-weight: 600; text-align: center; }
 .record {
     padding: 5px 0;
@@ -70,7 +70,7 @@ html, body {
     gap: 8px;
     align-items: flex-start;
 }
-.record-sprite { width: 48px; height: 48px; image-rendering: pixelated; flex-shrink: 0; }
+.record-sprite { width: 64px; height: 64px; image-rendering: pixelated; flex-shrink: 0; filter: drop-shadow(0 2px 4px rgba(0,0,0,0.9)) drop-shadow(0 0 6px rgba(255,255,255,0.35)); }
 .record.dead-record .record-sprite { filter: grayscale(100%) brightness(0.5); }
 .record-info { flex: 1; min-width: 0; }
 .record-name { font-weight: bold; font-size: 14px; display: flex; align-items: center; gap: 5px; }
@@ -96,7 +96,7 @@ html, body {
 .db-enc-heading { font-size: 11px; color: #ccc; font-style: italic; font-weight: 600; margin-bottom: 3px; }
 .db-enc-row { display: flex; flex-wrap: wrap; gap: 4px; }
 .db-enc-mon { display: flex; flex-direction: column; align-items: center; gap: 1px; }
-.db-enc-sprite { width: 40px; height: 40px; image-rendering: pixelated; }
+.db-enc-sprite { width: 52px; height: 52px; image-rendering: pixelated; filter: drop-shadow(0 2px 4px rgba(0,0,0,0.9)) drop-shadow(0 0 6px rgba(255,255,255,0.35)); }
 .db-enc-sprite.failed { filter: grayscale(80%) brightness(0.6); }
 .db-enc-label { font-size: 9px; color: #bbb; font-weight: 600; text-align: center; }
 .db-enc-label.caught-yes { color: #60e060; }
@@ -120,7 +120,7 @@ html, body {
 }
 .box-slot.shiny { background: rgba(255,215,0,0.1); }
 .box-slot.egg   { background: rgba(100,180,100,0.1); }
-.box-sprite { width: 40px; height: 40px; image-rendering: pixelated; }
+.box-sprite { width: 52px; height: 52px; image-rendering: pixelated; filter: drop-shadow(0 2px 4px rgba(0,0,0,0.9)) drop-shadow(0 0 6px rgba(255,255,255,0.35)); }
 .box-name { font-size: 9px; color: #ddd; font-weight: 600; text-align: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; width: 100%; }
 .box-nature { font-size: 8px; color: #aaa; text-align: center; }
 .box-ivs { font-size: 8px; color: #bbb; text-align: center; }

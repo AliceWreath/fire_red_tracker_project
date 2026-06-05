@@ -1368,6 +1368,50 @@ impl DbReader {
 /// then resets the active_run_id meta key.
 ///
 /// Returns `Ok(())` on success or an error string on failure.
+/// Executes arbitrary SQL via a fresh connection and returns the results as JSON.
+///
+/// SELECT queries return `{ "columns": [...], "rows": [{col: val, ...}, ...] }`.
+/// Non-SELECT statements return `{ "columns": [], "rows": [], "rows_affected": N }`.
+/// Errors return `{ "error": "..." }`.
+pub fn run_sql(conn_str: &str, sql: &str) -> serde_json::Value {
+    let mut client = match Client::connect(conn_str, NoTls) {
+        Ok(c)  => c,
+        Err(e) => return serde_json::json!({ "error": format!("DB connection failed: {e}") }),
+    };
+    let messages = match client.simple_query(sql) {
+        Ok(m)  => m,
+        Err(e) => return serde_json::json!({ "error": format!("Query error: {e}") }),
+    };
+    let mut columns: Vec<String> = Vec::new();
+    let mut rows: Vec<serde_json::Value> = Vec::new();
+    let mut rows_affected: Option<u64> = None;
+    for msg in messages {
+        match msg {
+            postgres::SimpleQueryMessage::Row(row) => {
+                if columns.is_empty() {
+                    columns = row.columns().iter().map(|c| c.name().to_string()).collect();
+                }
+                let obj: serde_json::Map<String, serde_json::Value> = row.columns()
+                    .iter()
+                    .enumerate()
+                    .map(|(i, col)| {
+                        let val = row.get(i)
+                            .map(|s| serde_json::Value::String(s.to_string()))
+                            .unwrap_or(serde_json::Value::Null);
+                        (col.name().to_string(), val)
+                    })
+                    .collect();
+                rows.push(serde_json::Value::Object(obj));
+            }
+            postgres::SimpleQueryMessage::CommandComplete(n) => {
+                rows_affected = Some(n);
+            }
+            _ => {}
+        }
+    }
+    serde_json::json!({ "columns": columns, "rows": rows, "rows_affected": rows_affected })
+}
+
 pub fn clear_all_records(conn_str: &str) -> Result<(), String> {
     let mut client = Client::connect(conn_str, NoTls)
         .map_err(|e| format!("DB connection failed: {e}"))?;

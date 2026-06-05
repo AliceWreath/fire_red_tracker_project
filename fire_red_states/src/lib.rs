@@ -25,11 +25,13 @@ pub const MAX_NATIONAL_DEX_FIRERED: u16 = 386;
 ///   0 = RequestTextures
 ///   1 = EndRun
 ///   2 = NewRun
+///   3 = Hello
 #[derive(serde::Serialize, serde::Deserialize, Clone)]
 pub enum ClientMessage {
     RequestTextures(Vec<u16>), // index 0 — do not reorder
     EndRun,                    // index 1 — do not reorder
     NewRun,                    // index 2 — do not reorder
+    Hello(String),             // index 3 — do not reorder
     // Append new variants here only.
 }
 

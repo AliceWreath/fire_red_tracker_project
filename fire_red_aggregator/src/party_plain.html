@@ -27,11 +27,14 @@ html, body {
     border-radius: 6px;
     padding: 4px 10px 4px 4px;
 }
-.mon.dead { opacity: 0.55; }
+.mon.dead { background: rgba(90,0,0,0.45); }
+.mon.dead .name-row { color: #c06060; }
+.dead-badge { color: #ff5050; font-size: 11px; font-weight: bold; }
 .sprite {
-    width: 48px; height: 48px;
+    width: 64px; height: 64px;
     image-rendering: pixelated;
     flex-shrink: 0;
+    filter: drop-shadow(0 2px 4px rgba(0,0,0,0.9)) drop-shadow(0 0 6px rgba(255,255,255,0.35));
 }
 .mon.dead .sprite { filter: grayscale(100%) brightness(0.45); }
 .info {
@@ -155,36 +158,45 @@ function render(slots) {
         const nameEl = document.createElement('span');
         nameEl.textContent = mon.nickname || mon.species_name;
         nameRow.appendChild(nameEl);
-        const lvEl = document.createElement('span');
-        const atCap = cap !== null && mon.level >= cap;
-        lvEl.className = atCap ? 'lv lv-cap' : 'lv';
-        lvEl.textContent = 'Lv' + mon.level;
-        nameRow.appendChild(lvEl);
-        const sb = statusBadge(mon.status);
-        if (sb) nameRow.appendChild(sb);
+        if (mon.dead) {
+            const db = document.createElement('span');
+            db.className = 'dead-badge';
+            db.textContent = 'DEAD';
+            nameRow.appendChild(db);
+        } else {
+            const lvEl = document.createElement('span');
+            const atCap = cap !== null && mon.level >= cap;
+            lvEl.className = atCap ? 'lv lv-cap' : 'lv';
+            lvEl.textContent = 'Lv' + mon.level;
+            nameRow.appendChild(lvEl);
+            const sb = statusBadge(mon.status);
+            if (sb) nameRow.appendChild(sb);
+        }
         info.appendChild(nameRow);
 
-        // HP bar + numbers
-        const hpRow = document.createElement('div');
-        hpRow.className = 'hp-row';
+        if (!mon.dead) {
+            // HP bar + numbers
+            const hpRow = document.createElement('div');
+            hpRow.className = 'hp-row';
 
-        const ratio  = mon.max_hp > 0 ? mon.hp / mon.max_hp : 0;
-        const barCls = ratio > 0.5 ? 'high' : ratio > 0.2 ? 'mid' : 'low';
+            const ratio  = mon.max_hp > 0 ? mon.hp / mon.max_hp : 0;
+            const barCls = ratio > 0.5 ? 'high' : ratio > 0.2 ? 'mid' : 'low';
 
-        const barBg   = document.createElement('div');
-        barBg.className = 'hp-bar-bg';
-        const barFill = document.createElement('div');
-        barFill.className = 'hp-bar-fill ' + barCls;
-        barFill.style.width = Math.round(ratio * 100) + '%';
-        barBg.appendChild(barFill);
-        hpRow.appendChild(barBg);
+            const barBg   = document.createElement('div');
+            barBg.className = 'hp-bar-bg';
+            const barFill = document.createElement('div');
+            barFill.className = 'hp-bar-fill ' + barCls;
+            barFill.style.width = Math.round(ratio * 100) + '%';
+            barBg.appendChild(barFill);
+            hpRow.appendChild(barBg);
 
-        const hpNums = document.createElement('div');
-        hpNums.className = 'hp-nums';
-        hpNums.textContent = mon.hp + ' / ' + mon.max_hp;
-        hpRow.appendChild(hpNums);
+            const hpNums = document.createElement('div');
+            hpNums.className = 'hp-nums';
+            hpNums.textContent = mon.hp + ' / ' + mon.max_hp;
+            hpRow.appendChild(hpNums);
 
-        info.appendChild(hpRow);
+            info.appendChild(hpRow);
+        }
         row.appendChild(info);
         root.appendChild(row);
     }

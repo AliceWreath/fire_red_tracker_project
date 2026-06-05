@@ -88,6 +88,9 @@ pub fn handle_client(
                         }
                     }
                 }
+                Ok(ClientMessage::Hello(version)) => {
+                    println!("Aggregator v{}", version);
+                }
                 Ok(ClientMessage::EndRun) => {
                     fire_red_database::end_run();
                     run_changed.store(true, Ordering::Release);

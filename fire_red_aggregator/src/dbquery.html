@@ -1,0 +1,389 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>FireRed SQL Query</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body {
+    background: #0f0f0f;
+    font-family: 'Segoe UI', Tahoma, sans-serif;
+    color: #e0e0e0;
+    min-height: 100vh;
+}
+#root { max-width: 1200px; margin: 0 auto; padding: 16px; }
+
+.page-header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding-bottom: 12px;
+    border-bottom: 1px solid rgba(255,255,255,0.1);
+    margin-bottom: 14px;
+}
+.page-title { font-size: 20px; font-weight: bold; color: #fff; }
+.nav-links { margin-left: auto; display: flex; gap: 8px; }
+.nav-link {
+    font-size: 12px; font-weight: 600; padding: 4px 12px;
+    background: #1a1a2e; border: 1px solid #334; border-radius: 5px;
+    color: #8899cc; text-decoration: none; cursor: pointer;
+}
+.nav-link:hover { background: #22223e; color: #aabbdd; }
+
+.query-area {
+    margin-bottom: 10px;
+}
+.sql-textarea {
+    width: 100%;
+    min-height: 120px;
+    background: #111;
+    border: 1px solid #333;
+    border-radius: 6px;
+    color: #e0e0e0;
+    font-family: 'Consolas', 'Fira Mono', 'Courier New', monospace;
+    font-size: 13px;
+    padding: 10px 12px;
+    resize: vertical;
+    outline: none;
+    line-height: 1.5;
+}
+.sql-textarea:focus { border-color: #5090e0; }
+
+.controls-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 14px;
+}
+
+.run-btn {
+    font-size: 13px; font-weight: 700;
+    padding: 8px 22px; border: none; border-radius: 6px;
+    background: #1a4a1a; color: #aaffaa; border: 1px solid #2a7a2a;
+    cursor: pointer; transition: background 0.15s;
+}
+.run-btn:not(:disabled):hover { background: #224a22; }
+.run-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+.clear-btn {
+    font-size: 12px; font-weight: 600; padding: 7px 14px;
+    background: transparent; border: 1px solid #333; border-radius: 6px;
+    color: #777; cursor: pointer;
+}
+.clear-btn:hover { color: #aaa; border-color: #555; }
+
+.shortcut-hint { font-size: 11px; color: #555; margin-left: auto; }
+
+.preset-row {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+    margin-bottom: 14px;
+}
+.preset-btn {
+    font-size: 11px; font-weight: 600; padding: 4px 10px;
+    background: #1a1a2e; border: 1px solid #334; border-radius: 4px;
+    color: #8899cc; cursor: pointer;
+}
+.preset-btn:hover { background: #22223e; color: #aabbdd; }
+
+.result-area { }
+
+.result-meta {
+    font-size: 11px;
+    color: #777;
+    margin-bottom: 8px;
+    display: flex;
+    gap: 14px;
+}
+.result-meta span { }
+.result-ok  { color: #60c060; }
+.result-err { color: #c06060; }
+
+.error-box {
+    background: rgba(80,20,20,0.4);
+    border: 1px solid #5a2a2a;
+    border-radius: 6px;
+    padding: 12px 14px;
+    color: #e08080;
+    font-family: monospace;
+    font-size: 12px;
+    white-space: pre-wrap;
+}
+
+.table-wrap {
+    overflow-x: auto;
+    border-radius: 6px;
+    border: 1px solid rgba(255,255,255,0.08);
+    max-height: 60vh;
+    overflow-y: auto;
+}
+table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12px;
+}
+thead {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+}
+thead tr { background: #1a1a2e; }
+th {
+    padding: 8px 10px;
+    text-align: left;
+    font-size: 11px; font-weight: 700;
+    color: #8899cc;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    white-space: nowrap;
+    border-bottom: 1px solid rgba(255,255,255,0.1);
+    cursor: pointer;
+    user-select: none;
+}
+th:hover { color: #aabbdd; }
+th.sort-asc::after  { content: ' ↑'; color: #5090e0; }
+th.sort-desc::after { content: ' ↓'; color: #5090e0; }
+tbody tr { border-bottom: 1px solid rgba(255,255,255,0.04); }
+tbody tr:hover { background: rgba(255,255,255,0.04); }
+td {
+    padding: 5px 10px;
+    color: #ccc;
+    font-family: 'Consolas', 'Fira Mono', monospace;
+    font-size: 12px;
+    white-space: nowrap;
+    max-width: 400px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+td.null-val { color: #444; font-style: italic; }
+
+.no-rows { padding: 20px; text-align: center; color: #555; font-size: 13px; }
+
+.search-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 8px;
+}
+.search-input {
+    flex: 1; max-width: 280px;
+    background: #1a1a1a; border: 1px solid #333; border-radius: 5px;
+    color: #e0e0e0; font-size: 12px; padding: 5px 10px; outline: none;
+}
+.search-input:focus { border-color: #5090e0; }
+.row-count { font-size: 11px; color: #777; }
+</style>
+</head>
+<body>
+<div id="root">
+    <div class="page-header">
+        <div class="page-title">SQL Query</div>
+        <div class="nav-links">
+            <a class="nav-link" href="/db">DB Viewer</a>
+            <a class="nav-link" href="/cmd">Commands</a>
+        </div>
+    </div>
+
+    <div class="query-area">
+        <textarea class="sql-textarea" id="sql-input" placeholder="SELECT * FROM runs ORDER BY id DESC LIMIT 20;" spellcheck="false"></textarea>
+    </div>
+
+    <div class="controls-row">
+        <button class="run-btn" id="run-btn" onclick="runQuery()">▶ Run</button>
+        <button class="clear-btn" onclick="clearResults()">Clear</button>
+        <span class="shortcut-hint">Ctrl+Enter to run</span>
+    </div>
+
+    <div class="preset-row">
+        <span style="font-size:11px;color:#555;align-self:center">Presets:</span>
+        <button class="preset-btn" onclick="setQuery('SELECT * FROM runs ORDER BY id DESC;')">All Runs</button>
+        <button class="preset-btn" onclick="setQuery('SELECT * FROM caught_pokemon ORDER BY caught_at DESC LIMIT 50;')">Recent Caught</button>
+        <button class="preset-btn" onclick="setQuery('SELECT * FROM dead_pokemon ORDER BY died_at DESC LIMIT 50;')">Recent Dead</button>
+        <button class="preset-btn" onclick="setQuery('SELECT * FROM encounters ORDER BY encountered_at DESC LIMIT 50;')">Recent Encounters</button>
+        <button class="preset-btn" onclick="setQuery('SELECT * FROM meta;')">Meta</button>
+        <button class="preset-btn" onclick="setQuery(`SELECT table_name FROM information_schema.tables\nWHERE table_schema = 'public' ORDER BY table_name;`)">List Tables</button>
+    </div>
+
+    <div id="result-area"></div>
+</div>
+
+<script>
+let lastResult = null;
+let sortCol = null;
+let sortDir = 1;
+let filterText = '';
+
+document.getElementById('sql-input').addEventListener('keydown', e => {
+    if (e.ctrlKey && e.key === 'Enter') { e.preventDefault(); runQuery(); }
+});
+
+function setQuery(sql) {
+    document.getElementById('sql-input').value = sql;
+    document.getElementById('sql-input').focus();
+}
+
+function clearResults() {
+    lastResult = null;
+    sortCol = null;
+    sortDir = 1;
+    filterText = '';
+    document.getElementById('result-area').innerHTML = '';
+}
+
+async function runQuery() {
+    const sql = document.getElementById('sql-input').value.trim();
+    if (!sql) return;
+    const btn = document.getElementById('run-btn');
+    btn.disabled = true;
+    btn.textContent = '…';
+    const t0 = performance.now();
+    try {
+        const res = await fetch('/api/db/query', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ sql }),
+        });
+        const data = await res.json();
+        const elapsed = ((performance.now() - t0) / 1000).toFixed(3);
+        lastResult = data;
+        sortCol = null;
+        sortDir = 1;
+        filterText = '';
+        renderResult(data, elapsed);
+    } catch (e) {
+        renderError('Request failed: ' + e.message);
+    } finally {
+        btn.disabled = false;
+        btn.textContent = '▶ Run';
+    }
+}
+
+function renderError(msg) {
+    document.getElementById('result-area').innerHTML =
+        '<div class="error-box">' + escHtml(msg) + '</div>';
+}
+
+function renderResult(data, elapsed) {
+    const area = document.getElementById('result-area');
+    if (data.error) { renderError(data.error); return; }
+
+    const rows    = data.rows || [];
+    const cols    = data.columns || [];
+    const affected = data.rows_affected;
+
+    let metaHtml = '<div class="result-meta">';
+    if (cols.length > 0) {
+        metaHtml += '<span class="result-ok">' + rows.length + ' row' + (rows.length !== 1 ? 's' : '') + '</span>';
+        metaHtml += '<span>' + cols.length + ' column' + (cols.length !== 1 ? 's' : '') + '</span>';
+    }
+    if (affected != null) {
+        metaHtml += '<span class="result-ok">' + affected + ' row' + (affected !== 1 ? 's' : '') + ' affected</span>';
+    }
+    metaHtml += '<span>' + elapsed + 's</span>';
+    metaHtml += '</div>';
+
+    if (cols.length === 0 && rows.length === 0) {
+        area.innerHTML = metaHtml + '<div class="no-rows">Query executed successfully. No rows returned.</div>';
+        return;
+    }
+
+    area.innerHTML = metaHtml +
+        '<div class="search-row">' +
+            '<input class="search-input" id="tbl-search" type="text" placeholder="Filter results...">' +
+            '<span class="row-count" id="tbl-row-count"></span>' +
+        '</div>' +
+        '<div id="tbl-wrap"></div>';
+
+    document.getElementById('tbl-search').addEventListener('input', e => {
+        filterText = e.target.value.toLowerCase();
+        renderTable();
+    });
+
+    renderTable();
+}
+
+function renderTable() {
+    if (!lastResult) return;
+    const cols = lastResult.columns || [];
+    const rows = lastResult.rows || [];
+
+    let filtered = rows.filter(row =>
+        filterText === '' ||
+        cols.some(c => (row[c] ?? '').toLowerCase().includes(filterText))
+    );
+
+    if (sortCol !== null) {
+        filtered = [...filtered].sort((a, b) => {
+            const av = a[cols[sortCol]], bv = b[cols[sortCol]];
+            if (av == null) return 1;
+            if (bv == null) return -1;
+            const an = parseFloat(av), bn = parseFloat(bv);
+            if (!isNaN(an) && !isNaN(bn)) return (an < bn ? -1 : an > bn ? 1 : 0) * sortDir;
+            return av < bv ? -sortDir : av > bv ? sortDir : 0;
+        });
+    }
+
+    const rowCountEl = document.getElementById('tbl-row-count');
+    if (rowCountEl) rowCountEl.textContent = filtered.length + ' of ' + rows.length + ' rows';
+
+    const wrap = document.getElementById('tbl-wrap');
+    if (!wrap) return;
+
+    if (filtered.length === 0 && rows.length > 0) {
+        wrap.innerHTML = '<div class="no-rows">No rows match filter.</div>';
+        return;
+    }
+    if (cols.length === 0) {
+        wrap.innerHTML = '<div class="no-rows">No columns.</div>';
+        return;
+    }
+
+    const tableWrap = document.createElement('div');
+    tableWrap.className = 'table-wrap';
+    const table = document.createElement('table');
+
+    const thead = document.createElement('thead');
+    const hr = document.createElement('tr');
+    cols.forEach((c, i) => {
+        const th = document.createElement('th');
+        th.textContent = c;
+        if (sortCol === i) th.className = sortDir === 1 ? 'sort-asc' : 'sort-desc';
+        th.onclick = () => {
+            if (sortCol === i) sortDir = -sortDir;
+            else { sortCol = i; sortDir = 1; }
+            renderTable();
+        };
+        hr.appendChild(th);
+    });
+    thead.appendChild(hr);
+    table.appendChild(thead);
+
+    const tbody = document.createElement('tbody');
+    for (const row of filtered) {
+        const tr = document.createElement('tr');
+        for (const c of cols) {
+            const td = document.createElement('td');
+            const v = row[c];
+            if (v === null || v === undefined) {
+                td.textContent = 'NULL';
+                td.className = 'null-val';
+            } else {
+                td.textContent = v;
+            }
+            tr.appendChild(td);
+        }
+        tbody.appendChild(tr);
+    }
+    table.appendChild(tbody);
+    tableWrap.appendChild(table);
+    wrap.innerHTML = '';
+    wrap.appendChild(tableWrap);
+}
+
+function escHtml(s) {
+    return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+</script>
+</body>
+</html>

@@ -103,12 +103,14 @@ The database must already exist (`CREATE DATABASE nuzlocke;`). The schema is cre
 
 #### Run management
 
-The aggregator web overlay (see below) has **End Run** and **New Run** buttons in every player column. Both buttons apply to **all connected trackers simultaneously** — you don't need to manage each player separately.
+Run commands can be issued from three places, all of which broadcast to **all connected trackers simultaneously**:
+
+- **`/cmd` page** — dedicated command control page at `http://localhost:PORT/cmd`. Shows all connected slots with their current run IDs and party counts. Has **End Run** and **New Run** buttons that POST to the REST API below.
+- **REST API** — `POST /api/command/end_run` and `POST /api/command/new_run` (see REST API section below).
+- **WebSocket** — send `{ "cmd": "end_run" }` or `{ "cmd": "new_run" }` as a text frame from any connected WebSocket client.
 
 - **End Run** — marks the current run as ended (sets `ended_at`). The tracker stops recording deaths, catches, and encounters. The web display switches to the run summary / history view.
 - **New Run** — creates a fresh run on every connected tracker and makes it active. Recording resumes immediately.
-
-A confirmation dialog is shown for both actions. The "End Run" button is disabled when no run is active.
 
 #### WebSocket overlay mode
 
@@ -125,8 +127,10 @@ The following pages are available:
 | URL | Content |
 |---|---|
 | `http://localhost:PORT/` | Full overlay — all players side by side |
-| `http://localhost:PORT/db` | Database browser — all four tables (requires `--db`) |
-| `http://localhost:PORT/db?manage` | Database browser with **Clear All Records** button |
+| `http://localhost:PORT/db` | Database browser — all four tables with sort and filter (requires `--db`) |
+| `http://localhost:PORT/db?manage` | Database browser with **Clear All Records** button visible |
+| `http://localhost:PORT/db/query` | SQL query tool — run arbitrary SQL, see results in a sortable table |
+| `http://localhost:PORT/cmd` | Command control — **End Run** / **New Run** buttons with live slot status |
 | `http://localhost:PORT/0/party` | Player 1's party (or run summary if no active run) |
 | `http://localhost:PORT/0/encounters` | Player 1's area encounters (or DB encounter log if no active run) |
 | `http://localhost:PORT/0/dead` | Player 1's dead Pokémon log (requires `--db`) |
@@ -144,6 +148,71 @@ The following pages are available:
 | `http://localhost:PORT/history` | Run history — all past runs with expandable catch / death / encounter logs |
 
 The per-player pages can all be added as separate Browser Sources in OBS and positioned independently. The alerts overlay is fully transparent when idle — nothing appears until an event fires.
+
+#### REST API
+
+All endpoints are served on the same port as the WebSocket overlay (`--ws-port`). JSON responses are `application/json`.
+
+| Endpoint | Method | Description |
+|---|---|---|
+| `/ws` | `GET` (WS upgrade) | WebSocket stream. Sends the full state JSON immediately on connect, then pushes updates whenever state changes (~10×/s while playing, zero bandwidth when idle). Accepts `{ "cmd": "end_run" }` and `{ "cmd": "new_run" }` text frames from the client |
+| `/api/state` | `GET` | Full current state as a JSON array of slot objects — the same payload the WebSocket pushes. Each slot contains party, encounters, dead, caught, box, badges, run summary, and encounter-zone fields |
+| `/api/slot/:index` | `GET` | Single slot object by zero-based index. Returns `404` if the index is out of range |
+| `/api/command/end_run` | `POST` | Broadcasts `EndRun` to all connected tracker slots. Returns plain text: `"Command 'end_run' sent to N slot(s)"` |
+| `/api/command/new_run` | `POST` | Broadcasts `NewRun` to all connected tracker slots. Returns plain text: `"Command 'new_run' sent to N slot(s)"` |
+| `/api/db/query` | `POST` | Runs arbitrary SQL against the database. Request body: `{ "sql": "SELECT ..." }`. Response: `{ "columns": ["col1", ...], "rows": [{ "col1": "val", ... }, ...], "rows_affected": N }` or `{ "error": "..." }` on failure. All values are returned as strings. Requires `--db` |
+| `/db.json` | `GET` | Full database snapshot — all four tables (runs, caught, dead, encounters) formatted for the browser viewer. Requires `--db` |
+| `/db/clear` | `POST` | Deletes all records from every table and removes the active-run meta key. No confirmation, no undo. Requires `--db` |
+
+##### Slot object fields
+
+Each object in the `/api/state` array (and on `/api/slot/:index`) contains:
+
+| Field | Type | Description |
+|---|---|---|
+| `label` | string | Player name / IP address of the connected tracker |
+| `connected` | bool | Whether a tracker is currently connected to this slot |
+| `db_connected` | bool | Whether the slot has an active database connection |
+| `active_run_id` | number \| null | ID of the current active run, or `null` if none |
+| `run_summary` | object \| null | `{ run_id, player_name, started_at, ended_at, deaths, caught }` for the most recent run |
+| `badges` | bool[8] | Badge flags in gym order (Boulder → Earth) |
+| `next_gym` | object \| null | `{ leader, city, max_level }` for the next gym |
+| `party` | array | Up to 6 party member objects (see below) |
+| `dead` | array | Dead Pokémon records for the active run, sorted newest first |
+| `caught` | array | Caught Pokémon records for the active run, sorted oldest first |
+| `box_pokemon` | array | All Pokémon in PC boxes |
+| `db_encounters` | array | First-encounter records for the active run |
+| `prev_run_encounters` | array | First-encounter records from the most recently completed run (for cross-run hints) |
+| `encounters` | array | Live wild encounter tables for the current map area, grouped by type (`Land`, `Water / Fishing`, `Rock Smash`) |
+| `current_map_group` | number | EWRAM map group byte for the current position |
+| `current_map_name` | number | EWRAM map name byte for the current position |
+| `current_zone_name` | string | Human-readable name of the current wild-encounter zone, empty when not in a wild area |
+
+##### Party member fields
+
+| Field | Type | Description |
+|---|---|---|
+| `nickname` | string | In-game nickname (decoded from GBA text encoding) |
+| `species_name` | string | Species name |
+| `level` | number | Current level |
+| `hp` / `max_hp` | number | Current and maximum HP |
+| `exp` | number | Total experience points |
+| `nature` | string | Nature name (derived from `personality % 25`) |
+| `shiny` | bool | Shiny flag (Gen III formula) |
+| `dead` | bool | True if the Pokémon has a death record, HP = 0, or is a soul-link kill |
+| `soul_link_kill` | bool | True if the death was triggered by a soul-link partner fainting |
+| `soul_link_partner` | object \| null | `{ nickname, player }` of the linked partner across another slot |
+| `died_at` | string \| null | UTC timestamp of death |
+| `attack` / `defense` / `speed` / `sp_attack` / `sp_defense` | number | Current stats (from death record if dead) |
+| `gender` | number | `0` = male, `1` = female, `2` = genderless |
+| `ability` | string | Ability name |
+| `held_item` | string | Held item name |
+| `held_item_id` | number | Held item ID |
+| `growth_rate` | string | Growth rate name |
+| `ev_hp` … `ev_spd` | number | Stat EVs (0–255) |
+| `sprite` | string \| null | `data:image/png;base64,...` PNG sprite URI, or `null` while the sprite is in transit |
+| `personality` | number | Raw personality value — used by overlays to detect identity changes |
+| `status` | number | Gen III status bitmask: bits 0–2 = SLP turns, bit 3 = PSN, bit 4 = BRN, bit 5 = FRZ, bit 6 = PAR, bit 7 = TOX |
 
 > **ROM paths with spaces** can be quoted: `tracker "My ROMs/fire red.gba"`
 
@@ -488,7 +557,7 @@ Then in OBS add Browser Sources for whichever pages you need:
 - `http://localhost:9090/0/routes` and `http://localhost:9090/1/routes` — route completion board
 - `http://localhost:9090/0/alerts` and `http://localhost:9090/1/alerts` — transparent alerts overlay (add on top of everything else; invisible when idle)
 
-The `?manage` query parameter on any focused page enables **End Run** and **New Run** buttons. Clicking either button applies to all connected trackers simultaneously. The party wipe detector in the alerts overlay also ends the run automatically.
+Add `http://localhost:9090/cmd` in a browser tab to manage runs — **End Run** and **New Run** buttons apply to all connected trackers simultaneously. The party wipe detector in the alerts overlay also ends the run automatically.
 
 ---
 

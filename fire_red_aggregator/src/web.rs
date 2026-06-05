@@ -871,6 +871,7 @@ struct WebState {
     tx:         watch::Sender<String>,
     live_slots: SharedSlots,
     db_conn:    Option<String>,
+    testing:    bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -884,39 +885,52 @@ const HISTORY_HTML:      &str = include_str!("history.html");
 const ALERTS_HTML:       &str = include_str!("alerts.html");
 const ROUTES_HTML:       &str = include_str!("routes.html");
 const PARTY_PLAIN_HTML:  &str = include_str!("party_plain.html");
+const CMD_HTML:          &str = include_str!("cmd.html");
+const DBQUERY_HTML:      &str = include_str!("dbquery.html");
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
-async fn serve_html() -> Html<String> {
-    Html(OVERLAY_HTML.replace("__VERSION__", VERSION))
-}
+const TESTING_BANNER: &str = r#"<div id="testing-banner" style="position:fixed;top:0;left:0;right:0;z-index:9999;background:#b00;color:#fff;font-weight:bold;text-align:center;padding:4px 0;font-family:sans-serif;font-size:14px;">[TESTING]</div>"#;
 
-async fn serve_focused() -> Html<String> {
-    Html(FOCUSED_HTML.replace("__VERSION__", VERSION))
-}
-
-async fn serve_party(Query(params): Query<HashMap<String, String>>) -> Html<String> {
-    if params.contains_key("plain-view") {
-        Html(PARTY_PLAIN_HTML.to_string())
+fn apply_page(html: &str, testing: bool) -> String {
+    let html = html.replace("__VERSION__", VERSION);
+    if testing {
+        html.replacen("<body>", &format!("<body>{}", TESTING_BANNER), 1)
     } else {
-        Html(FOCUSED_HTML.replace("__VERSION__", VERSION))
+        html
     }
 }
 
-async fn serve_db_viewer() -> Html<&'static str> {
-    Html(DBVIEWER_HTML)
+async fn serve_html(State(state): State<WebState>) -> Html<String> {
+    Html(apply_page(OVERLAY_HTML, state.testing))
 }
 
-async fn serve_history() -> Html<&'static str> {
-    Html(HISTORY_HTML)
+async fn serve_focused(State(state): State<WebState>) -> Html<String> {
+    Html(apply_page(FOCUSED_HTML, state.testing))
 }
 
-async fn serve_alerts() -> Html<&'static str> {
-    Html(ALERTS_HTML)
+async fn serve_party(State(state): State<WebState>, Query(params): Query<HashMap<String, String>>) -> Html<String> {
+    if params.contains_key("plain-view") {
+        Html(apply_page(PARTY_PLAIN_HTML, state.testing))
+    } else {
+        Html(apply_page(FOCUSED_HTML, state.testing))
+    }
 }
 
-async fn serve_routes() -> Html<&'static str> {
-    Html(ROUTES_HTML)
+async fn serve_db_viewer(State(state): State<WebState>) -> Html<String> {
+    Html(apply_page(DBVIEWER_HTML, state.testing))
+}
+
+async fn serve_history(State(state): State<WebState>) -> Html<String> {
+    Html(apply_page(HISTORY_HTML, state.testing))
+}
+
+async fn serve_alerts(State(state): State<WebState>) -> Html<String> {
+    Html(apply_page(ALERTS_HTML, state.testing))
+}
+
+async fn serve_routes(State(state): State<WebState>) -> Html<String> {
+    Html(apply_page(ROUTES_HTML, state.testing))
 }
 
 async fn serve_db_json(State(state): State<WebState>) -> axum::Json<serde_json::Value> {
@@ -1026,11 +1040,56 @@ async fn handle_socket(
     }
 }
 
+async fn serve_cmd(State(state): State<WebState>) -> Html<String> {
+    Html(apply_page(CMD_HTML, state.testing))
+}
+
+async fn serve_db_query(State(state): State<WebState>) -> Html<String> {
+    Html(apply_page(DBQUERY_HTML, state.testing))
+}
+
+/// Broadcasts `end_run` or `new_run` to all connected tracker slots.
+async fn api_command(
+    State(state): State<WebState>,
+    Path(cmd): Path<String>,
+) -> impl IntoResponse {
+    let msg = match cmd.as_str() {
+        "end_run" => ClientMessage::EndRun,
+        "new_run" => ClientMessage::NewRun,
+        other => return (StatusCode::BAD_REQUEST, format!("Unknown command: {other}")),
+    };
+    let slots = state.live_slots.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    let count = slots.len();
+    for slot in &slots {
+        slot.command_queue
+            .lock().unwrap_or_else(|e| e.into_inner())
+            .push_back(msg.clone());
+    }
+    (StatusCode::OK, format!("Command '{cmd}' sent to {count} slot(s)"))
+}
+
+/// Runs arbitrary SQL against the database and returns results as JSON.
+async fn api_db_query(
+    State(state): State<WebState>,
+    axum::Json(body): axum::Json<serde_json::Value>,
+) -> axum::Json<serde_json::Value> {
+    let conn = match state.db_conn {
+        Some(s) => s,
+        None    => return axum::Json(serde_json::json!({ "error": "No database configured" })),
+    };
+    let sql = match body["sql"].as_str() {
+        Some(s) => s.to_string(),
+        None    => return axum::Json(serde_json::json!({ "error": "Missing 'sql' field" })),
+    };
+    let result = tokio::task::spawn_blocking(move || fire_red_database::run_sql(&conn, &sql)).await;
+    axum::Json(result.unwrap_or_else(|_| serde_json::json!({ "error": "Task panicked" })))
+}
+
 // ---------------------------------------------------------------------------
 // Entry point
 // ---------------------------------------------------------------------------
 
-pub fn run(live_slots: SharedSlots, port: u16, db_conn: Option<String>) {
+pub fn run(live_slots: SharedSlots, port: u16, db_conn: Option<String>, testing: bool) {
     let sprites: SpriteCache = Arc::new(Mutex::new(HashMap::new()));
 
     // Wire the shared sprite cache into any already-connected slots and keep
@@ -1057,7 +1116,7 @@ pub fn run(live_slots: SharedSlots, port: u16, db_conn: Option<String>) {
         }
     });
 
-    let web_state = WebState { tx, live_slots, db_conn };
+    let web_state = WebState { tx, live_slots, db_conn, testing };
 
     let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
     rt.block_on(async move {
@@ -1067,8 +1126,12 @@ pub fn run(live_slots: SharedSlots, port: u16, db_conn: Option<String>) {
             .route("/db", get(serve_db_viewer))
             .route("/db.json", get(serve_db_json))
             .route("/db/clear", post(clear_db))
+            .route("/db/query", get(serve_db_query))
+            .route("/cmd", get(serve_cmd))
             .route("/api/state", get(api_state))
             .route("/api/slot/:index", get(api_slot))
+            .route("/api/command/:cmd", post(api_command))
+            .route("/api/db/query", post(api_db_query))
             .route("/history", get(serve_history))
             .route("/alerts", get(serve_alerts))
             .route("/:index/alerts", get(serve_alerts))

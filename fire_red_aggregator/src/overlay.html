@@ -80,10 +80,11 @@ html, body {
     gap: 6px;
 }
 .mon-sprite {
-    width: 48px;
-    height: 48px;
+    width: 64px;
+    height: 64px;
     image-rendering: pixelated;
     flex-shrink: 0;
+    filter: drop-shadow(0 2px 4px rgba(0,0,0,0.9)) drop-shadow(0 0 6px rgba(255,255,255,0.35));
 }
 .mon.dead .mon-sprite {
     filter: grayscale(100%) brightness(0.5);
@@ -121,7 +122,7 @@ html, body {
     align-items: center;
     gap: 1px;
 }
-.enc-sprite { width: 40px; height: 40px; image-rendering: pixelated; }
+.enc-sprite { width: 52px; height: 52px; image-rendering: pixelated; filter: drop-shadow(0 2px 4px rgba(0,0,0,0.9)) drop-shadow(0 0 6px rgba(255,255,255,0.35)); }
 .enc-lv { font-size: 9px; color: #bbb; font-weight: 600; text-align: center; }
 .run-ended-summary {
     margin: 6px 0 2px;
@@ -142,7 +143,7 @@ html, body {
 .db-enc-heading { font-size: 11px; color: #ccc; font-style: italic; font-weight: 600; margin-bottom: 3px; }
 .db-enc-row { display: flex; flex-wrap: wrap; gap: 4px; }
 .db-enc-mon { display: flex; flex-direction: column; align-items: center; gap: 1px; }
-.db-enc-sprite { width: 40px; height: 40px; image-rendering: pixelated; }
+.db-enc-sprite { width: 52px; height: 52px; image-rendering: pixelated; filter: drop-shadow(0 2px 4px rgba(0,0,0,0.9)) drop-shadow(0 0 6px rgba(255,255,255,0.35)); }
 .db-enc-sprite.failed { filter: grayscale(80%) brightness(0.6); }
 .db-enc-label { font-size: 9px; color: #bbb; font-weight: 600; text-align: center; }
 .db-enc-label.caught-yes { color: #60e060; }
@@ -170,6 +171,17 @@ html, body {
 .gender-f { color: #ff82b4; font-size: 12px; font-weight: bold; }
 .nat-up   { color: #ff99cc; }
 .nat-down { color: #9ec8ff; }
+.status-badge {
+    display: inline-block; font-size: 9px; font-weight: bold;
+    padding: 1px 4px; border-radius: 3px; margin-left: 4px;
+    vertical-align: middle; text-shadow: none;
+}
+.status-slp { background: #555577; color: #ccccee; }
+.status-psn { background: #7733aa; color: #ddb8ff; }
+.status-brn { background: #aa4400; color: #ffcc99; }
+.status-frz { background: #336688; color: #aaddff; }
+.status-par { background: #887700; color: #ffee88; }
+.status-tox { background: #550077; color: #dd99ff; }
 #version-badge {
     position: fixed; top: 4px; right: 6px;
     font-size: 11px; font-weight: 600; color: rgba(255,255,255,0.75);
@@ -288,6 +300,8 @@ function render(slots) {
                 } else {
                     nr.appendChild(el('span', 'lv', 'Lv' + mon.level));
                 }
+                const sb = statusBadgeEl(mon.status);
+                if (sb) nr.appendChild(sb);
                 content.appendChild(nr);
 
                 if (mon.dead) {
@@ -422,6 +436,19 @@ function evRowEl(cls, hp, atk, def, spe, spa, spd) {
         d.appendChild(s);
     }
     return d;
+}
+
+function statusBadgeEl(status) {
+    if (!status) return null;
+    let label, cls;
+    if      (status & 0x07) { label = 'SLP'; cls = 'status-slp'; }
+    else if (status & 0x80) { label = 'TOX'; cls = 'status-tox'; }
+    else if (status & 0x08) { label = 'PSN'; cls = 'status-psn'; }
+    else if (status & 0x10) { label = 'BRN'; cls = 'status-brn'; }
+    else if (status & 0x20) { label = 'FRZ'; cls = 'status-frz'; }
+    else if (status & 0x40) { label = 'PAR'; cls = 'status-par'; }
+    else return null;
+    return el('span', 'status-badge ' + cls, label);
 }
 
 function genderSym(g) {

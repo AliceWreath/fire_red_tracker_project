@@ -1,0 +1,259 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>FireRed Command Control</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body {
+    background: #0f0f0f;
+    font-family: 'Segoe UI', Tahoma, sans-serif;
+    color: #e0e0e0;
+    min-height: 100vh;
+}
+#root { max-width: 900px; margin: 0 auto; padding: 16px; }
+
+.page-header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding-bottom: 12px;
+    border-bottom: 1px solid rgba(255,255,255,0.1);
+    margin-bottom: 14px;
+}
+.page-title { font-size: 20px; font-weight: bold; color: #fff; }
+.nav-links { margin-left: auto; display: flex; gap: 8px; }
+.nav-link {
+    font-size: 12px; font-weight: 600; padding: 4px 12px;
+    background: #1a1a2e; border: 1px solid #334; border-radius: 5px;
+    color: #8899cc; text-decoration: none; cursor: pointer;
+}
+.nav-link:hover { background: #22223e; color: #aabbdd; }
+
+.status-bar {
+    font-size: 12px;
+    color: #888;
+    margin-bottom: 18px;
+    padding: 8px 12px;
+    background: rgba(255,255,255,0.03);
+    border: 1px solid rgba(255,255,255,0.07);
+    border-radius: 6px;
+}
+
+.section { margin-bottom: 24px; }
+.section-title {
+    font-size: 13px; font-weight: 700; color: #8899cc;
+    text-transform: uppercase; letter-spacing: 0.5px;
+    margin-bottom: 10px;
+}
+
+.cmd-grid {
+    display: flex;
+    gap: 12px;
+    flex-wrap: wrap;
+}
+
+.cmd-card {
+    flex: 1;
+    min-width: 220px;
+    background: rgba(255,255,255,0.03);
+    border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 8px;
+    padding: 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+.cmd-card-title { font-size: 14px; font-weight: 700; color: #ddd; }
+.cmd-card-desc  { font-size: 12px; color: #888; line-height: 1.4; }
+
+.btn {
+    font-size: 13px; font-weight: 700;
+    padding: 9px 20px; border: none; border-radius: 6px;
+    cursor: pointer; transition: background 0.15s, opacity 0.15s;
+    align-self: flex-start;
+}
+.btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.btn-danger  { background: #6b1a1a; color: #ffaaaa; border: 1px solid #9b2020; }
+.btn-danger:not(:disabled):hover  { background: #7f2020; }
+.btn-success { background: #1a4a1a; color: #aaffaa; border: 1px solid #2a7a2a; }
+.btn-success:not(:disabled):hover { background: #224a22; }
+.btn-neutral { background: #1a2a3a; color: #aaccff; border: 1px solid #2a4a6a; }
+.btn-neutral:not(:disabled):hover { background: #223344; }
+
+.result-msg {
+    font-size: 12px;
+    padding: 6px 10px;
+    border-radius: 5px;
+    display: none;
+}
+.result-msg.ok  { background: rgba(20,60,20,0.5); color: #80d080; border: 1px solid #2a5a2a; display: block; }
+.result-msg.err { background: rgba(60,20,20,0.5); color: #d08080; border: 1px solid #5a2a2a; display: block; }
+
+.slots-section { margin-bottom: 24px; }
+
+.slot-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.slot-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 12px;
+    background: rgba(255,255,255,0.03);
+    border: 1px solid rgba(255,255,255,0.07);
+    border-radius: 6px;
+    font-size: 12px;
+}
+.slot-dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    flex-shrink: 0;
+}
+.slot-dot.connected    { background: #40c040; }
+.slot-dot.disconnected { background: #404040; }
+.slot-name { font-weight: 700; color: #ccc; min-width: 100px; }
+.slot-run  { color: #5090e0; }
+.slot-info { color: #777; margin-left: auto; }
+
+.no-slots { color: #555; font-size: 12px; padding: 12px 0; }
+
+.refresh-btn {
+    font-size: 11px; font-weight: 600; padding: 3px 10px;
+    background: transparent; border: 1px solid #333; border-radius: 4px;
+    color: #777; cursor: pointer;
+}
+.refresh-btn:hover { color: #aaa; border-color: #555; }
+</style>
+</head>
+<body>
+<div id="root">
+    <div class="page-header">
+        <div class="page-title">Command Control</div>
+        <div class="nav-links">
+            <a class="nav-link" href="/db">DB Viewer</a>
+            <a class="nav-link" href="/db/query">SQL Query</a>
+        </div>
+    </div>
+
+    <div class="status-bar" id="status-bar">Loading state...</div>
+
+    <div class="section slots-section">
+        <div class="section-title" style="display:flex;align-items:center;gap:8px">
+            Connected Slots
+            <button class="refresh-btn" onclick="loadState()">↺ Refresh</button>
+        </div>
+        <div id="slot-list" class="slot-list"><div class="no-slots">Loading...</div></div>
+    </div>
+
+    <div class="section">
+        <div class="section-title">Run Commands</div>
+        <div class="cmd-grid">
+            <div class="cmd-card">
+                <div class="cmd-card-title">End Run</div>
+                <div class="cmd-card-desc">Ends the current active nuzlocke run for all connected trackers. Records a final timestamp and closes the run in the database.</div>
+                <button class="btn btn-danger" onclick="sendCommand('end_run', this)">End Run</button>
+                <div class="result-msg" id="res-end_run"></div>
+            </div>
+            <div class="cmd-card">
+                <div class="cmd-card-title">New Run</div>
+                <div class="cmd-card-desc">Starts a new nuzlocke run for all connected trackers. Creates a fresh run record in the database linked to the current player name.</div>
+                <button class="btn btn-success" onclick="sendCommand('new_run', this)">New Run</button>
+                <div class="result-msg" id="res-new_run"></div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+async function loadState() {
+    try {
+        const res = await fetch('/api/state');
+        const slots = await res.json();
+        renderSlots(slots);
+        document.getElementById('status-bar').textContent =
+            'Last refreshed: ' + new Date().toLocaleTimeString() +
+            ' — ' + slots.length + ' slot(s)';
+    } catch (e) {
+        document.getElementById('status-bar').textContent = 'Failed to load state: ' + e.message;
+        document.getElementById('slot-list').innerHTML = '<div class="no-slots">Error loading slots.</div>';
+    }
+}
+
+function renderSlots(slots) {
+    const list = document.getElementById('slot-list');
+    if (!slots || slots.length === 0) {
+        list.innerHTML = '<div class="no-slots">No trackers connected.</div>';
+        return;
+    }
+    list.innerHTML = '';
+    for (const s of slots) {
+        const row = document.createElement('div');
+        row.className = 'slot-row';
+
+        const dot = document.createElement('div');
+        dot.className = 'slot-dot ' + (s.connected ? 'connected' : 'disconnected');
+
+        const name = document.createElement('div');
+        name.className = 'slot-name';
+        name.textContent = s.label || '(unnamed)';
+
+        const run = document.createElement('div');
+        run.className = 'slot-run';
+        if (s.active_run_id != null) {
+            run.textContent = 'Run #' + s.active_run_id;
+            if (s.run_summary) {
+                run.textContent += ' — ' + s.run_summary.caught + ' caught, ' + s.run_summary.deaths + ' deaths';
+            }
+        } else if (s.db_connected) {
+            run.textContent = 'No active run';
+            run.style.color = '#666';
+        } else {
+            run.textContent = 'No DB';
+            run.style.color = '#555';
+        }
+
+        const info = document.createElement('div');
+        info.className = 'slot-info';
+        const badges = (s.badges || []).filter(Boolean).length;
+        if (s.connected) info.textContent = badges + '/8 badges · ' + (s.party || []).length + ' party';
+
+        row.appendChild(dot);
+        row.appendChild(name);
+        row.appendChild(run);
+        row.appendChild(info);
+        list.appendChild(row);
+    }
+}
+
+async function sendCommand(cmd, btn) {
+    const msgEl = document.getElementById('res-' + cmd);
+    btn.disabled = true;
+    msgEl.className = 'result-msg';
+    msgEl.textContent = '';
+    try {
+        const res = await fetch('/api/command/' + cmd, { method: 'POST' });
+        const text = await res.text();
+        if (res.ok) {
+            msgEl.className = 'result-msg ok';
+            msgEl.textContent = text;
+            setTimeout(loadState, 600);
+        } else {
+            msgEl.className = 'result-msg err';
+            msgEl.textContent = 'Error: ' + text;
+        }
+    } catch (e) {
+        msgEl.className = 'result-msg err';
+        msgEl.textContent = 'Request failed: ' + e.message;
+    } finally {
+        btn.disabled = false;
+    }
+}
+
+loadState();
+setInterval(loadState, 5000);
+</script>
+</body>
+</html>

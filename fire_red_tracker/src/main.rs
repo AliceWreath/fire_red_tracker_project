@@ -153,6 +153,8 @@ fn main() {
         return;
     }
 
+    println!("FireRed Tracker v{}", env!("CARGO_PKG_VERSION"));
+
     // Load config (prompts on first run), then overlay any CLI overrides.
     let config_path = cli.config.as_deref()
         .map(std::path::PathBuf::from)

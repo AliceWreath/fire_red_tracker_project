@@ -216,7 +216,7 @@ fn main() {
 
     if let Some(port) = ws_port {
         // Headless WebSocket overlay mode.
-        web::run(shared_slots, port, db);
+        web::run(shared_slots, port, db, use_test);
     } else {
         // Normal egui window mode.
         let options = eframe::NativeOptions {
