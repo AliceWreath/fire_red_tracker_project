@@ -15,9 +15,9 @@ pub struct EncounterTracker {
     last_enemy_personality: u32,
     tracked_personality:    Option<u32>,
     enc_map:                (u8, u8),
-    /// Latches to `true` the first time balls are detected in the bag and stays
-    /// true until reset. Ensures encounters still count after all balls are used.
-    has_received_balls:     bool,
+    /// Latches to `true` once the run is considered officially underway (5+ balls
+    /// detected or encounters already exist in DB) and stays true until reset.
+    run_tracking_active:    bool,
     /// Set when a party wipe ends the run. Prevents `tick` from re-enabling
     /// tracking until the game unloads or a new run is started.
     wipe_detected:          bool,
@@ -29,7 +29,7 @@ impl EncounterTracker {
             last_enemy_personality: 0,
             tracked_personality:    None,
             enc_map:                (0, 0),
-            has_received_balls:     false,
+            run_tracking_active:     false,
             wipe_detected:          false,
         }
     }
@@ -37,14 +37,14 @@ impl EncounterTracker {
     pub fn reset(&mut self) {
         self.last_enemy_personality = 0;
         self.tracked_personality    = None;
-        self.has_received_balls     = false;
+        self.run_tracking_active     = false;
         self.wipe_detected          = false;
     }
 
     /// Called when a party wipe ends the run. Clears the ball latch and locks
     /// `tick` so it won't re-enable tracking until `reset` is called.
     pub fn mark_wipe(&mut self) {
-        self.has_received_balls = false;
+        self.run_tracking_active = false;
         self.wipe_detected      = true;
     }
 
@@ -55,12 +55,12 @@ impl EncounterTracker {
     /// data at startup.
     pub fn seed_from_db(&mut self) {
         if fire_red_database::has_any_encounters() {
-            self.has_received_balls = true;
+            self.run_tracking_active = true;
         }
     }
 
-    pub fn has_received_balls(&self) -> bool {
-        self.has_received_balls
+    pub fn run_tracking_active(&self) -> bool {
+        self.run_tracking_active
     }
 
     /// Called once per poll cycle while the game is loaded and state is
@@ -72,9 +72,9 @@ impl EncounterTracker {
         {
             self.last_enemy_personality = enemy.box_mon.personality;
 
-            if !self.has_received_balls {
+            if !self.run_tracking_active {
                 if crate::game::has_pokeballs() {
-                    self.has_received_balls = true;
+                    self.run_tracking_active = true;
                 } else {
                     return;
                 }

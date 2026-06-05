@@ -26,7 +26,7 @@ Shows each Pokémon's sprite (shiny-aware), nickname, level, nature, HP (colour-
 
 ### Encounter tracking
 - **Encounters panel** — shows the wild Pokémon available in the current map area, split by encounter type (grass, water/fishing, Rock Smash). Updates when the player moves to a new map.
-- **First-encounter recording** — records the first wild Pokémon encountered per area per run (Nuzlocke rule). Encounters are ignored until Pokéballs have been obtained; tracking continues even after all balls are used. Duplicate species are skipped. Catches are detected automatically when the Pokémon joins the party.
+- **First-encounter recording** — records the first wild Pokémon encountered per area per run (Nuzlocke rule). Encounters and deaths are not recorded until the player has obtained 5 or more Pokéballs; once that threshold is crossed the latch stays set for the remainder of the run. Duplicate species are skipped. Catches are detected automatically when the Pokémon joins the party.
 - **Shiny detection** — the Gen III shiny formula (`p_high ^ p_low ^ id_high ^ id_low < 8`) is evaluated when an encounter is recorded. Shiny encounters are flagged in the database and trigger a shiny alert toast.
 - **Route completion board** — a grid showing every Nuzlocke-relevant zone colour-coded as caught (green), failed/fled (red), or not yet visited (grey), grouped by region. Available at `/:index/routes`.
 
@@ -36,7 +36,7 @@ A dedicated transparent OBS source (`/:index/alerts`) that shows timed toast not
 - **Zone-entry** — fires when entering a wild area with no first encounter yet this run. Includes the zone name, a note that no encounter has been recorded, what was caught or fled in that zone on the most recently completed run, and a level-cap warning if any encounter in the zone matches or exceeds the next gym's cap.
 - **Faint** — fires when a party member's HP reaches zero. Shows nickname, species, level, and nature.
 - **Shiny encounter** — fires when a new encounter is recorded with the shiny flag set. Shows species, level, and zone name. Stays visible for 10 seconds.
-- **Party wipe / blackout** — fires when every party member is dead simultaneously. Displays a full-width "PARTY WIPED" banner and automatically sends `end_run` to close the active run.
+- **Party wipe / blackout** — fires when every party member is dead simultaneously. The tracker detects the wipe and calls `end_run()` automatically; the overlay displays the "PARTY WIPED" banner in response to the resulting run-state change.
 
 ### Run management
 - **Badge tracker** — displays obtained badges as coloured dots and shows the next gym leader's name, city, and highest level.
@@ -52,11 +52,12 @@ Runs locally. Reads the ROM and polls RetroArch on the same machine. Displays a 
 
 ```
 tracker firered.gba
-tracker firered.gba --new-run             # start a fresh run (ignores the most recent active run)
-tracker firered.gba --run-id 3            # resume a specific run by its numeric ID
-tracker firered.gba --list-runs           # print all stored runs and exit
-tracker firered.gba --scan-balls-pocket   # locate bag balls pocket offset (run with balls in bag)
-tracker firered.gba --update              # check GitHub for a newer release and self-update
+tracker firered.gba --new-run                   # start a fresh run (ignores the most recent active run)
+tracker firered.gba --run-id 3                  # resume a specific run by its numeric ID
+tracker firered.gba --list-runs                 # print all stored runs and exit
+tracker firered.gba --scan-balls-pocket         # locate bag balls pocket offset (run with balls in bag)
+tracker firered.gba --scan-security-key=<QTY>  # locate bag security key offset (run with QTY balls in bag)
+tracker firered.gba --update                    # check GitHub for a newer release and self-update
 ```
 
 ### Connected
@@ -202,7 +203,7 @@ A **Soul Link** is a Nuzlocke variant played with a partner: each player's catch
 | `cli.rs` | `Cli` and `Command` structs (clap definitions) |
 | `config.rs` | Config file load/save, first-run setup dialog |
 | `encounter.rs` | `EncounterTracker` — wild battle detection via personality change, balls-gate latch, duplicate species check, shiny detection (Gen III formula), catch detection via party membership |
-| `game.rs` | `is_shiny`, `fill_party_list`, `map_state_from_ewram`, `game_is_loaded`, `has_pokeballs`, `scan_for_balls_pocket` |
+| `game.rs` | `fill_party_list`, `check_for_dead_pokemon`, `check_for_new_pokemon`, `check_for_run_over`, `map_state_from_ewram`, `game_is_loaded`, `has_pokeballs`, `count_pokeballs`, `read_security_key`, `scan_for_balls_pocket`, `scan_for_security_key` |
 | `textures.rs` | `PendingTexture`, sprite compression, `build_sprite_data` |
 | `gui.rs` | `WindowInfo`, `eframe::App` impl, party panel, encounters viewport |
 | `server.rs` | Aggregator connection handler — manages the bidirectional push stream over an established TCP connection |
@@ -235,7 +236,7 @@ A **Soul Link** is a Nuzlocke variant played with a partner: each player's catch
 
 All live game data is read from two in-memory snapshots maintained by `fire_red_memory`:
 
-- **EWRAM snapshot** (256 KiB) — refreshed every 500 ms by reading from RetroArch in parallel 4 KiB chunks over UDP, then assembled in address order.
+- **EWRAM snapshot** (256 KiB) — refreshed every 100 ms by reading from RetroArch in parallel 4 KiB chunks over UDP, then assembled in address order.
 - **IWRAM snapshot** (32 KiB) — refreshed on the same cycle.
 
 Every other crate reads from these snapshots rather than issuing its own UDP requests. This eliminates hundreds of individual network round-trips per second and makes the read pattern predictable regardless of how many subsystems are running.
@@ -275,10 +276,11 @@ If any check fails, the shared party, encounter, and badge data are cleared and 
 ```
 main thread  (GUI)
 │
-├── memory thread             refresh EWRAM + IWRAM snapshots every 500 ms
+├── memory thread             refresh EWRAM + IWRAM snapshots every 100 ms
 ├── game-polling thread       read map/party/encounters from snapshots every 100 ms
 │                             EncounterTracker runs here (personality-change detection)
-├── party-monitor thread      read party on size-change + force-refresh every 5 s
+│                             fill_party_list called every tick; DB checks (deaths/catches)
+│                             run every 1 s or immediately on party-size change
 ├── box-monitor thread        read all 14 PC boxes every 5 s
 └── trainer-data thread       read trainer name / play time every 15 s
 ```
@@ -289,10 +291,12 @@ main thread  (GUI)
 main thread  (headless, parked until Ctrl-C)
 │
 ├── game-polling thread       (same as standalone)
+│                             also signals wipe_signal AtomicBool on party wipe
 │
 └── network thread            outer reconnect loop (retry every 5 s on disconnect)
         └── on each connection: handle_client(stream, ...)
-                ├── writer loop    push GameState snapshot to aggregator every 100 ms
+                ├── writer loop    push GameState snapshot every 100 ms;
+                │                  sends RunChanged(None) when wipe_signal fires
                 └── reader thread  receive ClientMessage (RequestTextures / EndRun / NewRun)
 ```
 
@@ -399,7 +403,8 @@ RetroArch memory reads use the `READ_CORE_MEMORY` UDP command (default port 5535
 | PC box storage | `*0x03005010 + 0x4` | `SaveBlock3` pointer + offset; 14 × 30 × 80 bytes |
 | Current map | `0x02031DBC` | 2 bytes: map group, map name |
 | SaveBlock1 ptr | `0x03005008` | 4-byte IWRAM pointer; dereference for badge flag offset and bag pocket offsets |
-| Balls pocket | `*0x03005008 + 0x0430` | 13 × 4-byte `ItemSlot` (item_id u16, quantity u16); quantities are XOR-encrypted in RAM — only item_ids are readable directly |
+| Balls pocket | `*0x03005008 + 0x0430` | 13 × 4-byte `ItemSlot` (item_id u16, quantity u16); quantities are XOR-encrypted with `security_key & 0xFFFF` (key at SaveBlock2+`0x0E4C`) |
+| Security key | `0x02024298 + 0x0E4C` | u32 in SaveBlock2; lower 16 bits XOR each bag slot quantity. Use `--scan-security-key=<QTY>` to verify the offset on a different revision |
 | SaveBlock2 (trainer) | `0x02024298` | 19 bytes: trainer name, gender, ID, play time |
 | WildMonHeaders | scanned at startup | Offset varies; `fire_red_scanner` locates it via heuristic validation |
 | Ability names | `0x24FCB0` | 13 bytes per entry |
@@ -491,7 +496,9 @@ The `?manage` query parameter on any focused page enables **End Run** and **New 
 
 Personal project built for Nuzlocke and Soul Link runs. The codebase is functional but not hardened for general distribution:
 
-- ROM scanning and all hardcoded addresses are calibrated for **FireRed USA (Rev 1)**. Other regional releases or ROM hacks will likely require address adjustments. If the balls pocket offset is wrong for a different revision, run `tracker <rom> --scan-balls-pocket` with at least one ball in the bag to locate the correct `BALLS_POCKET_SAVE_BLOCK_OFFSET` in `fire_red_tracker/src/game.rs`. Note that bag item quantities are XOR-encrypted in RAM; the scanner checks item IDs only.
+- ROM scanning and all hardcoded addresses are calibrated for **FireRed USA (Rev 1)**. Other regional releases or ROM hacks will likely require address adjustments. Two scan tools are provided for this:
+  - `tracker <rom> --scan-balls-pocket` — run with at least one ball in the bag to locate `BALLS_POCKET_SAVE_BLOCK_OFFSET` in `game.rs`. The scanner checks item IDs only; quantities are XOR-encrypted.
+  - `tracker <rom> --scan-security-key=<QTY>` — run with exactly `QTY` balls in the bag to locate `SECURITY_KEY_OFFSET` in `game.rs`. The scanner finds all SaveBlock2-relative offsets where `raw_qty ^ offset_value == QTY` and prints the candidates for verification.
 - Map area names (`map_area_name` in `fire_red_location_names`) are sourced from the FireRed/LeafGreen map groups document and cross-checked in-game for a subset of locations. All Kanto routes, major caves, and Sevii Island wild areas are covered. Individual dungeon floors (e.g. which floor of Rock Tunnel a given personality came from) have been confirmed for Diglett's Cave and inferred for the rest; verify with `READ_CORE_MEMORY 0x2031DBC 2` when entering each floor in-game.
 - Ability data is read from ROM base-stat tables and is only reliable on unmodified ROMs.
 - The `fire_red_map_data` crate is in progress and not yet integrated into the main loop.

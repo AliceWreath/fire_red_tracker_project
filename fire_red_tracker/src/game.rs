@@ -66,11 +66,11 @@ pub fn fill_party_list(thread_party: &Arc<Mutex<Vec<Pokemon>>>) {
 /// Checks the current party for any Pokemon with zero HP and marks them dead.
 ///
 /// Skips Pokemon that are already recorded to avoid double-entries.
-/// Skips the entire check when `has_received_balls` is `false` — deaths before
+/// Skips the entire check when `run_tracking_active` is `false` — deaths before
 /// Pokéballs are obtainable (e.g. losing to the rival in Oak's lab) are not
 /// Nuzlocke deaths, mirroring how encounters are ignored before balls arrive.
-pub fn check_for_dead_pokemon(thread_party: &Arc<Mutex<Vec<Pokemon>>>, has_received_balls: bool) {
-    if !has_received_balls { return; }
+pub fn check_for_dead_pokemon(thread_party: &Arc<Mutex<Vec<Pokemon>>>, run_tracking_active: bool) {
+    if !run_tracking_active { return; }
     let party = thread_party.lock().unwrap_or_else(|e| e.into_inner());
     for pokemon in party.iter() {
         if pokemon.hp != 0 { continue; }
@@ -309,9 +309,9 @@ pub fn game_is_loaded() -> bool {
 ///
 /// Returns `false` when the party is empty (pre-game or between battles) or
 /// when any party member is still alive in the database, and when
-/// `has_received_balls` is false (run hasn't officially started yet).
-pub fn check_for_run_over(thread_party: &Arc<Mutex<Vec<Pokemon>>>, has_received_balls: bool) -> bool {
-    if !has_received_balls { return false; }
+/// `run_tracking_active` is false (run hasn't officially started yet).
+pub fn check_for_run_over(thread_party: &Arc<Mutex<Vec<Pokemon>>>, run_tracking_active: bool) -> bool {
+    if !run_tracking_active { return false; }
     let party = thread_party.lock().unwrap_or_else(|e| e.into_inner());
     if party.is_empty() { return false; }
     let all_dead = party.iter().all(|p| {

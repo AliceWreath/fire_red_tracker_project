@@ -144,7 +144,6 @@ let _deathPartyState    = {};
 let _deathTimer         = null;
 let _seenEncounterKeys  = null;
 let _shinyTimer         = null;
-let _hadAlive           = true;
 let _wipeEndSent        = false;
 let _wipeTimer          = null;
 let _prevRunId          = null;
@@ -192,25 +191,19 @@ function handleState(slots) {
 
     // Reset wipe state when a new run starts.
     if (currentRunId != null && _prevRunId == null) {
-        _hadAlive    = true;
         _wipeEndSent = false;
     }
 
     // Wipe toast: the tracker calls end_run() before broadcasting state, so
     // active_run_id is already null by the time the all-dead party arrives.
     // Detect the active→ended transition instead of checking allDead while active.
-    if (_prevRunId != null && currentRunId == null && !_wipeEndSent && _hadAlive) {
+    if (_prevRunId != null && currentRunId == null && !_wipeEndSent) {
         if (party.length > 0 && party.every(m => m.dead)) {
             _wipeEndSent = true;
             showWipeToast(party);
         }
     }
     _prevRunId = currentRunId;
-
-    // Keep _hadAlive current while a run is active.
-    if (currentRunId != null && party.length > 0 && !party.every(m => m.dead)) {
-        _hadAlive = true;
-    }
 
     if (currentRunId == null) return;
 

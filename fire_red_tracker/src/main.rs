@@ -329,8 +329,8 @@ fn main() {
 
             fill_party_list(&thread_party);
             check_for_new_pokemon(&thread_party);
-            check_for_dead_pokemon(&thread_party, enc_tracker.has_received_balls());
-            if check_for_run_over(&thread_party, enc_tracker.has_received_balls()) {
+            check_for_dead_pokemon(&thread_party, enc_tracker.run_tracking_active());
+            if check_for_run_over(&thread_party, enc_tracker.run_tracking_active()) {
                 enc_tracker.mark_wipe();
                 thread_wipe_signal.store(true, Ordering::Release);
             }
@@ -386,8 +386,8 @@ fn main() {
                     update_box_list();
                     *thread_box.lock().unwrap_or_else(|e| e.into_inner()) = build_box_entries();
                     check_for_new_pokemon(&thread_party);
-                    check_for_dead_pokemon(&thread_party, enc_tracker.has_received_balls());
-                    if check_for_run_over(&thread_party, enc_tracker.has_received_balls()) {
+                    check_for_dead_pokemon(&thread_party, enc_tracker.run_tracking_active());
+                    if check_for_run_over(&thread_party, enc_tracker.run_tracking_active()) {
                         enc_tracker.mark_wipe();
                         thread_wipe_signal.store(true, Ordering::Release);
                     }
@@ -396,8 +396,8 @@ fn main() {
                 if last_party_refresh.elapsed().as_secs() >= FORCE_PARTY_CHECK_INTERVAL {
                     last_party_refresh = std::time::Instant::now();
                     check_for_new_pokemon(&thread_party);
-                    check_for_dead_pokemon(&thread_party, enc_tracker.has_received_balls());
-                    if check_for_run_over(&thread_party, enc_tracker.has_received_balls()) {
+                    check_for_dead_pokemon(&thread_party, enc_tracker.run_tracking_active());
+                    if check_for_run_over(&thread_party, enc_tracker.run_tracking_active()) {
                         enc_tracker.mark_wipe();
                         thread_wipe_signal.store(true, Ordering::Release);
                     }
