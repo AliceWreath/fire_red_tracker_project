@@ -21,21 +21,23 @@ pub const PARTY_WINDOW: (f32, f32) = (400.0, 800.0);
 pub const ENCOUNTER_WINDOW: (f32, f32) = (600.0, 400.0);
 
 struct SettingsDraft {
-    rom:             String,
-    db:              String,
-    mode:            crate::config::ConfigMode,
-    aggregator_host: String,
-    aggregator_port: String,
+    rom:              String,
+    db:               String,
+    mode:             crate::config::ConfigMode,
+    aggregator_host:  String,
+    aggregator_port:  String,
+    preferred_player: String,
 }
 
 impl SettingsDraft {
     fn from_config(cfg: &TrackerConfig) -> Self {
         Self {
-            rom:             cfg.rom.clone(),
-            db:              cfg.db.trim_start_matches("postgresql://").trim_start_matches("postgres://").to_string(),
-            mode:            cfg.mode.clone(),
-            aggregator_host: cfg.aggregator_host.clone(),
-            aggregator_port: cfg.aggregator_port.to_string(),
+            rom:              cfg.rom.clone(),
+            db:               cfg.db.trim_start_matches("postgresql://").trim_start_matches("postgres://").to_string(),
+            mode:             cfg.mode.clone(),
+            aggregator_host:  cfg.aggregator_host.clone(),
+            aggregator_port:  cfg.aggregator_port.to_string(),
+            preferred_player: cfg.preferred_player.map(|n| n.to_string()).unwrap_or_default(),
         }
     }
 }
@@ -336,29 +338,38 @@ impl WindowInfo {
                     ui.label("Aggregator port:");
                     ui.add(egui::TextEdit::singleline(&mut s.aggregator_port).desired_width(80.0));
                     ui.end_row();
+
+                    ui.label("Player number:");
+                    ui.add(egui::TextEdit::singleline(&mut s.preferred_player).desired_width(60.0).hint_text("1, 2, …"));
+                    ui.end_row();
                 }
             });
 
         ui.add_space(8.0);
-        let rom_ok  = !s.rom.trim().is_empty();
-        let port_ok = s.mode != crate::config::ConfigMode::Connected || s.aggregator_port.parse::<u16>().is_ok();
+        let rom_ok    = !s.rom.trim().is_empty();
+        let port_ok   = s.mode != crate::config::ConfigMode::Connected || s.aggregator_port.parse::<u16>().is_ok();
+        let player_parse: Option<u8> = s.preferred_player.trim().parse().ok().filter(|&n: &u8| n >= 1);
+        let player_ok = s.preferred_player.trim().is_empty() || player_parse.is_some();
         ui.horizontal(|ui| {
-            let saved = ui.add_enabled(rom_ok && port_ok, egui::Button::new("Save")).clicked();
+            let saved = ui.add_enabled(rom_ok && port_ok && player_ok, egui::Button::new("Save")).clicked();
             if !rom_ok {
                 ui.label(egui::RichText::new("ROM path is required").color(egui::Color32::from_rgb(220, 80, 80)).small());
             } else if !port_ok {
                 ui.label(egui::RichText::new("Invalid port").color(egui::Color32::from_rgb(220, 80, 80)).small());
+            } else if !player_ok {
+                ui.label(egui::RichText::new("Player number must be 1 or higher").color(egui::Color32::from_rgb(220, 80, 80)).small());
             }
             if saved {
                 let db_raw = s.db.trim().to_string();
                 let db = if db_raw.starts_with("postgresql://") || db_raw.starts_with("postgres://") { db_raw } else { format!("postgresql://{}", db_raw) };
                 let cfg = TrackerConfig {
-                    rom:             s.rom.trim().to_string(),
+                    rom:              s.rom.trim().to_string(),
                     db,
-                    clean:           false,
-                    mode:            s.mode.clone(),
-                    aggregator_host: s.aggregator_host.trim().to_string(),
-                    aggregator_port: s.aggregator_port.parse().unwrap_or(7878),
+                    clean:            false,
+                    mode:             s.mode.clone(),
+                    aggregator_host:  s.aggregator_host.trim().to_string(),
+                    aggregator_port:  s.aggregator_port.parse().unwrap_or(7878),
+                    preferred_player: player_parse,
                 };
                 save_config(&cfg, &self.config_path);
                 self.settings_open = false;

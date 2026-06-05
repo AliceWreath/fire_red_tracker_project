@@ -55,6 +55,11 @@ pub struct Cli {
     #[arg(long, value_name = "QTY")]
     pub scan_security_key: Option<u16>,
 
+    /// Preferred display column in the aggregator (1 = first, 2 = second, …).
+    /// Overrides the value in the config file for this run only.
+    #[arg(long, value_name = "N")]
+    pub preferred_player: Option<u8>,
+
     /// Override the operating mode for this run only.
     #[command(subcommand)]
     pub command: Option<Command>,

@@ -529,8 +529,20 @@ impl BroadcastLoop {
             }
         }
 
+        // Determine display order: sort by (preferred_player, player_name).
+        // Slots with no preference sort last; ties break alphabetically by name.
+        let mut display_order: Vec<usize> = (0..n).collect();
+        display_order.sort_by(|&i, &j| {
+            let pi = states[i].1.as_ref().and_then(|gs| gs.preferred_player)
+                .map(u32::from).unwrap_or(u32::MAX);
+            let pj = states[j].1.as_ref().and_then(|gs| gs.preferred_player)
+                .map(u32::from).unwrap_or(u32::MAX);
+            pi.cmp(&pj)
+                .then_with(|| states[i].0.to_lowercase().cmp(&states[j].0.to_lowercase()))
+        });
+
         // Build JSON payload
-        let slots_dto: Vec<SlotDto> = (0..n)
+        let slots_dto: Vec<SlotDto> = display_order.iter().copied()
             .map(|i| {
                 let (label, state) = &states[i];
                 let dead_records   = &all_dead[i];

@@ -31,6 +31,8 @@ use std::sync::{Arc, Mutex};
 ///   stale badge data from being sent to clients.
 /// * `run_changed`       — Set to `true` when a `EndRun` or `NewRun` command is
 ///   processed so the game loop can reset encounter state.
+/// * `preferred_player`  — Preferred display slot sent to the aggregator on
+///   every tick so it can sort columns correctly.
 pub fn handle_client(
     stream: TcpStream,
     server_party: Arc<Mutex<Vec<fire_red_party_monitor::Pokemon>>>,
@@ -40,6 +42,7 @@ pub fn handle_client(
     game_loaded: Arc<AtomicBool>,
     run_changed: Arc<AtomicBool>,
     wipe_signal: Arc<AtomicBool>,
+    preferred_player: Option<u8>,
 ) {
     println!(
         "Client connected: {}",
@@ -159,6 +162,7 @@ pub fn handle_client(
                 zone_name,
                 current_map_group: pos.map_group_id,
                 current_map_name:  pos.map_name_id,
+                preferred_player,
             }
         };
 

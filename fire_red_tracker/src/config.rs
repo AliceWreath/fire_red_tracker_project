@@ -26,6 +26,10 @@ pub struct TrackerConfig {
     pub aggregator_host: String,
     #[serde(default = "default_aggregator_port")]
     pub aggregator_port: u16,
+    /// Preferred display slot in the aggregator (1 = first column, 2 = second, …).
+    /// Leave unset to let the aggregator assign order by connection time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preferred_player: Option<u8>,
 }
 
 fn default_aggregator_host() -> String { "127.0.0.1".to_string() }
@@ -95,6 +99,7 @@ struct SetupApp {
     mode:             ConfigMode,
     aggregator_host:  String,
     aggregator_port:  String,
+    preferred_player: String,
     result:           Arc<Mutex<Option<TrackerConfig>>>,
     should_close:     bool,
     heading:          &'static str,
@@ -103,15 +108,16 @@ struct SetupApp {
 impl SetupApp {
     fn new(result: Arc<Mutex<Option<TrackerConfig>>>) -> Self {
         Self {
-            rom:             String::new(),
-            db:              "localhost/nuzlocke".to_string(),
-            clean:           false,
-            mode:            ConfigMode::Standalone,
-            aggregator_host: "127.0.0.1".to_string(),
-            aggregator_port: "7878".to_string(),
+            rom:              String::new(),
+            db:               "localhost/nuzlocke".to_string(),
+            clean:            false,
+            mode:             ConfigMode::Standalone,
+            aggregator_host:  "127.0.0.1".to_string(),
+            aggregator_port:  "7878".to_string(),
+            preferred_player: String::new(),
             result,
-            should_close:    false,
-            heading:         "First-Run Setup",
+            should_close:     false,
+            heading:          "First-Run Setup",
         }
     }
 
@@ -121,15 +127,16 @@ impl SetupApp {
             .trim_start_matches("postgres://")
             .to_string();
         Self {
-            rom:             cfg.rom.clone(),
-            db:              db_display,
-            clean:           cfg.clean,
-            mode:            cfg.mode.clone(),
-            aggregator_host: cfg.aggregator_host.clone(),
-            aggregator_port: cfg.aggregator_port.to_string(),
+            rom:              cfg.rom.clone(),
+            db:               db_display,
+            clean:            cfg.clean,
+            mode:             cfg.mode.clone(),
+            aggregator_host:  cfg.aggregator_host.clone(),
+            aggregator_port:  cfg.aggregator_port.to_string(),
+            preferred_player: cfg.preferred_player.map(|n| n.to_string()).unwrap_or_default(),
             result,
-            should_close:    false,
-            heading:         "Edit Config",
+            should_close:     false,
+            heading:          "Edit Config",
         }
     }
 }
@@ -206,6 +213,17 @@ impl eframe::App for SetupApp {
                             .desired_width(80.0),
                     );
                     ui.end_row();
+
+                    ui.label("Player number:");
+                    ui.vertical(|ui| {
+                        ui.add(
+                            egui::TextEdit::singleline(&mut self.preferred_player)
+                                .desired_width(60.0)
+                                .hint_text("1, 2, …"),
+                        );
+                        ui.small("Display column in the aggregator (leave blank for auto)");
+                    });
+                    ui.end_row();
                 }
             });
 
@@ -216,7 +234,11 @@ impl eframe::App for SetupApp {
         let rom_ok = !self.rom.trim().is_empty();
         let port_parse: Result<u16, _> = self.aggregator_port.parse();
         let port_ok = self.mode != ConfigMode::Connected || port_parse.is_ok();
-        let can_save = rom_ok && port_ok;
+        let player_parse: Option<u8> = self.preferred_player.trim()
+            .parse().ok()
+            .filter(|&n: &u8| n >= 1);
+        let player_ok = self.preferred_player.trim().is_empty() || player_parse.is_some();
+        let can_save = rom_ok && port_ok && player_ok;
 
         ui.horizontal(|ui| {
             let btn = ui.add_enabled(can_save, egui::Button::new("Save & Continue"));
@@ -229,12 +251,13 @@ impl eframe::App for SetupApp {
                 };
 
                 let config = TrackerConfig {
-                    rom:             self.rom.trim().to_string(),
+                    rom:              self.rom.trim().to_string(),
                     db,
-                    clean:           self.clean,
-                    mode:            self.mode.clone(),
-                    aggregator_host: self.aggregator_host.trim().to_string(),
-                    aggregator_port: port_parse.unwrap_or(7878),
+                    clean:            self.clean,
+                    mode:             self.mode.clone(),
+                    aggregator_host:  self.aggregator_host.trim().to_string(),
+                    aggregator_port:  port_parse.unwrap_or(7878),
+                    preferred_player: player_parse,
                 };
 
                 *self.result.lock().unwrap() = Some(config);
@@ -250,6 +273,12 @@ impl eframe::App for SetupApp {
             } else if !port_ok {
                 ui.label(
                     egui::RichText::new("  Invalid port (1–65535)")
+                        .color(egui::Color32::from_rgb(220, 80, 80))
+                        .small(),
+                );
+            } else if !player_ok {
+                ui.label(
+                    egui::RichText::new("  Player number must be 1 or higher")
                         .color(egui::Color32::from_rgb(220, 80, 80))
                         .small(),
                 );

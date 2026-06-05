@@ -238,6 +238,7 @@ fn main() {
     let rom_path            = cli.rom.unwrap_or(cfg.rom);
     let do_scan_balls       = cli.scan_balls_pocket;
     let do_scan_sec_key     = cli.scan_security_key;
+    let preferred_player    = cli.preferred_player.or(cfg.preferred_player);
 
     let game_loaded:  Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
     let run_changed:  Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
@@ -445,6 +446,7 @@ fn main() {
                             net_loaded.clone(),
                             net_run_changed.clone(),
                             net_wipe_signal.clone(),
+                            preferred_player,
                         );
                         println!("Disconnected from aggregator.");
                     }

@@ -119,6 +119,11 @@ pub struct GameState {
 
     /// Actual player map-name ID read directly from EWRAM (0x02031DBC[1]).
     pub current_map_name: u8,
+
+    /// Preferred display slot index (1 = first column, 2 = second, …).
+    /// `None` means no preference; the aggregator places those slots last,
+    /// then breaks ties alphabetically by player name.
+    pub preferred_player: Option<u8>,
 }
 
 /// Network operating mode for the tracker.
