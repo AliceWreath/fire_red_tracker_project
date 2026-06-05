@@ -39,6 +39,7 @@ pub fn handle_client(
     sprite_cache: Arc<Mutex<HashMap<(u16, bool), SpriteData>>>,
     game_loaded: Arc<AtomicBool>,
     run_changed: Arc<AtomicBool>,
+    wipe_signal: Arc<AtomicBool>,
 ) {
     println!(
         "Client connected: {}",
@@ -165,6 +166,13 @@ pub fn handle_client(
         if send_message(&mut ws, &ServerMessage::State(Box::new(state))).is_err() {
             println!("Client disconnected.");
             break;
+        }
+
+        if wipe_signal.swap(false, Ordering::AcqRel) {
+            if send_message(&mut ws, &ServerMessage::RunChanged(None)).is_err() {
+                println!("Client disconnected.");
+                break;
+            }
         }
 
         // Send box snapshot on first tick and every 5 seconds thereafter.

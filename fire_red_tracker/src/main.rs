@@ -50,7 +50,7 @@ use cli::{Cli, Command};
 use colored::Colorize;
 use fire_red_loop::*;
 use fire_red_states::*;
-use game::{check_for_dead_pokemon, check_for_new_pokemon, fill_party_list, game_is_loaded, is_shiny, map_state_from_ewram, scan_for_balls_pocket};
+use game::{check_for_dead_pokemon, check_for_new_pokemon, check_for_run_over, fill_party_list, game_is_loaded, is_shiny, map_state_from_ewram, scan_for_balls_pocket, scan_for_security_key};
 use gui::{WindowInfo, PARTY_WINDOW};
 use server::handle_client;
 use std::collections::HashMap;
@@ -62,9 +62,9 @@ use std::sync::{Arc, Mutex};
 // Constants
 // ---------------------------------------------------------------------------
 
-/// How often (in seconds) the party list is force-refreshed even when the
-/// party size has not changed, to catch in-place changes such as HP loss.
-const FORCE_PARTY_CHECK_INTERVAL: u64 = 5;
+/// How often (in seconds) the DB checks for deaths/new-pokemon are run when
+/// the party size has not changed, to catch in-place changes such as HP loss.
+const FORCE_PARTY_CHECK_INTERVAL: u64 = 1;
 
 // ---------------------------------------------------------------------------
 // Box data helpers
@@ -234,12 +234,14 @@ fn main() {
         }
     }
 
-    let is_clean          = cfg.clean || cli.clean;
-    let rom_path          = cli.rom.unwrap_or(cfg.rom);
-    let do_scan_balls     = cli.scan_balls_pocket;
+    let is_clean            = cfg.clean || cli.clean;
+    let rom_path            = cli.rom.unwrap_or(cfg.rom);
+    let do_scan_balls       = cli.scan_balls_pocket;
+    let do_scan_sec_key     = cli.scan_security_key;
 
-    let game_loaded: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
-    let run_changed: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
+    let game_loaded:  Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
+    let run_changed:  Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
+    let wipe_signal:  Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
 
     let shared_party: Arc<Mutex<Vec<fire_red_party_monitor::Pokemon>>> =
         Arc::new(Mutex::new(Vec::new()));
@@ -257,6 +259,7 @@ fn main() {
         let thread_box         = shared_box.clone();
         let thread_game_loaded = game_loaded.clone();
         let thread_run_changed = run_changed.clone();
+        let thread_wipe_signal = wipe_signal.clone();
 
         let main_thread = std::thread::spawn(move || {
             match start_loop(rom_path.as_str(), is_clean) {
@@ -280,6 +283,11 @@ fn main() {
 
             if do_scan_balls {
                 scan_for_balls_pocket();
+                std::process::exit(0);
+            }
+
+            if let Some(qty) = do_scan_sec_key {
+                scan_for_security_key(qty);
                 std::process::exit(0);
             }
 
@@ -322,6 +330,10 @@ fn main() {
             fill_party_list(&thread_party);
             check_for_new_pokemon(&thread_party);
             check_for_dead_pokemon(&thread_party, enc_tracker.has_received_balls());
+            if check_for_run_over(&thread_party, enc_tracker.has_received_balls()) {
+                enc_tracker.mark_wipe();
+                thread_wipe_signal.store(true, Ordering::Release);
+            }
 
             loop {
                 if !game_is_loaded() {
@@ -364,20 +376,31 @@ fn main() {
                         get_area_pokemon_id_for_state(&current_state);
                 }
 
+                // Refresh HP/status from the EWRAM buffer every tick so the
+                // aggregator always sees current values without waiting for a
+                // size change or the periodic DB-check interval.
+                fill_party_list(&thread_party);
+
                 if old_party_size != party_size {
                     old_party_size = party_size;
                     update_box_list();
                     *thread_box.lock().unwrap_or_else(|e| e.into_inner()) = build_box_entries();
-                    fill_party_list(&thread_party);
                     check_for_new_pokemon(&thread_party);
                     check_for_dead_pokemon(&thread_party, enc_tracker.has_received_balls());
+                    if check_for_run_over(&thread_party, enc_tracker.has_received_balls()) {
+                        enc_tracker.mark_wipe();
+                        thread_wipe_signal.store(true, Ordering::Release);
+                    }
                 }
 
                 if last_party_refresh.elapsed().as_secs() >= FORCE_PARTY_CHECK_INTERVAL {
                     last_party_refresh = std::time::Instant::now();
-                    fill_party_list(&thread_party);
                     check_for_new_pokemon(&thread_party);
                     check_for_dead_pokemon(&thread_party, enc_tracker.has_received_balls());
+                    if check_for_run_over(&thread_party, enc_tracker.has_received_balls()) {
+                        enc_tracker.mark_wipe();
+                        thread_wipe_signal.store(true, Ordering::Release);
+                    }
                 }
 
                 if thread_run_changed.swap(false, Ordering::AcqRel) {
@@ -405,6 +428,7 @@ fn main() {
         let net_cache         = sprite_cache.clone();
         let net_loaded        = game_loaded.clone();
         let net_run_changed   = run_changed.clone();
+        let net_wipe_signal   = wipe_signal.clone();
 
         let net_thread = std::thread::spawn(move || {
             loop {
@@ -420,6 +444,7 @@ fn main() {
                             net_cache.clone(),
                             net_loaded.clone(),
                             net_run_changed.clone(),
+                            net_wipe_signal.clone(),
                         );
                         println!("Disconnected from aggregator.");
                     }

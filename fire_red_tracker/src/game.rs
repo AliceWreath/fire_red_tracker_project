@@ -35,6 +35,17 @@ const BALLS_POCKET_SAVE_BLOCK_OFFSET: usize = 0x0430;
 /// Number of slots in the balls pocket.
 const BALLS_POCKET_SLOTS: usize = 13;
 
+/// Fixed EWRAM base address of SaveBlock2 for FireRed USA Rev 1.
+/// Same address used by `fire_red_trainer_data`.
+const SAVE_BLOCK_2_BASE: usize = 0x02024298;
+
+/// Byte offset of `securityKey` (u32) within SaveBlock2.
+/// Confirmed empirically via --scan-security-key: raw_qty 0x91B5 ^ key_low 0x91B0 = 5.
+const SECURITY_KEY_OFFSET: usize = 0x0E4C;
+
+/// Minimum number of Pokéballs required for the run-start latch to trigger.
+const RUN_START_BALL_THRESHOLD: u32 = 5;
+
 /// Returns `true` if the pokemon with `personality` and `ot_id` is shiny.
 ///
 /// Uses the Gen III formula: `(p_high ^ p_low ^ id_high ^ id_low) < 8`.
@@ -292,6 +303,28 @@ pub fn game_is_loaded() -> bool {
     true
 }
 
+/// Returns `true` if every Pokémon in the current party is recorded as dead,
+/// indicating a Nuzlocke party wipe. Calls `end_run()` and returns `true` so
+/// the caller can lock the encounter tracker against further tracking.
+///
+/// Returns `false` when the party is empty (pre-game or between battles) or
+/// when any party member is still alive in the database, and when
+/// `has_received_balls` is false (run hasn't officially started yet).
+pub fn check_for_run_over(thread_party: &Arc<Mutex<Vec<Pokemon>>>, has_received_balls: bool) -> bool {
+    if !has_received_balls { return false; }
+    let party = thread_party.lock().unwrap_or_else(|e| e.into_inner());
+    if party.is_empty() { return false; }
+    let all_dead = party.iter().all(|p| {
+        fire_red_database::is_dead(p.box_mon.personality)
+    });
+    drop(party);
+    if all_dead {
+        fire_red_database::end_run();
+        return true;
+    }
+    false
+}
+
 /// Scans SaveBlock1 for the balls pocket by sliding a 13-slot window and
 /// checking only item IDs (quantities are XOR-encrypted in RAM and cannot be
 /// read directly). A valid candidate window has every item_id either 0 (empty
@@ -384,22 +417,135 @@ pub fn scan_for_balls_pocket() {
     }
 }
 
-/// Returns `true` if the player has at least one Pokéball in their bag.
+/// Scans EWRAM for the bag item security key given the known quantity for one
+/// ball slot. Run this with a known number of Pokéballs in the bag.
 ///
-/// Reads the balls pocket (13 ItemSlots) from SaveBlock1 via the IWRAM pointer.
-/// Each slot is 4 bytes: `u16` item_id followed by `u16` quantity. Returns
-/// `false` when the pocket is empty, the SaveBlock1 pointer is invalid, or the
-/// EWRAM snapshot is too small to reach the pocket.
+/// The security key is stored as a u32 in SaveBlock2 but only the lower 16 bits
+/// are used for encryption: `stored_qty = actual_qty ^ (security_key & 0xFFFF)`.
+/// This function reads the raw bytes at the balls pocket slot 0, computes the
+/// candidate key (`raw_qty ^ expected_qty`), then searches all of EWRAM for
+/// that u16 and prints each hit with its SaveBlock2-relative offset.
+pub fn scan_for_security_key(expected_qty: u16) {
+    let iwram = fire_red_memory::get_iwram();
+    let ewram = fire_red_memory::get_ewram();
+
+    // Resolve the balls pocket so we can read raw slot 0 quantity.
+    let ptr_offset = SAVE_BLOCK_1_PTR_ADDR - IWRAM_BASE;
+    if iwram.len() < ptr_offset + 4 {
+        eprintln!("IWRAM too small to read SaveBlock1 pointer.");
+        return;
+    }
+    let save_block_ptr = u32::from_le_bytes([
+        iwram[ptr_offset],
+        iwram[ptr_offset + 1],
+        iwram[ptr_offset + 2],
+        iwram[ptr_offset + 3],
+    ]) as usize;
+    if save_block_ptr < EWRAM_BASE || save_block_ptr >= EWRAM_BASE + ewram.len() {
+        eprintln!("SaveBlock1 ptr 0x{:08X} is outside EWRAM — is the game loaded?", save_block_ptr);
+        return;
+    }
+
+    let pocket_start = (save_block_ptr - EWRAM_BASE) + BALLS_POCKET_SAVE_BLOCK_OFFSET;
+    let pocket_end   = pocket_start + BALLS_POCKET_SLOTS * 4;
+    if ewram.len() < pocket_end {
+        eprintln!("EWRAM too small to reach balls pocket.");
+        return;
+    }
+
+    // Find the first occupied ball slot and read its raw (encrypted) quantity.
+    let mut raw_qty: Option<u16> = None;
+    for slot in 0..BALLS_POCKET_SLOTS {
+        let base    = pocket_start + slot * 4;
+        let item_id = u16::from_le_bytes([ewram[base], ewram[base + 1]]);
+        if (1..=12).contains(&item_id) {
+            raw_qty = Some(u16::from_le_bytes([ewram[base + 2], ewram[base + 3]]));
+            println!("Slot {:2}: item_id={:2}  raw_qty_bytes=0x{:04X}",
+                slot, item_id, raw_qty.unwrap());
+            break;
+        }
+    }
+
+    let raw = match raw_qty {
+        Some(v) => v,
+        None => {
+            eprintln!("No ball found in the balls pocket — have at least one ball in your bag.");
+            return;
+        }
+    };
+
+    let candidate_key = raw ^ expected_qty;
+    println!("raw_qty=0x{:04X}  expected_qty={}  candidate_key=0x{:04X}",
+        raw, expected_qty, candidate_key);
+    println!();
+    println!("Searching EWRAM for 0x{:04X} at u16-aligned offsets (SaveBlock2 relative):", candidate_key);
+
+    let sb2_base_offset = SAVE_BLOCK_2_BASE - EWRAM_BASE;
+    let mut found_any = false;
+
+    // Scan all even-aligned positions in the region ±0x2000 around SaveBlock2.
+    let scan_start = sb2_base_offset.saturating_sub(0x200);
+    let scan_end   = (sb2_base_offset + 0x2000).min(ewram.len().saturating_sub(1));
+
+    let mut off = scan_start;
+    while off + 1 < scan_end {
+        let val = u16::from_le_bytes([ewram[off], ewram[off + 1]]);
+        if val == candidate_key {
+            let gba_addr  = EWRAM_BASE + off;
+            let sb2_rel   = off as isize - sb2_base_offset as isize;
+            println!("  EWRAM offset 0x{:05X}  GBA 0x{:08X}  SaveBlock2+0x{:04X}",
+                off, gba_addr, sb2_rel as usize);
+            found_any = true;
+        }
+        off += 2;
+    }
+
+    if !found_any {
+        println!("  Not found near SaveBlock2. Widening to full EWRAM scan...");
+        let mut off = 0usize;
+        while off + 1 < ewram.len() {
+            let val = u16::from_le_bytes([ewram[off], ewram[off + 1]]);
+            if val == candidate_key {
+                let gba_addr = EWRAM_BASE + off;
+                let sb2_rel  = off as isize - sb2_base_offset as isize;
+                println!("  EWRAM offset 0x{:05X}  GBA 0x{:08X}  (SaveBlock2{:+#06X})",
+                    off, gba_addr, sb2_rel);
+            }
+            off += 2;
+        }
+    }
+}
+
+/// Returns the lower 16 bits of the bag item security key from SaveBlock2.
 ///
-/// Returns `false` (not `true`) on read failure so that pre-ball encounters on
-/// routes like Route 1 are silently skipped rather than incorrectly recorded.
-pub fn has_pokeballs() -> bool {
+/// Item quantities are stored in RAM as `actual_qty ^ (security_key & 0xFFFF)`.
+/// Returns 0 on read failure (treats quantities as unencrypted).
+fn read_security_key() -> u16 {
+    let ewram  = fire_red_memory::get_ewram();
+    let offset = (SAVE_BLOCK_2_BASE - EWRAM_BASE) + SECURITY_KEY_OFFSET;
+    if ewram.len() < offset + 4 {
+        return 0;
+    }
+    u32::from_le_bytes([
+        ewram[offset],
+        ewram[offset + 1],
+        ewram[offset + 2],
+        ewram[offset + 3],
+    ]) as u16
+}
+
+/// Returns the total number of Pokéballs across all slots in the balls pocket.
+///
+/// Decodes XOR-encrypted quantities using the security key from SaveBlock2.
+/// Returns 0 on any read failure so that pre-ball encounters are silently
+/// skipped rather than incorrectly recorded.
+pub fn count_pokeballs() -> u32 {
     let iwram = fire_red_memory::get_iwram();
     let ewram = fire_red_memory::get_ewram();
 
     let ptr_offset = SAVE_BLOCK_1_PTR_ADDR - IWRAM_BASE;
     if iwram.len() < ptr_offset + 4 {
-        return false;
+        return 0;
     }
 
     let save_block_ptr = u32::from_le_bytes([
@@ -410,25 +556,36 @@ pub fn has_pokeballs() -> bool {
     ]) as usize;
 
     if save_block_ptr < EWRAM_BASE || save_block_ptr >= EWRAM_BASE + ewram.len() {
-        return false;
+        return 0;
     }
 
     let pocket_start = (save_block_ptr - EWRAM_BASE) + BALLS_POCKET_SAVE_BLOCK_OFFSET;
     let pocket_end   = pocket_start + BALLS_POCKET_SLOTS * 4;
     if ewram.len() < pocket_end {
-        return false;
+        return 0;
     }
 
-    // Quantities are XOR-encrypted in RAM; check item_id only.
+    let key     = read_security_key();
+    let mut total: u32 = 0;
     for slot in 0..BALLS_POCKET_SLOTS {
         let base    = pocket_start + slot * 4;
         let item_id = u16::from_le_bytes([ewram[base], ewram[base + 1]]);
-        if (1..=12).contains(&item_id) {
-            return true;
+        if !(1..=12).contains(&item_id) {
+            continue;
         }
+        let raw_qty = u16::from_le_bytes([ewram[base + 2], ewram[base + 3]]);
+        total += (raw_qty ^ key) as u32;
     }
+    total
+}
 
-    false
+/// Returns `true` if the player has at least `RUN_START_BALL_THRESHOLD` Pokéballs.
+///
+/// Used to gate encounter and death tracking — the run officially begins once
+/// the player has accumulated enough balls to be considered ready.
+/// Returns `false` on read failure so pre-ball encounters are silently skipped.
+pub fn has_pokeballs() -> bool {
+    count_pokeballs() >= RUN_START_BALL_THRESHOLD
 }
 
 /// Returns the wild Pokémon currently engaged in battle, or `None` when not

@@ -147,6 +147,7 @@ let _shinyTimer         = null;
 let _hadAlive           = true;
 let _wipeEndSent        = false;
 let _wipeTimer          = null;
+let _prevRunId          = null;
 
 function showShinyToast(enc) {
     const toast = document.getElementById('shiny-toast');
@@ -184,11 +185,38 @@ function showDeathToast(mon) {
 
 function handleState(slots) {
     const slot = slots[playerIndex];
-    if (!slot || !slot.connected || slot.active_run_id == null) return;
+    if (!slot || !slot.connected) return;
+
+    const currentRunId = slot.active_run_id;
+    const party        = slot.party || [];
+
+    // Reset wipe state when a new run starts.
+    if (currentRunId != null && _prevRunId == null) {
+        _hadAlive    = true;
+        _wipeEndSent = false;
+    }
+
+    // Wipe toast: the tracker calls end_run() before broadcasting state, so
+    // active_run_id is already null by the time the all-dead party arrives.
+    // Detect the active→ended transition instead of checking allDead while active.
+    if (_prevRunId != null && currentRunId == null && !_wipeEndSent && _hadAlive) {
+        if (party.length > 0 && party.every(m => m.dead)) {
+            _wipeEndSent = true;
+            showWipeToast(party);
+        }
+    }
+    _prevRunId = currentRunId;
+
+    // Keep _hadAlive current while a run is active.
+    if (currentRunId != null && party.length > 0 && !party.every(m => m.dead)) {
+        _hadAlive = true;
+    }
+
+    if (currentRunId == null) return;
 
     // Death detection
     const next = {};
-    for (const mon of (slot.party || [])) {
+    for (const mon of party) {
         if (mon.personality == null) continue;
         next[mon.personality] = mon.dead;
         if (mon.dead && _deathPartyState[mon.personality] === false) showDeathToast(mon);
@@ -206,26 +234,6 @@ function handleState(slots) {
         }
         _seenEncounterKeys = encKeys;
     }
-
-    // Wipe / blackout detection
-    // Guard: require at least 2 caught Pokémon before auto-ending. The
-    // starter is always caught entry #1 immediately at game start. Entry #2
-    // only exists after the player has caught a second Pokémon (first wild
-    // catch, trade, or second gift), which means the nuzlocke is fully
-    // underway. This prevents a pre-ball blackout from ending the run.
-    const party = slot.party || [];
-    const runActive = slot.caught && slot.caught.length >= 2;
-    if (party.length > 0 && slot.active_run_id != null) {
-        const allDead = party.every(m => m.dead);
-        if (allDead && _hadAlive && !_wipeEndSent && runActive) {
-            _wipeEndSent = true;
-            showWipeToast(party);
-            if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ cmd: 'end_run' }));
-        }
-        if (!allDead) { _hadAlive = true; _wipeEndSent = false; }
-        else if (_hadAlive && allDead) _hadAlive = false;
-    }
-    if (slot.active_run_id == null) _wipeEndSent = false;
 
     const mg  = slot.current_map_group || 0;
     const mn  = slot.current_map_name  || 0;

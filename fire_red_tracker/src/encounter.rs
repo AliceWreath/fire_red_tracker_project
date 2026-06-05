@@ -18,6 +18,9 @@ pub struct EncounterTracker {
     /// Latches to `true` the first time balls are detected in the bag and stays
     /// true until reset. Ensures encounters still count after all balls are used.
     has_received_balls:     bool,
+    /// Set when a party wipe ends the run. Prevents `tick` from re-enabling
+    /// tracking until the game unloads or a new run is started.
+    wipe_detected:          bool,
 }
 
 impl EncounterTracker {
@@ -27,6 +30,7 @@ impl EncounterTracker {
             tracked_personality:    None,
             enc_map:                (0, 0),
             has_received_balls:     false,
+            wipe_detected:          false,
         }
     }
 
@@ -34,6 +38,14 @@ impl EncounterTracker {
         self.last_enemy_personality = 0;
         self.tracked_personality    = None;
         self.has_received_balls     = false;
+        self.wipe_detected          = false;
+    }
+
+    /// Called when a party wipe ends the run. Clears the ball latch and locks
+    /// `tick` so it won't re-enable tracking until `reset` is called.
+    pub fn mark_wipe(&mut self) {
+        self.has_received_balls = false;
+        self.wipe_detected      = true;
     }
 
     /// Seeds the latch from the database. If any encounters have been recorded
@@ -54,6 +66,7 @@ impl EncounterTracker {
     /// Called once per poll cycle while the game is loaded and state is
     /// initialized. Records first encounters and detects catches.
     pub fn tick(&mut self, current_state: FireRedState, thread_party: &Arc<Mutex<Vec<Pokemon>>>) {
+        if self.wipe_detected { return; }
         if let Some(enemy) = crate::game::get_wild_enemy_pokemon()
             && enemy.box_mon.personality != self.last_enemy_personality
         {

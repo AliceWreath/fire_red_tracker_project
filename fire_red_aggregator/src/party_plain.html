@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Party</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body {
+    background: transparent;
+    font-family: 'Segoe UI', Tahoma, sans-serif;
+    color: #fff;
+    text-shadow: 0 1px 3px rgba(0,0,0,0.9);
+    width: fit-content;
+}
+#party {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 4px;
+    width: 280px;
+}
+.mon {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    background: rgba(15,15,15,0.78);
+    border-radius: 6px;
+    padding: 4px 10px 4px 4px;
+}
+.mon.dead { opacity: 0.55; }
+.sprite {
+    width: 48px; height: 48px;
+    image-rendering: pixelated;
+    flex-shrink: 0;
+}
+.mon.dead .sprite { filter: grayscale(100%) brightness(0.45); }
+.info {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+.name-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 13px;
+    font-weight: bold;
+    white-space: nowrap;
+    overflow: hidden;
+}
+.lv { font-size: 11px; color: #ccc; font-weight: 500; }
+.hp-row {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+}
+.hp-bar-bg {
+    flex: 1;
+    height: 6px;
+    background: rgba(255,255,255,0.15);
+    border-radius: 3px;
+    overflow: hidden;
+}
+.hp-bar-fill {
+    height: 100%;
+    border-radius: 3px;
+    transition: width 0.25s ease;
+}
+.hp-bar-fill.high { background: #44cc44; }
+.hp-bar-fill.mid  { background: #ddcc22; }
+.hp-bar-fill.low  { background: #cc3333; }
+.hp-nums {
+    font-size: 11px;
+    color: #ddd;
+    font-weight: 600;
+    white-space: nowrap;
+    min-width: 60px;
+    text-align: right;
+}
+.status-badge {
+    display: inline-block;
+    font-size: 9px;
+    font-weight: bold;
+    padding: 1px 4px;
+    border-radius: 3px;
+    flex-shrink: 0;
+    text-shadow: none;
+}
+.status-slp { background: #555577; color: #ccccee; }
+.status-psn { background: #7733aa; color: #ddb8ff; }
+.status-brn { background: #aa4400; color: #ffcc99; }
+.status-frz { background: #336688; color: #aaddff; }
+.status-par { background: #887700; color: #ffee88; }
+.status-tox { background: #550077; color: #dd99ff; }
+</style>
+</head>
+<body>
+<div id="party"></div>
+<script>
+const parts = window.location.pathname.split('/').filter(Boolean);
+const playerIndex = parseInt(parts[0]) || 0;
+
+let ws;
+function connect() {
+    ws = new WebSocket('ws://' + location.host + '/ws');
+    ws.onmessage = e => render(JSON.parse(e.data));
+    ws.onclose   = () => setTimeout(connect, 2000);
+}
+connect();
+
+function statusBadge(status) {
+    if (!status) return null;
+    let label = '', cls = '';
+    if      (status & 0x07) { label = 'SLP'; cls = 'status-slp'; }
+    else if (status & 0x80) { label = 'TOX'; cls = 'status-tox'; }
+    else if (status & 0x08) { label = 'PSN'; cls = 'status-psn'; }
+    else if (status & 0x10) { label = 'BRN'; cls = 'status-brn'; }
+    else if (status & 0x20) { label = 'FRZ'; cls = 'status-frz'; }
+    else if (status & 0x40) { label = 'PAR'; cls = 'status-par'; }
+    if (!label) return null;
+    const s = document.createElement('span');
+    s.className = 'status-badge ' + cls;
+    s.textContent = label;
+    return s;
+}
+
+function render(slots) {
+    const slot  = slots[playerIndex];
+    const root  = document.getElementById('party');
+    root.innerHTML = '';
+    if (!slot || !slot.party) return;
+
+    for (const mon of slot.party) {
+        const row = document.createElement('div');
+        row.className = 'mon' + (mon.dead ? ' dead' : '');
+
+        if (mon.sprite) {
+            const img = document.createElement('img');
+            img.className = 'sprite';
+            img.src = mon.sprite;
+            row.appendChild(img);
+        }
+
+        const info = document.createElement('div');
+        info.className = 'info';
+
+        // Name + level + status
+        const nameRow = document.createElement('div');
+        nameRow.className = 'name-row';
+        const nameEl = document.createElement('span');
+        nameEl.textContent = mon.nickname || mon.species_name;
+        nameRow.appendChild(nameEl);
+        const lvEl = document.createElement('span');
+        lvEl.className = 'lv';
+        lvEl.textContent = 'Lv' + mon.level;
+        nameRow.appendChild(lvEl);
+        const sb = statusBadge(mon.status);
+        if (sb) nameRow.appendChild(sb);
+        info.appendChild(nameRow);
+
+        // HP bar + numbers
+        const hpRow = document.createElement('div');
+        hpRow.className = 'hp-row';
+
+        const ratio  = mon.max_hp > 0 ? mon.hp / mon.max_hp : 0;
+        const barCls = ratio > 0.5 ? 'high' : ratio > 0.2 ? 'mid' : 'low';
+
+        const barBg   = document.createElement('div');
+        barBg.className = 'hp-bar-bg';
+        const barFill = document.createElement('div');
+        barFill.className = 'hp-bar-fill ' + barCls;
+        barFill.style.width = Math.round(ratio * 100) + '%';
+        barBg.appendChild(barFill);
+        hpRow.appendChild(barBg);
+
+        const hpNums = document.createElement('div');
+        hpNums.className = 'hp-nums';
+        hpNums.textContent = mon.hp + ' / ' + mon.max_hp;
+        hpRow.appendChild(hpNums);
+
+        info.appendChild(hpRow);
+        row.appendChild(info);
+        root.appendChild(row);
+    }
+}
+</script>
+</body>
+</html>

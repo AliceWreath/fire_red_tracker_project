@@ -12,7 +12,7 @@
 use crate::app::is_shiny;
 use crate::client::{MonitorSlot, SharedSlots, SpriteCache, encode_png};
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::{header, StatusCode},
     response::{Html, IntoResponse},
     routing::{get, post},
@@ -865,12 +865,13 @@ struct WebState {
 // Axum handlers
 // ---------------------------------------------------------------------------
 
-const OVERLAY_HTML:     &str = include_str!("overlay.html");
-const FOCUSED_HTML:     &str = include_str!("focused.html");
-const DBVIEWER_HTML:    &str = include_str!("db.html");
-const HISTORY_HTML:     &str = include_str!("history.html");
-const ALERTS_HTML:      &str = include_str!("alerts.html");
-const ROUTES_HTML:      &str = include_str!("routes.html");
+const OVERLAY_HTML:      &str = include_str!("overlay.html");
+const FOCUSED_HTML:      &str = include_str!("focused.html");
+const DBVIEWER_HTML:     &str = include_str!("db.html");
+const HISTORY_HTML:      &str = include_str!("history.html");
+const ALERTS_HTML:       &str = include_str!("alerts.html");
+const ROUTES_HTML:       &str = include_str!("routes.html");
+const PARTY_PLAIN_HTML:  &str = include_str!("party_plain.html");
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -880,6 +881,14 @@ async fn serve_html() -> Html<String> {
 
 async fn serve_focused() -> Html<String> {
     Html(FOCUSED_HTML.replace("__VERSION__", VERSION))
+}
+
+async fn serve_party(Query(params): Query<HashMap<String, String>>) -> Html<String> {
+    if params.contains_key("plain-view") {
+        Html(PARTY_PLAIN_HTML.to_string())
+    } else {
+        Html(FOCUSED_HTML.replace("__VERSION__", VERSION))
+    }
 }
 
 async fn serve_db_viewer() -> Html<&'static str> {
@@ -1052,7 +1061,7 @@ pub fn run(live_slots: SharedSlots, port: u16, db_conn: Option<String>) {
             .route("/alerts", get(serve_alerts))
             .route("/:index/alerts", get(serve_alerts))
             .route("/:index/routes", get(serve_routes))
-            .route("/:index/party", get(serve_focused))
+            .route("/:index/party", get(serve_party))
             .route("/:index/encounters", get(serve_focused))
             .route("/:index/dead", get(serve_focused))
             .route("/:index/caught", get(serve_focused))
