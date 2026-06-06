@@ -234,6 +234,28 @@ fn main() {
         web::run(shared_slots, port, db, use_test);
     } else {
         // Normal egui window mode.
+        let update_available: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+        {
+            let flag = update_available.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_secs(10));
+                let result = self_update::backends::github::Update::configure()
+                    .repo_owner("AliceWreath")
+                    .repo_name("fire_red_tracker_project")
+                    .bin_name("fire_red_aggregator")
+                    .identifier("fire_red_aggregator")
+                    .current_version(env!("CARGO_PKG_VERSION"))
+                    .build()
+                    .and_then(|u| u.get_latest_release());
+                if let Ok(release) = result {
+                    let latest = release.version.trim_start_matches('v');
+                    if latest != env!("CARGO_PKG_VERSION") {
+                        *flag.lock_or_recover() = Some(release.version.clone());
+                    }
+                }
+            });
+        }
+
         let options = eframe::NativeOptions {
             viewport: egui::ViewportBuilder::default()
                 .with_title("Fire Red Aggregator")
@@ -243,7 +265,7 @@ fn main() {
         let _ = eframe::run_native(
             "Fire Red Aggregator",
             options,
-            Box::new(move |cc| Ok(Box::new(AggregatorApp::new(cc, shared_slots, config_path, &cfg_ref)))),
+            Box::new(move |cc| Ok(Box::new(AggregatorApp::new(cc, shared_slots, config_path, &cfg_ref, update_available)))),
         );
     }
 }

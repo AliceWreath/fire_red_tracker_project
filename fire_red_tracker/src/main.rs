@@ -519,6 +519,28 @@ fn main() {
     }
 
     // ── Standalone: show local GUI ────────────────────────────────────────────
+    let update_available: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+    {
+        let flag = update_available.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_secs(10));
+            let result = self_update::backends::github::Update::configure()
+                .repo_owner("AliceWreath")
+                .repo_name("fire_red_tracker_project")
+                .bin_name("fire_red_tracker")
+                .identifier("fire_red_tracker")
+                .current_version(env!("CARGO_PKG_VERSION"))
+                .build()
+                .and_then(|u| u.get_latest_release());
+            if let Ok(release) = result {
+                let latest = release.version.trim_start_matches('v');
+                if latest != env!("CARGO_PKG_VERSION") {
+                    *flag.lock_or_recover() = Some(release.version.clone());
+                }
+            }
+        });
+    }
+
     let _ = eframe::run_native(
         "Tracker",
         eframe::NativeOptions {
@@ -536,6 +558,7 @@ fn main() {
                 None,
                 config_path_gui,
                 &cfg_gui,
+                update_available,
             )))
         }),
     );

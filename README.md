@@ -84,6 +84,8 @@ POSTs are fire-and-forget: they are dispatched on a dedicated background thread 
 ### Standalone
 Runs locally. Reads the ROM and polls RetroArch on the same machine. Displays a local GUI.
 
+10 seconds after the window opens, a background thread checks GitHub for a newer release. If one is found the window title changes to `Tracker — v{X} available` as a passive reminder. Run `--update` to apply it.
+
 ```
 tracker firered.gba
 tracker firered.gba --new-run                   # start a fresh run (ignores the most recent active run)
@@ -106,6 +108,8 @@ Default host is `127.0.0.1`, default port is `7878`. The tracker reconnects auto
 
 ### Aggregator
 A separate binary for Soul Link / co-op runs. **Listens** for incoming tracker connections — no addresses need to be configured in advance. Each tracker dials out to the aggregator when started in connected mode.
+
+The same background version check runs here: 10 seconds after the window opens, if a newer release is found the title bar changes to `Fire Red Aggregator — v{X} available`.
 
 ```
 aggregator
@@ -331,7 +335,7 @@ A **Soul Link** is a Nuzlocke variant played with a partner: each player's catch
 | `serde_json` | JSON serialisation of game state pushed to WebSocket clients |
 | `futures-util` | Stream/sink utilities for bidirectional axum WebSocket handling |
 | `rfd` | Native file-picker dialogs used in the first-run config setup wizard |
-| `self_update` | GitHub release auto-updater; powers the `--update` flag on both binaries |
+| `self_update` | GitHub release auto-updater; powers the `--update` flag on both binaries and the passive background version check that updates the window title when a newer release is available |
 | `once_cell` | Lazy static initialisation for shared name buffers and ROM data |
 | `reqwest` | Blocking HTTP client used by the tracker's webhook sender to POST event payloads; TLS via rustls |
 

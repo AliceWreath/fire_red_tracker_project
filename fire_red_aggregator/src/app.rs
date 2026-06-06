@@ -137,10 +137,20 @@ pub struct AggregatorApp {
     config_path:   PathBuf,
     settings_open: bool,
     settings:      SettingsDraft,
+    /// Latest release version string if a newer version is available, set by the
+    /// background update-check thread.
+    update_available: Arc<std::sync::Mutex<Option<String>>>,
+    title_set: bool,
 }
 
 impl AggregatorApp {
-    pub fn new(_cc: &eframe::CreationContext<'_>, live_slots: SharedSlots, config_path: PathBuf, config: &AggregatorConfig) -> Self {
+    pub fn new(
+        _cc: &eframe::CreationContext<'_>,
+        live_slots: SharedSlots,
+        config_path: PathBuf,
+        config: &AggregatorConfig,
+        update_available: Arc<std::sync::Mutex<Option<String>>>,
+    ) -> Self {
         Self {
             live_slots,
             slots:                     Vec::new(),
@@ -154,6 +164,8 @@ impl AggregatorApp {
             config_path,
             settings_open: false,
             settings:      SettingsDraft::from_config(config),
+            update_available,
+            title_set: false,
         }
     }
 
@@ -677,6 +689,15 @@ impl eframe::App for AggregatorApp {
     }
 
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        if !self.title_set {
+            if let Some(v) = &*self.update_available.lock_or_recover() {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Title(
+                    format!("Fire Red Aggregator — v{} available", v.trim_start_matches('v')),
+                ));
+                self.title_set = true;
+            }
+        }
+
         // Snapshot the live slot list for this frame.
         self.slots = self.live_slots.lock_or_recover().clone();
         while self.db_caches.len() < self.slots.len() {

@@ -101,6 +101,10 @@ pub struct WindowInfo {
     pub config_path:   PathBuf,
     pub settings_open: bool,
     settings:          SettingsDraft,
+    /// Latest release version string if a newer version is available, set by the
+    /// background update-check thread.
+    pub update_available: Arc<Mutex<Option<String>>>,
+    title_set: bool,
 }
 
 impl WindowInfo {
@@ -114,6 +118,7 @@ impl WindowInfo {
         texture_request_queue: Option<Arc<Mutex<VecDeque<Vec<u16>>>>>,
         config_path: PathBuf,
         config: &TrackerConfig,
+        update_available: Arc<Mutex<Option<String>>>,
     ) -> Self {
         Self {
             party_list,
@@ -126,6 +131,8 @@ impl WindowInfo {
             config_path,
             settings_open: false,
             settings: SettingsDraft::from_config(config),
+            update_available,
+            title_set: false,
         }
     }
 }
@@ -140,6 +147,15 @@ impl eframe::App for WindowInfo {
     /// 3. Draw the party panel.
     /// 4. Draw the encounters child viewport.
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        if !self.title_set {
+            if let Some(v) = &*self.update_available.lock_or_recover() {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Title(
+                    format!("Tracker — v{} available", v.trim_start_matches('v')),
+                ));
+                self.title_set = true;
+            }
+        }
+
         ctx.request_repaint();
 
         // ── 1. Upload textures received from the server ───────────────────────
