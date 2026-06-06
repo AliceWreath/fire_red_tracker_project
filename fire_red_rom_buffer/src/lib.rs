@@ -93,6 +93,16 @@ pub struct RomAddresses {
     pub flags_offset:     usize,
     pub badge_flag_start: usize,
     pub box_data_offset:  usize,
+
+    // Elite 4 and game-clear flag indices within gSaveBlock1.flags[]
+    /// Flag index for Lorelei's first defeat (enables rematch).
+    /// Bruno, Agatha, and Lance follow at e4_flag_start+1/+2/+3 respectively.
+    /// Source: pokefirered FLAG_REMATCH_LORELEI = 0x3E3
+    pub e4_flag_start: usize,
+    /// Flag index set when the player first enters the Hall of Fame
+    /// (i.e., defeats the Champion for the first time).
+    /// Source: pokefirered FLAG_SYS_GAME_CLEAR = 0x083
+    pub game_clear_flag: usize,
 }
 
 /// Address table confirmed for Pokémon FireRed USA Rev 1.
@@ -113,6 +123,8 @@ const FIRERED_USA_REV1: RomAddresses = RomAddresses {
     flags_offset:            0x0EE0,
     badge_flag_start:        0x820,
     box_data_offset:         0x4,
+    e4_flag_start:           0x3E3,
+    game_clear_flag:         0x083,
 };
 
 /// Address table for Pokémon FireRed USA Rev 0.

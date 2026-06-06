@@ -67,8 +67,11 @@ const IWRAM_BASE: usize = 0x03000000;
 /// Base address of EWRAM in the GBA address space.
 const EWRAM_BASE: usize = 0x02000000;
 
-/// Total number of badges.
+/// Total number of gym badges.
 const NUM_BADGES: usize = 8;
+
+/// Number of Elite 4 members plus the Champion.
+const NUM_E4: usize = 5;
 
 // ---------------------------------------------------------------------------
 // Offset helpers
@@ -100,8 +103,13 @@ pub struct BadgeState {
     /// One entry per badge, in gym order. `true` = obtained.
     pub badges: [bool; NUM_BADGES],
 
-    /// The next gym leader the player hasn't beaten yet, or `None` if all
-    /// badges have been obtained.
+    /// Elite 4 + Champion defeat flags (requires all 8 badges to be populated).
+    /// Indices: 0=Lorelei, 1=Bruno, 2=Agatha, 3=Lance, 4=Blue (Champion).
+    pub e4: [bool; NUM_E4],
+
+    /// The next challenge the player hasn't beaten yet: a gym leader while
+    /// badges remain, an Elite 4 member/Champion once all badges are held,
+    /// or `None` if the Champion has been defeated.
     pub next_gym: Option<GymInfo>,
 }
 
@@ -114,6 +122,12 @@ impl BadgeState {
     /// Returns `true` if all 8 badges have been obtained.
     pub fn all_obtained(&self) -> bool {
         self.badges.iter().all(|&b| b)
+    }
+
+    /// Returns `true` if all badges have been obtained and the Champion has
+    /// been defeated (i.e., the player has entered the Hall of Fame).
+    pub fn game_complete(&self) -> bool {
+        self.all_obtained() && self.e4.iter().all(|&b| b)
     }
 }
 
@@ -144,13 +158,14 @@ pub struct GymInfo {
 ///
 /// ```c
 /// typedef struct {
-///     uint8_t badges[8];   // 1 = obtained, 0 = not obtained, gym order
-///     int     badge_count; // number of obtained badges (0–8)
-///     int     has_next_gym;// 1 if next_gym fields are valid, 0 otherwise
-///     char   *next_leader; // gym leader name, or NULL
-///     char   *next_city;   // city name, or NULL
-///     char   *next_badge;  // badge name, or NULL
+///     uint8_t badges[8];      // 1 = obtained, 0 = not obtained, gym order
+///     int     badge_count;    // number of obtained badges (0–8)
+///     int     has_next_gym;   // 1 if next_gym fields are valid, 0 otherwise
+///     char   *next_leader;    // gym leader / E4 member name, or NULL
+///     char   *next_city;      // city name, or NULL
+///     char   *next_badge;     // badge name (empty for E4), or NULL
 ///     uint8_t next_max_level; // highest level on next leader's team
+///     uint8_t e4_progress[5]; // 1 = defeated: [Lorelei,Bruno,Agatha,Lance,Blue]
 /// } BadgeStateFFI;
 /// ```
 #[repr(C)]
@@ -159,16 +174,19 @@ pub struct BadgeStateFFI {
     pub badges: [c_uchar; NUM_BADGES],
     /// Number of badges obtained (0–8).
     pub badge_count: i32,
-    /// `1` if the `next_*` fields are valid, `0` if all badges are obtained.
+    /// `1` if the `next_*` fields are valid, `0` if the Champion is defeated.
     pub has_next_gym: i32,
-    /// Null-terminated gym leader name, or null if `has_next_gym` is 0.
+    /// Null-terminated gym leader / Elite 4 member name, or null if challenge complete.
     pub next_leader: *mut c_char,
-    /// Null-terminated city name, or null if `has_next_gym` is 0.
+    /// Null-terminated city name, or null if challenge complete.
     pub next_city: *mut c_char,
-    /// Null-terminated badge name, or null if `has_next_gym` is 0.
+    /// Null-terminated badge name (empty string for Elite 4), or null if challenge complete.
     pub next_badge: *mut c_char,
-    /// Highest level pokemon on the next gym leader's team, or 0.
+    /// Highest level pokemon on the next leader's team, or 0.
     pub next_max_level: c_uchar,
+    /// Elite 4 + Champion defeat flags: 1=defeated, 0=not yet.
+    /// Indices: 0=Lorelei, 1=Bruno, 2=Agatha, 3=Lance, 4=Blue (Champion).
+    pub e4_progress: [c_uchar; NUM_E4],
 }
 
 // ---------------------------------------------------------------------------
@@ -186,6 +204,18 @@ fn gym_leaders() -> [GymInfo; NUM_BADGES] {
         GymInfo { leader: "Sabrina".into(),   city: "Saffron City".into(),    badge: "Marsh Badge".into(),   max_level: 50 },
         GymInfo { leader: "Blaine".into(),    city: "Cinnabar Island".into(), badge: "Volcano Badge".into(), max_level: 54 },
         GymInfo { leader: "Giovanni".into(),  city: "Viridian City".into(),   badge: "Earth Badge".into(),   max_level: 55 },
+    ]
+}
+
+/// Static table of Elite 4 members and the Champion, in encounter order.
+/// The `badge` field is empty because no badge is awarded for these fights.
+fn e4_members() -> [GymInfo; NUM_E4] {
+    [
+        GymInfo { leader: "Lorelei".into(), city: "Indigo Plateau".into(), badge: String::new(), max_level: 54 },
+        GymInfo { leader: "Bruno".into(),   city: "Indigo Plateau".into(), badge: String::new(), max_level: 58 },
+        GymInfo { leader: "Agatha".into(),  city: "Indigo Plateau".into(), badge: String::new(), max_level: 58 },
+        GymInfo { leader: "Lance".into(),   city: "Indigo Plateau".into(), badge: String::new(), max_level: 62 },
+        GymInfo { leader: "Blue".into(),    city: "Indigo Plateau".into(), badge: String::new(), max_level: 65 },
     ]
 }
 
@@ -245,8 +275,9 @@ pub fn read_badge_state() -> Option<BadgeState> {
     // Step 3: locate the two badge flag bytes.
     // Badge flags occupy bits 0–7 of the two bytes at
     // flags_array[badge_flag_start / 8].
+    let flags_base            = ewram_offset(save_block_base) + addrs.flags_offset;
     let badge_byte_index      = addrs.badge_flag_start / 8;
-    let flags_offset_in_ewram = ewram_offset(save_block_base) + addrs.flags_offset + badge_byte_index;
+    let flags_offset_in_ewram = flags_base + badge_byte_index;
 
     if ewram.len() < flags_offset_in_ewram + 2 {
         return None;
@@ -265,13 +296,44 @@ pub fn read_badge_state() -> Option<BadgeState> {
         *badge = (both >> (bit_start + i)) & 1 == 1;
     }
 
-    // Step 5: find the first unearned badge to identify the next gym.
-    let next_gym = badges
-        .iter()
-        .position(|&obtained| !obtained)
-        .map(|i| gym_leaders()[i].clone());
+    // Step 5: if all badges are held, read Elite 4 + Champion defeat flags.
+    let all_badges = badges.iter().all(|&b| b);
+    let mut e4 = [false; NUM_E4];
+    if all_badges {
+        // Flags for Lorelei/Bruno/Agatha/Lance are consecutive starting at
+        // e4_flag_start; read two bytes so we handle any bit alignment.
+        let e4_byte_idx = addrs.e4_flag_start / 8;
+        let e4_bit_start = addrs.e4_flag_start % 8;
+        let e4_offset = flags_base + e4_byte_idx;
+        if ewram.len() >= e4_offset + 2 {
+            let e4_both = (ewram[e4_offset] as u16) | ((ewram[e4_offset + 1] as u16) << 8);
+            for i in 0..4 {
+                e4[i] = (e4_both >> (e4_bit_start + i)) & 1 == 1;
+            }
+        }
 
-    Some(BadgeState { badges, next_gym })
+        // Champion is tracked by the Hall of Fame entry flag (game_clear_flag).
+        let gc_byte_idx = addrs.game_clear_flag / 8;
+        let gc_bit      = addrs.game_clear_flag % 8;
+        let gc_offset   = flags_base + gc_byte_idx;
+        if ewram.len() > gc_offset {
+            e4[4] = (ewram[gc_offset] >> gc_bit) & 1 == 1;
+        }
+    }
+
+    // Step 6: determine the next challenge.
+    let next_gym = if all_badges {
+        e4.iter()
+            .position(|&beaten| !beaten)
+            .map(|i| e4_members()[i].clone())
+    } else {
+        badges
+            .iter()
+            .position(|&obtained| !obtained)
+            .map(|i| gym_leaders()[i].clone())
+    };
+
+    Some(BadgeState { badges, e4, next_gym })
 }
 
 /// Returns the name of badge N (0-indexed), or `"Unknown"` if out of range.
@@ -330,6 +392,11 @@ pub extern "C" fn badge_read_state() -> *mut BadgeStateFFI {
         badges[i] = obtained as u8;
     }
 
+    let mut e4_progress = [0u8; NUM_E4];
+    for (i, &beaten) in state.e4.iter().enumerate() {
+        e4_progress[i] = beaten as u8;
+    }
+
     let ffi = Box::new(BadgeStateFFI {
         badges,
         badge_count:    state.count() as i32,
@@ -338,6 +405,7 @@ pub extern "C" fn badge_read_state() -> *mut BadgeStateFFI {
         next_city,
         next_badge,
         next_max_level,
+        e4_progress,
     });
 
     Box::into_raw(ffi)
@@ -567,6 +635,7 @@ mod tests {
             next_city,
             next_badge,
             next_max_level,
+            e4_progress: [0u8; NUM_E4],
         }))
     }
  
@@ -819,21 +888,39 @@ mod tests {
     fn test_badge_state_count_method() {
         let state = BadgeState {
             badges: [true, true, false, false, false, false, false, false],
+            e4: [false; NUM_E4],
             next_gym: None,
         };
         assert_eq!(state.count(), 2);
     }
- 
+
     #[test]
     fn test_badge_state_all_obtained_method() {
-        let full = BadgeState { badges: [true; 8], next_gym: None };
+        let full = BadgeState { badges: [true; 8], e4: [false; NUM_E4], next_gym: None };
         assert!(full.all_obtained());
- 
+
         let partial = BadgeState {
             badges: [true, true, true, true, true, true, true, false],
+            e4: [false; NUM_E4],
             next_gym: None,
         };
         assert!(!partial.all_obtained());
+    }
+
+    #[test]
+    fn test_game_complete() {
+        let complete = BadgeState { badges: [true; 8], e4: [true; NUM_E4], next_gym: None };
+        assert!(complete.game_complete());
+
+        let badges_only = BadgeState { badges: [true; 8], e4: [false; NUM_E4], next_gym: None };
+        assert!(!badges_only.game_complete());
+
+        let partial_e4 = BadgeState {
+            badges: [true; 8],
+            e4: [true, true, true, true, false],
+            next_gym: None,
+        };
+        assert!(!partial_e4.game_complete());
     }
  
     #[test]
@@ -868,5 +955,29 @@ mod tests {
     #[test]
     fn test_gym_table_has_eight_entries() {
         assert_eq!(gym_leaders().len(), NUM_BADGES);
+    }
+
+    // ── Elite 4 / Champion table ──────────────────────────────────────────────
+
+    #[test]
+    fn test_e4_table_order_and_levels() {
+        let members = e4_members();
+        let expected = [
+            ("Lorelei", 54u8),
+            ("Bruno",   58),
+            ("Agatha",  58),
+            ("Lance",   62),
+            ("Blue",    65),
+        ];
+        for (i, (name, level)) in expected.iter().enumerate() {
+            assert_eq!(members[i].leader, *name,  "E4 name mismatch at index {}", i);
+            assert_eq!(members[i].max_level, *level, "E4 level mismatch at index {}", i);
+            assert!(members[i].badge.is_empty(), "E4 badge should be empty at index {}", i);
+        }
+    }
+
+    #[test]
+    fn test_e4_table_has_five_entries() {
+        assert_eq!(e4_members().len(), NUM_E4);
     }
 }

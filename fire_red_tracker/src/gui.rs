@@ -539,7 +539,7 @@ impl WindowInfo {
                 );
             } else {
                 ui.label(
-                    egui::RichText::new("All badges obtained!")
+                    egui::RichText::new("Champion defeated!")
                         .color(egui::Color32::from_rgb(80, 200, 80)),
                 );
             }
