@@ -737,44 +737,21 @@ impl eframe::App for AggregatorApp {
             .collect();
 
         // ── Soul link death propagation ───────────────────────────────────────
-        // For every dead pokemon in slot i, find its met_location via the
-        // caught cache, then check all other slots for a catch at the same
-        // location. If found and not already dead, insert a soul-link death.
         let n = self.slots.len();
-        for i in 0..n {
-            let dead_personalities: Vec<u32> = all_dead[i].keys().copied().collect();
-
-            for dead_p in dead_personalities {
-                let met_loc = self.db_caches[i].caught
-                    .iter()
-                    .find(|c| c.personality == dead_p)
-                    .map(|c| c.met_location)
-                    .unwrap_or(0);
-                if met_loc == 0 { continue; }
-
-                for (j, dead_j) in all_dead.iter().enumerate().take(n) {
-                    if j == i { continue; }
-
-                    let partner = self.db_caches[j].caught
-                        .iter()
-                        .find(|c| c.met_location == met_loc && c.personality != dead_p)
-                        .cloned();
-
-                    if let Some(p) = partner {
-                        let key = (j, p.personality);
-                        let partner_already_dead = dead_j.contains_key(&p.personality);
-                        let already_propagated   = self.soul_link_propagated.contains(&key);
-
-                        if !partner_already_dead && !already_propagated {
-                            let wrote = self.slots[j].db.as_ref()
-                                .map(|db| db.mark_soul_link_dead(&p))
-                                .unwrap_or(false);
-                            if wrote {
-                                self.soul_link_propagated.insert(key);
-                            }
-                        }
-                    }
-                }
+        let caught_by_slot: Vec<Vec<CaughtPokemon>> = self.db_caches
+            .iter()
+            .map(|c| c.caught.clone())
+            .collect();
+        for (j, partner) in soul_link_kill_candidates(
+            &all_dead,
+            &caught_by_slot,
+            &self.soul_link_propagated,
+        ) {
+            let wrote = self.slots[j].db.as_ref()
+                .map(|db| db.mark_soul_link_dead(&partner))
+                .unwrap_or(false);
+            if wrote {
+                self.soul_link_propagated.insert((j, partner.personality));
             }
         }
 
@@ -859,6 +836,46 @@ fn stat_row_job(
     job
 }
 
+/// For every dead pokemon across slots, finds partners in other slots caught
+/// at the same `met_location` that are not yet dead and have not already been
+/// propagated this session.
+///
+/// Returns `(slot_j, partner)` pairs; the caller is responsible for writing
+/// the DB record and updating `soul_link_propagated`.
+fn soul_link_kill_candidates(
+    all_dead: &[HashMap<u32, DeadPokemon>],
+    caught_by_slot: &[Vec<CaughtPokemon>],
+    already_propagated: &HashSet<(usize, u32)>,
+) -> Vec<(usize, CaughtPokemon)> {
+    let n = all_dead.len();
+    let mut out = Vec::new();
+    for i in 0..n {
+        for &dead_p in all_dead[i].keys() {
+            let met_loc = caught_by_slot[i]
+                .iter()
+                .find(|c| c.personality == dead_p)
+                .map(|c| c.met_location)
+                .unwrap_or(0);
+            if met_loc == 0 { continue; }
+            for j in 0..n {
+                if j == i { continue; }
+                if let Some(p) = caught_by_slot[j]
+                    .iter()
+                    .find(|c| c.met_location == met_loc && c.personality != dead_p)
+                    .cloned()
+                {
+                    if !all_dead[j].contains_key(&p.personality)
+                        && !already_propagated.contains(&(j, p.personality))
+                    {
+                        out.push((j, p));
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
 /// Returns the texture cache key for a given species and shininess.
 pub fn sprite_key(species: u16, shiny: bool) -> String {
     format!(
@@ -877,4 +894,152 @@ pub fn is_shiny(personality: u32, ot_id: u32) -> bool {
     let id_high = (ot_id >> 16) as u16;
     let id_low = (ot_id & 0xFFFF) as u16;
     (p_high ^ p_low ^ id_high ^ id_low) < 8
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use fire_red_database::{IVs, EVs};
+
+    // ── Test helpers ──────────────────────────────────────────────────────────
+
+    fn stub_caught(personality: u32, met_location: u8) -> CaughtPokemon {
+        CaughtPokemon {
+            player_name: String::new(), personality, ot_id: 0,
+            nickname: String::new(), species: 0, species_name: String::new(),
+            is_shiny: false, nature: String::new(), level: 5, met_location,
+            location_name: String::new(),
+            ivs: IVs::default(), evs: EVs::default(), caught_at: 0, gender: 2,
+        }
+    }
+
+    fn stub_dead() -> DeadPokemon {
+        DeadPokemon {
+            player_name: String::new(), personality: 0, ot_id: 0, ot_name: String::new(),
+            nickname: String::new(), species: 0, species_name: String::new(), is_shiny: false,
+            nature: String::new(), level: 5, experience: 0, max_hp: 0, attack: 0, defense: 0,
+            speed: 0, sp_attack: 0, sp_defense: 0, moves: [0; 4], pp: [0; 4],
+            ivs: IVs::default(), evs: EVs::default(), held_item: 0, ability: 0,
+            ability_name: String::new(), friendship: 0, met_location: 0, died_at: 0, gender: 2,
+        }
+    }
+
+    fn dead_map(personalities: &[u32]) -> HashMap<u32, DeadPokemon> {
+        personalities.iter().map(|&p| (p, stub_dead())).collect()
+    }
+
+    // ── soul_link_kill_candidates ─────────────────────────────────────────────
+
+    #[test]
+    fn no_dead_pokemon_returns_empty() {
+        let all_dead  = vec![HashMap::new(), HashMap::new()];
+        let caught    = vec![vec![stub_caught(1, 10)], vec![stub_caught(2, 10)]];
+        let propagated = HashSet::new();
+        assert!(soul_link_kill_candidates(&all_dead, &caught, &propagated).is_empty());
+    }
+
+    #[test]
+    fn dead_with_no_partner_at_same_location_returns_empty() {
+        let all_dead = vec![dead_map(&[1]), HashMap::new()];
+        let caught   = vec![
+            vec![stub_caught(1, 10)],
+            vec![stub_caught(2, 99)], // different location
+        ];
+        let propagated = HashSet::new();
+        assert!(soul_link_kill_candidates(&all_dead, &caught, &propagated).is_empty());
+    }
+
+    #[test]
+    fn partner_at_same_location_is_identified() {
+        let all_dead = vec![dead_map(&[1]), HashMap::new()];
+        let caught   = vec![
+            vec![stub_caught(1, 10)], // dead pokemon, caught at 10 by slot 0
+            vec![stub_caught(2, 10)], // soul-link partner, caught at 10 by slot 1
+        ];
+        let propagated = HashSet::new();
+        let candidates = soul_link_kill_candidates(&all_dead, &caught, &propagated);
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].0, 1);
+        assert_eq!(candidates[0].1.personality, 2);
+    }
+
+    #[test]
+    fn already_dead_partner_is_skipped() {
+        // Both pokemon are already dead — no new kills needed.
+        let all_dead = vec![dead_map(&[1]), dead_map(&[2])];
+        let caught   = vec![
+            vec![stub_caught(1, 10)],
+            vec![stub_caught(2, 10)],
+        ];
+        let propagated = HashSet::new();
+        assert!(soul_link_kill_candidates(&all_dead, &caught, &propagated).is_empty());
+    }
+
+    #[test]
+    fn already_propagated_pair_is_skipped() {
+        let all_dead = vec![dead_map(&[1]), HashMap::new()];
+        let caught   = vec![
+            vec![stub_caught(1, 10)],
+            vec![stub_caught(2, 10)],
+        ];
+        let mut propagated = HashSet::new();
+        propagated.insert((1usize, 2u32)); // already handled this session
+        assert!(soul_link_kill_candidates(&all_dead, &caught, &propagated).is_empty());
+    }
+
+    #[test]
+    fn met_location_zero_is_ignored() {
+        let all_dead = vec![dead_map(&[1]), HashMap::new()];
+        let caught   = vec![
+            vec![stub_caught(1, 0)], // met_location = 0 → untracked
+            vec![stub_caught(2, 0)],
+        ];
+        let propagated = HashSet::new();
+        assert!(soul_link_kill_candidates(&all_dead, &caught, &propagated).is_empty());
+    }
+
+    #[test]
+    fn dead_pokemon_not_in_caught_cache_is_skipped() {
+        // Personality 99 is dead in slot 0 but has no caught record → met_loc = 0 → skip.
+        let all_dead = vec![dead_map(&[99]), HashMap::new()];
+        let caught   = vec![
+            vec![stub_caught(1, 10)], // no entry for personality 99
+            vec![stub_caught(2, 10)],
+        ];
+        let propagated = HashSet::new();
+        assert!(soul_link_kill_candidates(&all_dead, &caught, &propagated).is_empty());
+    }
+
+    #[test]
+    fn three_slots_cross_links_all_partners() {
+        // Slot 0's pokemon 1 (met 10) links to slot 1's pokemon 2 AND slot 2's pokemon 3.
+        let all_dead = vec![dead_map(&[1]), HashMap::new(), HashMap::new()];
+        let caught   = vec![
+            vec![stub_caught(1, 10)],
+            vec![stub_caught(2, 10), stub_caught(5, 99)],
+            vec![stub_caught(3, 10)],
+        ];
+        let propagated = HashSet::new();
+        let mut candidates = soul_link_kill_candidates(&all_dead, &caught, &propagated);
+        candidates.sort_by_key(|(j, _)| *j);
+        assert_eq!(candidates.len(), 2);
+        assert_eq!(candidates[0].0, 1);
+        assert_eq!(candidates[0].1.personality, 2);
+        assert_eq!(candidates[1].0, 2);
+        assert_eq!(candidates[1].1.personality, 3);
+    }
+
+    #[test]
+    fn unrelated_slot_catch_at_different_location_is_not_linked() {
+        // Slot 1 has catches at two locations; only the one matching met_loc is linked.
+        let all_dead = vec![dead_map(&[1]), HashMap::new()];
+        let caught   = vec![
+            vec![stub_caught(1, 10)],
+            vec![stub_caught(2, 99), stub_caught(3, 10)], // only personality 3 links
+        ];
+        let propagated = HashSet::new();
+        let candidates = soul_link_kill_candidates(&all_dead, &caught, &propagated);
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].1.personality, 3);
+    }
 }

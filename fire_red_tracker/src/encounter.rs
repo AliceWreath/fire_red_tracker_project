@@ -148,3 +148,62 @@ impl EncounterTracker {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn new_is_not_active_and_not_wiped() {
+        let t = EncounterTracker::new();
+        assert!(!t.run_tracking_active());
+        assert!(!t.wipe_detected);
+    }
+
+    #[test]
+    fn mark_wipe_clears_tracking_and_latches_wipe_flag() {
+        let mut t = EncounterTracker::new();
+        t.run_tracking_active = true;
+        t.mark_wipe();
+        assert!(!t.run_tracking_active());
+        assert!(t.wipe_detected);
+    }
+
+    #[test]
+    fn reset_clears_wipe_flag_and_tracking() {
+        let mut t = EncounterTracker::new();
+        t.run_tracking_active = true;
+        t.mark_wipe();
+        t.reset();
+        assert!(!t.run_tracking_active());
+        assert!(!t.wipe_detected);
+    }
+
+    #[test]
+    fn reset_clears_tracked_personality() {
+        let mut t = EncounterTracker::new();
+        t.tracked_personality = Some(0xDEAD_BEEF);
+        t.reset();
+        assert!(t.tracked_personality.is_none());
+    }
+
+    #[test]
+    fn wipe_can_be_set_again_after_reset() {
+        let mut t = EncounterTracker::new();
+        t.mark_wipe();
+        t.reset();
+        assert!(!t.wipe_detected);
+        t.mark_wipe();
+        assert!(t.wipe_detected);
+    }
+
+    #[test]
+    fn run_tracking_active_accessor_mirrors_field() {
+        let mut t = EncounterTracker::new();
+        assert!(!t.run_tracking_active());
+        t.run_tracking_active = true;
+        assert!(t.run_tracking_active());
+        t.run_tracking_active = false;
+        assert!(!t.run_tracking_active());
+    }
+}

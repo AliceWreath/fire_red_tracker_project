@@ -6,6 +6,9 @@ name = "fire_red_party_monitor"
 version = "0.1.0"
 edition = "2024"
 
+[dev-dependencies]
+fire_red_pokemon_name_buffer.workspace = true
+
 [dependencies]
 arc-swap.workspace                       = true
 bincode.workspace                        = true

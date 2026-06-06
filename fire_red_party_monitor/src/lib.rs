@@ -967,3 +967,288 @@ impl IvEggAbility {
         ((value >> position) & mask) as u8
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── Helpers ───────────────────────────────────────────────────────────────
+
+    /// Seed the global pokemon name repo so `GrowthSubstruct::fill_struct`
+    /// can call `get_pokemon_name_by_number` without panicking.
+    /// Safe to call multiple times — the `OnceLock` inside is idempotent.
+    fn setup() {
+        fire_red_pokemon_name_buffer::fill_name_repo(
+            (0..=251).map(|i| format!("Species{i}")).collect(),
+        );
+    }
+
+    /// XOR-encrypt a 48-byte block word-by-word with the given key.
+    fn encrypt_block(plain: &[u8; 48], key: u32) -> [u8; 48] {
+        let mut out = [0u8; 48];
+        for i in 0..12 {
+            let word = u32::from_le_bytes(plain[i * 4..i * 4 + 4].try_into().unwrap());
+            out[i * 4..i * 4 + 4].copy_from_slice(&(word ^ key).to_le_bytes());
+        }
+        out
+    }
+
+    /// Compute the checksum that `verify_checksum` expects for a decrypted block.
+    fn block_checksum(plain: &[u8; 48]) -> u16 {
+        let s: u32 = plain
+            .chunks(2)
+            .map(|c| u16::from_le_bytes([c[0], c[1]]) as u32)
+            .sum();
+        (s & 0xFFFF) as u16
+    }
+
+    /// Build a minimal valid 80-byte `BoxPokemon` raw buffer with a correct checksum.
+    fn make_box_bytes(personality: u32, ot_id: u32, plain: &[u8; 48]) -> [u8; 80] {
+        let key = personality ^ ot_id;
+        let enc = encrypt_block(plain, key);
+        let cs  = block_checksum(plain);
+        let mut buf = [0u8; 80];
+        buf[0..4].copy_from_slice(&personality.to_le_bytes());
+        buf[4..8].copy_from_slice(&ot_id.to_le_bytes());
+        // Bytes 8–27: nickname, language, flags, ot_name, markings — all zero is fine.
+        buf[28..30].copy_from_slice(&cs.to_le_bytes());
+        // Bytes 30–31: unknown — zero.
+        buf[32..80].copy_from_slice(&enc);
+        buf
+    }
+
+    // ── XOR decryption ────────────────────────────────────────────────────────
+
+    #[test]
+    fn decrypt_zero_key_is_identity() {
+        setup();
+        // personality ^ ot_id = 0 — every word XOR'd with 0 is unchanged.
+        let plain: [u8; 48] = std::array::from_fn(|i| i as u8);
+        let result = SecureSubstruct::from_bytes(0, 0, &plain);
+        assert_eq!(result.decrypted_value, plain);
+    }
+
+    #[test]
+    fn decrypt_xor_roundtrip() {
+        setup();
+        let personality = 0xDEAD_BEEFu32;
+        let ot_id       = 0x1234_5678u32;
+        let key = personality ^ ot_id;
+        let plain = [0xABu8; 48];
+        let enc   = encrypt_block(&plain, key);
+        let result = SecureSubstruct::from_bytes(personality, ot_id, &enc);
+        assert_eq!(result.decrypted_value, plain);
+    }
+
+    #[test]
+    fn decrypt_key_field_is_personality_xor_ot_id() {
+        setup();
+        let personality = 0x0000_0005u32;
+        let ot_id       = 0x0000_0003u32;
+        let result = SecureSubstruct::from_bytes(personality, ot_id, &[0u8; 48]);
+        assert_eq!(result.key, 0x0000_0006);
+    }
+
+    // ── Substructure ordering — all 24 permutations ───────────────────────────
+
+    #[test]
+    fn all_24_orders_route_species_to_growth() {
+        setup();
+        for p in 0u32..24 {
+            let order   = ORDERS[p as usize];
+            let g_off   = order.chars().position(|c| c == 'G').unwrap() * 12;
+            let species = 50 + p as u16;
+
+            let mut plain = [0u8; 48];
+            plain[g_off..g_off + 2].copy_from_slice(&species.to_le_bytes());
+            // Encrypt before passing: from_bytes expects ciphertext.
+            let enc = encrypt_block(&plain, p); // key = p ^ 0 = p
+            let result = SecureSubstruct::from_bytes(p, 0, &enc);
+            assert_eq!(
+                result.growth.species, species,
+                "order {p} ({order}): G at byte offset {g_off}"
+            );
+        }
+    }
+
+    #[test]
+    fn all_24_orders_route_move1_to_attack() {
+        setup();
+        for p in 0u32..24 {
+            let order = ORDERS[p as usize];
+            let a_off = order.chars().position(|c| c == 'A').unwrap() * 12;
+            let mv    = 100 + p as u16;
+
+            let mut plain = [0u8; 48];
+            plain[a_off..a_off + 2].copy_from_slice(&mv.to_le_bytes());
+            let enc = encrypt_block(&plain, p);
+            let result = SecureSubstruct::from_bytes(p, 0, &enc);
+            assert_eq!(
+                result.attack.moves[0], mv,
+                "order {p} ({order}): A at byte offset {a_off}"
+            );
+        }
+    }
+
+    #[test]
+    fn all_24_orders_route_met_location_to_misc() {
+        setup();
+        // MiscSubstruct layout: pokerus(1), met_location(1), ...
+        for p in 0u32..24 {
+            let order = ORDERS[p as usize];
+            let m_off = order.chars().position(|c| c == 'M').unwrap() * 12;
+            let met   = (10 + p) as u8;
+
+            let mut plain = [0u8; 48];
+            plain[m_off + 1] = met; // met_location is the second byte of M-slot
+            let enc = encrypt_block(&plain, p);
+            let result = SecureSubstruct::from_bytes(p, 0, &enc);
+            assert_eq!(
+                result.misc.met_location, met,
+                "order {p} ({order}): M at byte offset {m_off}, met_location at +1"
+            );
+        }
+    }
+
+    #[test]
+    fn all_24_orders_route_hp_ev_to_ev_condition() {
+        setup();
+        // EvConditionSubstruct layout: hp_ev is the first byte of the E-slot.
+        for p in 0u32..24 {
+            let order  = ORDERS[p as usize];
+            let e_off  = order.chars().position(|c| c == 'E').unwrap() * 12;
+            let hp_ev  = (20 + p) as u8;
+
+            let mut plain = [0u8; 48];
+            plain[e_off] = hp_ev;
+            let enc = encrypt_block(&plain, p);
+            let result = SecureSubstruct::from_bytes(p, 0, &enc);
+            assert_eq!(
+                result.ev_condition.hp_ev, hp_ev,
+                "order {p} ({order}): E at byte offset {e_off}, hp_ev at +0"
+            );
+        }
+    }
+
+    // ── Checksum ──────────────────────────────────────────────────────────────
+
+    #[test]
+    fn checksum_zeros_match_zero_sum() {
+        assert!(verify_checksum(&[0u8; 48], 0));
+    }
+
+    #[test]
+    fn checksum_known_data_passes() {
+        let plain = [2u8; 48];
+        let cs = block_checksum(&plain);
+        assert!(verify_checksum(&plain, cs));
+    }
+
+    #[test]
+    fn checksum_wrong_value_rejects() {
+        assert!(!verify_checksum(&[0u8; 48], 1));
+    }
+
+    #[test]
+    fn checksum_all_0xff_wraps_to_correct_u16() {
+        let plain = [0xFFu8; 48];
+        let cs = block_checksum(&plain);
+        assert!(verify_checksum(&plain, cs));
+    }
+
+    // ── BoxPokemon::from_bytes guards ─────────────────────────────────────────
+
+    #[test]
+    fn box_pokemon_empty_slot_returns_none() {
+        // personality=0 and ot_id=0 → empty party slot.
+        assert!(BoxPokemon::from_bytes(&[0u8; 80], &[]).is_none());
+    }
+
+    #[test]
+    fn box_pokemon_buffer_too_short_returns_none() {
+        assert!(BoxPokemon::from_bytes(&[1u8; 10], &[]).is_none());
+    }
+
+    #[test]
+    fn box_pokemon_bad_checksum_returns_none() {
+        setup();
+        let mut buf = [0u8; 80];
+        buf[0] = 1; // non-zero personality
+        // Store checksum 0xFFFF; decrypted block is all-zero → real sum = 0 → mismatch.
+        buf[28] = 0xFF;
+        buf[29] = 0xFF;
+        assert!(BoxPokemon::from_bytes(&buf, &[]).is_none());
+    }
+
+    #[test]
+    fn box_pokemon_valid_all_zero_plain_parses() {
+        setup();
+        // personality=1, ot_id=0 → species=0, so no ROM access is needed.
+        let plain = [0u8; 48];
+        let buf   = make_box_bytes(1, 0, &plain);
+        assert!(BoxPokemon::from_bytes(&buf, &[]).is_some());
+    }
+
+    // ── IvEggAbility bit unpacking ────────────────────────────────────────────
+
+    #[test]
+    fn iv_egg_ability_zero_gives_all_zero_fields() {
+        let iva = IvEggAbility::new(0);
+        assert_eq!(iva.hp_iv,        0);
+        assert_eq!(iva.attack_iv,    0);
+        assert_eq!(iva.defense_iv,   0);
+        assert_eq!(iva.speed_iv,     0);
+        assert_eq!(iva.sp_attack_iv, 0);
+        assert_eq!(iva.sp_def_iv,    0);
+        assert_eq!(iva.egg,           0);
+        assert_eq!(iva.ability_number, 0);
+    }
+
+    #[test]
+    fn iv_egg_ability_max_ivs_31_each() {
+        // bits 0–29 all set → each 5-bit group = 31; bits 30–31 clear.
+        let iva = IvEggAbility::new(0x3FFF_FFFF);
+        assert_eq!(iva.hp_iv,        31);
+        assert_eq!(iva.attack_iv,    31);
+        assert_eq!(iva.defense_iv,   31);
+        assert_eq!(iva.speed_iv,     31);
+        assert_eq!(iva.sp_attack_iv, 31);
+        assert_eq!(iva.sp_def_iv,    31);
+        assert_eq!(iva.egg,           0);
+        assert_eq!(iva.ability_number, 0);
+    }
+
+    #[test]
+    fn iv_egg_ability_egg_flag_is_bit_30() {
+        let iva = IvEggAbility::new(1u32 << 30);
+        assert_eq!(iva.egg, 1);
+        assert_eq!(iva.ability_number, 0);
+        assert_eq!(iva.hp_iv, 0);
+    }
+
+    #[test]
+    fn iv_egg_ability_ability_slot_is_bit_31() {
+        let iva = IvEggAbility::new(1u32 << 31);
+        assert_eq!(iva.ability_number, 1);
+        assert_eq!(iva.egg, 0);
+        assert_eq!(iva.hp_iv, 0);
+    }
+
+    #[test]
+    fn iv_egg_ability_distinct_values_unpack_independently() {
+        let hp:  u32 = 15; // bits  0– 4
+        let atk: u32 = 20; // bits  5– 9
+        let def: u32 =  7; // bits 10–14
+        let spd: u32 = 31; // bits 15–19
+        let spa: u32 =  0; // bits 20–24
+        let spd2:u32 = 16; // bits 25–29
+        let raw = hp | (atk << 5) | (def << 10) | (spd << 15) | (spa << 20) | (spd2 << 25);
+        let iva = IvEggAbility::new(raw);
+        assert_eq!(iva.hp_iv,        15);
+        assert_eq!(iva.attack_iv,    20);
+        assert_eq!(iva.defense_iv,    7);
+        assert_eq!(iva.speed_iv,     31);
+        assert_eq!(iva.sp_attack_iv,  0);
+        assert_eq!(iva.sp_def_iv,    16);
+    }
+}
