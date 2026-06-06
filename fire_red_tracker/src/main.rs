@@ -53,7 +53,7 @@ use fire_red_loop::*;
 use fire_red_states::*;
 use game::{check_for_dead_pokemon, check_for_new_pokemon, check_for_run_over, fill_party_list, game_is_loaded, is_shiny, map_state_from_ewram, scan_for_balls_pocket, scan_for_security_key};
 use gui::{WindowInfo, PARTY_WINDOW};
-use server::handle_client;
+use server::{handle_client, SpriteCache};
 use std::collections::HashMap;
 use std::net::TcpStream;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -298,8 +298,7 @@ fn main() {
         Arc::new(Mutex::new(fire_red_pokemon_data::WildPokemonHeader::default()));
     let shared_box: Arc<Mutex<Vec<BoxEntry>>> =
         Arc::new(Mutex::new(Vec::new()));
-    let sprite_cache: Arc<Mutex<HashMap<(u16, bool, SpriteVariant), SpriteData>>> =
-        Arc::new(Mutex::new(HashMap::new()));
+    let sprite_cache: SpriteCache = Arc::new(Mutex::new(HashMap::new()));
 
     // ── Game-polling thread (both modes) ──────────────────────────────────────
     {

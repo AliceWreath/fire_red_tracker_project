@@ -148,13 +148,13 @@ impl eframe::App for WindowInfo {
     /// 3. Draw the party panel.
     /// 4. Draw the encounters child viewport.
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        if !self.title_set {
-            if let Some(v) = &*self.update_available.lock_or_recover() {
-                ctx.send_viewport_cmd(egui::ViewportCommand::Title(
-                    format!("Tracker — v{} available", v.trim_start_matches('v')),
-                ));
-                self.title_set = true;
-            }
+        if !self.title_set
+            && let Some(v) = &*self.update_available.lock_or_recover()
+        {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Title(
+                format!("Tracker — v{} available", v.trim_start_matches('v')),
+            ));
+            self.title_set = true;
         }
 
         ctx.request_repaint();
@@ -240,10 +240,10 @@ impl eframe::App for WindowInfo {
                         species,
                         if is_shiny(personality, ot_id) { "shiny" } else { "normal" },
                     );
-                    if !self.textures.contains_key(&back_key) {
-                        if let Ok(tex) = load_texture_back(ctx, rom, species, personality, ot_id) {
-                            self.textures.insert(back_key, tex);
-                        }
+                    if let std::collections::hash_map::Entry::Vacant(e) = self.textures.entry(back_key)
+                        && let Ok(tex) = load_texture_back(ctx, rom, species, personality, ot_id)
+                    {
+                        e.insert(tex);
                     }
                 }
             }

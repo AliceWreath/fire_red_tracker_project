@@ -307,8 +307,8 @@ pub fn read_badge_state() -> Option<BadgeState> {
         let e4_offset = flags_base + e4_byte_idx;
         if ewram.len() >= e4_offset + 2 {
             let e4_both = (ewram[e4_offset] as u16) | ((ewram[e4_offset + 1] as u16) << 8);
-            for i in 0..4 {
-                e4[i] = (e4_both >> (e4_bit_start + i)) & 1 == 1;
+            for (i, slot) in e4.iter_mut().enumerate().take(4) {
+                *slot = (e4_both >> (e4_bit_start + i)) & 1 == 1;
             }
         }
 

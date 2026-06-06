@@ -18,6 +18,8 @@ use std::net::TcpStream;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
+pub(crate) type SpriteCache = Arc<Mutex<HashMap<(u16, bool, SpriteVariant), SpriteData>>>;
+
 trait LockOrRecover<T> {
     fn lock_or_recover(&self) -> std::sync::MutexGuard<'_, T>;
 }
@@ -54,7 +56,7 @@ pub fn handle_client(
     server_party: Arc<Mutex<Vec<fire_red_party_monitor::Pokemon>>>,
     server_encounters: Arc<Mutex<fire_red_pokemon_data::WildPokemonHeader>>,
     server_box: Arc<Mutex<Vec<BoxEntry>>>,
-    sprite_cache: Arc<Mutex<HashMap<(u16, bool, SpriteVariant), SpriteData>>>,
+    sprite_cache: SpriteCache,
     game_loaded: Arc<AtomicBool>,
     run_changed: Arc<AtomicBool>,
     wipe_signal: Arc<AtomicBool>,

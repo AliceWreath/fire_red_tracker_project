@@ -695,13 +695,13 @@ impl eframe::App for AggregatorApp {
     }
 
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        if !self.title_set {
-            if let Some(v) = &*self.update_available.lock_or_recover() {
-                ctx.send_viewport_cmd(egui::ViewportCommand::Title(
-                    format!("Fire Red Aggregator — v{} available", v.trim_start_matches('v')),
-                ));
-                self.title_set = true;
-            }
+        if !self.title_set
+            && let Some(v) = &*self.update_available.lock_or_recover()
+        {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Title(
+                format!("Fire Red Aggregator — v{} available", v.trim_start_matches('v')),
+            ));
+            self.title_set = true;
         }
 
         // Snapshot the live slot list for this frame.
@@ -890,12 +890,10 @@ fn soul_link_kill_candidates(
                     .iter()
                     .find(|c| c.met_location == met_loc && c.personality != dead_p)
                     .cloned()
+                    && !all_dead[j].contains_key(&p.personality)
+                    && !already_propagated.contains(&(j, p.personality))
                 {
-                    if !all_dead[j].contains_key(&p.personality)
-                        && !already_propagated.contains(&(j, p.personality))
-                    {
-                        out.push((j, p));
-                    }
+                    out.push((j, p));
                 }
             }
         }
