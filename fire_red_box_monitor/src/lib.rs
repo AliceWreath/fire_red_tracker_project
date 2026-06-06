@@ -6,9 +6,9 @@
 //! # Memory layout
 //!
 //! FireRed stores PC box data in `gPokemonStorage` in EWRAM. The base address
-//! is not fixed — it must be resolved at runtime by dereferencing the
-//! `SaveBlock3` pointer stored in IWRAM at [`SAVE_BLOCK_3_PTR`] and adding
-//! [`BOX_DATA_OFFSET`].
+//! is not fixed — it must be resolved at runtime by reading the `SaveBlock3`
+//! pointer from IWRAM (address from [`fire_red_rom_buffer::get_rom_addresses`])
+//! and adding the `box_data_offset` from the same table.
 //!
 //! Each slot is [`SLOT_SIZE`] (0x50) bytes:
 //!
@@ -59,15 +59,6 @@ const IWRAM_BASE: usize = 0x03000000;
 
 /// Base address of EWRAM in the GBA address space.
 const EWRAM_BASE: usize = 0x02000000;
-
-/// IWRAM address of the `SaveBlock3` pointer.
-///
-/// Dereferencing this 4-byte little-endian value yields the runtime base
-/// address of `gPokemonStorage` in EWRAM.
-const SAVE_BLOCK_3_PTR: usize = 0x03005010;
-
-/// Byte offset from the `SaveBlock3` base to box 0, slot 0.
-const BOX_DATA_OFFSET: usize = 0x4;
 
 /// Size in bytes of one PC box slot (`BoxPokemon` on-disk format).
 const SLOT_SIZE: usize = 0x50;
@@ -199,7 +190,7 @@ impl PokemonStorage {
 ///
 /// Reads the `SaveBlock3` pointer from the IWRAM snapshot, validates that it
 /// points into EWRAM, and returns the corresponding EWRAM byte offset after
-/// adding [`BOX_DATA_OFFSET`].
+/// adding `box_data_offset` from the revision address table.
 ///
 /// # Returns
 ///
@@ -207,7 +198,8 @@ impl PokemonStorage {
 /// resolved address falls outside EWRAM.
 fn get_box_0_ewram_offset() -> Option<usize> {
     let iwram = fire_red_memory::get_iwram();
-    let ptr_offset = iwram_offset(SAVE_BLOCK_3_PTR);
+    let addrs = fire_red_rom_buffer::get_rom_addresses();
+    let ptr_offset = iwram_offset(addrs.save_block_3_ptr);
 
     if iwram.len() < ptr_offset + 4 {
         return None;
@@ -226,7 +218,7 @@ fn get_box_0_ewram_offset() -> Option<usize> {
     }
     drop(ewram);
 
-    let box_0_addr = save_block_3_base + BOX_DATA_OFFSET;
+    let box_0_addr = save_block_3_base + addrs.box_data_offset;
     if box_0_addr < EWRAM_BASE {
         return None;
     }

@@ -8,7 +8,7 @@
 //! Rather than issuing individual UDP reads, this crate slices the relevant
 //! bytes directly out of the EWRAM snapshot. [`update_player_data`] calls
 //! [`fire_red_memory::get_ewram`] to obtain the latest snapshot and parses
-//! [`PlayerData`] from the bytes at [`PLAYER_DATA_ADDR`] — no network I/O.
+//! [`PlayerData`] from the revision-appropriate SaveBlock2 address — no network I/O.
 //!
 //! The background loop re-reads on a longer interval than the party loop
 //! because trainer data (name, gender, ID, play time) changes infrequently.
@@ -19,7 +19,7 @@ use arc_swap::ArcSwap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 
-pub use trainer_data::{PlayerData, PLAYER_DATA_ADDR, PLAYER_DATA_SIZE};
+pub use trainer_data::{PlayerData, PLAYER_DATA_SIZE};
 
 // ---------------------------------------------------------------------------
 // Statics and constants
@@ -109,7 +109,7 @@ fn ewram_offset(addr: usize) -> usize {
 /// Returns `None` if the snapshot is too small or the data cannot be parsed.
 fn read_player_data_from_ewram() -> Option<PlayerData> {
     let ewram = fire_red_memory::get_ewram();
-    let offset = ewram_offset(PLAYER_DATA_ADDR as usize);
+    let offset = ewram_offset(trainer_data::player_data_addr());
 
     let end = offset + PLAYER_DATA_SIZE;
     if ewram.len() < end {

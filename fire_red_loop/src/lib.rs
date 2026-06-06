@@ -87,9 +87,6 @@ const SLEEP_DURATION: u64 = 333;
 /// Base address of EWRAM in the GBA address space.
 const EWRAM_BASE: usize = 0x02000000;
 
-/// GBA address of the two-byte packed (map_group, map_name) field.
-const MAP_GROUP_AND_NAME_ADDR: usize = 0x02031DBC;
-
 /// ROM byte offset of `gMapGroupsAndMaps`, located by [`find_map_groups_table`]
 /// at startup. `None` (unset) if the scan failed; callers fall back to the
 /// hardcoded lookup table in that case.
@@ -200,9 +197,13 @@ pub fn start_loop(file_path: &str, _is_clean: bool) -> c_int {
         }
     };
 
+    // Log the detected ROM revision so the user can confirm they loaded the
+    // right ROM.  Detection happens inside fill_rom via fill_static_buffer.
+    println!("ROM revision: {:?}", fire_red_rom_buffer::get_rom_revision());
+
     // Build all ROM-derived caches that subsystems read at runtime.
     fill_static_pokemon_header_list(get_rom(), start_wild_header_offset);
-    fill_static_name_repo(get_rom(), fire_red_text::POKEMON_NAMES_ADDR as usize);
+    fill_static_name_repo(get_rom(), fire_red_rom_buffer::get_rom_addresses().pokemon_names_addr);
 
     // Locate gMapGroupsAndMaps using one pair per distinct group from the wild
     // encounter headers. This is non-fatal: zone names fall back to the
@@ -543,7 +544,7 @@ fn fill_static_name_repo(buffer: &[u8], offset: usize) {
 /// the address is out of range.
 fn get_map_state_from_ewram() -> FireRedState {
     let ewram = fire_red_memory::get_ewram();
-    let offset = MAP_GROUP_AND_NAME_ADDR - EWRAM_BASE;
+    let offset = fire_red_rom_buffer::get_rom_addresses().map_group_and_name_addr - EWRAM_BASE;
 
     if ewram.len() < offset + 2 {
         return FireRedState::default();

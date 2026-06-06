@@ -7,15 +7,9 @@ use std::os::raw::c_char;
 use fire_red_get_values::*;
 
 /// Highest valid Pokemon species ID in Pokemon FireRed.
-/// 
+///
 /// Used when building the internal Pokemon name table from ROM data.
 pub static LAST_POKEMON_ID_NUMBER: size_t = 0x019B;
-
-/// ROM address where the pokemon name table begins in pokemon firered r1.
-/// 
-/// Each name is encoded using the GBA pokemon text encoding and terminated
-/// with 0xFF.
-pub static POKEMON_NAMES_ADDR: u32 = 0x245F5B;
 
 /// Converts a single pokemon firered/gba text byte into a Unicode character.
 ///

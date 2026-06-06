@@ -67,18 +67,6 @@ const IWRAM_BASE: usize = 0x03000000;
 /// Base address of EWRAM in the GBA address space.
 const EWRAM_BASE: usize = 0x02000000;
 
-/// IWRAM address of the pointer to SaveBlock1.
-///
-/// Dereferencing this 4-byte little-endian pointer yields the runtime base
-/// address of SaveBlock1, which lies somewhere in EWRAM.
-const SAVE_BLOCK_1_PTR: usize = 0x03005008;
-
-/// Byte offset of the flags array within SaveBlock1.
-const FLAGS_OFFSET: usize = 0x0EE0;
-
-/// Flag index of the first badge (Boulder Badge / Brock).
-const BADGE_FLAG_START: usize = 0x820;
-
 /// Total number of badges.
 const NUM_BADGES: usize = 8;
 
@@ -235,8 +223,10 @@ pub fn read_badge_state() -> Option<BadgeState> {
     let iwram = fire_red_memory::get_iwram();
     let ewram = fire_red_memory::get_ewram();
 
+    let addrs = fire_red_rom_buffer::get_rom_addresses();
+
     // Step 1: read the SaveBlock1 pointer from IWRAM.
-    let ptr_offset = iwram_offset(SAVE_BLOCK_1_PTR);
+    let ptr_offset = iwram_offset(addrs.save_block_1_ptr);
     if iwram.len() < ptr_offset + 4 {
         return None;
     }
@@ -253,10 +243,10 @@ pub fn read_badge_state() -> Option<BadgeState> {
     }
 
     // Step 3: locate the two badge flag bytes.
-    // Badge flags 0x820–0x827 occupy bits 0–7 of the two bytes at
-    // flags_array[0x820 / 8] = flags_array[0x104].
-    let badge_byte_index       = BADGE_FLAG_START / 8; // 0x104
-    let flags_offset_in_ewram  = ewram_offset(save_block_base) + FLAGS_OFFSET + badge_byte_index;
+    // Badge flags occupy bits 0–7 of the two bytes at
+    // flags_array[badge_flag_start / 8].
+    let badge_byte_index      = addrs.badge_flag_start / 8;
+    let flags_offset_in_ewram = ewram_offset(save_block_base) + addrs.flags_offset + badge_byte_index;
 
     if ewram.len() < flags_offset_in_ewram + 2 {
         return None;
@@ -267,8 +257,9 @@ pub fn read_badge_state() -> Option<BadgeState> {
     let both = (b0 as u16) | ((b1 as u16) << 8);
 
     // Step 4: extract one bit per badge.
-    // BADGE_FLAG_START (0x820) is 8-aligned so bit position for badge i is i.
-    let bit_start = BADGE_FLAG_START % 8; // 0
+    // badge_flag_start is 8-aligned (0x820 % 8 == 0), so the bit position for
+    // badge i is just i relative to the first badge byte.
+    let bit_start = addrs.badge_flag_start % 8;
     let mut badges = [false; NUM_BADGES];
     for (i, badge) in badges.iter_mut().enumerate() {
         *badge = (both >> (bit_start + i)) & 1 == 1;

@@ -1,13 +1,20 @@
 use std::net::TcpStream;
 use std::io::{Read, Write};
 
-/// Maximum allowed network message size.
+/// Maximum allowed network message size: 20 MB.
 ///
-/// Used as a safeguard against malformed or malicious packets that could
-/// otherwise allocate excessive memory.
+/// Guards against malformed or malicious packets that would otherwise cause
+/// runaway heap allocation.  The 4-byte length prefix could theoretically
+/// claim up to ~4 GB; this constant is the application-layer sanity cap.
 ///
-/// Current limit: 20 MB.
-const MAX_MESSAGE_SIZE: usize = 20 * 1024 * 1024; // 20 MB
+/// **Why 20 MB?**  The largest legitimate `ServerMessage` variant is
+/// `Textures(Vec<SpriteData>)`.  In the worst case the tracker sends all 386
+/// species × 2 (normal + shiny) as zlib-compressed 64×64 RGBA sprites; even
+/// at a conservative 2 KB per sprite that is under 1.6 MB.  20 MB leaves a
+/// comfortable margin for future sprite-count growth or higher-resolution
+/// assets without admitting absurdly large allocations from a buggy or
+/// hostile peer.
+const MAX_MESSAGE_SIZE: usize = 20 * 1024 * 1024;
 
 /// The highest valid National Pokédex number in FireRed (Generation III cap).
 ///

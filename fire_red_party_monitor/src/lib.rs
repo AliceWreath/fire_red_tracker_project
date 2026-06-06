@@ -36,40 +36,20 @@ use arc_swap::ArcSwap;
 /// EWRAM snapshot buffer.
 const EWRAM_BASE: usize = 0x02000000;
 
-/// GBA address of the party size byte.
-///
-/// A single byte in the range 0–6 indicating how many pokemon are currently
-/// in the player's party.
-const POKEMON_PARTY_SIZE_ADDR: usize = 0x02024029;
-
-/// GBA address of the first party member's data block.
-///
-/// Each party slot is [`POKEMON_SIZE`] bytes wide, laid out contiguously.
-const POKEMON_PARTY_ADDR: usize = 0x02024284;
-
 /// Size in bytes of a single in-memory [`Pokemon`] structure.
 const POKEMON_SIZE: usize = 100;
 
-/// ROM address of the ability name string table.
-const ABILITY_NAMES_ADDR: u32 = 0x24FCB0;
-
 /// Byte stride between entries in the ability name table.
-const ABILITY_NAMES_STRIDE: u32 = 13;
-
-/// ROM address of the item data table.
-const ITEM_DATA_ADDR: u32 = 0x3DB098;
+const ABILITY_NAMES_STRIDE: usize = 13;
 
 /// Size in bytes of a single item data entry.
-const ITEM_ENTRY_SIZE: u32 = 44;
+const ITEM_ENTRY_SIZE: usize = 44;
 
 /// Length of the item name field within an item data entry.
 const ITEM_NAME_LENGTH: usize = 14;
 
-/// ROM address of the base stat table.
-const BASE_STATS_ADDR: u32 = 0x2547F4;
-
 /// Size in bytes of a single base stat table entry.
-const BASE_STATS_ENTRY_SIZE: u32 = 28;
+const BASE_STATS_ENTRY_SIZE: usize = 28;
 
 /// Byte offset of the growth rate within a base stat entry.
 ///
@@ -253,7 +233,8 @@ impl Party {
     /// * `ewram`      — Full 256 KiB EWRAM snapshot from `fire_red_memory`.
     /// * `rom_buffer` — Full FireRed ROM data, used for metadata lookups.
     pub fn from_ewram(ewram: &[u8], rom_buffer: &[u8]) -> Self {
-        let size_offset = ewram_offset(POKEMON_PARTY_SIZE_ADDR);
+        let addrs = fire_red_rom_buffer::get_rom_addresses();
+        let size_offset = ewram_offset(addrs.party_size_addr);
 
         // Guard against a snapshot that hasn't been populated yet.
         if ewram.len() <= size_offset {
@@ -265,7 +246,7 @@ impl Party {
             return Self::empty();
         }
 
-        let party_offset = ewram_offset(POKEMON_PARTY_ADDR);
+        let party_offset = ewram_offset(addrs.party_addr);
         let required_len = party_offset + (number_pokemon as usize * POKEMON_SIZE);
         if ewram.len() < required_len {
             return Self::empty();
@@ -317,7 +298,8 @@ pub fn get_ability_string_from_id(rom_buffer: &[u8], id: u8) -> String {
     if id == 0 {
         return String::from("None");
     }
-    let offset = (ABILITY_NAMES_ADDR + (id as u32 * ABILITY_NAMES_STRIDE)) as usize;
+    let offset = fire_red_rom_buffer::get_rom_addresses().ability_names_addr
+        + id as usize * ABILITY_NAMES_STRIDE;
     if offset >= rom_buffer.len() {
         return String::from("???");
     }
@@ -336,7 +318,8 @@ pub fn get_growth_rate_name(rom_buffer: &[u8], species: u16) -> &'static str {
     if species == 0 {
         return "";
     }
-    let entry_addr = (BASE_STATS_ADDR + (species as u32 * BASE_STATS_ENTRY_SIZE)) as usize;
+    let entry_addr = fire_red_rom_buffer::get_rom_addresses().base_stats_addr
+        + species as usize * BASE_STATS_ENTRY_SIZE;
     let offset = entry_addr + GROWTH_RATE_OFFSET as usize;
     if offset >= rom_buffer.len() {
         return "";
@@ -359,7 +342,8 @@ pub fn get_item_string_from_id(rom_buffer: &[u8], id: u16) -> String {
     if id == 0 {
         return String::from("None");
     }
-    let offset = (ITEM_DATA_ADDR + (id as u32 * ITEM_ENTRY_SIZE)) as usize;
+    let offset = fire_red_rom_buffer::get_rom_addresses().item_data_addr
+        + id as usize * ITEM_ENTRY_SIZE;
     if offset + ITEM_NAME_LENGTH > rom_buffer.len() {
         return String::from("???");
     }
@@ -385,7 +369,8 @@ pub fn get_gender(rom_buffer: &[u8], species: u16, personality: u32) -> u8 {
     if species == 0 {
         return 2;
     }
-    let entry_addr = (BASE_STATS_ADDR + (species as u32 * BASE_STATS_ENTRY_SIZE)) as usize;
+    let entry_addr = fire_red_rom_buffer::get_rom_addresses().base_stats_addr
+        + species as usize * BASE_STATS_ENTRY_SIZE;
     let offset = entry_addr + GENDER_RATIO_OFFSET as usize;
     if offset >= rom_buffer.len() {
         return 2;
@@ -406,7 +391,8 @@ pub fn get_species_ability_id(rom_buffer: &[u8], species: u16, ability_number: u
     if species == 0 {
         return 0;
     }
-    let entry_addr = (BASE_STATS_ADDR + (species as u32 * BASE_STATS_ENTRY_SIZE)) as usize;
+    let entry_addr = fire_red_rom_buffer::get_rom_addresses().base_stats_addr
+        + species as usize * BASE_STATS_ENTRY_SIZE;
     let offset = if ability_number == 0 {
         ABILITY_1_OFFSET
     } else {

@@ -1798,7 +1798,7 @@ checksum = "5baebc0774151f905a1a2cc41989300b1e6fbb29aff0ceffa1064fdd3088d582"
 
 [[package]]
 name = "fire_red_aggregator"
-version = "0.8.60"
+version = "0.8.61"
 dependencies = [
  "axum",
  "bincode",
@@ -1828,6 +1828,7 @@ version = "0.1.0"
 dependencies = [
  "fire_red_get_values",
  "fire_red_memory",
+ "fire_red_rom_buffer",
  "serde",
 ]
 
@@ -1969,7 +1970,7 @@ dependencies = [
 
 [[package]]
 name = "fire_red_tracker"
-version = "0.8.60"
+version = "0.8.61"
 dependencies = [
  "bincode",
  "clap",
@@ -2004,6 +2005,7 @@ dependencies = [
  "arc-swap",
  "fire_red_get_values",
  "fire_red_memory",
+ "fire_red_rom_buffer",
  "fire_red_text",
 ]
 

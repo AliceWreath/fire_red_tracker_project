@@ -9,4 +9,5 @@ edition = "2024"
 [dependencies]
 fire_red_get_values.workspace = true
 fire_red_memory.workspace     = true
+fire_red_rom_buffer.workspace = true
 serde.workspace               = true
