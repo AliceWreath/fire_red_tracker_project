@@ -43,9 +43,15 @@ const FRONT_SPRITE_TABLE_PTR: u32 = 0x128;
 const PALETTE_TABLE_PTR: u32 = 0x130; 
 
 /// Byte offset within the ROM where the shiny palette pointer table pointer is stored.
-/// 
+///
 /// Parallel structure to [`PALLET_TABLE_PTR`] but for alternate shiny palettes.
 const SHINY_PALETTE_TABLE_PTR: u32 = 0x134;
+
+/// Byte offset within the ROM where the back-sprite pointer table pointer is stored.
+///
+/// Verified against the `pokefirered` decompilation for USA Rev 1.  Each entry
+/// is 8 bytes wide; the back-sprite pointer occupies the first 4 bytes.
+const BACK_SPRITE_TABLE_PTR: u32 = 0x12C;
 
 // ---------------------------------------------------------------------------
 // Pointer resolution helpers
@@ -114,15 +120,15 @@ fn read_table_pointer(rom: &[u8], header_offset: u32) -> Option<u32> {
 }
 
 /// Reads the ROM byte offset of the compressed front sprite for `species`
-/// 
+///
 /// Specialized wrapper around [`read_entity_pointer`] for teh front-sprite
 /// table. Each entry in the table is 8 bytes wide; the sprite pointer occupies
 /// the first 4 bytes.
-/// 
+///
 /// # Arguments
 /// * `rom`                     - Full ROM byte slice
 /// * `species`                 - National pokedex number.
-/// 
+///
 /// # Errors
 /// Propogates errors from [`read_table_pointer`] and pointer validation.
 fn read_sprite_pointer(rom: &[u8], species: u16) -> Result<u32, Box<dyn std::error::Error>> {
@@ -136,6 +142,25 @@ fn read_sprite_pointer(rom: &[u8], species: u16) -> Result<u32, Box<dyn std::err
     );
     if !(ROM_BASE..0x09000000).contains(&raw) {
         return Err("invalid sprite pointer".into());
+    }
+    Ok(raw - ROM_BASE)
+}
+
+/// Reads the ROM byte offset of the compressed back sprite for `species`.
+///
+/// Mirror of [`read_sprite_pointer`] but uses [`BACK_SPRITE_TABLE_PTR`].
+/// Each table entry is 8 bytes; the back-sprite pointer occupies bytes 0–3.
+fn read_back_sprite_pointer(rom: &[u8], species: u16) -> Result<u32, Box<dyn std::error::Error>> {
+    let table = read_table_pointer(rom, BACK_SPRITE_TABLE_PTR)
+        .ok_or("failed to read back sprite table pointer")?;
+    let ptr_addr = (table + (species as u32 * 8)) as usize;
+    let raw = u32::from_le_bytes(
+        rom.get(ptr_addr..ptr_addr + 4)
+            .ok_or("back sprite pointer address out of ROM bounds")?
+            .try_into()?,
+    );
+    if !(ROM_BASE..0x09000000).contains(&raw) {
+        return Err("invalid back sprite pointer".into());
     }
     Ok(raw - ROM_BASE)
 }
@@ -384,9 +409,53 @@ pub fn get_pokemon_sprite(
     let palette_data = decompress_lz77(rom, palette_offset)?;
     let pixels = decode_4bpp_tiles(&sprite_data, 8, 8)?;
 
+    let palette = decode_palette(&palette_data, 0)?;
     let mut img = ImageBuffer::new(64, 64);
     for (i, palette_index) in pixels.iter().copied().enumerate() {
-        let palette = decode_palette(&palette_data, 0)?;
+        let x = (i % 64) as u32;
+        let y = (i / 64) as u32;
+        let color = palette
+            .get(palette_index as usize)
+            .copied()
+            .unwrap_or([0, 0, 0, 0]);
+        img.put_pixel(x, y, Rgba(color));
+    }
+    Ok(img)
+}
+
+/// Returns the back sprite of a Pokemon as a 64x64 RGBA [`ImageBuffer`].
+///
+/// Identical pipeline to [`get_pokemon_sprite`] but reads compressed tile data
+/// from [`BACK_SPRITE_TABLE_PTR`].  The same normal/shiny palette tables are
+/// used — back sprites share the palette with the front sprite.
+///
+/// # Arguments
+/// * `rom`     - Full ROM byte slice.
+/// * `species` - National Pokédex number (1–386 for FireRed).
+/// * `shiny`   - `true` to use the shiny palette.
+///
+/// # Errors
+/// Propagates any error from pointer resolution, decompression, or tile decoding.
+pub fn get_pokemon_back_sprite(
+    rom: &[u8],
+    species: u16,
+    shiny: bool,
+) -> Result<ImageBuffer<Rgba<u8>, Vec<u8>>, Box<dyn std::error::Error>> {
+    let sprite_offset = read_back_sprite_pointer(rom, species)? as usize;
+
+    let palette_offset = if shiny {
+        read_entity_pointer(rom, SHINY_PALETTE_TABLE_PTR, species, "shiny palette")? as usize
+    } else {
+        read_entity_pointer(rom, PALETTE_TABLE_PTR, species, "palette")? as usize
+    };
+
+    let sprite_data  = decompress_lz77(rom, sprite_offset)?;
+    let palette_data = decompress_lz77(rom, palette_offset)?;
+    let pixels       = decode_4bpp_tiles(&sprite_data, 8, 8)?;
+
+    let palette = decode_palette(&palette_data, 0)?;
+    let mut img = ImageBuffer::new(64, 64);
+    for (i, palette_index) in pixels.iter().copied().enumerate() {
         let x = (i % 64) as u32;
         let y = (i / 64) as u32;
         let color = palette

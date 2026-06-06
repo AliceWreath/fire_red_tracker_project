@@ -11,7 +11,7 @@
 //! [`ServerMessage::State`] snapshot every 100 ms and exits on any write error
 //! (client disconnect).
 
-use crate::textures::build_sprite_data;
+use crate::textures::{build_sprite_data, build_sprite_data_back};
 use fire_red_states::*;
 use std::collections::HashMap;
 use std::net::TcpStream;
@@ -54,7 +54,7 @@ pub fn handle_client(
     server_party: Arc<Mutex<Vec<fire_red_party_monitor::Pokemon>>>,
     server_encounters: Arc<Mutex<fire_red_pokemon_data::WildPokemonHeader>>,
     server_box: Arc<Mutex<Vec<BoxEntry>>>,
-    sprite_cache: Arc<Mutex<HashMap<(u16, bool), SpriteData>>>,
+    sprite_cache: Arc<Mutex<HashMap<(u16, bool, SpriteVariant), SpriteData>>>,
     game_loaded: Arc<AtomicBool>,
     run_changed: Arc<AtomicBool>,
     wipe_signal: Arc<AtomicBool>,
@@ -84,14 +84,22 @@ pub fn handle_client(
 
                     for species in species_list {
                         if species == 0 || species > MAX_NATIONAL_DEX_FIRERED { continue; }
-                        // Always send both variants so the client never needs the ROM.
+                        // Send front and back sprites for both palette variants.
                         for shiny in [false, true] {
-                            let key = (species, shiny);
+                            let front_key = (species, shiny, SpriteVariant::Front);
                             let mut cache = cache_clone.lock_or_recover();
-                            if let Some(data) = cache.get(&key) {
+                            if let Some(data) = cache.get(&front_key) {
                                 sprites.push(data.clone());
                             } else if let Some(data) = build_sprite_data(rom, species, shiny) {
-                                cache.insert(key, data.clone());
+                                cache.insert(front_key, data.clone());
+                                sprites.push(data);
+                            }
+
+                            let back_key = (species, shiny, SpriteVariant::Back);
+                            if let Some(data) = cache.get(&back_key) {
+                                sprites.push(data.clone());
+                            } else if let Some(data) = build_sprite_data_back(rom, species, shiny) {
+                                cache.insert(back_key, data.clone());
                                 sprites.push(data);
                             }
                         }

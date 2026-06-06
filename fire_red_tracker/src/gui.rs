@@ -7,8 +7,9 @@ use crate::config::{TrackerConfig, save_config};
 use crate::game::is_shiny;
 use crate::textures::{
     PARTY_IMAGE_SIZE, ENCOUNTER_IMAGE_SIZE,
-    PendingTexture, load_texture, load_texture_normal, make_placeholder,
+    PendingTexture, load_texture, load_texture_back, load_texture_normal, make_placeholder,
 };
+use fire_red_states::SpriteVariant;
 use fire_red_states::MAX_NATIONAL_DEX_FIRERED;
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
@@ -162,11 +163,11 @@ impl eframe::App for WindowInfo {
         {
             let mut pending = self.pending_textures.lock_or_recover();
             for pt in pending.drain(..) {
-                let key = format!(
-                    "pokemon_{}_{}",
-                    pt.species,
-                    if pt.shiny { "shiny" } else { "normal" },
-                );
+                let palette = if pt.shiny { "shiny" } else { "normal" };
+                let key = match pt.variant {
+                    SpriteVariant::Front => format!("pokemon_{}_{}", pt.species, palette),
+                    SpriteVariant::Back  => format!("pokemon_{}_{}_back", pt.species, palette),
+                };
                 let image = egui::ColorImage::from_rgba_unmultiplied(
                     [pt.width as usize, pt.height as usize],
                     &pt.pixels,
@@ -229,9 +230,21 @@ impl eframe::App for WindowInfo {
                     let known = self.known_species.lock_or_recover();
                     if !known.contains(&species) { needed.push(species); }
                 } else {
-                    let texture = load_texture(ctx, fire_red_rom_buffer::get_rom(), species, personality, ot_id)
+                    let rom = fire_red_rom_buffer::get_rom();
+                    let texture = load_texture(ctx, rom, species, personality, ot_id)
                         .unwrap_or_else(|_| make_placeholder(ctx, species));
                     self.textures.insert(key, texture);
+
+                    let back_key = format!(
+                        "pokemon_{}_{}_back",
+                        species,
+                        if is_shiny(personality, ot_id) { "shiny" } else { "normal" },
+                    );
+                    if !self.textures.contains_key(&back_key) {
+                        if let Ok(tex) = load_texture_back(ctx, rom, species, personality, ot_id) {
+                            self.textures.insert(back_key, tex);
+                        }
+                    }
                 }
             }
 
@@ -535,6 +548,10 @@ impl WindowInfo {
         }
 
         // ── Party members ─────────────────────────────────────────────────────
+        // Animate between front and back sprites at ~1 Hz (0.5 s per frame).
+        let anim_time = ui.ctx().input(|i| i.time);
+        let show_back = (anim_time * 2.0) as u64 % 2 == 1;
+
         let list = self.party_list.lock_or_recover();
         for (idx, pokemon) in list.iter().enumerate() {
             let dead = fire_red_database::is_dead(pokemon.box_mon.personality);
@@ -543,13 +560,17 @@ impl WindowInfo {
                 let species     = pokemon.box_mon.secure.growth.species;
                 let personality = pokemon.box_mon.personality;
                 let ot_id       = pokemon.box_mon.ot_id;
-                let key = format!(
-                    "pokemon_{}_{}",
-                    species,
-                    if is_shiny(personality, ot_id) { "shiny" } else { "normal" },
-                );
+                let palette     = if is_shiny(personality, ot_id) { "shiny" } else { "normal" };
+                let front_key   = format!("pokemon_{}_{}", species, palette);
+                let back_key    = format!("pokemon_{}_{}_back", species, palette);
 
-                if let Some(tex) = self.textures.get(&key) {
+                let tex_key = if show_back && self.textures.contains_key(&back_key) {
+                    &back_key
+                } else {
+                    &front_key
+                };
+
+                if let Some(tex) = self.textures.get(tex_key) {
                     let tint = if dead {
                         egui::Color32::from_rgba_unmultiplied(80, 80, 80, 180)
                     } else {

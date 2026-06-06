@@ -20,6 +20,7 @@ pub const ENCOUNTER_IMAGE_SIZE: (f32, f32) = (64.0, 64.0);
 pub struct PendingTexture {
     pub species: u16,
     pub shiny:   bool,
+    pub variant: fire_red_states::SpriteVariant,
     /// Decompressed RGBA bytes (width × height × 4).
     pub pixels:  Vec<u8>,
     pub width:   u32,
@@ -37,7 +38,7 @@ pub fn compress_pixels(data: &[u8]) -> Option<Vec<u8>> {
     encoder.finish().ok()
 }
 
-/// Extracts a pokemon sprite from the ROM, compresses it, and returns a
+/// Extracts a pokemon front sprite from the ROM, compresses it, and returns a
 /// [`SpriteData`] packet ready to send to a client.
 ///
 /// Returns `None` if the species index is invalid or the sprite cannot be
@@ -51,7 +52,32 @@ pub fn build_sprite_data(
     let width  = img.width();
     let height = img.height();
     let pixels = compress_pixels(&img.into_raw())?;
-    Some(fire_red_states::SpriteData { species, shiny, pixels, width, height })
+    Some(fire_red_states::SpriteData {
+        species, shiny,
+        variant: fire_red_states::SpriteVariant::Front,
+        pixels, width, height,
+    })
+}
+
+/// Extracts a pokemon back sprite from the ROM, compresses it, and returns a
+/// [`SpriteData`] packet ready to send to a client.
+///
+/// Returns `None` if the species index is invalid or the sprite cannot be
+/// decoded.
+pub fn build_sprite_data_back(
+    rom: &[u8],
+    species: u16,
+    shiny: bool,
+) -> Option<fire_red_states::SpriteData> {
+    let img    = fire_red_image_data::get_pokemon_back_sprite(rom, species, shiny).ok()?;
+    let width  = img.width();
+    let height = img.height();
+    let pixels = compress_pixels(&img.into_raw())?;
+    Some(fire_red_states::SpriteData {
+        species, shiny,
+        variant: fire_red_states::SpriteVariant::Back,
+        pixels, width, height,
+    })
 }
 
 /// Loads a pokemon sprite from the ROM and uploads it as an egui texture.
@@ -70,6 +96,27 @@ pub fn load_texture(
     let image = egui::ColorImage::from_rgba_unmultiplied(size, &img.into_raw());
     Ok(ctx.load_texture(
         format!("pokemon_{}_{}", species, if shiny { "shiny" } else { "normal" }),
+        image,
+        egui::TextureOptions::NEAREST,
+    ))
+}
+
+/// Loads a pokemon back sprite from the ROM and uploads it as an egui texture.
+///
+/// The shiny variant is selected automatically via [`is_shiny`].
+pub fn load_texture_back(
+    ctx: &egui::Context,
+    rom: &[u8],
+    species: u16,
+    personality: u32,
+    ot_id: u32,
+) -> Result<egui::TextureHandle, Box<dyn std::error::Error>> {
+    let shiny = is_shiny(personality, ot_id);
+    let img   = fire_red_image_data::get_pokemon_back_sprite(rom, species, shiny)?;
+    let size  = [img.width() as usize, img.height() as usize];
+    let image = egui::ColorImage::from_rgba_unmultiplied(size, &img.into_raw());
+    Ok(ctx.load_texture(
+        format!("pokemon_{}_{}_back", species, if shiny { "shiny" } else { "normal" }),
         image,
         egui::TextureOptions::NEAREST,
     ))

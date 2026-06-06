@@ -87,13 +87,27 @@ pub struct BoxEntry {
     pub gender:       u8,
 }
 
+/// Which sprite image a [`SpriteData`] packet carries.
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, PartialEq, Eq, Hash, Default)]
+pub enum SpriteVariant {
+    /// Standard front-facing battle sprite (default).
+    #[default]
+    Front,
+    /// Rear-facing sprite used on the player's side of battle.
+    Back,
+}
+
 /// Serialized Pokemon sprite texture data for network transmission.
-/// 
+///
 /// Pixel data is stored as zlib-compressed RGBA bytes.
 #[derive(serde::Serialize, serde::Deserialize, Clone)]
 pub struct SpriteData {
     pub species: u16,
     pub shiny: bool,
+    /// Which image this packet carries; defaults to [`SpriteVariant::Front`] when
+    /// deserializing packets from older server versions that lack the field.
+    #[serde(default)]
+    pub variant: SpriteVariant,
     pub pixels: Vec<u8>, // zlib-compressed RGBA bytes
     pub width: u32,
     pub height: u32,

@@ -44,7 +44,7 @@ use std::path::PathBuf;
 use egui::Ui;
 use fire_red_database::{CaughtPokemon, DeadPokemon};
 use fire_red_party_monitor::Pokemon;
-use fire_red_states::{GameState, MAX_NATIONAL_DEX_FIRERED};
+use fire_red_states::{GameState, MAX_NATIONAL_DEX_FIRERED, SpriteVariant};
 use std::collections::{HashMap, HashSet};
 
 // ---------------------------------------------------------------------------
@@ -177,7 +177,10 @@ impl AggregatorApp {
                     .pending_textures
                     .lock_or_recover();
                 for pt in pending.drain(..) {
-                    let key = sprite_key(pt.species, pt.shiny);
+                    let key = match pt.variant {
+                        SpriteVariant::Front => sprite_key(pt.species, pt.shiny),
+                        SpriteVariant::Back  => sprite_key_back(pt.species, pt.shiny),
+                    };
                     let image = egui::ColorImage::from_rgba_unmultiplied(
                         [pt.width as usize, pt.height as usize],
                         &pt.pixels,
@@ -409,7 +412,10 @@ impl AggregatorApp {
         let ot_id = pokemon.box_mon.ot_id;
         let met = pokemon.box_mon.secure.misc.met_location;
         let shiny = is_shiny(personality, ot_id);
-        let key = sprite_key(species, shiny);
+        let front_key = sprite_key(species, shiny);
+        let back_key  = sprite_key_back(species, shiny);
+        let show_back = (ui.ctx().input(|i| i.time) * 2.0) as u64 % 2 == 1;
+        let key = if show_back && textures.contains_key(&back_key) { back_key } else { front_key };
         let dead = dead_record.is_some() || pokemon.hp == 0 || soul_link_dead;
 
         // Soul-link annotation based on live party state.
@@ -897,13 +903,14 @@ fn soul_link_kill_candidates(
     out
 }
 
-/// Returns the texture cache key for a given species and shininess.
+/// Returns the front-sprite texture cache key for a given species and shininess.
 pub fn sprite_key(species: u16, shiny: bool) -> String {
-    format!(
-        "pokemon_{}_{}",
-        species,
-        if shiny { "shiny" } else { "normal" }
-    )
+    format!("pokemon_{}_{}", species, if shiny { "shiny" } else { "normal" })
+}
+
+/// Returns the back-sprite texture cache key for a given species and shininess.
+pub fn sprite_key_back(species: u16, shiny: bool) -> String {
+    format!("pokemon_{}_{}_back", species, if shiny { "shiny" } else { "normal" })
 }
 
 /// Returns `true` if the pokemon with `personality` and `ot_id` is shiny.

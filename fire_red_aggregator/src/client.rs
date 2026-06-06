@@ -75,6 +75,8 @@ pub struct PendingTexture {
     pub species: u16,
     /// `true` if this is the shiny palette
     pub shiny: bool,
+    /// Which sprite image this packet carries (front or back).
+    pub variant: fire_red_states::SpriteVariant,
     /// Decompressed RGBA pixel data (width x height x 4 bytes)
     pub pixels: Vec<u8>, // decompressed RGBA
     /// Image width in pixels
@@ -282,6 +284,7 @@ pub fn handle_tracker_connection(
                     pending.push(PendingTexture {
                         species: sprite.species,
                         shiny:   sprite.shiny,
+                        variant: sprite.variant.clone(),
                         pixels,
                         width:   sprite.width,
                         height:  sprite.height,

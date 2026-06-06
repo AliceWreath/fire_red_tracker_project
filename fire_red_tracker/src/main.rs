@@ -298,7 +298,7 @@ fn main() {
         Arc::new(Mutex::new(fire_red_pokemon_data::WildPokemonHeader::default()));
     let shared_box: Arc<Mutex<Vec<BoxEntry>>> =
         Arc::new(Mutex::new(Vec::new()));
-    let sprite_cache: Arc<Mutex<HashMap<(u16, bool), SpriteData>>> =
+    let sprite_cache: Arc<Mutex<HashMap<(u16, bool, SpriteVariant), SpriteData>>> =
         Arc::new(Mutex::new(HashMap::new()));
 
     // ── Game-polling thread (both modes) ──────────────────────────────────────
