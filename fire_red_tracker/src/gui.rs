@@ -44,10 +44,20 @@ struct SettingsDraft {
     preferred_player: String,
     default_test:     bool,
     test:             Option<crate::config::TrackerTestOverrides>,
+    // Webhook URL fields
+    death_url:         String,
+    death_url_enabled: bool,
+    catch_url:         String,
+    catch_url_enabled: bool,
+    shiny_url:         String,
+    shiny_url_enabled: bool,
+    wipe_url:          String,
+    wipe_url_enabled:  bool,
 }
 
 impl SettingsDraft {
     fn from_config(cfg: &TrackerConfig) -> Self {
+        let wh = &cfg.webhooks;
         Self {
             rom:              cfg.rom.clone(),
             db:               cfg.db.trim_start_matches("postgresql://").trim_start_matches("postgres://").to_string(),
@@ -57,6 +67,14 @@ impl SettingsDraft {
             preferred_player: cfg.preferred_player.map(|n| n.to_string()).unwrap_or_default(),
             default_test:     cfg.default_test,
             test:             cfg.test.clone(),
+            death_url:         wh.death_url.clone().unwrap_or_default(),
+            death_url_enabled: wh.death_url.is_some(),
+            catch_url:         wh.catch_url.clone().unwrap_or_default(),
+            catch_url_enabled: wh.catch_url.is_some(),
+            shiny_url:         wh.shiny_url.clone().unwrap_or_default(),
+            shiny_url_enabled: wh.shiny_url.is_some(),
+            wipe_url:          wh.wipe_url.clone().unwrap_or_default(),
+            wipe_url_enabled:  wh.wipe_url.is_some(),
         }
     }
 }
@@ -366,6 +384,37 @@ impl WindowInfo {
                 ui.checkbox(&mut s.default_test, "Default to test mode:");
                 ui.small("Uses [test] config overrides on every launch (same as always passing --test).");
                 ui.end_row();
+
+                // Webhooks
+                ui.separator();
+                ui.end_row();
+                ui.label(egui::RichText::new("Webhooks").strong());
+                ui.small("POST JSON on game events (Discord, stream alerts, etc.)");
+                ui.end_row();
+
+                ui.checkbox(&mut s.death_url_enabled, "Death URL:");
+                ui.add_enabled_ui(s.death_url_enabled, |ui| {
+                    ui.add(egui::TextEdit::singleline(&mut s.death_url).desired_width(280.0).hint_text("https://…"));
+                });
+                ui.end_row();
+
+                ui.checkbox(&mut s.catch_url_enabled, "Catch URL:");
+                ui.add_enabled_ui(s.catch_url_enabled, |ui| {
+                    ui.add(egui::TextEdit::singleline(&mut s.catch_url).desired_width(280.0).hint_text("https://…"));
+                });
+                ui.end_row();
+
+                ui.checkbox(&mut s.shiny_url_enabled, "Shiny URL:");
+                ui.add_enabled_ui(s.shiny_url_enabled, |ui| {
+                    ui.add(egui::TextEdit::singleline(&mut s.shiny_url).desired_width(280.0).hint_text("https://…"));
+                });
+                ui.end_row();
+
+                ui.checkbox(&mut s.wipe_url_enabled, "Wipe URL:");
+                ui.add_enabled_ui(s.wipe_url_enabled, |ui| {
+                    ui.add(egui::TextEdit::singleline(&mut s.wipe_url).desired_width(280.0).hint_text("https://…"));
+                });
+                ui.end_row();
             });
 
         ui.add_space(8.0);
@@ -395,6 +444,12 @@ impl WindowInfo {
                     preferred_player: player_parse,
                     default_test:     s.default_test,
                     test:             s.test.clone(),
+                    webhooks: crate::config::WebhookConfig {
+                        death_url: if s.death_url_enabled && !s.death_url.trim().is_empty() { Some(s.death_url.trim().to_string()) } else { None },
+                        catch_url: if s.catch_url_enabled && !s.catch_url.trim().is_empty() { Some(s.catch_url.trim().to_string()) } else { None },
+                        shiny_url: if s.shiny_url_enabled && !s.shiny_url.trim().is_empty() { Some(s.shiny_url.trim().to_string()) } else { None },
+                        wipe_url:  if s.wipe_url_enabled  && !s.wipe_url.trim().is_empty()  { Some(s.wipe_url.trim().to_string())  } else { None },
+                    },
                 };
                 save_config(&cfg, &self.config_path);
                 self.settings_open = false;

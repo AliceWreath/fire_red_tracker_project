@@ -115,6 +115,20 @@ impl EncounterTracker {
             let id_low      = ot_id as u16;
             let is_shiny    = (p_high ^ p_low ^ id_high ^ id_low) < 8;
 
+            if is_shiny {
+                crate::webhook::fire_event(crate::webhook::WebhookEvent::Shiny {
+                    player:    fire_red_loop::get_trainer_name(),
+                    timestamp: now,
+                    pokemon:   crate::webhook::PokemonInfo {
+                        nickname: String::new(),
+                        species:  enemy.box_mon.secure.growth.species_string.clone(),
+                        level:    enemy.level,
+                        shiny:    true,
+                        nature:   fire_red_database::nature_name(personality).to_string(),
+                    },
+                });
+            }
+
             let is_first = fire_red_database::record_encounter(
                 fire_red_database::Encounter {
                     player_name:    String::new(), // populated from DbState::current_player

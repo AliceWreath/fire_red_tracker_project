@@ -1,6 +1,6 @@
 [package]
 name = "fire_red_tracker"
-version = "0.8.61"
+version = "0.8.62"
 edition = "2024"
 
 [dependencies]
@@ -28,3 +28,4 @@ fire_red_location_names.workspace  = true
 self_update.workspace          = true
 fire_red_database.workspace    = true
 fire_red_text.workspace        = true
+reqwest.workspace              = true

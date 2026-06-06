@@ -36,10 +36,42 @@ pub struct TrackerConfig {
     /// Settings applied when `--test` is passed (overrides base config; explicit CLI flags still win).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub test: Option<TrackerTestOverrides>,
+    /// Webhook URLs fired on game events.
+    #[serde(default, skip_serializing_if = "WebhookConfig::is_empty")]
+    pub webhooks: WebhookConfig,
 }
 
 fn default_aggregator_host() -> String { "127.0.0.1".to_string() }
 fn default_aggregator_port() -> u16 { 7878 }
+
+// ---------------------------------------------------------------------------
+// Webhook config
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct WebhookConfig {
+    /// POSTed when a party member dies.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub death_url: Option<String>,
+    /// POSTed when a new pokemon is added to the party (caught/gifted/traded).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub catch_url: Option<String>,
+    /// POSTed when a shiny wild pokemon is first encountered.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shiny_url: Option<String>,
+    /// POSTed when the entire party is wiped and the run ends.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wipe_url: Option<String>,
+}
+
+impl WebhookConfig {
+    pub fn is_empty(&self) -> bool {
+        self.death_url.is_none()
+            && self.catch_url.is_none()
+            && self.shiny_url.is_none()
+            && self.wipe_url.is_none()
+    }
+}
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct TrackerTestOverrides {
@@ -119,6 +151,15 @@ struct SetupApp {
     heading:          &'static str,
     default_test:     bool,
     test:             Option<TrackerTestOverrides>,
+    // Webhook URL fields
+    death_url:         String,
+    death_url_enabled: bool,
+    catch_url:         String,
+    catch_url_enabled: bool,
+    shiny_url:         String,
+    shiny_url_enabled: bool,
+    wipe_url:          String,
+    wipe_url_enabled:  bool,
 }
 
 impl SetupApp {
@@ -136,6 +177,14 @@ impl SetupApp {
             heading:          "First-Run Setup",
             default_test:     false,
             test:             None,
+            death_url:         String::new(),
+            death_url_enabled: false,
+            catch_url:         String::new(),
+            catch_url_enabled: false,
+            shiny_url:         String::new(),
+            shiny_url_enabled: false,
+            wipe_url:          String::new(),
+            wipe_url_enabled:  false,
         }
     }
 
@@ -144,6 +193,7 @@ impl SetupApp {
             .trim_start_matches("postgresql://")
             .trim_start_matches("postgres://")
             .to_string();
+        let wh = &cfg.webhooks;
         Self {
             rom:              cfg.rom.clone(),
             db:               db_display,
@@ -157,6 +207,14 @@ impl SetupApp {
             heading:          "Edit Config",
             default_test:     cfg.default_test,
             test:             cfg.test.clone(),
+            death_url:         wh.death_url.clone().unwrap_or_default(),
+            death_url_enabled: wh.death_url.is_some(),
+            catch_url:         wh.catch_url.clone().unwrap_or_default(),
+            catch_url_enabled: wh.catch_url.is_some(),
+            shiny_url:         wh.shiny_url.clone().unwrap_or_default(),
+            shiny_url_enabled: wh.shiny_url.is_some(),
+            wipe_url:          wh.wipe_url.clone().unwrap_or_default(),
+            wipe_url_enabled:  wh.wipe_url.is_some(),
         }
     }
 }
@@ -245,6 +303,37 @@ impl eframe::App for SetupApp {
                     });
                     ui.end_row();
                 }
+
+                // Webhooks
+                ui.separator();
+                ui.end_row();
+                ui.label(egui::RichText::new("Webhooks").strong());
+                ui.small("POST JSON to a URL on game events (Discord, stream alerts, etc.)");
+                ui.end_row();
+
+                ui.checkbox(&mut self.death_url_enabled, "Death URL:");
+                ui.add_enabled_ui(self.death_url_enabled, |ui| {
+                    ui.add(egui::TextEdit::singleline(&mut self.death_url).desired_width(340.0).hint_text("https://…"));
+                });
+                ui.end_row();
+
+                ui.checkbox(&mut self.catch_url_enabled, "Catch URL:");
+                ui.add_enabled_ui(self.catch_url_enabled, |ui| {
+                    ui.add(egui::TextEdit::singleline(&mut self.catch_url).desired_width(340.0).hint_text("https://…"));
+                });
+                ui.end_row();
+
+                ui.checkbox(&mut self.shiny_url_enabled, "Shiny URL:");
+                ui.add_enabled_ui(self.shiny_url_enabled, |ui| {
+                    ui.add(egui::TextEdit::singleline(&mut self.shiny_url).desired_width(340.0).hint_text("https://…"));
+                });
+                ui.end_row();
+
+                ui.checkbox(&mut self.wipe_url_enabled, "Wipe URL:");
+                ui.add_enabled_ui(self.wipe_url_enabled, |ui| {
+                    ui.add(egui::TextEdit::singleline(&mut self.wipe_url).desired_width(340.0).hint_text("https://…"));
+                });
+                ui.end_row();
             });
 
         ui.add_space(12.0);
@@ -280,6 +369,12 @@ impl eframe::App for SetupApp {
                     preferred_player: player_parse,
                     default_test:     self.default_test,
                     test:             self.test.clone(),
+                    webhooks: WebhookConfig {
+                        death_url: if self.death_url_enabled && !self.death_url.trim().is_empty() { Some(self.death_url.trim().to_string()) } else { None },
+                        catch_url: if self.catch_url_enabled && !self.catch_url.trim().is_empty() { Some(self.catch_url.trim().to_string()) } else { None },
+                        shiny_url: if self.shiny_url_enabled && !self.shiny_url.trim().is_empty() { Some(self.shiny_url.trim().to_string()) } else { None },
+                        wipe_url:  if self.wipe_url_enabled  && !self.wipe_url.trim().is_empty()  { Some(self.wipe_url.trim().to_string())  } else { None },
+                    },
                 };
 
                 *self.result.lock().unwrap() = Some(config);
@@ -337,8 +432,8 @@ fn run_setup_window(existing: Option<&TrackerConfig>) -> TrackerConfig {
         eframe::NativeOptions {
             viewport: egui::ViewportBuilder::default()
                 .with_title(title)
-                .with_inner_size([520.0, 300.0])
-                .with_resizable(false),
+                .with_inner_size([560.0, 480.0])
+                .with_resizable(true),
             ..Default::default()
         },
         Box::new(move |_cc| Ok(Box::new(app))),

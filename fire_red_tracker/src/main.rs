@@ -44,6 +44,7 @@ mod game;
 mod gui;
 mod server;
 mod textures;
+mod webhook;
 
 use clap::Parser;
 use cli::{Cli, Command};
@@ -276,6 +277,8 @@ fn main() {
             println!("Using run #{}.", id);
         }
     }
+
+    webhook::init(cfg.webhooks.clone());
 
     let is_clean            = cfg.clean || cli.clean;
     let rom_path            = cli.rom.unwrap_or(cfg.rom);

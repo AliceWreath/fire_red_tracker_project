@@ -113,6 +113,7 @@ pub fn check_for_dead_pokemon(thread_party: &Arc<Mutex<Vec<Pokemon>>>, run_track
             .map(|d| d.as_secs())
             .unwrap_or(0);
 
+        let shiny_flag = is_shiny(personality, ot_id);
         fire_red_database::mark_dead(fire_red_database::DeadPokemon {
             player_name:   String::new(), // populated from DbState::current_player by mark_dead
             personality,
@@ -121,7 +122,7 @@ pub fn check_for_dead_pokemon(thread_party: &Arc<Mutex<Vec<Pokemon>>>, run_track
             nickname:      pokemon.box_mon.nickname_string.clone(),
             species:       growth.species,
             species_name:  growth.species_string.clone(),
-            is_shiny:      is_shiny(personality, ot_id),
+            is_shiny:      shiny_flag,
             nature:        fire_red_database::nature_name(personality).to_string(),
 
             level:      pokemon.level,
@@ -161,6 +162,17 @@ pub fn check_for_dead_pokemon(thread_party: &Arc<Mutex<Vec<Pokemon>>>, run_track
             gender:       pokemon.box_mon.gender,
 
             died_at,
+        });
+        crate::webhook::fire_event(crate::webhook::WebhookEvent::Death {
+            player:    fire_red_loop::get_trainer_name(),
+            timestamp: died_at,
+            pokemon:   crate::webhook::PokemonInfo {
+                nickname: pokemon.box_mon.nickname_string.clone(),
+                species:  growth.species_string.clone(),
+                level:    pokemon.level,
+                shiny:    shiny_flag,
+                nature:   fire_red_database::nature_name(personality).to_string(),
+            },
         });
     }
 }
@@ -236,6 +248,7 @@ pub fn check_for_new_pokemon(thread_party: &Arc<Mutex<Vec<Pokemon>>>) {
             })
             .unwrap_or_default();
 
+        let shiny_flag = is_shiny(personality, ot_id);
         fire_red_database::mark_caught(fire_red_database::CaughtPokemon {
             player_name:   String::new(), // populated from DbState::current_player by mark_caught
             personality,
@@ -243,7 +256,7 @@ pub fn check_for_new_pokemon(thread_party: &Arc<Mutex<Vec<Pokemon>>>) {
             nickname:      pokemon.box_mon.nickname_string.clone(),
             species,
             species_name:  growth.species_string.clone(),
-            is_shiny:      is_shiny(personality, ot_id),
+            is_shiny:      shiny_flag,
             nature:        fire_red_database::nature_name(personality).to_string(),
             level:         pokemon.level,
             met_location:  misc.met_location,
@@ -266,6 +279,17 @@ pub fn check_for_new_pokemon(thread_party: &Arc<Mutex<Vec<Pokemon>>>) {
                 sp_defense: ev.sp_defense_ev,
             },
             caught_at,
+        });
+        crate::webhook::fire_event(crate::webhook::WebhookEvent::Catch {
+            player:    fire_red_loop::get_trainer_name(),
+            timestamp: caught_at,
+            pokemon:   crate::webhook::PokemonInfo {
+                nickname: pokemon.box_mon.nickname_string.clone(),
+                species:  growth.species_string.clone(),
+                level:    pokemon.level,
+                shiny:    shiny_flag,
+                nature:   fire_red_database::nature_name(personality).to_string(),
+            },
         });
     }
 }
@@ -335,6 +359,13 @@ pub fn check_for_run_over(thread_party: &Arc<Mutex<Vec<Pokemon>>>, run_tracking_
     drop(party);
     if all_dead {
         fire_red_database::end_run();
+        crate::webhook::fire_event(crate::webhook::WebhookEvent::Wipe {
+            player:    fire_red_loop::get_trainer_name(),
+            timestamp: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0),
+        });
         return true;
     }
     false
