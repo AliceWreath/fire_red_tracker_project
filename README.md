@@ -1,6 +1,6 @@
 # Fire Red Tracker
 
-A real-time Pokémon FireRed Nuzlocke and Soul Link tracker built in Rust. It reads live game state from a running RetroArch instance via the mGBA core, tracks first encounters, deaths, catches, and shiny encounters across runs, and feeds a set of OBS Browser Source overlays through a WebSocket aggregator server.
+A real-time Pokémon FireRed Nuzlocke and Soul Link tracker built in Rust. It reads live game state from a running RetroArch instance via the mGBA core, tracks first encounters, deaths, catches, and shiny encounters across runs, feeds a set of OBS Browser Source overlays through a WebSocket aggregator server, and fires configurable HTTP webhooks on key events for Discord notifications, stream alerts, and other external integrations.
 
 ---
 
@@ -37,6 +37,40 @@ A dedicated transparent OBS source (`/:index/alerts`) that shows timed toast not
 - **Faint** — fires when a party member's HP reaches zero. Shows nickname, species, level, and nature.
 - **Shiny encounter** — fires when a new encounter is recorded with the shiny flag set. Shows species, level, and zone name. Stays visible for 10 seconds.
 - **Party wipe / blackout** — fires when every party member is dead simultaneously. The tracker detects the wipe and calls `end_run()` automatically; the overlay displays the "PARTY WIPED" banner in response to the resulting run-state change.
+
+### Webhooks
+
+The tracker can POST a JSON payload to a user-configured URL whenever a key event occurs. Each event type has its own independent optional URL; any combination can be enabled. Configuration is done via the setup dialog or the in-app ⚙ Settings panel.
+
+| Event | Trigger | Config key |
+|---|---|---|
+| `death` | A party member's HP reaches zero and the death is written to the database | `death_url` |
+| `catch` | A new Pokémon joins the party (caught, gifted, or traded in) | `catch_url` |
+| `shiny` | A shiny wild Pokémon's personality is detected, before any catch attempt | `shiny_url` |
+| `wipe` | Every party member is dead and the run ends | `wipe_url` |
+
+All four keys live under `[webhooks]` in `~/.config/fire_red_tracker/config.toml`. The section is omitted from the file entirely when no URLs are set.
+
+**Payload format** — every POST is `application/json` with `Content-Type: application/json`:
+
+```json
+{
+  "event":     "death",
+  "player":    "Alice",
+  "timestamp": 1748989234,
+  "pokemon": {
+    "nickname": "Bulbasaur",
+    "species":  "Bulbasaur",
+    "level":    14,
+    "shiny":    false,
+    "nature":   "Jolly"
+  }
+}
+```
+
+The `pokemon` field is absent for `wipe` events. For `shiny` events the `nickname` field is always an empty string (the wild Pokémon has not yet been named). The `catch` event's payload includes `"shiny": true` when the caught Pokémon is shiny; a separate `shiny` webhook fires earlier at first sighting in the wild.
+
+POSTs are fire-and-forget: they are dispatched on a dedicated background thread with a 5-second timeout and never block the game-polling loop. Failures are printed to stderr.
 
 ### Run management
 - **Badge tracker** — displays obtained badges as coloured dots and shows the next gym leader's name, city, and highest level.
@@ -276,6 +310,7 @@ A **Soul Link** is a Nuzlocke variant played with a partner: each player's catch
 | `textures.rs` | `PendingTexture`, sprite compression, `build_sprite_data` |
 | `gui.rs` | `WindowInfo`, `eframe::App` impl, party panel, encounters viewport |
 | `server.rs` | Aggregator connection handler — manages the bidirectional push stream over an established TCP connection |
+| `webhook.rs` | `WebhookEvent` enum, channel-backed background sender, `init` / `fire_event` — HTTP POST dispatch for death, catch, shiny, and wipe events |
 
 ### Key external dependencies
 
@@ -298,6 +333,7 @@ A **Soul Link** is a Nuzlocke variant played with a partner: each player's catch
 | `rfd` | Native file-picker dialogs used in the first-run config setup wizard |
 | `self_update` | GitHub release auto-updater; powers the `--update` flag on both binaries |
 | `once_cell` | Lazy static initialisation for shared name buffers and ROM data |
+| `reqwest` | Blocking HTTP client used by the tracker's webhook sender to POST event payloads; TLS via rustls |
 
 ---
 
@@ -351,7 +387,8 @@ main thread  (GUI)
 │                             fill_party_list called every tick; DB checks (deaths/catches)
 │                             run every 1 s or immediately on party-size change
 ├── box-monitor thread        read all 14 PC boxes every 5 s
-└── trainer-data thread       read trainer name / play time every 15 s
+├── trainer-data thread       read trainer name / play time every 15 s
+└── webhook thread            drains event channel; fires HTTP POSTs (5 s timeout each)
 ```
 
 #### Tracker — connected
