@@ -2,6 +2,21 @@ use postgres::{Client, NoTls};
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 
+trait LockOrRecover<T> {
+    fn lock_or_recover(&self) -> std::sync::MutexGuard<'_, T>;
+}
+
+impl<T> LockOrRecover<T> for Mutex<T> {
+    #[track_caller]
+    fn lock_or_recover(&self) -> std::sync::MutexGuard<'_, T> {
+        self.lock().unwrap_or_else(|e| {
+            let loc = std::panic::Location::caller();
+            eprintln!("Warning: mutex poisoned at {}:{}: {e}", loc.file(), loc.line());
+            e.into_inner()
+        })
+    }
+}
+
 const NATURES: [&str; 25] = [
     "Hardy",   "Lonely", "Brave",   "Adamant", "Naughty",
     "Bold",    "Docile", "Relaxed", "Impish",  "Lax",
@@ -517,44 +532,44 @@ fn row_to_dead_pokemon(row: &postgres::Row) -> DeadPokemon {
 // ---------------------------------------------------------------------------
 
 /// Creates a fresh run, sets it as active in this process, and returns its ID.
-pub fn new_run(player_name: &str) -> u32 {
-    let mut state = db().lock().unwrap_or_else(|e| e.into_inner());
+pub fn new_run(player_name: &str) -> Result<u32, String> {
+    let mut state = db().lock_or_recover();
     let row = state.client
         .query_one(
             "INSERT INTO runs (player_name, started_at) VALUES ($1, $2) RETURNING id",
             &[&player_name, &(unix_now() as i64)],
         )
-        .expect("Failed to insert run");
+        .map_err(|e| format!("Failed to insert run: {e}"))?;
     let id = row.get::<_, i32>(0) as u32;
     state.run_id = Some(id);
     set_meta(&mut state.client, "active_run_id", &id.to_string());
-    id
+    Ok(id)
 }
 
 /// Switches the active run for this process to an existing run by ID.
 ///
-/// Returns `false` if no run with that ID exists.
-pub fn resume_run(id: u32) -> bool {
-    let mut state = db().lock().unwrap_or_else(|e| e.into_inner());
+/// Returns `Ok(false)` if no run with that ID exists.
+pub fn resume_run(id: u32) -> Result<bool, String> {
+    let mut state = db().lock_or_recover();
     let exists = state.client
         .query_opt("SELECT 1 FROM runs WHERE id = $1", &[&(id as i32)])
-        .expect("Failed to query runs")
+        .map_err(|e| format!("Failed to query runs: {e}"))?
         .is_some();
     if exists {
         state.run_id = Some(id);
         set_meta(&mut state.client, "active_run_id", &id.to_string());
     }
-    exists
+    Ok(exists)
 }
 
 /// Returns the active run ID for this process, falling back to the most
 /// recently created run. Creates a new run if none exist.
-pub fn get_or_create_run(player_name: &str) -> u32 {
-    let mut state = db().lock().unwrap_or_else(|e| e.into_inner());
+pub fn get_or_create_run(player_name: &str) -> Result<u32, String> {
+    let mut state = db().lock_or_recover();
 
     // Already selected in this session — keep it.
     if let Some(id) = state.run_id {
-        return id;
+        return Ok(id);
     }
 
     // Fall back to the most recently created run — all trackers share one run.
@@ -563,12 +578,12 @@ pub fn get_or_create_run(player_name: &str) -> u32 {
             "SELECT id FROM runs ORDER BY id DESC LIMIT 1",
             &[],
         )
-        .expect("Failed to query runs")
+        .map_err(|e| format!("Failed to query runs: {e}"))?
     {
         let id = row.get::<_, i32>(0) as u32;
         state.run_id = Some(id);
         set_meta(&mut state.client, "active_run_id", &id.to_string());
-        return id;
+        return Ok(id);
     }
 
     // No runs at all — create one.
@@ -577,11 +592,11 @@ pub fn get_or_create_run(player_name: &str) -> u32 {
             "INSERT INTO runs (player_name, started_at) VALUES ($1, $2) RETURNING id",
             &[&player_name, &(unix_now() as i64)],
         )
-        .expect("Failed to insert run");
+        .map_err(|e| format!("Failed to insert run: {e}"))?;
     let id = row.get::<_, i32>(0) as u32;
     state.run_id = Some(id);
     set_meta(&mut state.client, "active_run_id", &id.to_string());
-    id
+    Ok(id)
 }
 
 /// Updates the player name once it is known from the game.
@@ -589,15 +604,15 @@ pub fn get_or_create_run(player_name: &str) -> u32 {
 /// Stores the name in-process for tagging all subsequent DB writes, and updates
 /// the run row if it still holds the placeholder 'Unknown'.
 pub fn set_player_name(name: &str) {
-    let mut state = db().lock().unwrap_or_else(|e| e.into_inner());
+    let mut state = db().lock_or_recover();
     state.current_player = name.to_string();
-    if let Some(id) = state.run_id {
-        state.client
-            .execute(
-                "UPDATE runs SET player_name = $1 WHERE id = $2 AND player_name = 'Unknown'",
-                &[&name, &(id as i32)],
-            )
-            .expect("Failed to update player name");
+    if let Some(id) = state.run_id
+        && let Err(e) = state.client.execute(
+            "UPDATE runs SET player_name = $1 WHERE id = $2 AND player_name = 'Unknown'",
+            &[&name, &(id as i32)],
+        )
+    {
+        eprintln!("Warning: failed to update player name: {e}");
     }
 }
 
@@ -605,7 +620,7 @@ pub fn set_player_name(name: &str) {
 /// the meta table, which is useful for the `--list-runs` display before
 /// a run has been selected in the current session).
 pub fn active_run_id() -> Option<u32> {
-    let mut state = db().lock().unwrap_or_else(|e| e.into_inner());
+    let mut state = db().lock_or_recover();
     state.run_id.or_else(|| {
         get_meta(&mut state.client, "active_run_id")
             .and_then(|v| v.parse().ok())
@@ -618,20 +633,22 @@ pub fn active_run_id() -> Option<u32> {
 ///
 /// Returns the ID of the run that was ended, or `None` if no run was active.
 pub fn end_run() -> Option<u32> {
-    let mut state = db().lock().unwrap_or_else(|e| e.into_inner());
+    let mut state = db().lock_or_recover();
     let id = state.run_id.take()?;
-    state.client.execute(
+    if let Err(e) = state.client.execute(
         "UPDATE runs SET ended_at = $1 WHERE id = $2",
         &[&(unix_now() as i64), &(id as i32)],
-    ).expect("Failed to end run");
+    ) {
+        eprintln!("Warning: failed to record run end time: {e}");
+    }
     delete_meta(&mut state.client, "active_run_id");
     Some(id)
 }
 
 /// Returns a summary of every run: `(id, player_name, started_at, dead_count)`.
-pub fn list_runs() -> Vec<(u32, String, u64, usize)> {
-    let mut state = db().lock().unwrap_or_else(|e| e.into_inner());
-    state.client
+pub fn list_runs() -> Result<Vec<(u32, String, u64, usize)>, String> {
+    let mut state = db().lock_or_recover();
+    let rows = state.client
         .query(
             "SELECT r.id, r.player_name, r.started_at, COUNT(d.personality)
              FROM runs r
@@ -640,15 +657,15 @@ pub fn list_runs() -> Vec<(u32, String, u64, usize)> {
              ORDER BY r.id",
             &[],
         )
-        .expect("Failed to query runs")
-        .iter()
+        .map_err(|e| format!("Failed to query runs: {e}"))?;
+    Ok(rows.iter()
         .map(|row| (
             row.get::<_, i32>(0) as u32,
             row.get(1),
             row.get::<_, i64>(2) as u64,
             row.get::<_, i64>(3) as usize,
         ))
-        .collect()
+        .collect())
 }
 
 // ---------------------------------------------------------------------------
@@ -659,7 +676,7 @@ pub fn list_runs() -> Vec<(u32, String, u64, usize)> {
 ///
 /// No-op if the Pokemon (identified by personality) is already recorded.
 pub fn mark_dead(pokemon: DeadPokemon) {
-    let mut state = db().lock().unwrap_or_else(|e| e.into_inner());
+    let mut state = db().lock_or_recover();
     let active = match state.run_id {
         Some(id) => id,
         None => return,
@@ -669,7 +686,7 @@ pub fn mark_dead(pokemon: DeadPokemon) {
     let nickname     = pg_safe(&pokemon.nickname);
     let spec_name    = pg_safe(&pokemon.species_name);
     let ability_name = pg_safe(&pokemon.ability_name);
-    state.client.execute(
+    if let Err(e) = state.client.execute(
         "INSERT INTO dead_pokemon (
             run_id, player_name, personality, ot_id, ot_name, nickname,
             species, species_name, is_shiny, nature,
@@ -732,12 +749,14 @@ pub fn mark_dead(pokemon: DeadPokemon) {
             &(pokemon.died_at as i64),
             &(pokemon.gender as i32),
         ],
-    ).expect("Failed to insert dead pokemon");
+    ) {
+        eprintln!("Warning: failed to record dead pokemon (personality={}): {e}", pokemon.personality);
+    }
 }
 
 /// Returns `true` if the Pokemon with this personality is dead in the active run.
 pub fn is_dead(personality: u32) -> bool {
-    let mut state = db().lock().unwrap_or_else(|e| e.into_inner());
+    let mut state = db().lock_or_recover();
     let active = match state.run_id {
         Some(id) => id,
         None => return false,
@@ -747,7 +766,7 @@ pub fn is_dead(personality: u32) -> bool {
 
 /// Returns the stored `DeadPokemon` entry for this personality in the active run.
 pub fn get_dead_pokemon(personality: u32) -> Option<DeadPokemon> {
-    let mut state = db().lock().unwrap_or_else(|e| e.into_inner());
+    let mut state = db().lock_or_recover();
     let active = state.run_id?;
     let row = state.client
         .query_opt(
@@ -783,7 +802,7 @@ fn pg_safe(s: &str) -> String {
 ///
 /// No-op if this personality is already recorded (deduplicates on reconnect).
 pub fn mark_caught(pokemon: CaughtPokemon) {
-    let mut state = db().lock().unwrap_or_else(|e| e.into_inner());
+    let mut state = db().lock_or_recover();
     let active = match state.run_id {
         Some(id) => id,
         None => return,
@@ -791,7 +810,7 @@ pub fn mark_caught(pokemon: CaughtPokemon) {
     let player    = pg_safe(&state.current_player);
     let nickname  = pg_safe(&pokemon.nickname);
     let spec_name = pg_safe(&pokemon.species_name);
-    state.client.execute(
+    if let Err(e) = state.client.execute(
         "INSERT INTO caught_pokemon (
             run_id, player_name, personality, ot_id, nickname, species, species_name,
             is_shiny, nature, level, met_location,
@@ -828,7 +847,9 @@ pub fn mark_caught(pokemon: CaughtPokemon) {
             &(pokemon.gender as i32),
             &pokemon.location_name,
         ],
-    ).expect("Failed to insert caught pokemon");
+    ) {
+        eprintln!("Warning: failed to record caught pokemon (personality={}): {e}", pokemon.personality);
+    }
 }
 
 /// Updates the nickname of a caught Pokémon if it has changed.
@@ -836,7 +857,7 @@ pub fn mark_caught(pokemon: CaughtPokemon) {
 /// No-op if the Pokémon is not registered, the run is not active, or the
 /// nickname matches what is already stored.
 pub fn update_caught_nickname(personality: u32, nickname: &str) {
-    let mut state = db().lock().unwrap_or_else(|e| e.into_inner());
+    let mut state = db().lock_or_recover();
     let active = match state.run_id {
         Some(id) => id,
         None => return,
@@ -853,7 +874,7 @@ pub fn update_caught_nickname(personality: u32, nickname: &str) {
 /// No-op if the Pokémon is not registered, the run is not active, or all EVs
 /// match what is already stored.
 pub fn update_caught_evs(personality: u32, evs: &EVs) {
-    let mut state = db().lock().unwrap_or_else(|e| e.into_inner());
+    let mut state = db().lock_or_recover();
     let active = match state.run_id {
         Some(id) => id,
         None => return,
@@ -880,7 +901,7 @@ pub fn update_caught_evs(personality: u32, evs: &EVs) {
 
 /// Returns `true` if a Pokemon with this personality has been caught in the active run.
 pub fn is_caught(personality: u32) -> bool {
-    let mut state = db().lock().unwrap_or_else(|e| e.into_inner());
+    let mut state = db().lock_or_recover();
     let active = match state.run_id {
         Some(id) => id,
         None => return false,
@@ -896,7 +917,7 @@ pub fn is_caught(personality: u32) -> bool {
 
 /// Returns all caught Pokemon for the active run for the current player.
 pub fn list_caught() -> Vec<CaughtPokemon> {
-    let mut state = db().lock().unwrap_or_else(|e| e.into_inner());
+    let mut state = db().lock_or_recover();
     let active = match state.run_id {
         Some(id) => id,
         None => return vec![],
@@ -914,7 +935,7 @@ pub fn list_caught() -> Vec<CaughtPokemon> {
 /// Subsequent encounters in the same area by the same player are silently
 /// ignored (Nuzlocke rule). Returns `true` if this was a new encounter.
 pub fn record_encounter(encounter: Encounter) -> bool {
-    let mut state = db().lock().unwrap_or_else(|e| e.into_inner());
+    let mut state = db().lock_or_recover();
     let active = match state.run_id {
         Some(id) => id,
         None => return false,
@@ -943,7 +964,7 @@ pub fn record_encounter(encounter: Encounter) -> bool {
 
 /// Marks the current player's encounter for this area as successfully caught.
 pub fn set_encounter_caught(map_group: u8, map_name: u8) {
-    let mut state = db().lock().unwrap_or_else(|e| e.into_inner());
+    let mut state = db().lock_or_recover();
     let active = match state.run_id {
         Some(id) => id,
         None => return,
@@ -961,7 +982,7 @@ pub fn set_encounter_caught(map_group: u8, map_name: u8) {
 /// Returns `true` if this species has already been recorded as a first encounter
 /// anywhere in the active run for the current player.
 pub fn species_encountered(species: u16) -> bool {
-    let mut state = db().lock().unwrap_or_else(|e| e.into_inner());
+    let mut state = db().lock_or_recover();
     let active = match state.run_id {
         Some(id) => id,
         None => return false,
@@ -981,7 +1002,7 @@ pub fn species_encountered(species: u16) -> bool {
 /// Used at startup to seed the pre-ball latch: if the run already has
 /// encounters the player must have had balls at some point this run.
 pub fn has_any_encounters() -> bool {
-    let mut state = db().lock().unwrap_or_else(|e| e.into_inner());
+    let mut state = db().lock_or_recover();
     let active = match state.run_id {
         Some(id) => id,
         None => return false,
@@ -997,7 +1018,7 @@ pub fn has_any_encounters() -> bool {
 
 /// Returns `true` if an encounter has already been recorded for this area by the current player.
 pub fn has_encounter(map_group: u8, map_name: u8) -> bool {
-    let mut state = db().lock().unwrap_or_else(|e| e.into_inner());
+    let mut state = db().lock_or_recover();
     let active = match state.run_id {
         Some(id) => id,
         None => return false,
@@ -1015,7 +1036,7 @@ pub fn has_encounter(map_group: u8, map_name: u8) -> bool {
 
 /// Returns all encounters for the active run, ordered by time.
 pub fn list_encounters() -> Vec<Encounter> {
-    let mut state = db().lock().unwrap_or_else(|e| e.into_inner());
+    let mut state = db().lock_or_recover();
     let active = match state.run_id {
         Some(id) => id,
         None => return vec![],
@@ -1096,7 +1117,7 @@ impl DbReader {
     /// Returns the active run ID if the tracked run has not been ended, else `None`.
     pub fn active_run_id(&self) -> Option<u32> {
         if self.is_active.load(std::sync::atomic::Ordering::SeqCst) {
-            *self.run_id.lock().unwrap_or_else(|e| e.into_inner())
+            *self.run_id.lock_or_recover()
         } else {
             None
         }
@@ -1112,13 +1133,12 @@ impl DbReader {
     pub fn sync_player(&self, player_name: &str) -> bool {
         let forced = self.dirty.swap(false, std::sync::atomic::Ordering::SeqCst);
         if !forced {
-            let last = self.last_player.lock().unwrap_or_else(|e| e.into_inner());
+            let last = self.last_player.lock_or_recover();
             if *last == player_name { return false; }
         }
 
         let row = self.client
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .lock_or_recover()
             .query_opt(
                 "SELECT id, ended_at FROM runs ORDER BY id DESC LIMIT 1",
                 &[],
@@ -1136,41 +1156,40 @@ impl DbReader {
         };
 
         self.is_active.store(active, std::sync::atomic::Ordering::SeqCst);
-        let old_id = *self.run_id.lock().unwrap_or_else(|e| e.into_inner());
-        *self.run_id.lock().unwrap_or_else(|e| e.into_inner()) = new_id;
+        let old_id = *self.run_id.lock_or_recover();
+        *self.run_id.lock_or_recover() = new_id;
         if new_id.is_some() || forced {
-            *self.last_player.lock().unwrap_or_else(|e| e.into_inner()) = player_name.to_string();
+            *self.last_player.lock_or_recover() = player_name.to_string();
         }
         new_id != old_id
     }
 
     /// Returns caught Pokemon for the active run belonging to `player_name`.
     pub fn list_caught(&self, player_name: &str) -> Vec<CaughtPokemon> {
-        let run_id = match *self.run_id.lock().unwrap_or_else(|e| e.into_inner()) {
+        let run_id = match *self.run_id.lock_or_recover() {
             Some(id) => id,
             None => return vec![],
         };
-        query_caught(&mut self.client.lock().unwrap_or_else(|e| e.into_inner()), run_id, player_name)
+        query_caught(&mut self.client.lock_or_recover(), run_id, player_name)
     }
 
     /// Returns `true` if the Pokemon with this personality is dead in the active run.
     pub fn is_dead(&self, personality: u32) -> bool {
-        let run_id = match *self.run_id.lock().unwrap_or_else(|e| e.into_inner()) {
+        let run_id = match *self.run_id.lock_or_recover() {
             Some(id) => id,
             None => return false,
         };
-        query_is_dead(&mut self.client.lock().unwrap_or_else(|e| e.into_inner()), run_id, personality)
+        query_is_dead(&mut self.client.lock_or_recover(), run_id, personality)
     }
 
     /// Returns dead Pokemon for the active run belonging to `player_name`, keyed by personality.
     pub fn list_dead_with_records(&self, player_name: &str) -> HashMap<u32, DeadPokemon> {
-        let run_id = match *self.run_id.lock().unwrap_or_else(|e| e.into_inner()) {
+        let run_id = match *self.run_id.lock_or_recover() {
             Some(id) => id,
             None => return HashMap::new(),
         };
         self.client
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .lock_or_recover()
             .query(
                 "SELECT
                     player_name, personality, ot_id, ot_name, nickname, species, species_name, is_shiny, nature,
@@ -1193,13 +1212,12 @@ impl DbReader {
 
     /// Returns recorded first encounters for the active run belonging to `player_name`.
     pub fn list_encounters(&self, player_name: &str) -> Vec<Encounter> {
-        let run_id = match *self.run_id.lock().unwrap_or_else(|e| e.into_inner()) {
+        let run_id = match *self.run_id.lock_or_recover() {
             Some(id) => id,
             None => return vec![],
         };
         self.client
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .lock_or_recover()
             .query(
                 "SELECT player_name, map_group, map_name, species, species_name, level, caught, encountered_at, is_shiny
                  FROM encounters WHERE run_id = $1 AND player_name = $2 ORDER BY encountered_at ASC",
@@ -1223,8 +1241,8 @@ impl DbReader {
 
     /// Returns encounters from the most recently completed run, for cross-run comparison.
     pub fn list_prev_run_encounters(&self, player_name: &str) -> Vec<Encounter> {
-        let current_run_id = *self.run_id.lock().unwrap_or_else(|e| e.into_inner());
-        let mut client = self.client.lock().unwrap_or_else(|e| e.into_inner());
+        let current_run_id = *self.run_id.lock_or_recover();
+        let mut client = self.client.lock_or_recover();
 
         let prev_run_id: Option<u32> = if let Some(cid) = current_run_id {
             client.query_opt(
@@ -1268,10 +1286,9 @@ impl DbReader {
     /// Returns a summary of the tracked run: player name, start/end times,
     /// death count, and catch count. Returns `None` if no run is tracked yet.
     pub fn run_summary(&self) -> Option<(u32, String, u64, Option<u64>, usize, usize)> {
-        let run_id = (*self.run_id.lock().unwrap_or_else(|e| e.into_inner()))?;
+        let run_id = (*self.run_id.lock_or_recover())?;
         self.client
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .lock_or_recover()
             .query_opt(
                 "SELECT r.player_name, r.started_at, r.ended_at,
                         COUNT(DISTINCT d.personality), COUNT(DISTINCT c.personality)
@@ -1302,14 +1319,13 @@ impl DbReader {
     /// Returns `true` if the insert was attempted (run_id was known), `false` if
     /// the run has not been identified yet (caller should retry next frame).
     pub fn mark_soul_link_dead(&self, caught: &CaughtPokemon) -> bool {
-        let run_id = match *self.run_id.lock().unwrap_or_else(|e| e.into_inner()) {
+        let run_id = match *self.run_id.lock_or_recover() {
             Some(id) => id,
             None => return false,
         };
         let now = unix_now();
         if let Err(e) = self.client
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .lock_or_recover()
             .execute(
                 "INSERT INTO dead_pokemon (
                     run_id, personality, ot_id, ot_name, nickname,

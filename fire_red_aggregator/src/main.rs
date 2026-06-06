@@ -21,7 +21,22 @@ use app::AggregatorApp;
 use clap::Parser;
 use client::{MonitorSlot, SharedSlots, handle_tracker_connection};
 use std::net::TcpListener;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+
+trait LockOrRecover<T> {
+    fn lock_or_recover(&self) -> std::sync::MutexGuard<'_, T>;
+}
+
+impl<T> LockOrRecover<T> for Mutex<T> {
+    #[track_caller]
+    fn lock_or_recover(&self) -> std::sync::MutexGuard<'_, T> {
+        self.lock().unwrap_or_else(|e| {
+            let loc = std::panic::Location::caller();
+            eprintln!("Warning: mutex poisoned at {}:{}: {e}", loc.file(), loc.line());
+            e.into_inner()
+        })
+    }
+}
 
 // ---------------------------------------------------------------------------
 // CLI definition
@@ -170,14 +185,14 @@ fn main() {
 
             // Reuse the first disconnected slot, or create a new one.
             let slot_arc = {
-                let mut slots = listener_slots.lock().unwrap_or_else(|e| e.into_inner());
+                let mut slots = listener_slots.lock_or_recover();
                 let reuse = slots.iter().find(|s| {
-                    s.state.lock().unwrap_or_else(|e| e.into_inner()).is_none()
+                    s.state.lock_or_recover().is_none()
                 }).cloned();
                 if let Some(s) = reuse {
                     // Reset stale per-connection state before handing to a new tracker.
-                    s.known_species.lock().unwrap_or_else(|e| e.into_inner()).clear();
-                    s.command_queue.lock().unwrap_or_else(|e| e.into_inner()).clear();
+                    s.known_species.lock_or_recover().clear();
+                    s.command_queue.lock_or_recover().clear();
                     s.run_changed.store(false, std::sync::atomic::Ordering::Relaxed);
                     s
                 } else {
@@ -207,7 +222,7 @@ fn main() {
                 }));
                 if result.is_err() {
                     eprintln!("Tracker thread for {} panicked — clearing slot state.", peer);
-                    *state.lock().unwrap_or_else(|e| e.into_inner()) = None;
+                    *state.lock_or_recover() = None;
                 }
                 println!("Tracker from {} disconnected.", peer);
             });

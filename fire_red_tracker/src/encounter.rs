@@ -2,6 +2,21 @@ use fire_red_loop::FireRedState;
 use fire_red_party_monitor::Pokemon;
 use std::sync::{Arc, Mutex};
 
+trait LockOrRecover<T> {
+    fn lock_or_recover(&self) -> std::sync::MutexGuard<'_, T>;
+}
+
+impl<T> LockOrRecover<T> for Mutex<T> {
+    #[track_caller]
+    fn lock_or_recover(&self) -> std::sync::MutexGuard<'_, T> {
+        self.lock().unwrap_or_else(|e| {
+            let loc = std::panic::Location::caller();
+            eprintln!("Warning: mutex poisoned at {}:{}: {e}", loc.file(), loc.line());
+            e.into_inner()
+        })
+    }
+}
+
 /// Tracks wild Pokémon encounters for the active Nuzlocke run.
 ///
 /// `gEnemyParty[0]` is never cleared between battles — FireRed only overwrites
@@ -123,7 +138,7 @@ impl EncounterTracker {
         }
 
         if let Some(tp) = self.tracked_personality {
-            let party  = thread_party.lock().unwrap_or_else(|e| e.into_inner());
+            let party  = thread_party.lock_or_recover();
             let caught = party.iter().any(|p| p.box_mon.personality == tp);
             drop(party);
             if caught {

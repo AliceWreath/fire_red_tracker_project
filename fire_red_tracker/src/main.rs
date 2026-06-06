@@ -58,6 +58,21 @@ use std::net::TcpStream;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
+trait LockOrRecover<T> {
+    fn lock_or_recover(&self) -> std::sync::MutexGuard<'_, T>;
+}
+
+impl<T> LockOrRecover<T> for Mutex<T> {
+    #[track_caller]
+    fn lock_or_recover(&self) -> std::sync::MutexGuard<'_, T> {
+        self.lock().unwrap_or_else(|e| {
+            let loc = std::panic::Location::caller();
+            eprintln!("Warning: mutex poisoned at {}:{}: {e}", loc.file(), loc.line());
+            e.into_inner()
+        })
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
@@ -207,7 +222,10 @@ fn main() {
 
     // --list-runs: print stored runs and exit without starting the tracker.
     if cli.list_runs {
-        let runs = fire_red_database::list_runs();
+        let runs = fire_red_database::list_runs().unwrap_or_else(|e| {
+            eprintln!("error: {e}");
+            std::process::exit(1);
+        });
         if runs.is_empty() {
             println!("No runs found.");
         } else {
@@ -234,18 +252,27 @@ fn main() {
     let new_run = cli.new_run || use_test;
     match (cli.run_id, new_run) {
         (Some(id), _) => {
-            if !fire_red_database::resume_run(id) {
-                eprintln!("Error: run #{} not found. Use --list-runs to see available runs.", id);
-                std::process::exit(1);
+            match fire_red_database::resume_run(id) {
+                Ok(true)  => println!("Resuming run #{}.", id),
+                Ok(false) => {
+                    eprintln!("Error: run #{} not found. Use --list-runs to see available runs.", id);
+                    std::process::exit(1);
+                }
+                Err(e) => { eprintln!("error: {e}"); std::process::exit(1); }
             }
-            println!("Resuming run #{}.", id);
         }
         (None, true) => {
-            let id = fire_red_database::new_run("Unknown");
+            let id = fire_red_database::new_run("Unknown").unwrap_or_else(|e| {
+                eprintln!("error: {e}");
+                std::process::exit(1);
+            });
             println!("Started new run #{}.", id);
         }
         (None, false) => {
-            let id = fire_red_database::get_or_create_run("Unknown");
+            let id = fire_red_database::get_or_create_run("Unknown").unwrap_or_else(|e| {
+                eprintln!("error: {e}");
+                std::process::exit(1);
+            });
             println!("Using run #{}.", id);
         }
     }
@@ -313,7 +340,7 @@ fn main() {
             let initial_state = map_state_from_ewram()
                 .unwrap_or(FireRedState { map_group_id: 0, map_name_id: 0 });
 
-            *thread_encounters.lock().unwrap_or_else(|e| e.into_inner()) =
+            *thread_encounters.lock_or_recover() =
                 get_area_pokemon_id_for_state(&initial_state);
 
             let mut current_state      = initial_state;
@@ -357,9 +384,9 @@ fn main() {
             loop {
                 if !game_is_loaded() {
                     thread_game_loaded.store(false, Ordering::Release);
-                    *thread_encounters.lock().unwrap_or_else(|e| e.into_inner()) =
+                    *thread_encounters.lock_or_recover() =
                         fire_red_pokemon_data::WildPokemonHeader::default();
-                    *thread_party.lock().unwrap_or_else(|e| e.into_inner()) = Vec::new();
+                    *thread_party.lock_or_recover() = Vec::new();
                     state_initialized = false;
                     player_name_set   = false;
                     current_state = FireRedState { map_group_id: 0xFF, map_name_id: 0xFF };
@@ -385,13 +412,13 @@ fn main() {
                 {
                     state_initialized = true;
                     current_state = state;
-                    *thread_encounters.lock().unwrap_or_else(|e| e.into_inner()) =
+                    *thread_encounters.lock_or_recover() =
                         get_area_pokemon_id_for_state(&current_state);
                 }
 
                 if state_initialized && current_state != state {
                     current_state = state;
-                    *thread_encounters.lock().unwrap_or_else(|e| e.into_inner()) =
+                    *thread_encounters.lock_or_recover() =
                         get_area_pokemon_id_for_state(&current_state);
                 }
 
@@ -403,7 +430,7 @@ fn main() {
                 if old_party_size != party_size {
                     old_party_size = party_size;
                     update_box_list();
-                    *thread_box.lock().unwrap_or_else(|e| e.into_inner()) = build_box_entries();
+                    *thread_box.lock_or_recover() = build_box_entries();
                     check_for_new_pokemon(&thread_party);
                     check_for_dead_pokemon(&thread_party, enc_tracker.run_tracking_active());
                     if check_for_run_over(&thread_party, enc_tracker.run_tracking_active()) {
@@ -435,7 +462,7 @@ fn main() {
             }
         });
 
-        *MAIN_THREAD_HANDLE.lock().unwrap_or_else(|e| e.into_inner()) = Some(main_thread);
+        *MAIN_THREAD_HANDLE.lock_or_recover() = Some(main_thread);
     }
 
     // ── Connected mode: dial out to the aggregator ────────────────────────────
@@ -474,7 +501,7 @@ fn main() {
             }
         });
 
-        *NET_THREAD_HANDLE.lock().unwrap_or_else(|e| e.into_inner()) = Some(net_thread);
+        *NET_THREAD_HANDLE.lock_or_recover() = Some(net_thread);
 
         println!("{}", "***** Connected mode — no GUI. Press Ctrl-C to exit. *****".green().bold());
         ctrlc::set_handler(|| {

@@ -18,6 +18,21 @@ use std::net::TcpStream;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
+trait LockOrRecover<T> {
+    fn lock_or_recover(&self) -> std::sync::MutexGuard<'_, T>;
+}
+
+impl<T> LockOrRecover<T> for Mutex<T> {
+    #[track_caller]
+    fn lock_or_recover(&self) -> std::sync::MutexGuard<'_, T> {
+        self.lock().unwrap_or_else(|e| {
+            let loc = std::panic::Location::caller();
+            eprintln!("Warning: mutex poisoned at {}:{}: {e}", loc.file(), loc.line());
+            e.into_inner()
+        })
+    }
+}
+
 /// Manages the full lifecycle of a single TCP client connection in server mode.
 ///
 /// # Arguments
@@ -33,6 +48,7 @@ use std::sync::{Arc, Mutex};
 ///   processed so the game loop can reset encounter state.
 /// * `preferred_player`  — Preferred display slot sent to the aggregator on
 ///   every tick so it can sort columns correctly.
+#[allow(clippy::too_many_arguments)]
 pub fn handle_client(
     stream: TcpStream,
     server_party: Arc<Mutex<Vec<fire_red_party_monitor::Pokemon>>>,
@@ -71,7 +87,7 @@ pub fn handle_client(
                         // Always send both variants so the client never needs the ROM.
                         for shiny in [false, true] {
                             let key = (species, shiny);
-                            let mut cache = cache_clone.lock().unwrap_or_else(|e| e.into_inner());
+                            let mut cache = cache_clone.lock_or_recover();
                             if let Some(data) = cache.get(&key) {
                                 sprites.push(data.clone());
                             } else if let Some(data) = build_sprite_data(rom, species, shiny) {
@@ -82,7 +98,7 @@ pub fn handle_client(
                     }
 
                     if !sprites.is_empty() {
-                        let mut ws = write_stream_clone.lock().unwrap_or_else(|e| e.into_inner());
+                        let mut ws = write_stream_clone.lock_or_recover();
                         if send_message(&mut ws, &ServerMessage::Textures(sprites)).is_err() {
                             break;
                         }
@@ -94,17 +110,21 @@ pub fn handle_client(
                 Ok(ClientMessage::EndRun) => {
                     fire_red_database::end_run();
                     run_changed.store(true, Ordering::Release);
-                    let mut ws = write_stream_clone.lock().unwrap_or_else(|e| e.into_inner());
+                    let mut ws = write_stream_clone.lock_or_recover();
                     if send_message(&mut ws, &ServerMessage::RunChanged(None)).is_err() {
                         break;
                     }
                 }
                 Ok(ClientMessage::NewRun) => {
-                    let id = fire_red_database::new_run("Unknown");
-                    run_changed.store(true, Ordering::Release);
-                    let mut ws = write_stream_clone.lock().unwrap_or_else(|e| e.into_inner());
-                    if send_message(&mut ws, &ServerMessage::RunChanged(Some(id))).is_err() {
-                        break;
+                    match fire_red_database::new_run("Unknown") {
+                        Ok(id) => {
+                            run_changed.store(true, Ordering::Release);
+                            let mut ws = write_stream_clone.lock_or_recover();
+                            if send_message(&mut ws, &ServerMessage::RunChanged(Some(id))).is_err() {
+                                break;
+                            }
+                        }
+                        Err(e) => eprintln!("Failed to create new run: {e}"),
                     }
                 }
                 Err(_) => break,
@@ -131,8 +151,8 @@ pub fn handle_client(
         };
 
         let state = {
-            let party      = server_party.lock().unwrap_or_else(|e| e.into_inner());
-            let encounters = server_encounters.lock().unwrap_or_else(|e| e.into_inner());
+            let party      = server_party.lock_or_recover();
+            let encounters = server_encounters.lock_or_recover();
 
             // Only resolve a zone name when the encounter header actually contains
             // pokemon — the default WildPokemonHeader (map_group=0, map_num=0)
@@ -169,22 +189,22 @@ pub fn handle_client(
             }
         };
 
-        let mut ws = write_stream.lock().unwrap_or_else(|e| e.into_inner());
+        let mut ws = write_stream.lock_or_recover();
         if send_message(&mut ws, &ServerMessage::State(Box::new(state))).is_err() {
             println!("Client disconnected.");
             break;
         }
 
-        if wipe_signal.swap(false, Ordering::AcqRel) {
-            if send_message(&mut ws, &ServerMessage::RunChanged(None)).is_err() {
-                println!("Client disconnected.");
-                break;
-            }
+        if wipe_signal.swap(false, Ordering::AcqRel)
+            && send_message(&mut ws, &ServerMessage::RunChanged(None)).is_err()
+        {
+            println!("Client disconnected.");
+            break;
         }
 
         // Send box snapshot on first tick and every 5 seconds thereafter.
         if last_box_send.elapsed() >= std::time::Duration::from_secs(5) {
-            let entries = server_box.lock().unwrap_or_else(|e| e.into_inner()).clone();
+            let entries = server_box.lock_or_recover().clone();
             if send_message(&mut ws, &ServerMessage::BoxData(entries)).is_err() {
                 println!("Client disconnected.");
                 break;

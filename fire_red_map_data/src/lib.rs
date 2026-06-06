@@ -15,8 +15,11 @@
 //! a single byte.
 
 use fire_red_get_values::*;
+#[cfg(feature = "retroarch-parser")]
 use libc::size_t;
-use std::os::raw::{c_int, c_short, c_uchar, c_uint, c_ushort};
+use std::os::raw::{c_uchar, c_uint, c_ushort};
+#[cfg(feature = "retroarch-parser")]
+use std::os::raw::{c_int, c_short};
 
 // -------------------------------------------
 // Map identification
@@ -92,9 +95,9 @@ pub struct MapHeader {
 // ------------------------------------------------
 
 /// A background event (hidden item, secret base entrance, sign, etc.)
-/// 
-/// The `script_ptr` and `hidden_items` fields are a union in teh original C
-/// source; which one is meaningful depends on `kind`
+///
+/// Only available with the `retroarch-parser` feature.
+#[cfg(feature = "retroarch-parser")]
 #[derive(Default, Debug, Clone, Copy)]
 #[repr(C)]
 pub struct BgEvent {
@@ -115,6 +118,7 @@ pub struct BgEvent {
 }
 
 /// A coordinate trigger event: fires a script when the player steps on a tile.
+#[cfg(feature = "retroarch-parser")]
 #[derive(Default, Debug, Clone, Copy)]
 #[repr(C)]
 pub struct CoordEvent {
@@ -133,6 +137,7 @@ pub struct CoordEvent {
 }
 
 /// A warp event: teleports the player to another map when stepped on.
+#[cfg(feature = "retroarch-parser")]
 #[derive(Default, Debug, Clone, Copy)]
 #[repr(C)]
 pub struct WarpEvent {
@@ -155,9 +160,9 @@ pub struct WarpEvent {
 // --------------------------------------------
 
 /// Header for the list of adjacent-map connections attached to a map.
-/// 
-/// Connections define the maps that border this one in each cardinal direction,
-/// enabling seamless scrolling between routes, towns, and so on.
+///
+/// Only available with the `retroarch-parser` feature.
+#[cfg(feature = "retroarch-parser")]
 #[derive(Default, Debug, Clone, Copy)]
 #[repr(C)]
 pub struct MapConnections {
@@ -168,6 +173,7 @@ pub struct MapConnections {
 }
 
 /// A single directional connection to the adjacent map.
+#[cfg(feature = "retroarch-parser")]
 #[derive(Default, Debug, Clone, Copy)]
 #[repr(C)]
 pub struct MapConnection {
@@ -186,9 +192,9 @@ pub struct MapConnection {
 // ------------------------------------------------------
 
 /// Placeholder wrapper for the map script table entry byte.
-/// 
-/// The full script table is variable-length and parsed separately; this stuct
-/// holds only the first byte as a handle for the `fill_*` pattern.
+///
+/// Only available with the `retroarch-parser` feature.
+#[cfg(feature = "retroarch-parser")]
 #[derive(Default, Debug, Clone, Copy)]
 #[repr(C)]
 pub struct MapScripts {
@@ -196,9 +202,9 @@ pub struct MapScripts {
 }
 
 /// Counts and pointers for all event lists on a map.
-/// 
-/// The four `*_pointer` fields point to arrays of their respective event types;
-/// use the corresponding count fields to know how many entries to read.
+///
+/// Only available with the `retroarch-parser` feature.
+#[cfg(feature = "retroarch-parser")]
 #[derive(Default, Debug, Clone, Copy)]
 #[repr(C)]
 pub struct MapEvents {
@@ -225,9 +231,9 @@ pub struct MapEvents {
 // --------------------------------------------------------------------
 
 /// Describes the visual and spatial layout of a map.
-/// 
-/// Also called the "footer" in the original FireRed source. Contains the map
-/// dimensions, pointers to the tile data and tilesets, and border tile info.
+///
+/// Only available with the `retroarch-parser` feature.
+#[cfg(feature = "retroarch-parser")]
 #[derive(Default, Debug, Clone, Copy)]
 #[repr(C)]
 pub struct MapLayout {
@@ -254,10 +260,10 @@ pub struct MapLayout {
 // Object event template (NPC / overworld object)
 // ------------------------------------------------------------------------
 
-/// Template used to spawn an overword object (NPC, item ball, etc.)
-/// 
-/// One of these exists per object on the map; the engine instantiates live
-/// `ObjectEvent` structs from them at runtime.
+/// Template used to spawn an overworld object (NPC, item ball, etc.)
+///
+/// Only available with the `retroarch-parser` feature.
+#[cfg(feature = "retroarch-parser")]
 #[derive(Default, Debug, Clone, Copy)]
 #[repr(C)]
 pub struct ObjectEventTemplate {
@@ -293,6 +299,7 @@ pub struct ObjectEventTemplate {
 // impl blocks - deserialization and command generation
 // ---------------------------------------------------------------------
 
+#[cfg(feature = "retroarch-parser")]
 impl BgEvent {
     /// Populates this [`BgEvent`] by parsing hex byte tokens from `buffer`
     /// 
@@ -339,6 +346,7 @@ impl BgEvent {
     }
 }
 
+#[cfg(feature = "retroarch-parser")]
 impl CoordEvent {
     /// Populates this [`CoordEvent`] by parsing hex byte tokens from `buffer`
     /// 
@@ -385,6 +393,7 @@ impl CoordEvent {
     }
 }
 
+#[cfg(feature = "retroarch-parser")]
 impl WarpEvent {
     /// Populates this [`WarpEvent`] by parsing hex byte tokens from `buffer`
     /// 
@@ -425,6 +434,7 @@ impl WarpEvent {
     }
 }
 
+#[cfg(feature = "retroarch-parser")]
 impl ObjectEventTemplate {
     /// Populates this [`ObjectEventTemplate`] by parsing hex byte tokens from `buffer`
     /// 
@@ -494,6 +504,7 @@ impl ObjectEventTemplate {
     }
 }
 
+#[cfg(feature = "retroarch-parser")]
 impl MapConnections {
     /// Populates this [`MapConnections`] by parsing hex byte tokens from `buffer`
     /// 
@@ -520,6 +531,7 @@ impl MapConnections {
     }
 }
 
+#[cfg(feature = "retroarch-parser")]
 impl MapConnection {
     /// Populates this [`MapConnection`] by parsing hex byte tokens from `buffer`
     /// 
@@ -553,6 +565,7 @@ impl MapConnection {
     }
 }
 
+#[cfg(feature = "retroarch-parser")]
 impl MapScripts {
     /// Populates this [`MapScripts`] by parsing hex byte tokens from `buffer`
     /// 
@@ -572,6 +585,7 @@ impl MapScripts {
     }
 }
 
+#[cfg(feature = "retroarch-parser")]
 impl MapEvents {
     /// Populates this [`MapEvents`] by parsing hex byte tokens from `buffer`
     /// 
@@ -620,6 +634,7 @@ impl MapEvents {
     }
 }
 
+#[cfg(feature = "retroarch-parser")]
 impl MapLayout {
     /// Populates this [`MapLayout`] by parsing hex byte tokens from `buffer`
     /// 
@@ -688,12 +703,8 @@ impl MapLayout {
 }
 
 impl MapHeader {
-    /// Populates this [`MapHeader`] by parsing hex byte tokens from `buffer`
-    /// 
-    /// Parsing begins at index 2
-    /// 
-    /// # Arguments
-    /// * `buffer` - Slice of hex byte strings as returned by `READ_CORE_MEMORY`
+    /// Populates this [`MapHeader`] from a Retroarch string-buffer response.
+    #[cfg(feature = "retroarch-parser")]
     pub fn fill_header(mut self, buffer: &[&str]) -> Self {
         let mut index = 2;
 
@@ -730,20 +741,8 @@ impl MapHeader {
         self
     }
 
-    /// Unpacks the three permission flags stored in a single byte (byte 26 of the header)
-    /// 
-    /// The byte is a bitfield.
-    /// - Bit 2 (`0x04`) -> [`allow_escape`](MapHeader::allow_escape)
-    /// - Bit 1 (`0x02`) -> [`allow_running`](MapHeader::allow_running)
-    /// - Bit 0 (`0x01`) -> [`show_map_name`](MapHeader::show_map_name)
-    /// 
-    /// The remaining 5 bits are unused padding.
-    /// 
-    /// Takes `&mut self` rather than consuming `self` because it is called
-    /// mid-parse from [`fill_header`](MapHeader::fill_header)
-    /// 
-    /// # Arguments
-    /// * `buffer` - Single-element slice containing the packed byte token
+    /// Unpacks the three permission flags packed into byte 26 of the header.
+    #[cfg(feature = "retroarch-parser")]
     pub fn fill_allow_esc_run_map_name(&mut self, buffer: &[&str]) {
         let byte = get_u8(buffer);
         self.allow_escape = (byte & 4) == 4;
@@ -783,9 +782,7 @@ impl MapHeader {
 
 impl CurrentMapGroupAndName {
     /// Reads the two-byte `(group, name)` field from a raw byte buffer at `offset`.
-    ///
-    /// Matches the layout of `gMapHeader` current-position bytes in EWRAM at
-    /// `0x02031DBC` (bus address). Subtract `0x02000000` to get the EWRAM offset.
+    #[cfg(feature = "retroarch-parser")]
     pub fn fill_from_bytes(buffer: &[u8], offset: usize) -> Self {
         Self {
             group: read_u8(buffer, offset),
@@ -810,6 +807,7 @@ impl CurrentMapGroupAndName {
 /// 
 /// # Returns
 /// A newline-terminated command string ready to send to the emulator.
+#[cfg(feature = "retroarch-parser")]
 pub fn generate_follow_ptr_command(ptr: c_uint, len: size_t) -> String {
     format!("READ_CORE_MEMORY {:08X} {}\n", ptr, len)
 }

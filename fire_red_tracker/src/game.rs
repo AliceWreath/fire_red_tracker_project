@@ -9,6 +9,21 @@ use fire_red_party_monitor::Pokemon;
 use fire_red_states::MAX_NATIONAL_DEX_FIRERED;
 use std::sync::{Arc, Mutex};
 
+trait LockOrRecover<T> {
+    fn lock_or_recover(&self) -> std::sync::MutexGuard<'_, T>;
+}
+
+impl<T> LockOrRecover<T> for Mutex<T> {
+    #[track_caller]
+    fn lock_or_recover(&self) -> std::sync::MutexGuard<'_, T> {
+        self.lock().unwrap_or_else(|e| {
+            let loc = std::panic::Location::caller();
+            eprintln!("Warning: mutex poisoned at {}:{}: {e}", loc.file(), loc.line());
+            e.into_inner()
+        })
+    }
+}
+
 /// GBA address of the packed (map_group, map_name) bytes in EWRAM.
 pub const MAP_GROUP_AND_NAME_ADDR: usize = 0x02031DBC;
 
@@ -59,7 +74,7 @@ pub fn is_shiny(personality: u32, ot_id: u32) -> bool {
 
 /// Overwrites the shared party list with the current party members.
 pub fn fill_party_list(thread_party: &Arc<Mutex<Vec<Pokemon>>>) {
-    *thread_party.lock().unwrap_or_else(|e| e.into_inner()) =
+    *thread_party.lock_or_recover() =
         fire_red_loop::get_party_members();
 }
 
@@ -71,7 +86,7 @@ pub fn fill_party_list(thread_party: &Arc<Mutex<Vec<Pokemon>>>) {
 /// Nuzlocke deaths, mirroring how encounters are ignored before balls arrive.
 pub fn check_for_dead_pokemon(thread_party: &Arc<Mutex<Vec<Pokemon>>>, run_tracking_active: bool) {
     if !run_tracking_active { return; }
-    let party = thread_party.lock().unwrap_or_else(|e| e.into_inner());
+    let party = thread_party.lock_or_recover();
     for pokemon in party.iter() {
         if pokemon.hp != 0 { continue; }
         if fire_red_database::is_dead(pokemon.box_mon.personality) { continue; }
@@ -177,7 +192,7 @@ pub fn map_state_from_ewram() -> Option<FireRedState> {
 /// Called alongside `check_for_dead_pokemon` on every party refresh so that
 /// newly obtained mons (caught, gifted, or traded) are captured immediately.
 pub fn check_for_new_pokemon(thread_party: &Arc<Mutex<Vec<Pokemon>>>) {
-    let party = thread_party.lock().unwrap_or_else(|e| e.into_inner());
+    let party = thread_party.lock_or_recover();
     for pokemon in party.iter() {
         let species = pokemon.box_mon.secure.growth.species;
         if species == 0 || species > MAX_NATIONAL_DEX_FIRERED { continue; }
@@ -312,7 +327,7 @@ pub fn game_is_loaded() -> bool {
 /// `run_tracking_active` is false (run hasn't officially started yet).
 pub fn check_for_run_over(thread_party: &Arc<Mutex<Vec<Pokemon>>>, run_tracking_active: bool) -> bool {
     if !run_tracking_active { return false; }
-    let party = thread_party.lock().unwrap_or_else(|e| e.into_inner());
+    let party = thread_party.lock_or_recover();
     if party.is_empty() { return false; }
     let all_dead = party.iter().all(|p| {
         fire_red_database::is_dead(p.box_mon.personality)

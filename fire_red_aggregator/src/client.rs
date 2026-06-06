@@ -15,6 +15,21 @@
 //! and reuse the same slot.
 
 use fire_red_states::{ClientMessage, GameState, ServerMessage, recv_message, send_message};
+
+trait LockOrRecover<T> {
+    fn lock_or_recover(&self) -> std::sync::MutexGuard<'_, T>;
+}
+
+impl<T> LockOrRecover<T> for std::sync::Mutex<T> {
+    #[track_caller]
+    fn lock_or_recover(&self) -> std::sync::MutexGuard<'_, T> {
+        self.lock().unwrap_or_else(|e| {
+            let loc = std::panic::Location::caller();
+            eprintln!("Warning: mutex poisoned at {}:{}: {e}", loc.file(), loc.line());
+            e.into_inner()
+        })
+    }
+}
 use image::ImageEncoder;
 use image::codecs::png::PngEncoder;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -215,7 +230,7 @@ pub fn handle_tracker_connection(
     let writer = std::thread::spawn(move || {
         while connected_writer.load(Ordering::Acquire) {
             let cmds: Vec<ClientMessage> = {
-                let mut q = writer_cmds.lock().unwrap_or_else(|e| e.into_inner());
+                let mut q = writer_cmds.lock_or_recover();
                 q.drain(..).collect()
             };
             for cmd in cmds {
@@ -225,7 +240,7 @@ pub fn handle_tracker_connection(
             }
 
             let batch = {
-                let mut q = writer_queue.lock().unwrap_or_else(|e| e.into_inner());
+                let mut q = writer_queue.lock_or_recover();
                 let mut all: Vec<u16> = q.drain(..).flatten().collect();
                 all.sort();
                 all.dedup();
@@ -245,20 +260,20 @@ pub fn handle_tracker_connection(
     loop {
         match recv_message::<ServerMessage>(&mut read_stream) {
             Ok(ServerMessage::State(gs)) => {
-                *label.lock().unwrap_or_else(|e| e.into_inner()) = gs.player_name.clone();
-                *state.lock().unwrap_or_else(|e| e.into_inner()) = Some(*gs);
+                *label.lock_or_recover() = gs.player_name.clone();
+                *state.lock_or_recover() = Some(*gs);
             }
             Ok(ServerMessage::Textures(sprites)) => {
                 let maybe_cache: Option<SpriteCache> =
-                    sprite_cache.lock().unwrap_or_else(|e| e.into_inner()).clone();
-                let mut pending = pending_textures.lock().unwrap_or_else(|e| e.into_inner());
-                let mut known   = known_species.lock().unwrap_or_else(|e| e.into_inner());
+                    sprite_cache.lock_or_recover().clone();
+                let mut pending = pending_textures.lock_or_recover();
+                let mut known   = known_species.lock_or_recover();
                 for sprite in sprites {
                     known.insert(sprite.species);
                     let pixels = decompress_pixels(&sprite.pixels);
                     if let Some(ref cache) = maybe_cache {
                         let key = (sprite.species, sprite.shiny);
-                        let mut c = cache.lock().unwrap_or_else(|e| e.into_inner());
+                        let mut c = cache.lock_or_recover();
                         if let std::collections::hash_map::Entry::Vacant(e) = c.entry(key)
                             && let Some(png) = encode_png(&pixels, sprite.width, sprite.height) {
                             e.insert(png);
@@ -277,10 +292,10 @@ pub fn handle_tracker_connection(
                 run_changed.store(true, Ordering::Release);
             }
             Ok(ServerMessage::BoxData(entries)) => {
-                *box_data.lock().unwrap_or_else(|e| e.into_inner()) = entries;
+                *box_data.lock_or_recover() = entries;
             }
             Err(_) => {
-                *state.lock().unwrap_or_else(|e| e.into_inner()) = None;
+                *state.lock_or_recover() = None;
                 break;
             }
         }

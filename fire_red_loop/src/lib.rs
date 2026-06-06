@@ -38,6 +38,21 @@ use std::os::raw::c_char;
 use std::os::raw::c_int;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
+
+trait LockOrRecover<T> {
+    fn lock_or_recover(&self) -> std::sync::MutexGuard<'_, T>;
+}
+
+impl<T> LockOrRecover<T> for Mutex<T> {
+    #[track_caller]
+    fn lock_or_recover(&self) -> std::sync::MutexGuard<'_, T> {
+        self.lock().unwrap_or_else(|e| {
+            let loc = std::panic::Location::caller();
+            eprintln!("Warning: mutex poisoned at {}:{}: {e}", loc.file(), loc.line());
+            e.into_inner()
+        })
+    }
+}
 use fire_red_pokemon_data::*;
 use fire_red_scanner::{find_wild_headers, find_map_groups_table};
 use fire_red_map_data::{CurrentMapGroupAndName, MapHeader};
@@ -246,8 +261,7 @@ pub fn start_loop(file_path: &str, _is_clean: bool) -> c_int {
                 let mut state = STATE
                     .get()
                     .expect("STATE not initialized")
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner());
+                    .lock_or_recover();
                 state.map_group_id = current_state.map_group_id;
                 state.map_name_id  = current_state.map_name_id;
             } // MutexGuard dropped here
@@ -255,7 +269,7 @@ pub fn start_loop(file_path: &str, _is_clean: bool) -> c_int {
         }
     });
 
-    *THREAD_HANDLE.lock().unwrap_or_else(|e| e.into_inner()) = Some(handle);
+    *THREAD_HANDLE.lock_or_recover() = Some(handle);
 
     0
 }
@@ -275,7 +289,7 @@ pub extern "C" fn stop_loop() {
     fire_red_trainer_data::end_loop();
     fire_red_memory::end_loop();
 
-    let mut handle_slot = THREAD_HANDLE.lock().unwrap_or_else(|e| e.into_inner());
+    let mut handle_slot = THREAD_HANDLE.lock_or_recover();
     if let Some(handle) = handle_slot.take()
         && let Err(e) = handle.join() {
         eprintln!("Error joining map-polling thread: {:?}", e);
@@ -296,7 +310,7 @@ pub fn get_value() -> FireRedState {
     let Some(mutex) = STATE.get() else {
         return FireRedState::default();
     };
-    let state = mutex.lock().unwrap_or_else(|e| e.into_inner());
+    let state = mutex.lock_or_recover();
     FireRedState {
         map_group_id: state.map_group_id,
         map_name_id:  state.map_name_id,

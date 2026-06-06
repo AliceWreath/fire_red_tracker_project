@@ -25,6 +25,21 @@
 use crate::client::{MonitorSlot, SharedSlots};
 use crate::config::{AggregatorConfig, save_config};
 use std::sync::Arc;
+
+trait LockOrRecover<T> {
+    fn lock_or_recover(&self) -> std::sync::MutexGuard<'_, T>;
+}
+
+impl<T> LockOrRecover<T> for std::sync::Mutex<T> {
+    #[track_caller]
+    fn lock_or_recover(&self) -> std::sync::MutexGuard<'_, T> {
+        self.lock().unwrap_or_else(|e| {
+            let loc = std::panic::Location::caller();
+            eprintln!("Warning: mutex poisoned at {}:{}: {e}", loc.file(), loc.line());
+            e.into_inner()
+        })
+    }
+}
 use std::path::PathBuf;
 use egui::Ui;
 use fire_red_database::{CaughtPokemon, DeadPokemon};
@@ -148,8 +163,7 @@ impl AggregatorApp {
             {
                 let mut pending = slot
                     .pending_textures
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner());
+                    .lock_or_recover();
                 for pt in pending.drain(..) {
                     let key = sprite_key(pt.species, pt.shiny);
                     let image = egui::ColorImage::from_rgba_unmultiplied(
@@ -161,13 +175,13 @@ impl AggregatorApp {
                 }
             }
             {
-                let state_guard = slot.state.lock().unwrap_or_else(|e| e.into_inner());
+                let state_guard = slot.state.lock_or_recover();
                 let gs = match state_guard.as_ref() {
                     Some(gs) => gs,
                     None => continue,
                 };
                 let mut needed: Vec<u16> = Vec::new();
-                let known = slot.known_species.lock().unwrap_or_else(|e| e.into_inner());
+                let known = slot.known_species.lock_or_recover();
 
                 for p in &gs.party {
                     let s = p.box_mon.secure.growth.species;
@@ -194,8 +208,7 @@ impl AggregatorApp {
                     needed.sort();
                     needed.dedup();
                     slot.texture_request_queue
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner())
+                        .lock_or_recover()
                         .push_back(needed);
                 }
             }
@@ -665,7 +678,7 @@ impl eframe::App for AggregatorApp {
 
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         // Snapshot the live slot list for this frame.
-        self.slots = self.live_slots.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        self.slots = self.live_slots.lock_or_recover().clone();
         while self.db_caches.len() < self.slots.len() {
             self.db_caches.push(SlotDbCache::new());
         }
@@ -678,8 +691,8 @@ impl eframe::App for AggregatorApp {
             .slots
             .iter()
             .map(|slot| {
-                let state = slot.state.lock().unwrap_or_else(|e| e.into_inner()).clone();
-                let label = slot.label.lock().unwrap_or_else(|e| e.into_inner()).clone();
+                let state = slot.state.lock_or_recover().clone();
+                let label = slot.label.lock_or_recover().clone();
                 (label, state)
             })
             .collect();

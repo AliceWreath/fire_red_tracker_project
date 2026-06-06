@@ -6,6 +6,12 @@ name = "fire_red_map_data"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+# Enables the legacy Retroarch string-buffer parser methods (fill_*_event,
+# fill_header, generate_* etc.) and the associated structs not used by the
+# current ROM-buffer pipeline. Enable to verify these haven't bitrotted.
+retroarch-parser = []
+
 [dependencies]
 libc.workspace                = true
 fire_red_get_values.workspace = true

@@ -11,13 +11,29 @@
 
 use crate::app::is_shiny;
 use crate::client::{MonitorSlot, SharedSlots, SpriteCache, encode_png};
+
+trait LockOrRecover<T> {
+    fn lock_or_recover(&self) -> std::sync::MutexGuard<'_, T>;
+}
+
+impl<T> LockOrRecover<T> for std::sync::Mutex<T> {
+    #[track_caller]
+    fn lock_or_recover(&self) -> std::sync::MutexGuard<'_, T> {
+        self.lock().unwrap_or_else(|e| {
+            let loc = std::panic::Location::caller();
+            eprintln!("Warning: mutex poisoned at {}:{}: {e}", loc.file(), loc.line());
+            e.into_inner()
+        })
+    }
+}
 use axum::{
-    extract::{Path, Query, State},
+    extract::{ConnectInfo, Path, Query, State},
     http::{header, StatusCode},
     response::{Html, IntoResponse},
     routing::{get, post},
     Router,
 };
+use std::net::SocketAddr;
 use fire_red_database::{CaughtPokemon, DeadPokemon};
 use fire_red_states::{ClientMessage, GameState, MAX_NATIONAL_DEX_FIRERED};
 use futures_util::{SinkExt, StreamExt};
@@ -278,10 +294,10 @@ impl BroadcastLoop {
 
     /// Requests sprites for party members and encounter pokemon not yet cached.
     fn request_sprites(&self, slots: &[Arc<MonitorSlot>], states: &[(String, Option<GameState>)]) {
-        let cache = self.sprites.lock().unwrap_or_else(|e| e.into_inner());
+        let cache = self.sprites.lock_or_recover();
         for (i, slot) in slots.iter().enumerate() {
             let Some(gs) = &states[i].1 else { continue };
-            let mut known = slot.known_species.lock().unwrap_or_else(|e| e.into_inner());
+            let mut known = slot.known_species.lock_or_recover();
             let mut needed: Vec<u16> = Vec::new();
 
             // Party sprites (normal + shiny variant if shiny)
@@ -318,8 +334,7 @@ impl BroadcastLoop {
                 needed.sort();
                 needed.dedup();
                 slot.texture_request_queue
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
+                    .lock_or_recover()
                     .push_back(needed);
             }
         }
@@ -330,15 +345,15 @@ impl BroadcastLoop {
     /// `run()` started (identified by having `sprite_cache = None`).
     fn drain_sprites(&mut self, slots: &[Arc<MonitorSlot>]) {
         for slot in slots {
-            let mut sc = slot.sprite_cache.lock().unwrap_or_else(|e| e.into_inner());
+            let mut sc = slot.sprite_cache.lock_or_recover();
             if sc.is_none() { *sc = Some(self.sprites.clone()); }
             drop(sc);
 
-            let mut pending = slot.pending_textures.lock().unwrap_or_else(|e| e.into_inner());
+            let mut pending = slot.pending_textures.lock_or_recover();
             if pending.is_empty() { continue; }
             let drained: Vec<_> = pending.drain(..).collect();
             drop(pending);
-            let mut cache = self.sprites.lock().unwrap_or_else(|e| e.into_inner());
+            let mut cache = self.sprites.lock_or_recover();
             for pt in drained {
                 let key = (pt.species, pt.shiny);
                 if let std::collections::hash_map::Entry::Vacant(e) = cache.entry(key)
@@ -352,7 +367,7 @@ impl BroadcastLoop {
     /// Returns a `data:image/png;base64,...` URI for the given species/shiny
     /// if the sprite has been received and encoded, or `None` otherwise.
     fn sprite_uri(&self, species: u16, shiny: bool) -> Option<String> {
-        let cache = self.sprites.lock().unwrap_or_else(|e| e.into_inner());
+        let cache = self.sprites.lock_or_recover();
         cache.get(&(species, shiny)).map(|png| {
             format!("data:image/png;base64,{}", base64_encode(png))
         })
@@ -362,7 +377,7 @@ impl BroadcastLoop {
     /// returns a JSON string if the state has changed since the last tick.
     fn tick(&mut self) -> Option<String> {
         let slots: Vec<Arc<MonitorSlot>> =
-            self.live_slots.lock().unwrap_or_else(|e| e.into_inner()).clone();
+            self.live_slots.lock_or_recover().clone();
         let n = slots.len();
         while self.caches.len() < n { self.caches.push(SlotCache::new()); }
 
@@ -370,8 +385,8 @@ impl BroadcastLoop {
         let states: Vec<(String, Option<GameState>)> = slots
             .iter()
             .map(|s| {
-                let state = s.state.lock().unwrap_or_else(|e| e.into_inner()).clone();
-                let label = s.label.lock().unwrap_or_else(|e| e.into_inner()).clone();
+                let state = s.state.lock_or_recover().clone();
+                let label = s.label.lock_or_recover().clone();
                 (label, state)
             })
             .collect();
@@ -423,14 +438,14 @@ impl BroadcastLoop {
         // Snapshot box data per slot for use in sprite requests and DTO building.
         let all_box: Vec<Vec<fire_red_states::BoxEntry>> = slots
             .iter()
-            .map(|s| s.box_data.lock().unwrap_or_else(|e| e.into_inner()).clone())
+            .map(|s| s.box_data.lock_or_recover().clone())
             .collect();
 
         // Request sprites for dead, caught, and box pokemon not yet in the cache
         {
-            let cache = self.sprites.lock().unwrap_or_else(|e| e.into_inner());
+            let cache = self.sprites.lock_or_recover();
             for (i, slot) in slots.iter().enumerate() {
-                let mut known = slot.known_species.lock().unwrap_or_else(|e| e.into_inner());
+                let mut known = slot.known_species.lock_or_recover();
                 let mut needed: Vec<u16> = Vec::new();
                 for dp in all_dead[i].values() {
                     let s = dp.species;
@@ -465,8 +480,7 @@ impl BroadcastLoop {
                     needed.sort();
                     needed.dedup();
                     slot.texture_request_queue
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner())
+                        .lock_or_recover()
                         .push_back(needed);
                 }
             }
@@ -942,7 +956,13 @@ async fn serve_db_json(State(state): State<WebState>) -> axum::Json<serde_json::
     axum::Json(result.unwrap_or_else(|_| serde_json::json!({ "error": "Query failed" })))
 }
 
-async fn clear_db(State(state): State<WebState>) -> impl IntoResponse {
+async fn clear_db(
+    State(state): State<WebState>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> impl IntoResponse {
+    if params.get("confirm").map(String::as_str) != Some("true") {
+        return (StatusCode::BAD_REQUEST, "Add ?confirm=true to confirm database wipe".to_string());
+    }
     let conn = match state.db_conn {
         Some(s) => s,
         None    => return (StatusCode::SERVICE_UNAVAILABLE, "No database configured".to_string()),
@@ -1019,10 +1039,10 @@ async fn handle_socket(
                     _ => None,
                 };
                 if let Some(msg) = msg {
-                    let slots = live_slots.lock().unwrap_or_else(|e| e.into_inner()).clone();
+                    let slots = live_slots.lock_or_recover().clone();
                     for slot in &slots {
                         slot.command_queue
-                            .lock().unwrap_or_else(|e| e.into_inner())
+                            .lock_or_recover()
                             .push_back(msg.clone());
                     }
                 }
@@ -1058,21 +1078,27 @@ async fn api_command(
         "new_run" => ClientMessage::NewRun,
         other => return (StatusCode::BAD_REQUEST, format!("Unknown command: {other}")),
     };
-    let slots = state.live_slots.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    let slots = state.live_slots.lock_or_recover().clone();
     let count = slots.len();
     for slot in &slots {
         slot.command_queue
-            .lock().unwrap_or_else(|e| e.into_inner())
+            .lock_or_recover()
             .push_back(msg.clone());
     }
     (StatusCode::OK, format!("Command '{cmd}' sent to {count} slot(s)"))
 }
 
 /// Runs arbitrary SQL against the database and returns results as JSON.
+///
+/// Restricted to loopback connections — returns 403 for any remote caller.
 async fn api_db_query(
     State(state): State<WebState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
     axum::Json(body): axum::Json<serde_json::Value>,
 ) -> axum::Json<serde_json::Value> {
+    if !addr.ip().is_loopback() {
+        return axum::Json(serde_json::json!({ "error": "Forbidden: endpoint only available on localhost" }));
+    }
     let conn = match state.db_conn {
         Some(s) => s,
         None    => return axum::Json(serde_json::json!({ "error": "No database configured" })),
@@ -1095,9 +1121,9 @@ pub fn run(live_slots: SharedSlots, port: u16, db_conn: Option<String>, testing:
     // Wire the shared sprite cache into any already-connected slots and keep
     // it available for slots that connect later (BroadcastLoop sets it on drain).
     {
-        let slots = live_slots.lock().unwrap_or_else(|e| e.into_inner());
+        let slots = live_slots.lock_or_recover();
         for slot in slots.iter() {
-            *slot.sprite_cache.lock().unwrap_or_else(|e| e.into_inner()) = Some(sprites.clone());
+            *slot.sprite_cache.lock_or_recover() = Some(sprites.clone());
         }
     }
 
@@ -1150,7 +1176,10 @@ pub fn run(live_slots: SharedSlots, port: u16, db_conn: Option<String>, testing:
         let listener = tokio::net::TcpListener::bind(&addr)
             .await
             .expect("failed to bind WebSocket port");
-        if let Err(e) = axum::serve(listener, app).await {
+        if let Err(e) = axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<SocketAddr>(),
+        ).await {
             eprintln!("WebSocket server error: {e}");
         }
     });

@@ -14,6 +14,21 @@ use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
+trait LockOrRecover<T> {
+    fn lock_or_recover(&self) -> std::sync::MutexGuard<'_, T>;
+}
+
+impl<T> LockOrRecover<T> for Mutex<T> {
+    #[track_caller]
+    fn lock_or_recover(&self) -> std::sync::MutexGuard<'_, T> {
+        self.lock().unwrap_or_else(|e| {
+            let loc = std::panic::Location::caller();
+            eprintln!("Warning: mutex poisoned at {}:{}: {e}", loc.file(), loc.line());
+            e.into_inner()
+        })
+    }
+}
+
 /// Default target window size for the party panel, in logical pixels.
 pub const PARTY_WINDOW: (f32, f32) = (400.0, 800.0);
 
@@ -111,7 +126,7 @@ impl eframe::App for WindowInfo {
 
         // ── 1. Upload textures received from the server ───────────────────────
         {
-            let mut pending = self.pending_textures.lock().unwrap_or_else(|e| e.into_inner());
+            let mut pending = self.pending_textures.lock_or_recover();
             for pt in pending.drain(..) {
                 let key = format!(
                     "pokemon_{}_{}",
@@ -129,8 +144,8 @@ impl eframe::App for WindowInfo {
 
         // ── 2. Load / request missing textures ───────────────────────────────
         {
-            let list           = self.party_list.lock().unwrap_or_else(|e| e.into_inner()).clone();
-            let encounter_list = self.encounter_list.lock().unwrap_or_else(|e| e.into_inner());
+            let list           = self.party_list.lock_or_recover().clone();
+            let encounter_list = self.encounter_list.lock_or_recover();
             let mut needed: Vec<u16> = Vec::new();
 
             // Encounter sprites are always the normal (non-shiny) palette.
@@ -144,7 +159,7 @@ impl eframe::App for WindowInfo {
                 let key = format!("pokemon_{}_normal", mon.species);
                 if self.textures.contains_key(&key) { continue; }
                 if self.texture_request_queue.is_some() {
-                    let known = self.known_species.lock().unwrap_or_else(|e| e.into_inner());
+                    let known = self.known_species.lock_or_recover();
                     if !known.contains(&mon.species) { needed.push(mon.species); }
                 } else {
                     let texture = load_texture_normal(ctx, fire_red_rom_buffer::get_rom(), mon.species)
@@ -177,7 +192,7 @@ impl eframe::App for WindowInfo {
                     if is_shiny(personality, ot_id) { "shiny" } else { "normal" },
                 );
                 if self.texture_request_queue.is_some() {
-                    let known = self.known_species.lock().unwrap_or_else(|e| e.into_inner());
+                    let known = self.known_species.lock_or_recover();
                     if !known.contains(&species) { needed.push(species); }
                 } else {
                     let texture = load_texture(ctx, fire_red_rom_buffer::get_rom(), species, personality, ot_id)
@@ -190,7 +205,7 @@ impl eframe::App for WindowInfo {
                 needed.sort();
                 needed.dedup();
                 if let Some(queue) = &self.texture_request_queue {
-                    queue.lock().unwrap_or_else(|e| e.into_inner()).push_back(needed);
+                    queue.lock_or_recover().push_back(needed);
                 }
             }
         }
@@ -215,7 +230,7 @@ impl eframe::App for WindowInfo {
                     #[allow(deprecated)]
                     egui::CentralPanel::default().show(ctx, |ui| {
                         egui::ScrollArea::vertical().show(ui, |ui| {
-                            let enc = encounter_list.lock().unwrap_or_else(|e| e.into_inner());
+                            let enc = encounter_list.lock_or_recover();
 
                             ui.heading("Land Encounters");
                             ui.horizontal(|ui| {
@@ -449,7 +464,7 @@ impl WindowInfo {
         }
 
         // ── Party members ─────────────────────────────────────────────────────
-        let list = self.party_list.lock().unwrap_or_else(|e| e.into_inner());
+        let list = self.party_list.lock_or_recover();
         for (idx, pokemon) in list.iter().enumerate() {
             let dead = fire_red_database::is_dead(pokemon.box_mon.personality);
 

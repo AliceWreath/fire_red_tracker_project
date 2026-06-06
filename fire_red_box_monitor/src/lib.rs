@@ -35,6 +35,21 @@ use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 
+trait LockOrRecover<T> {
+    fn lock_or_recover(&self) -> std::sync::MutexGuard<'_, T>;
+}
+
+impl<T> LockOrRecover<T> for Mutex<T> {
+    #[track_caller]
+    fn lock_or_recover(&self) -> std::sync::MutexGuard<'_, T> {
+        self.lock().unwrap_or_else(|e| {
+            let loc = std::panic::Location::caller();
+            eprintln!("Warning: mutex poisoned at {}:{}: {e}", loc.file(), loc.line());
+            e.into_inner()
+        })
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Address constants
 // ---------------------------------------------------------------------------
@@ -129,7 +144,7 @@ pub fn start_loop() {
         }
     });
 
-    *THREAD_HANDLE.lock().unwrap_or_else(|e| e.into_inner()) = Some(handle);
+    *THREAD_HANDLE.lock_or_recover() = Some(handle);
 }
 
 /// Signals the background thread to stop and blocks until it exits.
@@ -137,7 +152,7 @@ pub fn start_loop() {
 /// If the thread has already exited or was never started, this is a no-op.
 pub fn end_loop() {
     RUNNING.store(false, Ordering::SeqCst);
-    let mut handle_slot = THREAD_HANDLE.lock().unwrap_or_else(|e| e.into_inner());
+    let mut handle_slot = THREAD_HANDLE.lock_or_recover();
     if let Some(handle) = handle_slot.take()
         && let Err(e) = handle.join() {
         eprintln!("Error joining box monitor thread: {:?}", e);
@@ -231,8 +246,7 @@ pub fn get_storage_list() -> &'static Mutex<PokemonStorage> {
 /// Returns a cloned snapshot of all unique box pokemon currently in the cache.
 pub fn get_storage_entries() -> Vec<BoxPokemon> {
     PokemonStorage::get_storage_list()
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
+        .lock_or_recover()
         .entries
         .clone()
 }
@@ -240,8 +254,7 @@ pub fn get_storage_entries() -> Vec<BoxPokemon> {
 /// Returns a cloned snapshot of the species ID set currently in the cache.
 pub fn get_storage_species_set() -> HashSet<u16> {
     PokemonStorage::get_storage_list()
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
+        .lock_or_recover()
         .species_set
         .clone()
 }
@@ -259,8 +272,7 @@ pub fn check_for_new_entry(entry: &BoxPokemon) -> Option<()> {
         return None;
     }
     let mut storage = PokemonStorage::get_storage_list()
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
+        .lock_or_recover();
 
     if storage.species_set.contains(&entry.secure.growth.species) {
         return None;
@@ -283,8 +295,7 @@ pub fn check_for_new_entry(entry: &BoxPokemon) -> Option<()> {
 /// positive = additions, zero = no change).
 pub fn sync_storage(list: &[BoxPokemon]) -> isize {
     let mut storage = PokemonStorage::get_storage_list()
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
+        .lock_or_recover();
     let initial_size = storage.species_set.len() as isize;
 
     if list.is_empty() {
