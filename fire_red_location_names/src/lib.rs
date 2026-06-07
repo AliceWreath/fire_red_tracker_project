@@ -274,6 +274,70 @@ pub fn location_name(loc: u8) -> &'static str {
     }
 }
 
+/// Returns every `(map_group, map_name)` pair that belongs to the same
+/// multi-floor dungeon as the given pair.
+///
+/// The returned slice always includes the given pair itself when it is part
+/// of a dungeon.  Returns an empty slice for single-floor or outdoor areas —
+/// callers should treat an empty result as "no dungeon grouping applies."
+///
+/// Use this with `fire_red_database::has_encounter_for_any_floor` to check
+/// whether any floor of the dungeon has already been claimed this run before
+/// recording a new encounter.
+pub fn dungeon_floors(group: u8, map: u8) -> &'static [(u8, u8)] {
+    match (group, map) {
+        // Mt. Moon
+        (1, 0x01) | (1, 0x02) | (1, 0x03) =>
+            &[(1,0x01),(1,0x02),(1,0x03)],
+        // Diglett's Cave (entrances + main tunnel)
+        (1, 0x24) | (1, 0x25) | (1, 0x26) =>
+            &[(1,0x24),(1,0x25),(1,0x26)],
+        // Victory Road
+        (1, 0x27) | (1, 0x28) | (1, 0x29) =>
+            &[(1,0x27),(1,0x28),(1,0x29)],
+        // Pokémon Mansion
+        (1, 0x3B) | (1, 0x3C) | (1, 0x3D) | (1, 0x3E) =>
+            &[(1,0x3B),(1,0x3C),(1,0x3D),(1,0x3E)],
+        // Safari Zone
+        (1, 0x3F) | (1, 0x40) | (1, 0x41) | (1, 0x42) =>
+            &[(1,0x3F),(1,0x40),(1,0x41),(1,0x42)],
+        // Cerulean Cave
+        (1, 0x48) | (1, 0x49) | (1, 0x4A) =>
+            &[(1,0x48),(1,0x49),(1,0x4A)],
+        // Rock Tunnel
+        (1, 0x51) | (1, 0x52) =>
+            &[(1,0x51),(1,0x52)],
+        // Seafoam Islands
+        (1, 0x53) | (1, 0x54) | (1, 0x55) | (1, 0x56) | (1, 0x57) =>
+            &[(1,0x53),(1,0x54),(1,0x55),(1,0x56),(1,0x57)],
+        // Pokémon Tower
+        (1, 0x58) | (1, 0x59) | (1, 0x5A) | (1, 0x5B) | (1, 0x5C) | (1, 0x5D) | (1, 0x5E) =>
+            &[(1,0x58),(1,0x59),(1,0x5A),(1,0x5B),(1,0x5C),(1,0x5D),(1,0x5E)],
+        // Mt. Ember (exterior + summit path + ruby path)
+        (1, 0x60) | (1, 0x61) | (1, 0x62) | (1, 0x63) | (1, 0x64)
+        | (1, 0x65) | (1, 0x66) | (1, 0x67) | (1, 0x68) | (1, 0x69) | (1, 0x6A) =>
+            &[(1,0x60),(1,0x61),(1,0x62),(1,0x63),(1,0x64),
+              (1,0x65),(1,0x66),(1,0x67),(1,0x68),(1,0x69),(1,0x6A)],
+        // Icefall Cave
+        (1, 0x6E) | (1, 0x6F) | (1, 0x70) | (1, 0x71) =>
+            &[(1,0x6E),(1,0x6F),(1,0x70),(1,0x71)],
+        // Dotted Hole
+        (1, 0x73) | (1, 0x74) | (1, 0x75) | (1, 0x76) | (1, 0x77) =>
+            &[(1,0x73),(1,0x74),(1,0x75),(1,0x76),(1,0x77)],
+        // Lost Cave
+        (2, 0x0C) | (2, 0x0D) | (2, 0x0E) | (2, 0x0F) | (2, 0x10)
+        | (2, 0x11) | (2, 0x12) | (2, 0x13) | (2, 0x14) | (2, 0x15)
+        | (2, 0x16) | (2, 0x17) | (2, 0x18) | (2, 0x19) | (2, 0x1A) =>
+            &[(2,0x0C),(2,0x0D),(2,0x0E),(2,0x0F),(2,0x10),
+              (2,0x11),(2,0x12),(2,0x13),(2,0x14),(2,0x15),
+              (2,0x16),(2,0x17),(2,0x18),(2,0x19),(2,0x1A)],
+        // Tanoby Chambers (all seven share one encounter slot)
+        (2, 0x1B) | (2, 0x1C) | (2, 0x1D) | (2, 0x1E) | (2, 0x1F) | (2, 0x20) | (2, 0x21) =>
+            &[(2,0x1B),(2,0x1C),(2,0x1D),(2,0x1E),(2,0x1F),(2,0x20),(2,0x21)],
+        _ => &[],
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -335,4 +399,57 @@ mod tests {
     fn mapsec_none_returns_dash()  { assert_eq!(location_name(0xFF), "—"); }
     #[test]
     fn unknown_location()          { assert_eq!(location_name(0xFE), "Unknown Location"); }
+
+    // ── dungeon_floors ────────────────────────────────────────────────────────
+
+    #[test]
+    fn outdoor_route_has_no_floors() { assert!(dungeon_floors(3, 0x13).is_empty()); }
+    #[test]
+    fn unknown_pair_has_no_floors()  { assert!(dungeon_floors(0xFF, 0xFF).is_empty()); }
+    #[test]
+    fn mt_moon_1f_groups_all_floors() {
+        let floors = dungeon_floors(1, 0x01);
+        assert!(floors.contains(&(1, 0x01)));
+        assert!(floors.contains(&(1, 0x02)));
+        assert!(floors.contains(&(1, 0x03)));
+    }
+    #[test]
+    fn mt_moon_b2f_same_group_as_1f() {
+        assert_eq!(dungeon_floors(1, 0x03), dungeon_floors(1, 0x01));
+    }
+    #[test]
+    fn rock_tunnel_both_floors()     {
+        let floors = dungeon_floors(1, 0x51);
+        assert!(floors.contains(&(1, 0x51)));
+        assert!(floors.contains(&(1, 0x52)));
+    }
+    #[test]
+    fn seafoam_islands_b4f_in_group() {
+        let floors = dungeon_floors(1, 0x57);
+        assert_eq!(floors.len(), 5);
+        assert!(floors.contains(&(1, 0x53)));
+    }
+    #[test]
+    fn pokemon_tower_all_seven_floors() {
+        let floors = dungeon_floors(1, 0x5A);
+        assert_eq!(floors.len(), 7);
+    }
+    #[test]
+    fn lost_cave_room_7_in_group()   {
+        let floors = dungeon_floors(2, 0x13);
+        assert_eq!(floors.len(), 15);
+        assert!(floors.contains(&(2, 0x0C)));
+    }
+    #[test]
+    fn tanoby_chamber_groups_all_seven() {
+        let floors = dungeon_floors(2, 0x1F);
+        assert_eq!(floors.len(), 7);
+        assert!(floors.contains(&(2, 0x1B)));
+        assert!(floors.contains(&(2, 0x21)));
+    }
+    #[test]
+    fn diglett_cave_entrance_in_group() {
+        let floors = dungeon_floors(1, 0x24);
+        assert!(floors.contains(&(1, 0x25)));
+    }
 }

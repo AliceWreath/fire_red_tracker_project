@@ -102,6 +102,11 @@ impl EncounterTracker {
 
             let map_group = current_state.map_group_id;
             let map_name  = current_state.map_name_id;
+
+            let dungeon = fire_red_location_names::dungeon_floors(map_group, map_name);
+            if fire_red_database::has_encounter_for_any_floor(dungeon) {
+                return;
+            }
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_secs())

@@ -1016,6 +1016,38 @@ pub fn has_any_encounters() -> bool {
         .unwrap_or(false)
 }
 
+/// Returns `true` if an encounter has already been recorded for **any** of the
+/// given `(map_group, map_name)` pairs by the current player in the active run.
+///
+/// Pass the slice returned by `fire_red_location_names::dungeon_floors` to
+/// check whether any floor of a multi-floor dungeon is already claimed.
+/// Returns `false` immediately for an empty slice.
+pub fn has_encounter_for_any_floor(floors: &[(u8, u8)]) -> bool {
+    if floors.is_empty() {
+        return false;
+    }
+    let mut state = db().lock_or_recover();
+    let active = match state.run_id {
+        Some(id) => id,
+        None => return false,
+    };
+    let player = state.current_player.clone();
+    for &(mg, mn) in floors {
+        let found = state.client
+            .query_one(
+                "SELECT COUNT(*) FROM encounters
+                 WHERE run_id = $1 AND player_name = $2 AND map_group = $3 AND map_name = $4",
+                &[&(active as i32), &player, &(mg as i32), &(mn as i32)],
+            )
+            .map(|row| row.get::<_, i64>(0) > 0)
+            .unwrap_or(false);
+        if found {
+            return true;
+        }
+    }
+    false
+}
+
 /// Returns `true` if an encounter has already been recorded for this area by the current player.
 pub fn has_encounter(map_group: u8, map_name: u8) -> bool {
     let mut state = db().lock_or_recover();
