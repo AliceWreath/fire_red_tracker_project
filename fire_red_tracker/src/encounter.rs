@@ -1,21 +1,7 @@
 use fire_red_loop::FireRedState;
 use fire_red_party_monitor::Pokemon;
+use fire_red_states::LockOrRecover;
 use std::sync::{Arc, Mutex};
-
-trait LockOrRecover<T> {
-    fn lock_or_recover(&self) -> std::sync::MutexGuard<'_, T>;
-}
-
-impl<T> LockOrRecover<T> for Mutex<T> {
-    #[track_caller]
-    fn lock_or_recover(&self) -> std::sync::MutexGuard<'_, T> {
-        self.lock().unwrap_or_else(|e| {
-            let loc = std::panic::Location::caller();
-            eprintln!("Warning: mutex poisoned at {}:{}: {e}", loc.file(), loc.line());
-            e.into_inner()
-        })
-    }
-}
 
 /// Tracks wild Pokémon encounters for the active Nuzlocke run.
 ///
@@ -114,11 +100,7 @@ impl EncounterTracker {
 
             let personality = enemy.box_mon.personality;
             let ot_id       = enemy.box_mon.ot_id;
-            let p_high      = (personality >> 16) as u16;
-            let p_low       = personality as u16;
-            let id_high     = (ot_id >> 16) as u16;
-            let id_low      = ot_id as u16;
-            let is_shiny    = (p_high ^ p_low ^ id_high ^ id_low) < 8;
+            let is_shiny    = crate::game::is_shiny(personality, ot_id);
 
             if is_shiny {
                 crate::webhook::fire_event(crate::webhook::WebhookEvent::Shiny {
@@ -136,7 +118,7 @@ impl EncounterTracker {
 
             let is_first = fire_red_database::record_encounter(
                 fire_red_database::Encounter {
-                    player_name:    String::new(), // populated from DbState::current_player
+                    player_name:    fire_red_loop::get_trainer_name(),
                     map_group,
                     map_name,
                     species:        enemy.box_mon.secure.growth.species,

@@ -11,21 +11,7 @@
 
 use crate::app::is_shiny;
 use crate::client::{MonitorSlot, SharedSlots, SpriteCache, encode_png};
-
-trait LockOrRecover<T> {
-    fn lock_or_recover(&self) -> std::sync::MutexGuard<'_, T>;
-}
-
-impl<T> LockOrRecover<T> for std::sync::Mutex<T> {
-    #[track_caller]
-    fn lock_or_recover(&self) -> std::sync::MutexGuard<'_, T> {
-        self.lock().unwrap_or_else(|e| {
-            let loc = std::panic::Location::caller();
-            eprintln!("Warning: mutex poisoned at {}:{}: {e}", loc.file(), loc.line());
-            e.into_inner()
-        })
-    }
-}
+use fire_red_states::LockOrRecover;
 use axum::{
     extract::{ConnectInfo, Path, Query, State},
     http::{header, StatusCode},

@@ -6,23 +6,8 @@
 
 use fire_red_loop::FireRedState;
 use fire_red_party_monitor::Pokemon;
-use fire_red_states::MAX_NATIONAL_DEX_FIRERED;
+use fire_red_states::{LockOrRecover, MAX_NATIONAL_DEX_FIRERED};
 use std::sync::{Arc, Mutex};
-
-trait LockOrRecover<T> {
-    fn lock_or_recover(&self) -> std::sync::MutexGuard<'_, T>;
-}
-
-impl<T> LockOrRecover<T> for Mutex<T> {
-    #[track_caller]
-    fn lock_or_recover(&self) -> std::sync::MutexGuard<'_, T> {
-        self.lock().unwrap_or_else(|e| {
-            let loc = std::panic::Location::caller();
-            eprintln!("Warning: mutex poisoned at {}:{}: {e}", loc.file(), loc.line());
-            e.into_inner()
-        })
-    }
-}
 
 /// GBA address of the packed (map_group, map_name) bytes in EWRAM.
 pub const MAP_GROUP_AND_NAME_ADDR: usize = 0x02031DBC;
@@ -115,7 +100,7 @@ pub fn check_for_dead_pokemon(thread_party: &Arc<Mutex<Vec<Pokemon>>>, run_track
 
         let shiny_flag = is_shiny(personality, ot_id);
         fire_red_database::mark_dead(fire_red_database::DeadPokemon {
-            player_name:   String::new(), // populated from DbState::current_player by mark_dead
+            player_name:   fire_red_loop::get_trainer_name(),
             personality,
             ot_id,
             ot_name,
@@ -250,7 +235,7 @@ pub fn check_for_new_pokemon(thread_party: &Arc<Mutex<Vec<Pokemon>>>) {
 
         let shiny_flag = is_shiny(personality, ot_id);
         fire_red_database::mark_caught(fire_red_database::CaughtPokemon {
-            player_name:   String::new(), // populated from DbState::current_player by mark_caught
+            player_name:   fire_red_loop::get_trainer_name(),
             personality,
             ot_id,
             nickname:      pokemon.box_mon.nickname_string.clone(),

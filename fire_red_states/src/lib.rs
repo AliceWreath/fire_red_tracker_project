@@ -238,6 +238,29 @@ pub fn recv_message<T: serde::de::DeserializeOwned>(stream: &mut TcpStream) -> s
     bincode::deserialize(&buf).map_err(std::io::Error::other)
 }
 
+// ---------------------------------------------------------------------------
+// Mutex poison recovery
+// ---------------------------------------------------------------------------
+
+/// Extension trait for [`std::sync::Mutex`] that recovers from poison instead
+/// of propagating it. A poisoned mutex means a thread panicked while holding
+/// the lock; for this tracker's display-only state, stale data is safer than
+/// crashing.
+pub trait LockOrRecover<T> {
+    fn lock_or_recover(&self) -> std::sync::MutexGuard<'_, T>;
+}
+
+impl<T> LockOrRecover<T> for std::sync::Mutex<T> {
+    #[track_caller]
+    fn lock_or_recover(&self) -> std::sync::MutexGuard<'_, T> {
+        self.lock().unwrap_or_else(|e| {
+            let loc = std::panic::Location::caller();
+            eprintln!("Warning: mutex poisoned at {}:{}: {e}", loc.file(), loc.line());
+            e.into_inner()
+        })
+    }
+}
+
 /*
 /// Sends a serialized [`GameState`] packet over a TCP stream.
 ///
