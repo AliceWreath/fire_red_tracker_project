@@ -188,6 +188,21 @@ html, body {
     background: rgba(0,0,0,0.45); border-radius: 4px; padding: 1px 5px;
     pointer-events: none; z-index: 9999;
 }
+.box-grid { display: grid; grid-template-columns: repeat(6, 1fr); gap: 4px; margin-top: 4px; }
+.box-heading { font-size: 11px; color: #ccc; font-style: italic; font-weight: 600; margin: 6px 0 3px; }
+.box-slot {
+    display: flex; flex-direction: column; align-items: center; gap: 1px;
+    padding: 3px 2px; border-radius: 4px; background: rgba(255,255,255,0.05); min-width: 0;
+}
+.box-slot.shiny { background: rgba(255,215,0,0.1); }
+.box-slot.egg   { background: rgba(100,180,100,0.1); }
+.box-sprite { width: 52px; height: 52px; image-rendering: pixelated; filter: drop-shadow(0 2px 4px rgba(0,0,0,0.9)) drop-shadow(0 0 6px rgba(255,255,255,0.35)); }
+.box-name { font-size: 9px; color: #ddd; font-weight: 600; text-align: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; width: 100%; }
+.box-nature { font-size: 8px; color: #aaa; text-align: center; }
+.box-ivs { font-size: 8px; color: #bbb; text-align: center; }
+.iv-p     { color: #ffd040; }
+.iv-z     { color: #e06060; }
+.iv-label { color: rgba(200,200,200,0.45); }
 /* ── light theme ──────────────────────────────────────────────────────── */
 html[data-theme=light],html[data-theme=light] body{color:#111;text-shadow:none}
 html[data-theme=light] .col{background:rgba(238,238,238,.93);border:1px solid rgba(0,0,0,.12)}
@@ -215,9 +230,14 @@ html[data-theme=light] .gender-f{color:#cc2266}
 html[data-theme=light] .nat-up{color:#cc0066}
 html[data-theme=light] .nat-down{color:#0055cc}
 html[data-theme=light] .badge-dot.off{background:#aaa}
+html[data-theme=light] .box-heading,html[data-theme=light] .box-nature,html[data-theme=light] .box-ivs{color:#555}
+html[data-theme=light] .box-name{color:#222}
+html[data-theme=light] .box-slot{background:rgba(0,0,0,.06)}
+html[data-theme=light] .box-slot.shiny{background:rgba(180,140,0,.15)}
+html[data-theme=light] .box-slot.egg{background:rgba(0,120,0,.12)}
 /* ── minimal theme ────────────────────────────────────────────────────── */
 html[data-theme=minimal] .col{background:rgba(0,0,0,.55);border-radius:6px}
-html[data-theme=minimal] .mon-sprite,html[data-theme=minimal] .enc-sprite,html[data-theme=minimal] .db-enc-sprite{filter:drop-shadow(0 1px 2px rgba(0,0,0,.85))}
+html[data-theme=minimal] .mon-sprite,html[data-theme=minimal] .enc-sprite,html[data-theme=minimal] .db-enc-sprite,html[data-theme=minimal] .box-sprite{filter:drop-shadow(0 1px 2px rgba(0,0,0,.85))}
 </style>
 </head>
 <body>
@@ -226,6 +246,7 @@ html[data-theme=minimal] .mon-sprite,html[data-theme=minimal] .enc-sprite,html[d
 <script>
 (function(){const t=new URLSearchParams(window.location.search).get('theme');if(t==='light'||t==='minimal'||t==='dark')document.documentElement.dataset.theme=t;}());
 const READONLY = !new URLSearchParams(window.location.search).has('manage');
+const SHOW_BOX = new URLSearchParams(window.location.search).get('show') === 'box';
 
 let ws;
 function connect() {
@@ -306,6 +327,9 @@ function buildCol(slot, slotIndex) {
         } else if (slot.active_run_id == null && slot.run_summary) {
             renderRunEnded(col, slot);
         } else {
+            if (SHOW_BOX) {
+                buildBoxContent(col, slot);
+            } else {
             const brow = el('div', 'badges');
             brow.appendChild(document.createTextNode('Badges: ' + slot.badges.filter(Boolean).length + '/8  '));
             for (const obtained of slot.badges) {
@@ -411,6 +435,7 @@ function buildCol(slot, slotIndex) {
                 }
                 col.appendChild(encSec);
             }
+            } // end !SHOW_BOX
         }
         return col;
 }
@@ -513,6 +538,68 @@ function el(tag, cls, txt) {
     if (cls) e.className = cls;
     if (txt !== undefined) e.textContent = txt;
     return e;
+}
+
+const IV_LABELS = ['HP', 'Atk', 'Def', 'Spe', 'SpA', 'SpD'];
+
+function ivEl(v) {
+    const s = document.createElement('span');
+    if (v === 31) s.className = 'iv-p';
+    else if (v === 0) s.className = 'iv-z';
+    s.textContent = v;
+    return s;
+}
+
+function ivRowEl(cls, label, hp, atk, def, spe, spa, spd, labeled) {
+    const d = el('div', cls);
+    if (label) d.appendChild(document.createTextNode(label + ' '));
+    const vals = [hp, atk, def, spe, spa, spd];
+    for (let i = 0; i < vals.length; i++) {
+        if (i > 0) d.appendChild(document.createTextNode(labeled ? ' ' : '/'));
+        if (labeled) {
+            const lbl = document.createElement('span');
+            lbl.className = 'iv-label';
+            lbl.textContent = IV_LABELS[i] + ':';
+            d.appendChild(lbl);
+        }
+        d.appendChild(ivEl(vals[i]));
+    }
+    return d;
+}
+
+function buildBoxContent(col, slot) {
+    if (!slot.box_pokemon || slot.box_pokemon.length === 0) {
+        col.appendChild(el('div', 'disconnected', 'No Pokémon in boxes'));
+        return;
+    }
+    const byBox = {};
+    for (const mon of slot.box_pokemon) {
+        if (!byBox[mon.box_index]) byBox[mon.box_index] = [];
+        byBox[mon.box_index].push(mon);
+    }
+    for (const boxIdx of Object.keys(byBox).sort((a, b) => a - b)) {
+        col.appendChild(el('div', 'box-heading', 'Box ' + (parseInt(boxIdx) + 1)));
+        const grid = el('div', 'box-grid');
+        for (const mon of byBox[boxIdx]) {
+            const cls = 'box-slot' + (mon.is_egg ? ' egg' : mon.is_shiny ? ' shiny' : '');
+            const cell = el('div', cls);
+            if (mon.sprite) {
+                const img = document.createElement('img');
+                img.className = 'box-sprite';
+                img.src = mon.sprite;
+                cell.appendChild(img);
+            }
+            const gs = genderSym(mon.gender);
+            const label = mon.is_egg ? 'Egg' : mon.nickname || mon.species_name;
+            cell.appendChild(el('div', 'box-name', label + (mon.is_shiny ? ' ✨' : '') + (gs.sym ? ' ' + gs.sym : '')));
+            if (!mon.is_egg) {
+                cell.appendChild(el('div', 'box-nature', mon.nature));
+                cell.appendChild(ivRowEl('box-ivs', null, mon.iv_hp, mon.iv_atk, mon.iv_def, mon.iv_spe, mon.iv_spa, mon.iv_spd));
+            }
+            grid.appendChild(cell);
+        }
+        col.appendChild(grid);
+    }
 }
 </script>
 </body>
