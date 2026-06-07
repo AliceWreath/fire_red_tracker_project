@@ -378,6 +378,7 @@ pub fn check_for_run_over(thread_party: &Arc<Mutex<Vec<Pokemon>>>, run_tracking_
 ///
 /// Run this with at least one ball in the bag. The printed SaveBlock1 offset
 /// is the value to use for `BALLS_POCKET_SAVE_BLOCK_OFFSET`.
+#[cfg(feature = "dev-tools")]
 pub fn scan_for_balls_pocket() {
     let iwram = fire_red_memory::get_iwram();
     let ewram = fire_red_memory::get_ewram();
@@ -471,6 +472,7 @@ pub fn scan_for_balls_pocket() {
 /// This function reads the raw bytes at the balls pocket slot 0, computes the
 /// candidate key (`raw_qty ^ expected_qty`), then searches all of EWRAM for
 /// that u16 and prints each hit with its SaveBlock2-relative offset.
+#[cfg(feature = "dev-tools")]
 pub fn scan_for_security_key(expected_qty: u16) {
     let iwram = fire_red_memory::get_iwram();
     let ewram = fire_red_memory::get_ewram();

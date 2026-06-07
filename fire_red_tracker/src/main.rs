@@ -51,7 +51,9 @@ use cli::{Cli, Command};
 use colored::Colorize;
 use fire_red_loop::*;
 use fire_red_states::*;
-use game::{check_for_dead_pokemon, check_for_new_pokemon, check_for_run_over, fill_party_list, game_is_loaded, is_shiny, map_state_from_ewram, scan_for_balls_pocket, scan_for_security_key};
+use game::{check_for_dead_pokemon, check_for_new_pokemon, check_for_run_over, fill_party_list, game_is_loaded, is_shiny, map_state_from_ewram};
+#[cfg(feature = "dev-tools")]
+use game::{scan_for_balls_pocket, scan_for_security_key};
 use gui::{WindowInfo, PARTY_WINDOW};
 use server::{handle_client, SpriteCache};
 use std::collections::HashMap;
@@ -282,8 +284,10 @@ fn main() {
 
     let is_clean            = cfg.clean || cli.clean;
     let rom_path            = cli.rom.unwrap_or(cfg.rom);
-    let do_scan_balls       = cli.scan_balls_pocket;
-    let do_scan_sec_key     = cli.scan_security_key;
+    #[cfg(feature = "dev-tools")]
+    let do_scan_balls   = cli.scan_balls_pocket;
+    #[cfg(feature = "dev-tools")]
+    let do_scan_sec_key = cli.scan_security_key;
     let preferred_player = cli.preferred_player
         .or_else(|| test.and_then(|t| t.preferred_player))
         .or(cfg.preferred_player);
@@ -329,11 +333,13 @@ fn main() {
                 std::thread::sleep(std::time::Duration::from_millis(50));
             }
 
+            #[cfg(feature = "dev-tools")]
             if do_scan_balls {
                 scan_for_balls_pocket();
                 std::process::exit(0);
             }
 
+            #[cfg(feature = "dev-tools")]
             if let Some(qty) = do_scan_sec_key {
                 scan_for_security_key(qty);
                 std::process::exit(0);

@@ -46,12 +46,16 @@ pub struct Cli {
 
     /// Scan SaveBlock1 for Pokéball item slots and print their offsets, then exit.
     /// Run with at least one ball in your bag to identify BALLS_POCKET_SAVE_BLOCK_OFFSET.
+    /// Requires the `dev-tools` feature.
+    #[cfg(feature = "dev-tools")]
     #[arg(long, default_value_t = false)]
     pub scan_balls_pocket: bool,
 
     /// Scan EWRAM for the bag security key and print SaveBlock2-relative offsets, then exit.
     /// Pass the exact number of Pokéballs currently in your bag (e.g. --scan-security-key=5).
     /// Use the printed offset to update SECURITY_KEY_OFFSET in game.rs.
+    /// Requires the `dev-tools` feature.
+    #[cfg(feature = "dev-tools")]
     #[arg(long, value_name = "QTY")]
     pub scan_security_key: Option<u16>,
 
