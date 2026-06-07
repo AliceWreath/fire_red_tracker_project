@@ -188,12 +188,43 @@ html, body {
     background: rgba(0,0,0,0.45); border-radius: 4px; padding: 1px 5px;
     pointer-events: none; z-index: 9999;
 }
+/* ── light theme ──────────────────────────────────────────────────────── */
+html[data-theme=light],html[data-theme=light] body{color:#111;text-shadow:none}
+html[data-theme=light] .col{background:rgba(238,238,238,.93);border:1px solid rgba(0,0,0,.12)}
+html[data-theme=light] .heading{border-bottom-color:rgba(0,0,0,.15)}
+html[data-theme=light] .mon{border-bottom-color:rgba(0,0,0,.1)}
+html[data-theme=light] .badges{color:#444}
+html[data-theme=light] .lv,html[data-theme=light] .mon-sub,html[data-theme=light] .mon-sub-sm{color:#444}
+html[data-theme=light] .exp,html[data-theme=light] .enc-lv,html[data-theme=light] .enc-heading,html[data-theme=light] .db-enc-heading,html[data-theme=light] .db-enc-label{color:#555}
+html[data-theme=light] .disconnected{color:#cc2200}
+html[data-theme=light] .db-indicator{color:#007700}
+html[data-theme=light] .next-gym{color:#996600}
+html[data-theme=light] .soul-link-ann{color:#880088}
+html[data-theme=light] .hp-high{color:#111}
+html[data-theme=light] .hp-mid{color:#996600}
+html[data-theme=light] .hp-low{color:#cc2200}
+html[data-theme=light] .enc-section{border-top-color:rgba(0,0,0,.12)}
+html[data-theme=light] .db-enc-section{border-top-color:rgba(0,0,0,.12)}
+html[data-theme=light] .run-ended-summary{background:rgba(180,120,0,.12);color:#333}
+html[data-theme=light] .run-ended-summary .summary-title{color:#994400}
+html[data-theme=light] #version-badge{color:rgba(0,0,0,.6);background:rgba(255,255,255,.8)}
+html[data-theme=light] .mon.dead{background:rgba(220,50,50,.12)}
+html[data-theme=light] .mon.dead .mon-name-row,html[data-theme=light] .dead-badge{color:#cc2200}
+html[data-theme=light] .gender-m{color:#1144cc}
+html[data-theme=light] .gender-f{color:#cc2266}
+html[data-theme=light] .nat-up{color:#cc0066}
+html[data-theme=light] .nat-down{color:#0055cc}
+html[data-theme=light] .badge-dot.off{background:#aaa}
+/* ── minimal theme ────────────────────────────────────────────────────── */
+html[data-theme=minimal] .col{background:rgba(0,0,0,.55);border-radius:6px}
+html[data-theme=minimal] .mon-sprite,html[data-theme=minimal] .enc-sprite,html[data-theme=minimal] .db-enc-sprite{filter:drop-shadow(0 1px 2px rgba(0,0,0,.85))}
 </style>
 </head>
 <body>
 <div id="version-badge">v__VERSION__</div>
 <div id="root"></div>
 <script>
+(function(){const t=new URLSearchParams(window.location.search).get('theme');if(t==='light'||t==='minimal'||t==='dark')document.documentElement.dataset.theme=t;}());
 const READONLY = !new URLSearchParams(window.location.search).has('manage');
 
 let ws;

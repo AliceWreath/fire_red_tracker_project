@@ -187,6 +187,24 @@ The following pages are available:
 
 The per-player pages can all be added as separate Browser Sources in OBS and positioned independently. The alerts overlay is fully transparent when idle — nothing appears until an event fires.
 
+#### Overlay themes
+
+All overlay pages (`/`, `/:index/party`, `/:index/encounters`, `/:index/dead`, `/:index/caught`, `/:index/box`) accept a `?theme=` query parameter.
+
+| Value | Look |
+|---|---|
+| *(omitted)* or `dark` | Default — dark semi-transparent panels (`rgba(0,0,0,0.88)`) with white text |
+| `light` | Light grey/white panels, dark text — suits stream layouts with bright backgrounds |
+| `minimal` | More transparent panels (`rgba(0,0,0,0.55)`) with softer sprite shadows — cleaner look when the game is visible beneath the overlay |
+
+```
+http://localhost:PORT/0/party?theme=light
+http://localhost:PORT/0/party?theme=minimal
+http://localhost:PORT/?theme=light
+```
+
+Other query parameters combine freely: `http://localhost:PORT/0/party?theme=minimal&manage`
+
 #### REST API
 
 All endpoints are served on the same port as the WebSocket overlay (`--ws-port`). JSON responses are `application/json`.
