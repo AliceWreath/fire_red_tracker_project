@@ -229,7 +229,7 @@ const READONLY = !new URLSearchParams(window.location.search).has('manage');
 
 let ws;
 function connect() {
-    ws = new WebSocket('ws://' + location.host + '/ws');
+    ws = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws');
     ws.onmessage = e => render(JSON.parse(e.data));
     ws.onclose   = () => setTimeout(connect, 2000);
 }
