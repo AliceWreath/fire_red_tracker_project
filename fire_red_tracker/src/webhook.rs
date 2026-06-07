@@ -40,6 +40,8 @@
 //! | `{pokemon.shiny}`     | `true` or `false` (empty on wipe)     |
 //! | `{pokemon.nature}`    | Nature name (empty on wipe)            |
 //!
+//! Use `{{` and `}}` to emit a literal `{` or `}` in the output.
+//!
 //! Discord example:
 //! ```text
 //! {"content": "🎮 **{player}** just lost **{pokemon.nickname}** (Lv.{pokemon.level})!"}
@@ -102,19 +104,61 @@ fn render_template(template: &str, event: &WebhookEvent) -> String {
         WebhookEvent::Wipe  { player, timestamp }          => ("wipe",  player.as_str(), *timestamp, None),
     };
     let ts = timestamp.to_string();
-    let mut out = template.to_string();
-    out = out.replace("{event}",     event_name);
-    out = out.replace("{player}",    player);
-    out = out.replace("{timestamp}", &ts);
-    if let Some(p) = pokemon {
-        out = out.replace("{pokemon.nickname}", &p.nickname);
-        out = out.replace("{pokemon.species}",  &p.species);
-        out = out.replace("{pokemon.level}",    &p.level.to_string());
-        out = out.replace("{pokemon.shiny}",    &p.shiny.to_string());
-        out = out.replace("{pokemon.nature}",   &p.nature);
+    // Allocate these only when there is a pokemon, so wipe events pay nothing.
+    let level_buf;
+    let shiny_buf;
+    let (nickname, species, level, shiny, nature): (&str, &str, &str, &str, &str) = if let Some(p) = pokemon {
+        level_buf = p.level.to_string();
+        shiny_buf = p.shiny.to_string();
+        (&p.nickname, &p.species, &level_buf, &shiny_buf, &p.nature)
     } else {
-        for ph in ["{pokemon.nickname}", "{pokemon.species}", "{pokemon.level}", "{pokemon.shiny}", "{pokemon.nature}"] {
-            out = out.replace(ph, "");
+        ("", "", "", "", "")
+    };
+
+    let placeholders: &[(&str, &str)] = &[
+        ("{event}",            event_name),
+        ("{player}",           player),
+        ("{timestamp}",        &ts),
+        ("{pokemon.nickname}", nickname),
+        ("{pokemon.species}",  species),
+        ("{pokemon.level}",    level),
+        ("{pokemon.shiny}",    shiny),
+        ("{pokemon.nature}",   nature),
+    ];
+
+    // Single-pass scan: {{ → {, }} → }, known placeholders → value, else copy.
+    let mut out = String::with_capacity(template.len());
+    let mut rest = template;
+    while !rest.is_empty() {
+        if let Some(r) = rest.strip_prefix("{{") {
+            out.push('{');
+            rest = r;
+            continue;
+        }
+        if let Some(r) = rest.strip_prefix("}}") {
+            out.push('}');
+            rest = r;
+            continue;
+        }
+        if rest.starts_with('{') {
+            let mut matched = false;
+            for &(ph, val) in placeholders {
+                if let Some(r) = rest.strip_prefix(ph) {
+                    out.push_str(val);
+                    rest = r;
+                    matched = true;
+                    break;
+                }
+            }
+            if !matched {
+                let c = rest.chars().next().unwrap();
+                out.push(c);
+                rest = &rest[c.len_utf8()..];
+            }
+        } else {
+            let end = rest.find('{').unwrap_or(rest.len());
+            out.push_str(&rest[..end]);
+            rest = &rest[end..];
         }
     }
     out

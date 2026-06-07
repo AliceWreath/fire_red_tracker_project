@@ -359,6 +359,203 @@ impl BroadcastLoop {
         })
     }
 
+    /// Propagates soul-link deaths across slots (DB-persisted and live) and
+    /// returns the set of personality values that are soul-link-dead per slot.
+    fn propagate_soul_links(
+        &mut self,
+        slots: &[Arc<MonitorSlot>],
+        states: &[(String, Option<GameState>)],
+        all_dead: &[HashMap<u32, DeadPokemon>],
+    ) -> Vec<HashSet<u32>> {
+        let n = slots.len();
+
+        // DB soul-link death propagation
+        for i in 0..n {
+            let dead_personalities: Vec<u32> = all_dead[i].keys().copied().collect();
+            for dead_p in dead_personalities {
+                let met_loc = self.caches[i]
+                    .caught
+                    .iter()
+                    .find(|c| c.personality == dead_p)
+                    .map(|c| c.met_location)
+                    .unwrap_or(0);
+                if met_loc == 0 { continue; }
+                for j in 0..n {
+                    if j == i { continue; }
+                    let partner = self.caches[j]
+                        .caught
+                        .iter()
+                        .find(|c| c.met_location == met_loc && c.personality != dead_p)
+                        .cloned();
+                    if let Some(p) = partner {
+                        let key = (j, p.personality);
+                        let already_dead       = all_dead[j].contains_key(&p.personality);
+                        let already_propagated = self.soul_link_propagated.contains(&key);
+                        if !already_dead && !already_propagated {
+                            let wrote = slots[j]
+                                .db
+                                .as_ref()
+                                .map(|db| db.mark_soul_link_dead(&p))
+                                .unwrap_or(false);
+                            if wrote {
+                                self.soul_link_propagated.insert(key);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Live soul-link dead detection
+        let mut live_soul_link_dead: Vec<HashSet<u32>> = vec![HashSet::new(); n];
+        for i in 0..n {
+            let Some(gs_i) = &states[i].1 else { continue };
+            for p_i in &gs_i.party {
+                if p_i.hp != 0 { continue; }
+                let met_i = p_i.box_mon.secure.misc.met_location;
+                if met_i == 0 { continue; }
+                for j in 0..n {
+                    if j == i { continue; }
+                    let Some(gs_j) = &states[j].1 else { continue };
+                    for p_j in &gs_j.party {
+                        if p_j.box_mon.secure.misc.met_location == met_i {
+                            live_soul_link_dead[j].insert(p_j.box_mon.personality);
+                        }
+                    }
+                }
+            }
+        }
+        live_soul_link_dead
+    }
+
+    /// Builds the party DTO list for one slot.
+    fn build_party_dto(
+        &self,
+        slot_idx: usize,
+        gs: &GameState,
+        dead_records: &HashMap<u32, DeadPokemon>,
+        soul_link_dead: &HashSet<u32>,
+        states: &[(String, Option<GameState>)],
+    ) -> Vec<MemberDto> {
+        let n = states.len();
+        gs.party.iter().map(|p| {
+            let personality    = p.box_mon.personality;
+            let ot_id          = p.box_mon.ot_id;
+            let shiny          = is_shiny(personality, ot_id);
+            let met            = p.box_mon.secure.misc.met_location;
+            let species        = p.box_mon.secure.growth.species;
+            let is_soul_link   = soul_link_dead.contains(&personality);
+            let dead_record    = dead_records.get(&personality);
+            let dead           = dead_record.is_some() || p.hp == 0 || is_soul_link;
+
+            let soul_link_partner = if met == 0 {
+                None
+            } else {
+                let mut found = None;
+                'outer: for (j, (player_j, state_j)) in states.iter().enumerate().take(n) {
+                    if j == slot_idx { continue; }
+                    if let Some(gs_j) = state_j {
+                        for p_j in &gs_j.party {
+                            if p_j.box_mon.secure.misc.met_location == met {
+                                found = Some(SoulLinkPartnerDto {
+                                    nickname: p_j.get_nickname_string(),
+                                    player:   player_j.clone(),
+                                });
+                                break 'outer;
+                            }
+                        }
+                    }
+                }
+                found
+            };
+
+            let (died_at, soul_link_kill, attack, defense, speed, sp_attack, sp_defense) =
+                if let Some(r) = dead_record {
+                    (
+                        Some(fire_red_database::format_timestamp(r.died_at)),
+                        r.max_hp == 0,
+                        r.attack, r.defense, r.speed, r.sp_attack, r.sp_defense,
+                    )
+                } else {
+                    (
+                        None, false,
+                        p.attack, p.defense, p.speed, p.sp_attack, p.sp_defense,
+                    )
+                };
+
+            let sprite = self.sprite_uri(species, shiny);
+
+            MemberDto {
+                nickname:          p.get_nickname_string(),
+                species_name:      p.box_mon.secure.growth.species_string.clone(),
+                level:             p.level,
+                hp:                p.hp,
+                max_hp:            p.max_hp,
+                exp:               p.box_mon.secure.growth.experience,
+                nature:            fire_red_database::nature_name(personality).to_string(),
+                shiny,
+                dead,
+                soul_link_kill,
+                soul_link_partner,
+                died_at,
+                attack,
+                defense,
+                speed,
+                sp_attack,
+                sp_defense,
+                gender:            p.box_mon.gender,
+                ability:           p.box_mon.ability_string.clone(),
+                held_item:         p.box_mon.secure.growth.held_item_string.clone(),
+                held_item_id:      p.box_mon.secure.growth.held_item,
+                growth_rate:       p.box_mon.secure.growth.growth_rate_string.clone(),
+                ev_hp:             p.box_mon.secure.ev_condition.hp_ev,
+                ev_atk:            p.box_mon.secure.ev_condition.attack_ev,
+                ev_def:            p.box_mon.secure.ev_condition.defense_ev,
+                ev_spe:            p.box_mon.secure.ev_condition.speed_ev,
+                ev_spa:            p.box_mon.secure.ev_condition.sp_attack_ev,
+                ev_spd:            p.box_mon.secure.ev_condition.sp_defense_ev,
+                sprite,
+                personality,
+                status:            p.status,
+            }
+        }).collect()
+    }
+
+    /// Builds the dead-mon DTO list for one slot, sorted newest-first.
+    fn build_dead_dto(&self, dead_records: &HashMap<u32, DeadPokemon>) -> Vec<DeadMonDto> {
+        let mut dead_sorted: Vec<&DeadPokemon> = dead_records.values().collect();
+        dead_sorted.sort_by_key(|b| std::cmp::Reverse(b.died_at));
+        dead_sorted.iter().map(|dp| DeadMonDto {
+            nickname:     dp.nickname.clone(),
+            species_name: dp.species_name.clone(),
+            level:        dp.level,
+            nature:       dp.nature.clone(),
+            shiny:        dp.is_shiny,
+            soul_link:    dp.max_hp == 0,
+            gender:       dp.gender,
+            died_at:      fire_red_database::format_timestamp(dp.died_at),
+            max_hp:       dp.max_hp,
+            attack:       dp.attack,
+            defense:      dp.defense,
+            speed:        dp.speed,
+            sp_attack:    dp.sp_attack,
+            sp_defense:   dp.sp_defense,
+            iv_hp:        dp.ivs.hp,
+            iv_atk:       dp.ivs.attack,
+            iv_def:       dp.ivs.defense,
+            iv_spe:       dp.ivs.speed,
+            iv_spa:       dp.ivs.sp_attack,
+            iv_spd:       dp.ivs.sp_defense,
+            ev_hp:        dp.evs.hp,
+            ev_atk:       dp.evs.attack,
+            ev_def:       dp.evs.defense,
+            ev_spe:       dp.evs.speed,
+            ev_spa:       dp.evs.sp_attack,
+            ev_spd:       dp.evs.sp_defense,
+            sprite:       self.sprite_uri(dp.species, dp.is_shiny),
+        }).collect()
+    }
+
     /// Runs one tick: refreshes DB caches, propagates soul-link deaths, and
     /// returns a JSON string if the state has changed since the last tick.
     fn tick(&mut self) -> Option<String> {
@@ -472,62 +669,8 @@ impl BroadcastLoop {
             }
         }
 
-        // DB soul-link death propagation
-        for i in 0..n {
-            let dead_personalities: Vec<u32> = all_dead[i].keys().copied().collect();
-            for dead_p in dead_personalities {
-                let met_loc = self.caches[i]
-                    .caught
-                    .iter()
-                    .find(|c| c.personality == dead_p)
-                    .map(|c| c.met_location)
-                    .unwrap_or(0);
-                if met_loc == 0 { continue; }
-                for j in 0..n {
-                    if j == i { continue; }
-                    let partner = self.caches[j]
-                        .caught
-                        .iter()
-                        .find(|c| c.met_location == met_loc && c.personality != dead_p)
-                        .cloned();
-                    if let Some(p) = partner {
-                        let key = (j, p.personality);
-                        let already_dead       = all_dead[j].contains_key(&p.personality);
-                        let already_propagated = self.soul_link_propagated.contains(&key);
-                        if !already_dead && !already_propagated {
-                            let wrote = slots[j]
-                                .db
-                                .as_ref()
-                                .map(|db| db.mark_soul_link_dead(&p))
-                                .unwrap_or(false);
-                            if wrote {
-                                self.soul_link_propagated.insert(key);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        // Live soul-link dead detection
-        let mut live_soul_link_dead: Vec<HashSet<u32>> = vec![HashSet::new(); n];
-        for i in 0..n {
-            let Some(gs_i) = &states[i].1 else { continue };
-            for p_i in &gs_i.party {
-                if p_i.hp != 0 { continue; }
-                let met_i = p_i.box_mon.secure.misc.met_location;
-                if met_i == 0 { continue; }
-                for j in 0..n {
-                    if j == i { continue; }
-                    let Some(gs_j) = &states[j].1 else { continue };
-                    for p_j in &gs_j.party {
-                        if p_j.box_mon.secure.misc.met_location == met_i {
-                            live_soul_link_dead[j].insert(p_j.box_mon.personality);
-                        }
-                    }
-                }
-            }
-        }
+        // Soul-link death propagation (DB-persisted + live)
+        let live_soul_link_dead = self.propagate_soul_links(&slots, &states, &all_dead);
 
         // Determine display order: sort by (preferred_player, player_name).
         // Slots with no preference sort last; ties break alphabetically by name.
@@ -600,93 +743,7 @@ impl BroadcastLoop {
                                 max_level: g.max_level,
                             });
 
-                        let party = gs
-                            .party
-                            .iter()
-                            .map(|p| {
-                                let personality    = p.box_mon.personality;
-                                let ot_id          = p.box_mon.ot_id;
-                                let shiny          = is_shiny(personality, ot_id);
-                                let met            = p.box_mon.secure.misc.met_location;
-                                let species        = p.box_mon.secure.growth.species;
-                                let is_soul_link   = soul_link_dead.contains(&personality);
-                                let dead_record    = dead_records.get(&personality);
-                                let dead           = dead_record.is_some() || p.hp == 0 || is_soul_link;
-
-                                // Soul-link partner annotation
-                                let soul_link_partner = if met == 0 {
-                                    None
-                                } else {
-                                    let mut found = None;
-                                    'outer: for (j, (player_j, state_j)) in states.iter().enumerate().take(n) {
-                                        if j == i { continue; }
-                                        if let Some(gs_j) = state_j {
-                                            for p_j in &gs_j.party {
-                                                if p_j.box_mon.secure.misc.met_location == met {
-                                                    found = Some(SoulLinkPartnerDto {
-                                                        nickname: p_j.get_nickname_string(),
-                                                        player:   player_j.clone(),
-                                                    });
-                                                    break 'outer;
-                                                }
-                                            }
-                                        }
-                                    }
-                                    found
-                                };
-
-                                let (died_at, soul_link_kill, attack, defense, speed, sp_attack, sp_defense) =
-                                    if let Some(r) = dead_record {
-                                        (
-                                            Some(fire_red_database::format_timestamp(r.died_at)),
-                                            r.max_hp == 0,
-                                            r.attack, r.defense, r.speed, r.sp_attack, r.sp_defense,
-                                        )
-                                    } else {
-                                        (
-                                            None, false,
-                                            p.attack, p.defense, p.speed, p.sp_attack, p.sp_defense,
-                                        )
-                                    };
-
-                                // Embed sprite as data URI — avoids any HTTP / caching issues
-                                let sprite = self.sprite_uri(species, shiny);
-
-                                MemberDto {
-                                    nickname:          p.get_nickname_string(),
-                                    species_name:      p.box_mon.secure.growth.species_string.clone(),
-                                    level:             p.level,
-                                    hp:                p.hp,
-                                    max_hp:            p.max_hp,
-                                    exp:               p.box_mon.secure.growth.experience,
-                                    nature:            fire_red_database::nature_name(personality).to_string(),
-                                    shiny,
-                                    dead,
-                                    soul_link_kill,
-                                    soul_link_partner,
-                                    died_at,
-                                    attack,
-                                    defense,
-                                    speed,
-                                    sp_attack,
-                                    sp_defense,
-                                    gender:            p.box_mon.gender,
-                                    ability:           p.box_mon.ability_string.clone(),
-                                    held_item:         p.box_mon.secure.growth.held_item_string.clone(),
-                                    held_item_id:      p.box_mon.secure.growth.held_item,
-                                    growth_rate:       p.box_mon.secure.growth.growth_rate_string.clone(),
-                                    ev_hp:             p.box_mon.secure.ev_condition.hp_ev,
-                                    ev_atk:            p.box_mon.secure.ev_condition.attack_ev,
-                                    ev_def:            p.box_mon.secure.ev_condition.defense_ev,
-                                    ev_spe:            p.box_mon.secure.ev_condition.speed_ev,
-                                    ev_spa:            p.box_mon.secure.ev_condition.sp_attack_ev,
-                                    ev_spd:            p.box_mon.secure.ev_condition.sp_defense_ev,
-                                    sprite,
-                                    personality,
-                                    status:            p.status,
-                                }
-                            })
-                            .collect();
+                        let party = self.build_party_dto(i, gs, dead_records, soul_link_dead, &states);
 
                         // Build encounter groups (skip empty ones)
                         let enc = &gs.encounters;
@@ -738,37 +795,7 @@ impl BroadcastLoop {
 
                 // dead_records and caches are already filtered by player_name in
                 // list_dead_with_records / list_caught, so no further filtering needed.
-                let mut dead_sorted: Vec<&DeadPokemon> = dead_records.values().collect();
-                dead_sorted.sort_by_key(|b| std::cmp::Reverse(b.died_at));
-                let dead: Vec<DeadMonDto> = dead_sorted.iter().map(|dp| DeadMonDto {
-                    nickname:     dp.nickname.clone(),
-                    species_name: dp.species_name.clone(),
-                    level:        dp.level,
-                    nature:       dp.nature.clone(),
-                    shiny:        dp.is_shiny,
-                    soul_link:    dp.max_hp == 0,
-                    gender:       dp.gender,
-                    died_at:      fire_red_database::format_timestamp(dp.died_at),
-                    max_hp:       dp.max_hp,
-                    attack:       dp.attack,
-                    defense:      dp.defense,
-                    speed:        dp.speed,
-                    sp_attack:    dp.sp_attack,
-                    sp_defense:   dp.sp_defense,
-                    iv_hp:        dp.ivs.hp,
-                    iv_atk:       dp.ivs.attack,
-                    iv_def:       dp.ivs.defense,
-                    iv_spe:       dp.ivs.speed,
-                    iv_spa:       dp.ivs.sp_attack,
-                    iv_spd:       dp.ivs.sp_defense,
-                    ev_hp:        dp.evs.hp,
-                    ev_atk:       dp.evs.attack,
-                    ev_def:       dp.evs.defense,
-                    ev_spe:       dp.evs.speed,
-                    ev_spa:       dp.evs.sp_attack,
-                    ev_spd:       dp.evs.sp_defense,
-                    sprite:       self.sprite_uri(dp.species, dp.is_shiny),
-                }).collect();
+                let dead = self.build_dead_dto(dead_records);
 
                 let caught: Vec<CaughtMonDto> = self.caches[i].caught.iter()
                     .rev()
