@@ -45,15 +45,19 @@ struct SettingsDraft {
     preferred_player: String,
     default_test:     bool,
     test:             Option<crate::config::TrackerTestOverrides>,
-    // Webhook URL fields
+    // Webhook URL and template fields
     death_url:         String,
     death_url_enabled: bool,
+    death_template:    String,
     catch_url:         String,
     catch_url_enabled: bool,
+    catch_template:    String,
     shiny_url:         String,
     shiny_url_enabled: bool,
+    shiny_template:    String,
     wipe_url:          String,
     wipe_url_enabled:  bool,
+    wipe_template:     String,
 }
 
 impl SettingsDraft {
@@ -70,12 +74,16 @@ impl SettingsDraft {
             test:             cfg.test.clone(),
             death_url:         wh.death_url.clone().unwrap_or_default(),
             death_url_enabled: wh.death_url.is_some(),
+            death_template:    wh.death_template.clone().unwrap_or_default(),
             catch_url:         wh.catch_url.clone().unwrap_or_default(),
             catch_url_enabled: wh.catch_url.is_some(),
+            catch_template:    wh.catch_template.clone().unwrap_or_default(),
             shiny_url:         wh.shiny_url.clone().unwrap_or_default(),
             shiny_url_enabled: wh.shiny_url.is_some(),
+            shiny_template:    wh.shiny_template.clone().unwrap_or_default(),
             wipe_url:          wh.wipe_url.clone().unwrap_or_default(),
             wipe_url_enabled:  wh.wipe_url.is_some(),
+            wipe_template:     wh.wipe_template.clone().unwrap_or_default(),
         }
     }
 }
@@ -426,10 +434,22 @@ impl WindowInfo {
                     ui.add(egui::TextEdit::singleline(&mut s.death_url).desired_width(280.0).hint_text("https://…"));
                 });
                 ui.end_row();
+                ui.label("  Template:");
+                ui.add_enabled_ui(s.death_url_enabled, |ui| {
+                    ui.add(egui::TextEdit::singleline(&mut s.death_template).desired_width(280.0)
+                        .hint_text(r#"{"content": "{player} lost {pokemon.nickname}!"} — blank = default JSON"#));
+                });
+                ui.end_row();
 
                 ui.checkbox(&mut s.catch_url_enabled, "Catch URL:");
                 ui.add_enabled_ui(s.catch_url_enabled, |ui| {
                     ui.add(egui::TextEdit::singleline(&mut s.catch_url).desired_width(280.0).hint_text("https://…"));
+                });
+                ui.end_row();
+                ui.label("  Template:");
+                ui.add_enabled_ui(s.catch_url_enabled, |ui| {
+                    ui.add(egui::TextEdit::singleline(&mut s.catch_template).desired_width(280.0)
+                        .hint_text(r#"{"content": "{player} caught {pokemon.species} (Lv.{pokemon.level})!"}"#));
                 });
                 ui.end_row();
 
@@ -438,10 +458,22 @@ impl WindowInfo {
                     ui.add(egui::TextEdit::singleline(&mut s.shiny_url).desired_width(280.0).hint_text("https://…"));
                 });
                 ui.end_row();
+                ui.label("  Template:");
+                ui.add_enabled_ui(s.shiny_url_enabled, |ui| {
+                    ui.add(egui::TextEdit::singleline(&mut s.shiny_template).desired_width(280.0)
+                        .hint_text(r#"{"content": "✨ {player} encountered a shiny {pokemon.species}!"}"#));
+                });
+                ui.end_row();
 
                 ui.checkbox(&mut s.wipe_url_enabled, "Wipe URL:");
                 ui.add_enabled_ui(s.wipe_url_enabled, |ui| {
                     ui.add(egui::TextEdit::singleline(&mut s.wipe_url).desired_width(280.0).hint_text("https://…"));
+                });
+                ui.end_row();
+                ui.label("  Template:");
+                ui.add_enabled_ui(s.wipe_url_enabled, |ui| {
+                    ui.add(egui::TextEdit::singleline(&mut s.wipe_template).desired_width(280.0)
+                        .hint_text(r#"{"content": "{player}'s run has ended. RIP."}"#));
                 });
                 ui.end_row();
             });
@@ -474,10 +506,14 @@ impl WindowInfo {
                     default_test:     s.default_test,
                     test:             s.test.clone(),
                     webhooks: crate::config::WebhookConfig {
-                        death_url: if s.death_url_enabled && !s.death_url.trim().is_empty() { Some(s.death_url.trim().to_string()) } else { None },
-                        catch_url: if s.catch_url_enabled && !s.catch_url.trim().is_empty() { Some(s.catch_url.trim().to_string()) } else { None },
-                        shiny_url: if s.shiny_url_enabled && !s.shiny_url.trim().is_empty() { Some(s.shiny_url.trim().to_string()) } else { None },
-                        wipe_url:  if s.wipe_url_enabled  && !s.wipe_url.trim().is_empty()  { Some(s.wipe_url.trim().to_string())  } else { None },
+                        death_url:      if s.death_url_enabled && !s.death_url.trim().is_empty() { Some(s.death_url.trim().to_string()) } else { None },
+                        death_template: if s.death_url_enabled && !s.death_template.trim().is_empty() { Some(s.death_template.trim().to_string()) } else { None },
+                        catch_url:      if s.catch_url_enabled && !s.catch_url.trim().is_empty() { Some(s.catch_url.trim().to_string()) } else { None },
+                        catch_template: if s.catch_url_enabled && !s.catch_template.trim().is_empty() { Some(s.catch_template.trim().to_string()) } else { None },
+                        shiny_url:      if s.shiny_url_enabled && !s.shiny_url.trim().is_empty() { Some(s.shiny_url.trim().to_string()) } else { None },
+                        shiny_template: if s.shiny_url_enabled && !s.shiny_template.trim().is_empty() { Some(s.shiny_template.trim().to_string()) } else { None },
+                        wipe_url:       if s.wipe_url_enabled  && !s.wipe_url.trim().is_empty()  { Some(s.wipe_url.trim().to_string())  } else { None },
+                        wipe_template:  if s.wipe_url_enabled  && !s.wipe_template.trim().is_empty()  { Some(s.wipe_template.trim().to_string())  } else { None },
                     },
                 };
                 save_config(&cfg, &self.config_path);

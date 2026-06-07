@@ -40,18 +40,22 @@ A dedicated transparent OBS source (`/:index/alerts`) that shows timed toast not
 
 ### Webhooks
 
-The tracker can POST a JSON payload to a user-configured URL whenever a key event occurs. Each event type has its own independent optional URL; any combination can be enabled. Configuration is done via the setup dialog or the in-app ⚙ Settings panel.
+The tracker can POST to a user-configured URL whenever a key event occurs. Each event type has its own independent optional URL; any combination can be enabled. Configuration is done via the setup dialog or the in-app ⚙ Settings panel. All keys live under `[webhooks]` in `~/.config/fire_red_tracker/config.toml`. The section is omitted from the file entirely when nothing is configured.
 
-| Event | Trigger | Config key |
-|---|---|---|
-| `death` | A party member's HP reaches zero and the death is written to the database | `death_url` |
-| `catch` | A new Pokémon joins the party (caught, gifted, or traded in) | `catch_url` |
-| `shiny` | A shiny wild Pokémon's personality is detected, before any catch attempt | `shiny_url` |
-| `wipe` | Every party member is dead and the run ends | `wipe_url` |
+POSTs are fire-and-forget: dispatched on a dedicated background thread with a 5-second timeout so the game-polling loop is never blocked. Failures are printed to stderr.
 
-All four keys live under `[webhooks]` in `~/.config/fire_red_tracker/config.toml`. The section is omitted from the file entirely when no URLs are set.
+#### Events
 
-**Payload format** — every POST is `application/json` with `Content-Type: application/json`:
+| Event | Trigger | URL key | Template key |
+|---|---|---|---|
+| `death` | A party member's HP reaches zero and the death is written to the database | `death_url` | `death_template` |
+| `catch` | A new Pokémon joins the party (caught, gifted, or traded in) | `catch_url` | `catch_template` |
+| `shiny` | A shiny wild Pokémon's personality is detected, before any catch attempt | `shiny_url` | `shiny_template` |
+| `wipe` | Every party member is dead and the run ends | `wipe_url` | `wipe_template` |
+
+#### Default payload format
+
+When no template is configured for an event, every POST is `Content-Type: application/json`:
 
 ```json
 {
@@ -68,9 +72,78 @@ All four keys live under `[webhooks]` in `~/.config/fire_red_tracker/config.toml
 }
 ```
 
-The `pokemon` field is absent for `wipe` events. For `shiny` events the `nickname` field is always an empty string (the wild Pokémon has not yet been named). The `catch` event's payload includes `"shiny": true` when the caught Pokémon is shiny; a separate `shiny` webhook fires earlier at first sighting in the wild.
+Notes on specific events:
+- `wipe` — the `pokemon` field is absent entirely; only `event`, `player`, and `timestamp` are present.
+- `shiny` — the `nickname` field is always an empty string because the wild Pokémon has not yet been named at the moment of detection.
+- `catch` — includes `"shiny": true` when the caught Pokémon is shiny. A separate `shiny` webhook fires earlier at the moment of wild encounter, before any catch attempt.
 
-POSTs are fire-and-forget: they are dispatched on a dedicated background thread with a 5-second timeout and never block the game-polling loop. Failures are printed to stderr.
+#### Custom payload templates
+
+Each event supports an optional `*_template` config key. When set, the template string is rendered using simple `{placeholder}` substitution and the result is POSTed verbatim as the request body (`Content-Type: application/json`). The default JSON schema is not used.
+
+**Available placeholders:**
+
+| Placeholder | Value | Notes |
+|---|---|---|
+| `{event}` | `death`, `catch`, `shiny`, or `wipe` | |
+| `{player}` | Player name from config | |
+| `{timestamp}` | Unix timestamp in seconds | |
+| `{pokemon.nickname}` | Pokémon's in-game nickname | Empty string for `wipe` events |
+| `{pokemon.species}` | Species name | Empty string for `wipe` events |
+| `{pokemon.level}` | Level as a plain integer string | Empty string for `wipe` events |
+| `{pokemon.shiny}` | `true` or `false` | Empty string for `wipe` events |
+| `{pokemon.nature}` | Nature name | Empty string for `wipe` events |
+
+Templates are per-event and independent. You can use a template for `death` and leave `catch` using the default JSON — they do not need to match.
+
+The template string is used as the complete POST body after substitution. The caller is responsible for the resulting content being valid for the receiving service. For Discord webhooks (which require `Content-Type: application/json` with a JSON body), write the template as JSON:
+
+```
+{"content": "{player} just lost **{pokemon.nickname}** (Lv.{pokemon.level} {pokemon.species})!"}
+```
+
+For services that accept a plain string body, omit the outer JSON wrapper. Either way the `Content-Type` header is `application/json`.
+
+Unknown placeholders (any `{...}` that doesn't match the table above) are left in the output unchanged.
+
+#### Example TOML config
+
+Minimal config with a Discord death alert and default JSON for everything else:
+
+```toml
+[webhooks]
+death_url      = "https://discord.com/api/webhooks/your-id/your-token"
+death_template = '{"content": "💀 **{player}** just lost **{pokemon.nickname}** (Lv.{pokemon.level} {pokemon.species})"}'
+catch_url      = "https://discord.com/api/webhooks/your-id/your-token"
+```
+
+Full example with all four events and custom templates:
+
+```toml
+[webhooks]
+death_url      = "https://discord.com/api/webhooks/your-id/your-token"
+death_template = '{"content": "💀 **{player}** lost **{pokemon.nickname}** (Lv.{pokemon.level} {pokemon.species}, {pokemon.nature})"}'
+
+catch_url      = "https://discord.com/api/webhooks/your-id/your-token"
+catch_template = '{"content": "✅ **{player}** caught a **{pokemon.species}** (Lv.{pokemon.level}, {pokemon.nature}){pokemon.shiny}"}'
+
+shiny_url      = "https://discord.com/api/webhooks/your-id/your-token"
+shiny_template = '{"content": "✨ **{player}** encountered a shiny **{pokemon.species}** (Lv.{pokemon.level})!"}'
+
+wipe_url      = "https://discord.com/api/webhooks/your-id/your-token"
+wipe_template = '{"content": "☠️ **{player}**'\''s run has ended. Press F."}'
+```
+
+The `*_template` keys are optional even when the corresponding `*_url` is set — omitting a template falls back to the default JSON payload. The `[webhooks]` section is omitted from the config file entirely when all URLs and templates are unset.
+
+#### Delivery mechanics
+
+The tracker starts a single long-lived background thread at startup that owns a `reqwest::blocking::Client` with a 5-second timeout. When `fire_event` is called from the game-polling loop it:
+
+1. Looks up the URL and template for that event type.
+2. If a template is configured, renders it by substituting all placeholders in a single pass over the string. For `wipe` events the five pokemon placeholders are replaced with empty strings.
+3. Enqueues a `(url, body)` pair to the background thread via an `mpsc` channel and returns immediately — the polling loop is never blocked.
+4. The background thread drains the channel and POSTs each payload. If a POST fails (network error, timeout, non-2xx response) the error is printed to stderr and delivery is not retried.
 
 ### Run management
 - **Badge tracker** — displays obtained badges as coloured dots and shows the next gym leader's name, city, and highest level.
@@ -332,7 +405,7 @@ A **Soul Link** is a Nuzlocke variant played with a partner: each player's catch
 | `textures.rs` | `PendingTexture`, sprite compression, `build_sprite_data` |
 | `gui.rs` | `WindowInfo`, `eframe::App` impl, party panel, encounters viewport |
 | `server.rs` | Aggregator connection handler — manages the bidirectional push stream over an established TCP connection |
-| `webhook.rs` | `WebhookEvent` enum, channel-backed background sender, `init` / `fire_event` — HTTP POST dispatch for death, catch, shiny, and wipe events |
+| `webhook.rs` | `WebhookEvent` enum, channel-backed background sender, `init` / `fire_event` — HTTP POST dispatch for death, catch, shiny, and wipe events; `render_template` for `{placeholder}` substitution when a custom body template is configured |
 
 ### Key external dependencies
 

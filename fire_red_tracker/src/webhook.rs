@@ -5,9 +5,9 @@
 //! the payload and returns immediately. A background thread performs the
 //! actual HTTP POST so the game-polling loop is never blocked.
 //!
-//! # Payload format
+//! # Default payload format
 //!
-//! Every POST is `application/json`:
+//! When no template is configured, every POST is `application/json`:
 //! ```json
 //! {
 //!   "event":     "death",
@@ -23,6 +23,27 @@
 //! }
 //! ```
 //! The `pokemon` field is absent for `wipe` events.
+//!
+//! # Template format
+//!
+//! When a `*_template` is configured for an event, that string is rendered
+//! and POSTed verbatim (`application/json`). Supported placeholders:
+//!
+//! | Placeholder           | Value                                  |
+//! |-----------------------|----------------------------------------|
+//! | `{event}`             | `death`, `catch`, `shiny`, or `wipe`  |
+//! | `{player}`            | Player name from config                |
+//! | `{timestamp}`         | Unix seconds                           |
+//! | `{pokemon.nickname}`  | Pokémon nickname (empty on wipe)       |
+//! | `{pokemon.species}`   | Pokémon species name (empty on wipe)   |
+//! | `{pokemon.level}`     | Level as integer string (empty on wipe)|
+//! | `{pokemon.shiny}`     | `true` or `false` (empty on wipe)     |
+//! | `{pokemon.nature}`    | Nature name (empty on wipe)            |
+//!
+//! Discord example:
+//! ```text
+//! {"content": "🎮 **{player}** just lost **{pokemon.nickname}** (Lv.{pokemon.level})!"}
+//! ```
 
 use crate::config::WebhookConfig;
 use serde::Serialize;
@@ -52,15 +73,52 @@ pub enum WebhookEvent {
 }
 
 // ---------------------------------------------------------------------------
-// Internal state
+// Internal types
 // ---------------------------------------------------------------------------
 
+enum PostBody {
+    /// Serialize the event to JSON using serde (existing behaviour).
+    Json(WebhookEvent),
+    /// Already-rendered string; POST verbatim as application/json.
+    Raw(String),
+}
+
 struct WebhookState {
-    tx:     Sender<(String, WebhookEvent)>,
+    tx:     Sender<(String, PostBody)>,
     config: WebhookConfig,
 }
 
 static STATE: OnceLock<WebhookState> = OnceLock::new();
+
+// ---------------------------------------------------------------------------
+// Template rendering
+// ---------------------------------------------------------------------------
+
+fn render_template(template: &str, event: &WebhookEvent) -> String {
+    let (event_name, player, timestamp, pokemon) = match event {
+        WebhookEvent::Death { player, timestamp, pokemon } => ("death", player.as_str(), *timestamp, Some(pokemon)),
+        WebhookEvent::Catch { player, timestamp, pokemon } => ("catch", player.as_str(), *timestamp, Some(pokemon)),
+        WebhookEvent::Shiny { player, timestamp, pokemon } => ("shiny", player.as_str(), *timestamp, Some(pokemon)),
+        WebhookEvent::Wipe  { player, timestamp }          => ("wipe",  player.as_str(), *timestamp, None),
+    };
+    let ts = timestamp.to_string();
+    let mut out = template.to_string();
+    out = out.replace("{event}",     event_name);
+    out = out.replace("{player}",    player);
+    out = out.replace("{timestamp}", &ts);
+    if let Some(p) = pokemon {
+        out = out.replace("{pokemon.nickname}", &p.nickname);
+        out = out.replace("{pokemon.species}",  &p.species);
+        out = out.replace("{pokemon.level}",    &p.level.to_string());
+        out = out.replace("{pokemon.shiny}",    &p.shiny.to_string());
+        out = out.replace("{pokemon.nature}",   &p.nature);
+    } else {
+        for ph in ["{pokemon.nickname}", "{pokemon.species}", "{pokemon.level}", "{pokemon.shiny}", "{pokemon.nature}"] {
+            out = out.replace(ph, "");
+        }
+    }
+    out
+}
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -69,7 +127,7 @@ static STATE: OnceLock<WebhookState> = OnceLock::new();
 /// Initialize the webhook sender. Must be called once before any [`fire_event`]
 /// calls; subsequent calls are a no-op (the first config wins).
 pub fn init(config: WebhookConfig) {
-    let (tx, rx) = channel::<(String, WebhookEvent)>();
+    let (tx, rx) = channel::<(String, PostBody)>();
     if STATE.set(WebhookState { tx, config }).is_err() {
         return; // already initialized
     }
@@ -78,8 +136,15 @@ pub fn init(config: WebhookConfig) {
             .timeout(std::time::Duration::from_secs(5))
             .build()
             .unwrap_or_else(|_| reqwest::blocking::Client::new());
-        for (url, event) in rx {
-            if let Err(e) = client.post(&url).json(&event).send() {
+        for (url, body) in rx {
+            let result = match body {
+                PostBody::Json(event) => client.post(&url).json(&event).send(),
+                PostBody::Raw(text)   => client.post(&url)
+                    .header("content-type", "application/json")
+                    .body(text)
+                    .send(),
+            };
+            if let Err(e) = result {
                 eprintln!("Webhook POST to {url} failed: {e}");
             }
         }
@@ -93,13 +158,17 @@ pub fn init(config: WebhookConfig) {
 /// was never called.
 pub fn fire_event(event: WebhookEvent) {
     let Some(state) = STATE.get() else { return; };
-    let url = match &event {
-        WebhookEvent::Death { .. } => state.config.death_url.as_deref(),
-        WebhookEvent::Catch { .. } => state.config.catch_url.as_deref(),
-        WebhookEvent::Shiny { .. } => state.config.shiny_url.as_deref(),
-        WebhookEvent::Wipe  { .. } => state.config.wipe_url.as_deref(),
+    let (url, template) = match &event {
+        WebhookEvent::Death { .. } => (state.config.death_url.as_deref(), state.config.death_template.as_deref()),
+        WebhookEvent::Catch { .. } => (state.config.catch_url.as_deref(), state.config.catch_template.as_deref()),
+        WebhookEvent::Shiny { .. } => (state.config.shiny_url.as_deref(), state.config.shiny_template.as_deref()),
+        WebhookEvent::Wipe  { .. } => (state.config.wipe_url.as_deref(),  state.config.wipe_template.as_deref()),
     };
     if let Some(url) = url {
-        let _ = state.tx.send((url.to_string(), event));
+        let body = match template {
+            Some(t) => PostBody::Raw(render_template(t, &event)),
+            None    => PostBody::Json(event),
+        };
+        let _ = state.tx.send((url.to_string(), body));
     }
 }

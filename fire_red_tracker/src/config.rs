@@ -53,23 +53,40 @@ pub struct WebhookConfig {
     /// POSTed when a party member dies.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub death_url: Option<String>,
+    /// Custom body template for death events (placeholders: {player}, {timestamp}, {pokemon.nickname}, etc.).
+    /// When set, the rendered string is POSTed verbatim instead of the default JSON schema.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub death_template: Option<String>,
     /// POSTed when a new pokemon is added to the party (caught/gifted/traded).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub catch_url: Option<String>,
+    /// Custom body template for catch events.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub catch_template: Option<String>,
     /// POSTed when a shiny wild pokemon is first encountered.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shiny_url: Option<String>,
+    /// Custom body template for shiny events.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shiny_template: Option<String>,
     /// POSTed when the entire party is wiped and the run ends.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wipe_url: Option<String>,
+    /// Custom body template for wipe events (pokemon placeholders expand to empty string).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wipe_template: Option<String>,
 }
 
 impl WebhookConfig {
     pub fn is_empty(&self) -> bool {
         self.death_url.is_none()
+            && self.death_template.is_none()
             && self.catch_url.is_none()
+            && self.catch_template.is_none()
             && self.shiny_url.is_none()
+            && self.shiny_template.is_none()
             && self.wipe_url.is_none()
+            && self.wipe_template.is_none()
     }
 }
 
@@ -151,15 +168,19 @@ struct SetupApp {
     heading:          &'static str,
     default_test:     bool,
     test:             Option<TrackerTestOverrides>,
-    // Webhook URL fields
+    // Webhook URL and template fields
     death_url:         String,
     death_url_enabled: bool,
+    death_template:    String,
     catch_url:         String,
     catch_url_enabled: bool,
+    catch_template:    String,
     shiny_url:         String,
     shiny_url_enabled: bool,
+    shiny_template:    String,
     wipe_url:          String,
     wipe_url_enabled:  bool,
+    wipe_template:     String,
 }
 
 impl SetupApp {
@@ -179,12 +200,16 @@ impl SetupApp {
             test:             None,
             death_url:         String::new(),
             death_url_enabled: false,
+            death_template:    String::new(),
             catch_url:         String::new(),
             catch_url_enabled: false,
+            catch_template:    String::new(),
             shiny_url:         String::new(),
             shiny_url_enabled: false,
+            shiny_template:    String::new(),
             wipe_url:          String::new(),
             wipe_url_enabled:  false,
+            wipe_template:     String::new(),
         }
     }
 
@@ -209,12 +234,16 @@ impl SetupApp {
             test:             cfg.test.clone(),
             death_url:         wh.death_url.clone().unwrap_or_default(),
             death_url_enabled: wh.death_url.is_some(),
+            death_template:    wh.death_template.clone().unwrap_or_default(),
             catch_url:         wh.catch_url.clone().unwrap_or_default(),
             catch_url_enabled: wh.catch_url.is_some(),
+            catch_template:    wh.catch_template.clone().unwrap_or_default(),
             shiny_url:         wh.shiny_url.clone().unwrap_or_default(),
             shiny_url_enabled: wh.shiny_url.is_some(),
+            shiny_template:    wh.shiny_template.clone().unwrap_or_default(),
             wipe_url:          wh.wipe_url.clone().unwrap_or_default(),
             wipe_url_enabled:  wh.wipe_url.is_some(),
+            wipe_template:     wh.wipe_template.clone().unwrap_or_default(),
         }
     }
 }
@@ -316,10 +345,22 @@ impl eframe::App for SetupApp {
                     ui.add(egui::TextEdit::singleline(&mut self.death_url).desired_width(340.0).hint_text("https://…"));
                 });
                 ui.end_row();
+                ui.label("  Template:");
+                ui.add_enabled_ui(self.death_url_enabled, |ui| {
+                    ui.add(egui::TextEdit::singleline(&mut self.death_template).desired_width(340.0)
+                        .hint_text(r#"{"content": "{player} lost {pokemon.nickname}!"} — blank = default JSON"#));
+                });
+                ui.end_row();
 
                 ui.checkbox(&mut self.catch_url_enabled, "Catch URL:");
                 ui.add_enabled_ui(self.catch_url_enabled, |ui| {
                     ui.add(egui::TextEdit::singleline(&mut self.catch_url).desired_width(340.0).hint_text("https://…"));
+                });
+                ui.end_row();
+                ui.label("  Template:");
+                ui.add_enabled_ui(self.catch_url_enabled, |ui| {
+                    ui.add(egui::TextEdit::singleline(&mut self.catch_template).desired_width(340.0)
+                        .hint_text(r#"{"content": "{player} caught {pokemon.species} (Lv.{pokemon.level})!"}"#));
                 });
                 ui.end_row();
 
@@ -328,10 +369,22 @@ impl eframe::App for SetupApp {
                     ui.add(egui::TextEdit::singleline(&mut self.shiny_url).desired_width(340.0).hint_text("https://…"));
                 });
                 ui.end_row();
+                ui.label("  Template:");
+                ui.add_enabled_ui(self.shiny_url_enabled, |ui| {
+                    ui.add(egui::TextEdit::singleline(&mut self.shiny_template).desired_width(340.0)
+                        .hint_text(r#"{"content": "✨ {player} encountered a shiny {pokemon.species}!"}"#));
+                });
+                ui.end_row();
 
                 ui.checkbox(&mut self.wipe_url_enabled, "Wipe URL:");
                 ui.add_enabled_ui(self.wipe_url_enabled, |ui| {
                     ui.add(egui::TextEdit::singleline(&mut self.wipe_url).desired_width(340.0).hint_text("https://…"));
+                });
+                ui.end_row();
+                ui.label("  Template:");
+                ui.add_enabled_ui(self.wipe_url_enabled, |ui| {
+                    ui.add(egui::TextEdit::singleline(&mut self.wipe_template).desired_width(340.0)
+                        .hint_text(r#"{"content": "{player}'s run has ended. RIP."}"#));
                 });
                 ui.end_row();
             });
@@ -370,10 +423,14 @@ impl eframe::App for SetupApp {
                     default_test:     self.default_test,
                     test:             self.test.clone(),
                     webhooks: WebhookConfig {
-                        death_url: if self.death_url_enabled && !self.death_url.trim().is_empty() { Some(self.death_url.trim().to_string()) } else { None },
-                        catch_url: if self.catch_url_enabled && !self.catch_url.trim().is_empty() { Some(self.catch_url.trim().to_string()) } else { None },
-                        shiny_url: if self.shiny_url_enabled && !self.shiny_url.trim().is_empty() { Some(self.shiny_url.trim().to_string()) } else { None },
-                        wipe_url:  if self.wipe_url_enabled  && !self.wipe_url.trim().is_empty()  { Some(self.wipe_url.trim().to_string())  } else { None },
+                        death_url:      if self.death_url_enabled && !self.death_url.trim().is_empty() { Some(self.death_url.trim().to_string()) } else { None },
+                        death_template: if self.death_url_enabled && !self.death_template.trim().is_empty() { Some(self.death_template.trim().to_string()) } else { None },
+                        catch_url:      if self.catch_url_enabled && !self.catch_url.trim().is_empty() { Some(self.catch_url.trim().to_string()) } else { None },
+                        catch_template: if self.catch_url_enabled && !self.catch_template.trim().is_empty() { Some(self.catch_template.trim().to_string()) } else { None },
+                        shiny_url:      if self.shiny_url_enabled && !self.shiny_url.trim().is_empty() { Some(self.shiny_url.trim().to_string()) } else { None },
+                        shiny_template: if self.shiny_url_enabled && !self.shiny_template.trim().is_empty() { Some(self.shiny_template.trim().to_string()) } else { None },
+                        wipe_url:       if self.wipe_url_enabled  && !self.wipe_url.trim().is_empty()  { Some(self.wipe_url.trim().to_string())  } else { None },
+                        wipe_template:  if self.wipe_url_enabled  && !self.wipe_template.trim().is_empty()  { Some(self.wipe_template.trim().to_string())  } else { None },
                     },
                 };
 
