@@ -227,6 +227,12 @@ struct MemberDto {
     ev_spe:            u8,
     ev_spa:            u8,
     ev_spd:            u8,
+    iv_hp:             u8,
+    iv_atk:            u8,
+    iv_def:            u8,
+    iv_spe:            u8,
+    iv_spa:            u8,
+    iv_spd:            u8,
     /// Base64 PNG data URI for the sprite, e.g. `data:image/png;base64,...`.
     /// `None` while the sprite is still in transit from the tracker server.
     sprite:            Option<String>,
@@ -508,6 +514,12 @@ impl BroadcastLoop {
                 held_item:         p.box_mon.secure.growth.held_item_string.clone(),
                 held_item_id:      p.box_mon.secure.growth.held_item,
                 growth_rate:       p.box_mon.secure.growth.growth_rate_string.clone(),
+                iv_hp:             p.box_mon.secure.misc.iv_egg_ability.hp_iv,
+                iv_atk:            p.box_mon.secure.misc.iv_egg_ability.attack_iv,
+                iv_def:            p.box_mon.secure.misc.iv_egg_ability.defense_iv,
+                iv_spe:            p.box_mon.secure.misc.iv_egg_ability.speed_iv,
+                iv_spa:            p.box_mon.secure.misc.iv_egg_ability.sp_attack_iv,
+                iv_spd:            p.box_mon.secure.misc.iv_egg_ability.sp_def_iv,
                 ev_hp:             p.box_mon.secure.ev_condition.hp_ev,
                 ev_atk:            p.box_mon.secure.ev_condition.attack_ev,
                 ev_def:            p.box_mon.secure.ev_condition.defense_ev,
@@ -1016,27 +1028,53 @@ async fn api_slot(
 async fn ws_handler(
     ws: axum::extract::ws::WebSocketUpgrade,
     State(state): State<WebState>,
+    Query(params): Query<HashMap<String, String>>,
 ) -> impl IntoResponse {
-    ws.on_upgrade(move |socket| handle_socket(socket, state.tx.subscribe(), state.live_slots))
+    let show = params.get("show").cloned();
+    ws.on_upgrade(move |socket| handle_socket(socket, state.tx.subscribe(), state.live_slots, show))
+}
+
+/// Strips fields from a slot-array JSON string that the given `show` view does
+/// not render, reducing per-tick payload size for narrow views.
+fn filter_slots_json(json: &str, show: &str) -> String {
+    let strip: &[&str] = match show {
+        "box" => &["party", "encounters", "dead", "caught", "db_encounters", "prev_run_encounters"],
+        _     => return json.to_owned(),
+    };
+    let Ok(mut slots) = serde_json::from_str::<Vec<serde_json::Value>>(json) else {
+        return json.to_owned();
+    };
+    for slot in &mut slots {
+        if let Some(obj) = slot.as_object_mut() {
+            for key in strip { obj.remove(*key); }
+        }
+    }
+    serde_json::to_string(&slots).unwrap_or_else(|_| json.to_owned())
 }
 
 async fn handle_socket(
     socket: axum::extract::ws::WebSocket,
     mut rx: watch::Receiver<String>,
     live_slots: SharedSlots,
+    show: Option<String>,
 ) {
     let (mut ws_tx, mut ws_rx) = socket.split();
 
     // Send current state immediately so the browser isn't blank on connect.
     {
         let current = rx.borrow_and_update().clone();
-        if !current.is_empty()
-            && ws_tx
-                .send(axum::extract::ws::Message::Text(current))
+        if !current.is_empty() {
+            let msg = match &show {
+                Some(s) => filter_slots_json(&current, s),
+                None    => current,
+            };
+            if ws_tx
+                .send(axum::extract::ws::Message::Text(msg))
                 .await
                 .is_err()
-        {
-            return;
+            {
+                return;
+            }
         }
     }
 
@@ -1066,7 +1104,11 @@ async fn handle_socket(
     // Push state updates whenever the broadcast channel changes.
     loop {
         if rx.changed().await.is_err() { break; }
-        let msg = rx.borrow_and_update().clone();
+        let raw = rx.borrow_and_update().clone();
+        let msg = match &show {
+            Some(s) => filter_slots_json(&raw, s),
+            None    => raw,
+        };
         if ws_tx.send(axum::extract::ws::Message::Text(msg)).await.is_err() {
             break;
         }

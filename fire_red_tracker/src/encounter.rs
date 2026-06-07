@@ -145,6 +145,7 @@ impl EncounterTracker {
             if caught {
                 fire_red_database::set_encounter_caught(self.enc_map.0, self.enc_map.1);
                 self.tracked_personality = None;
+                self.enc_map             = (0, 0);
             }
         }
     }
