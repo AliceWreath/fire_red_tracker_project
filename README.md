@@ -764,6 +764,14 @@ Add `http://localhost:9090/cmd` in a browser tab to manage runs — **End Run** 
 
 ## Project status
 
+**v0.8.83** — third correctness pass (aggregator + database):
+
+- **Gift Pokémon soul-link propagation works in BroadcastLoop** — the headless WebSocket server path (`propagate_soul_links`) skipped gift Pokémon entirely (`if met_loc == 0 { continue }`), so starters and other gifts were never marked as soul-link-dead in the DB or in the live overlay when running without the egui window. Both the DB propagation loop and the live detection loop now pair gifts by receipt order (caught_at), matching the egui path.
+- **`parse_timestamp` rejects day > days-in-month** — e.g. "2025-02-30" or "2025-04-31" previously produced a silently-wrong timestamp by advancing past the end of the month. The function now returns `None` for any day exceeding the actual length of that month (accounting for leap years on February).
+- **Shared `sort_gifts_by_caught_at` helper** — the gift-pre-sort pattern (`filter met_location==0` → `sort_by caught_at`) was duplicated across `soul_link_kill_candidates`, `update()`, and `propagate_soul_links`. It is now a single `pub(crate)` function used in all three sites, ensuring consistent ordering.
+- **Removed redundant DB guard after `mark_soul_link_dead`** — the `&& let Some(db) = &self.slots[j].db` re-check in the `Some(true)` branch was unreachable: the DB must be `Some` for `mark_soul_link_dead` to have returned `Some`. Replaced with `.expect()` so any future regression fails loudly.
+- **Eliminated per-frame `CaughtPokemon` clone** — `soul_link_kill_candidates` previously accepted `&[Vec<CaughtPokemon>]`, forcing the caller to clone the entire caught list every frame. It now accepts `&[&[CaughtPokemon]]` and the caller passes slice references, avoiding the allocation.
+
 **v0.8.82** — second bug-fix pass (aggregator + database):
 
 - **Soul-link propagation no longer retries every frame after restart** — `mark_soul_link_dead` previously returned `false` for both "run ID not yet known" (retry) and "row already existed in DB" (skip). These are now distinguished via `Option<bool>`: `Some(true)` = newly inserted (fire event), `Some(false)` = already existed (mark propagated, no duplicate event), `None` = retry next frame. Previously, every soul-link death from a prior session would trigger one wasted DB write per frame indefinitely after an aggregator restart.

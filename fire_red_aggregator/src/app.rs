@@ -770,9 +770,9 @@ impl eframe::App for AggregatorApp {
 
         // ── Soul link death propagation ───────────────────────────────────────
         let n = self.slots.len();
-        let caught_by_slot: Vec<Vec<CaughtPokemon>> = self.db_caches
+        let caught_by_slot: Vec<&[CaughtPokemon]> = self.db_caches
             .iter()
-            .map(|c| c.caught.clone())
+            .map(|c| c.caught.as_slice())
             .collect();
         for (j, partner) in soul_link_kill_candidates(
             &all_dead,
@@ -786,9 +786,10 @@ impl eframe::App for AggregatorApp {
             let result = self.slots[j].db.as_ref()
                 .and_then(|db| db.mark_soul_link_dead(&partner));
             if result.is_some() {
-                if result == Some(true)
-                    && let Some(db) = &self.slots[j].db {
-                        db.record_event(
+                if result == Some(true) {
+                    self.slots[j].db.as_ref()
+                        .expect("db is Some when mark_soul_link_dead returned Some(true)")
+                        .record_event(
                             &partner.player_name,
                             fire_red_database::EventKind::SoulLinkDeath {
                                 species_name: &partner.species_name,
@@ -813,15 +814,9 @@ impl eframe::App for AggregatorApp {
         //
         // Pre-sort gifts per slot once so the inner j loop does not re-sort on
         // every (dead_pokemon, j) combination.
-        let live_sorted_gifts: Vec<Vec<&CaughtPokemon>> = (0..n)
-            .map(|k| {
-                let mut gifts: Vec<&CaughtPokemon> = self.db_caches[k].caught
-                    .iter()
-                    .filter(|c| c.met_location == 0)
-                    .collect();
-                gifts.sort_by_key(|c| c.caught_at);
-                gifts
-            })
+        let live_sorted_gifts: Vec<Vec<&CaughtPokemon>> = self.db_caches
+            .iter()
+            .map(|c| sort_gifts_by_caught_at(&c.caught))
             .collect();
 
         let mut live_soul_link_dead: Vec<HashSet<u32>> = vec![HashSet::new(); n];
@@ -918,6 +913,17 @@ fn gift_party_index(party: &[Pokemon], personality: u32) -> Option<usize> {
         .position(|p| p.box_mon.personality == personality)
 }
 
+/// Pre-sorts gift Pokémon (`met_location = 0`) from `caught` by receipt order
+/// (`caught_at`). Used to pair starters and gifts consistently across soul-link
+/// slots, both in the DB-propagation path and the live-detection path.
+pub(crate) fn sort_gifts_by_caught_at(caught: &[CaughtPokemon]) -> Vec<&CaughtPokemon> {
+    let mut gifts: Vec<&CaughtPokemon> = caught.iter()
+        .filter(|c| c.met_location == 0)
+        .collect();
+    gifts.sort_by_key(|c| c.caught_at);
+    gifts
+}
+
 /// For every dead pokemon across slots, finds partners in other slots caught
 /// at the same `met_location` that are not yet dead and have not already been
 /// propagated this session.
@@ -930,21 +936,15 @@ fn gift_party_index(party: &[Pokemon], personality: u32) -> Option<usize> {
 /// the DB record and updating `soul_link_propagated`.
 fn soul_link_kill_candidates(
     all_dead: &[HashMap<u32, DeadPokemon>],
-    caught_by_slot: &[Vec<CaughtPokemon>],
+    caught_by_slot: &[&[CaughtPokemon]],
     already_propagated: &HashSet<(usize, u32)>,
 ) -> Vec<(usize, CaughtPokemon)> {
     let n = all_dead.len();
 
-    // Pre-sort gift Pokémon per slot by caught_at once so the inner loop does
-    // not re-sort on every dead personality.
+    // Pre-sort gift Pokémon per slot once; uses the shared helper so ordering
+    // is identical to the live-detection and BroadcastLoop paths.
     let sorted_gifts: Vec<Vec<&CaughtPokemon>> = caught_by_slot.iter()
-        .map(|slot| {
-            let mut gifts: Vec<&CaughtPokemon> = slot.iter()
-                .filter(|c| c.met_location == 0)
-                .collect();
-            gifts.sort_by_key(|c| c.caught_at);
-            gifts
-        })
+        .map(|slot| sort_gifts_by_caught_at(slot))
         .collect();
 
     let mut out = Vec::new();

@@ -162,6 +162,7 @@ pub fn parse_timestamp(s: &str) -> Option<u64> {
         31, if is_leap(year) { 29 } else { 28 }, 31, 30,
         31, 30, 31, 31, 30, 31, 30, 31,
     ];
+    if day > month_days_arr[(month - 1) as usize] { return None; }
     for m in 1..month {
         days += month_days_arr[(m - 1) as usize] as u64;
     }
@@ -2671,5 +2672,13 @@ mod tests {
         assert_eq!(parse_timestamp("2025-06-01 24:00:00 UTC"), None); // hour 24
         assert_eq!(parse_timestamp("2025-06-01 00:60:00 UTC"), None); // min 60
         assert_eq!(parse_timestamp("2025-06-01 00:00:60 UTC"), None); // sec 60
+    }
+
+    #[test]
+    fn parse_timestamp_rejects_day_exceeds_month_length() {
+        assert_eq!(parse_timestamp("2025-02-29 00:00:00 UTC"), None); // not a leap year
+        assert!(parse_timestamp("2000-02-29 00:00:00 UTC").is_some()); // IS a leap year
+        assert_eq!(parse_timestamp("2025-04-31 00:00:00 UTC"), None); // April has 30 days
+        assert_eq!(parse_timestamp("2025-01-32 00:00:00 UTC"), None); // 32nd of any month
     }
 }

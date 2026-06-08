@@ -9,6 +9,7 @@
 //! Sprites are embedded directly in the JSON as base64 PNG data URIs, so no
 //! separate HTTP sprite endpoint or browser caching issues exist.
 
+use crate::app::sort_gifts_by_caught_at;
 use crate::client::{MonitorSlot, SharedSlots, PngSpriteCache, encode_png};
 use fire_red_states::{is_shiny, ClientMessage, GameState, LockOrRecover, MAX_NATIONAL_DEX_FIRERED};
 use axum::{
@@ -360,6 +361,14 @@ impl BroadcastLoop {
     ) -> Vec<HashSet<u32>> {
         let n = slots.len();
 
+        // Pre-sort gifts per slot once; reused by both the DB propagation loop
+        // and the live detection loop. Gift Pokémon (met_location = 0) are
+        // soul-linked by receipt order (caught_at) instead of by location —
+        // matching the pairing used in soul_link_kill_candidates and update().
+        let sorted_gifts: Vec<Vec<&CaughtPokemon>> = self.caches.iter()
+            .map(|c| sort_gifts_by_caught_at(&c.caught))
+            .collect();
+
         // DB soul-link death propagation
         for i in 0..n {
             let dead_personalities: Vec<u32> = all_dead[i].keys().copied().collect();
@@ -370,14 +379,29 @@ impl BroadcastLoop {
                     .find(|c| c.personality == dead_p)
                     .map(|c| c.met_location)
                     .unwrap_or(0);
-                if met_loc == 0 { continue; }
+
+                // For gift Pokémon (met_loc == 0) find the receipt-order index;
+                // for non-gifts the met_location itself is the pairing key.
+                let gift_idx: Option<usize> = if met_loc == 0 {
+                    sorted_gifts[i].iter().position(|c| c.personality == dead_p)
+                } else {
+                    None
+                };
+                if met_loc == 0 && gift_idx.is_none() { continue; }
+
                 for j in 0..n {
                     if j == i { continue; }
-                    let partner = self.caches[j]
-                        .caught
-                        .iter()
-                        .find(|c| c.met_location == met_loc && c.personality != dead_p)
-                        .cloned();
+                    let partner = if met_loc == 0 {
+                        gift_idx
+                            .and_then(|idx| sorted_gifts[j].get(idx))
+                            .map(|c| (*c).clone())
+                    } else {
+                        self.caches[j]
+                            .caught
+                            .iter()
+                            .find(|c| c.met_location == met_loc && c.personality != dead_p)
+                            .cloned()
+                    };
                     if let Some(p) = partner {
                         let key = (j, p.personality);
                         let already_dead       = all_dead[j].contains_key(&p.personality);
@@ -398,20 +422,30 @@ impl BroadcastLoop {
             }
         }
 
-        // Live soul-link dead detection
+        // Live soul-link dead detection — uses sorted_gifts built above so
+        // gift pairing is consistent with the DB propagation path.
         let mut live_soul_link_dead: Vec<HashSet<u32>> = vec![HashSet::new(); n];
         for i in 0..n {
             let Some(gs_i) = &states[i].1 else { continue };
             for p_i in &gs_i.party {
                 if p_i.hp != 0 { continue; }
                 let met_i = p_i.box_mon.secure.misc.met_location;
-                if met_i == 0 { continue; }
                 for j in 0..n {
                     if j == i { continue; }
-                    let Some(gs_j) = &states[j].1 else { continue };
-                    for p_j in &gs_j.party {
-                        if p_j.box_mon.secure.misc.met_location == met_i {
-                            live_soul_link_dead[j].insert(p_j.box_mon.personality);
+                    if met_i == 0 {
+                        // Gift Pokémon: pair by receipt order — matches DB path.
+                        let Some(idx) = sorted_gifts[i].iter()
+                            .position(|c| c.personality == p_i.box_mon.personality)
+                            else { continue };
+                        if let Some(partner) = sorted_gifts[j].get(idx) {
+                            live_soul_link_dead[j].insert(partner.personality);
+                        }
+                    } else {
+                        let Some(gs_j) = &states[j].1 else { continue };
+                        for p_j in &gs_j.party {
+                            if p_j.box_mon.secure.misc.met_location == met_i {
+                                live_soul_link_dead[j].insert(p_j.box_mon.personality);
+                            }
                         }
                     }
                 }
