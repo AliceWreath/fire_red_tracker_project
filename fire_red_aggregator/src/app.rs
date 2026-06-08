@@ -30,7 +30,7 @@ use std::path::PathBuf;
 use egui::Ui;
 use fire_red_database::{CaughtPokemon, DeadPokemon};
 use fire_red_party_monitor::Pokemon;
-use fire_red_states::{GameState, MAX_NATIONAL_DEX_FIRERED, SpriteVariant};
+use fire_red_states::{is_shiny, GameState, MAX_NATIONAL_DEX_FIRERED, SpriteVariant};
 use std::collections::{HashMap, HashSet};
 
 // ---------------------------------------------------------------------------
@@ -897,16 +897,6 @@ pub fn sprite_key_back(species: u16, shiny: bool) -> String {
     format!("pokemon_{}_{}_back", species, if shiny { "shiny" } else { "normal" })
 }
 
-/// Returns `true` if the pokemon with `personality` and `ot_id` is shiny.
-///
-/// Uses the Gen III formula: `(p_high ^ p_low ^ id_high ^ id_low) < 8`.
-pub fn is_shiny(personality: u32, ot_id: u32) -> bool {
-    let p_high = (personality >> 16) as u16;
-    let p_low = (personality & 0xFFFF) as u16;
-    let id_high = (ot_id >> 16) as u16;
-    let id_low = (ot_id & 0xFFFF) as u16;
-    (p_high ^ p_low ^ id_high ^ id_low) < 8
-}
 
 #[cfg(test)]
 mod tests {

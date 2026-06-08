@@ -260,3 +260,18 @@ impl<T> LockOrRecover<T> for std::sync::Mutex<T> {
         })
     }
 }
+
+// ---------------------------------------------------------------------------
+// GBA value helpers
+// ---------------------------------------------------------------------------
+
+/// Returns `true` if the Pokémon with `personality` and `ot_id` is shiny.
+///
+/// Gen III formula: `(p_high ^ p_low ^ id_high ^ id_low) < 8`.
+pub fn is_shiny(personality: u32, ot_id: u32) -> bool {
+    let p_high  = (personality >> 16) as u16;
+    let p_low   = (personality & 0xFFFF) as u16;
+    let id_high = (ot_id >> 16) as u16;
+    let id_low  = (ot_id & 0xFFFF) as u16;
+    (p_high ^ p_low ^ id_high ^ id_low) < 8
+}

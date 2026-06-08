@@ -9,9 +9,8 @@
 //! Sprites are embedded directly in the JSON as base64 PNG data URIs, so no
 //! separate HTTP sprite endpoint or browser caching issues exist.
 
-use crate::app::is_shiny;
 use crate::client::{MonitorSlot, SharedSlots, SpriteCache, encode_png};
-use fire_red_states::LockOrRecover;
+use fire_red_states::{is_shiny, ClientMessage, GameState, LockOrRecover, MAX_NATIONAL_DEX_FIRERED};
 use axum::{
     extract::{ConnectInfo, Path, Query, State},
     http::{header, StatusCode},
@@ -21,7 +20,6 @@ use axum::{
 };
 use std::net::SocketAddr;
 use fire_red_database::{CaughtPokemon, DeadPokemon};
-use fire_red_states::{ClientMessage, GameState, MAX_NATIONAL_DEX_FIRERED};
 use futures_util::{SinkExt, StreamExt};
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
@@ -32,6 +30,7 @@ use tokio::sync::watch;
 // Base64 encoding (no extra dependency needed)
 // ---------------------------------------------------------------------------
 
+// Hand-rolled because this is the only call site; no dep added for a single use.
 fn base64_encode(data: &[u8]) -> String {
     const CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
@@ -593,9 +592,11 @@ impl BroadcastLoop {
         // If the tracker confirmed a run change, mark the DB reader dirty so
         // sync_player re-queries even though the player name hasn't changed.
         for slot in &slots {
-            if slot.run_changed.swap(false, std::sync::atomic::Ordering::AcqRel)
-                && let Some(db) = &slot.db {
-                db.mark_dirty();
+            if slot.run_changed.swap(false, std::sync::atomic::Ordering::AcqRel) {
+                if let Some(db) = &slot.db {
+                    db.mark_dirty();
+                }
+                self.soul_link_propagated.clear();
             }
         }
 
