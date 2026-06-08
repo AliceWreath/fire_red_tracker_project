@@ -12,6 +12,7 @@ use std::sync::{Arc, Mutex};
 /// Catch detection watches the player party for the wild Pokémon's exact
 /// personality value. No timer is needed: the next battle (personality change)
 /// implicitly closes any unresolved encounter as failed/fled.
+#[derive(Default)]
 pub struct EncounterTracker {
     last_enemy_personality: u32,
     tracked_personality:    Option<u32>,
@@ -25,15 +26,7 @@ pub struct EncounterTracker {
 }
 
 impl EncounterTracker {
-    pub fn new() -> Self {
-        Self {
-            last_enemy_personality: 0,
-            tracked_personality:    None,
-            enc_map:                (0, 0),
-            run_tracking_active:     false,
-            wipe_detected:          false,
-        }
-    }
+    pub fn new() -> Self { Self::default() }
 
     pub fn reset(&mut self) {
         self.last_enemy_personality = 0;
@@ -66,7 +59,11 @@ impl EncounterTracker {
 
     /// Called once per poll cycle while the game is loaded and state is
     /// initialized. Records first encounters and detects catches.
-    pub fn tick(&mut self, current_state: FireRedState, thread_party: &Arc<Mutex<Vec<Pokemon>>>) {
+    ///
+    /// `dupes_clause` — when `true`, skips recording an encounter if the species
+    /// has already been caught anywhere in the current run. This mirrors the common
+    /// Nuzlocke variant rule that prevents catching a species you already own.
+    pub fn tick(&mut self, current_state: FireRedState, thread_party: &Arc<Mutex<Vec<Pokemon>>>, dupes_clause: bool) {
         if self.wipe_detected { return; }
         if let Some(enemy) = crate::game::get_wild_enemy_pokemon()
             && enemy.box_mon.personality != self.last_enemy_personality
@@ -85,6 +82,11 @@ impl EncounterTracker {
             if fire_red_database::species_encountered(species) {
                 return;
             }
+            // Dupes clause: skip if this species has already been caught this run,
+            // regardless of which area it was first encountered in.
+            if dupes_clause && fire_red_database::species_caught_any(species) {
+                return;
+            }
 
             let map_group = current_state.map_group_id;
             let map_name  = current_state.map_name_id;
@@ -93,16 +95,17 @@ impl EncounterTracker {
             if fire_red_database::has_encounter_for_any_floor(dungeon) {
                 return;
             }
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_secs())
-                .unwrap_or(0);
+            let now = fire_red_database::unix_now();
 
             let personality = enemy.box_mon.personality;
             let ot_id       = enemy.box_mon.ot_id;
             let is_shiny    = crate::game::is_shiny(personality, ot_id);
 
             if is_shiny {
+                fire_red_database::record_event(fire_red_database::EventKind::Shiny {
+                    species_name: &enemy.box_mon.secure.growth.species_string,
+                    level:        enemy.level,
+                });
                 crate::webhook::fire_event(crate::webhook::WebhookEvent::Shiny {
                     player:    fire_red_loop::get_trainer_name(),
                     timestamp: now,

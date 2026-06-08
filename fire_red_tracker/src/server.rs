@@ -18,7 +18,7 @@ use std::net::TcpStream;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
-pub(crate) type SpriteCache = Arc<Mutex<HashMap<(u16, bool, SpriteVariant), SpriteData>>>;
+pub(crate) type RomSpriteCache = Arc<Mutex<HashMap<(u16, bool, SpriteVariant), SpriteData>>>;
 
 /// Manages the full lifecycle of a single TCP client connection in server mode.
 ///
@@ -41,20 +41,20 @@ pub fn handle_client(
     server_party: Arc<Mutex<Vec<fire_red_party_monitor::Pokemon>>>,
     server_encounters: Arc<Mutex<fire_red_pokemon_data::WildPokemonHeader>>,
     server_box: Arc<Mutex<Vec<BoxEntry>>>,
-    sprite_cache: SpriteCache,
+    sprite_cache: RomSpriteCache,
     game_loaded: Arc<AtomicBool>,
     run_changed: Arc<AtomicBool>,
     wipe_signal: Arc<AtomicBool>,
     preferred_player: Option<u8>,
 ) {
-    println!(
+    tracing::info!(
         "Client connected: {}",
         stream.peer_addr().map_or_else(|_| "unknown".to_string(), |a| a.to_string()),
     );
 
     let read_stream = match stream.try_clone() {
         Ok(s)  => s,
-        Err(e) => { eprintln!("Failed to clone stream: {}", e); return; }
+        Err(e) => { tracing::error!("Failed to clone stream: {}", e); return; }
     };
     let write_stream = Arc::new(Mutex::new(stream));
 
@@ -92,15 +92,17 @@ pub fn handle_client(
                         }
                     }
 
-                    if !sprites.is_empty() {
-                        let mut ws = write_stream_clone.lock_or_recover();
-                        if send_message(&mut ws, &ServerMessage::Textures(sprites)).is_err() {
-                            break;
-                        }
+                    // Always send a reply so the aggregator knows this batch is
+                    // resolved — even an empty Textures([]) prevents it from
+                    // re-queuing the same species on every tick when ROM decode
+                    // fails for all requested species.
+                    let mut ws = write_stream_clone.lock_or_recover();
+                    if send_message(&mut ws, &ServerMessage::Textures(sprites)).is_err() {
+                        break;
                     }
                 }
                 Ok(ClientMessage::Hello(version)) => {
-                    println!("Aggregator v{}", version);
+                    tracing::info!("Aggregator v{}", version);
                 }
                 Ok(ClientMessage::EndRun) => {
                     fire_red_database::end_run();
@@ -119,7 +121,7 @@ pub fn handle_client(
                                 break;
                             }
                         }
-                        Err(e) => eprintln!("Failed to create new run: {e}"),
+                        Err(e) => tracing::error!("Failed to create new run: {e}"),
                     }
                 }
                 Err(_) => break,
@@ -186,14 +188,14 @@ pub fn handle_client(
 
         let mut ws = write_stream.lock_or_recover();
         if send_message(&mut ws, &ServerMessage::State(Box::new(state))).is_err() {
-            println!("Client disconnected.");
+            tracing::info!("Client disconnected.");
             break;
         }
 
         if wipe_signal.swap(false, Ordering::AcqRel)
             && send_message(&mut ws, &ServerMessage::RunChanged(None)).is_err()
         {
-            println!("Client disconnected.");
+            tracing::info!("Client disconnected.");
             break;
         }
 
@@ -201,7 +203,7 @@ pub fn handle_client(
         if last_box_send.elapsed() >= std::time::Duration::from_secs(5) {
             let entries = server_box.lock_or_recover().clone();
             if send_message(&mut ws, &ServerMessage::BoxData(entries)).is_err() {
-                println!("Client disconnected.");
+                tracing::info!("Client disconnected.");
                 break;
             }
             last_box_send = std::time::Instant::now();

@@ -194,10 +194,12 @@ function esc(s) {
 }
 
 let ws;
+let reconnectDelay = 1000;
 function connect() {
     ws = new WebSocket(WS_URL);
+    ws.onopen    = () => { reconnectDelay = 1000; };
     ws.onmessage = e => renderPairs(JSON.parse(e.data));
-    ws.onclose   = () => setTimeout(connect, 2000);
+    ws.onclose   = () => { setTimeout(connect, reconnectDelay); reconnectDelay = Math.min(reconnectDelay * 2, 30000); };
 }
 connect();
 </script>

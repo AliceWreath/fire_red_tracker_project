@@ -56,7 +56,7 @@ use game::{check_for_dead_pokemon, check_for_new_pokemon, check_for_run_over, fi
 #[cfg(feature = "dev-tools")]
 use game::{scan_for_balls_pocket, scan_for_security_key};
 use gui::{WindowInfo, PARTY_WINDOW};
-use server::{handle_client, SpriteCache};
+use server::{handle_client, RomSpriteCache};
 use std::collections::HashMap;
 use std::net::TcpStream;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -69,6 +69,30 @@ use std::sync::{Arc, Mutex};
 /// How often (in seconds) the DB checks for deaths/new-pokemon are run when
 /// the party size has not changed, to catch in-place changes such as HP loss.
 const FORCE_PARTY_CHECK_INTERVAL: u64 = 1;
+
+// ---------------------------------------------------------------------------
+// Party-event helper
+// ---------------------------------------------------------------------------
+
+/// Checks for new catches, deaths, and run-over in one place.
+///
+/// Called after every party refresh — both on party-size changes and on the
+/// periodic 1-second force-check. Returns `true` if a wipe was detected so
+/// the caller can stop the encounter tracker.
+fn handle_party_events(
+    thread_party:        &Arc<Mutex<Vec<fire_red_party_monitor::Pokemon>>>,
+    enc_tracker:         &mut encounter::EncounterTracker,
+    thread_wipe_signal:  &Arc<std::sync::atomic::AtomicBool>,
+) -> bool {
+    check_for_new_pokemon(thread_party);
+    check_for_dead_pokemon(thread_party, enc_tracker.run_tracking_active());
+    if check_for_run_over(thread_party, enc_tracker.run_tracking_active()) {
+        enc_tracker.mark_wipe();
+        thread_wipe_signal.store(true, std::sync::atomic::Ordering::Release);
+        return true;
+    }
+    false
+}
 
 // ---------------------------------------------------------------------------
 // Box data helpers
@@ -218,14 +242,9 @@ fn main() {
     };
 
     // Priority: base config → [test] overrides → explicit CLI flags.
-    let db_raw = cli.db
+    let db_conn = cli.db
         .or_else(|| test.and_then(|t| t.db.clone()))
         .unwrap_or(cfg.db);
-    let db_conn = if db_raw.starts_with("postgresql://") || db_raw.starts_with("postgres://") {
-        db_raw
-    } else {
-        format!("postgresql://{}", db_raw)
-    };
     if let Err(e) = fire_red_database::initialize(&db_conn) {
         eprintln!("error: {e}");
         std::process::exit(1);
@@ -293,6 +312,7 @@ fn main() {
     let is_clean            = cfg.clean || cli.clean;
     let poll_ms             = cfg.poll_ms.clamp(20, 2000);
     let rom_path            = cli.rom.unwrap_or(cfg.rom);
+    let dupes_clause        = cfg.dupes_clause;
     #[cfg(feature = "dev-tools")]
     let do_scan_balls   = cli.scan_balls_pocket;
     #[cfg(feature = "dev-tools")]
@@ -311,7 +331,7 @@ fn main() {
         Arc::new(Mutex::new(fire_red_pokemon_data::WildPokemonHeader::default()));
     let shared_box: Arc<Mutex<Vec<BoxEntry>>> =
         Arc::new(Mutex::new(Vec::new()));
-    let sprite_cache: SpriteCache = Arc::new(Mutex::new(HashMap::new()));
+    let sprite_cache: RomSpriteCache = Arc::new(Mutex::new(HashMap::new()));
 
     // ── Game-polling thread (both modes) ──────────────────────────────────────
     {
@@ -393,12 +413,7 @@ fn main() {
             enc_tracker.seed_from_db();
 
             fill_party_list(&thread_party);
-            check_for_new_pokemon(&thread_party);
-            check_for_dead_pokemon(&thread_party, enc_tracker.run_tracking_active());
-            if check_for_run_over(&thread_party, enc_tracker.run_tracking_active()) {
-                enc_tracker.mark_wipe();
-                thread_wipe_signal.store(true, Ordering::Release);
-            }
+            handle_party_events(&thread_party, &mut enc_tracker, &thread_wipe_signal);
 
             loop {
                 if !game_is_loaded() {
@@ -467,22 +482,12 @@ fn main() {
                     old_party_size = party_size;
                     update_box_list();
                     *thread_box.lock_or_recover() = build_box_entries();
-                    check_for_new_pokemon(&thread_party);
-                    check_for_dead_pokemon(&thread_party, enc_tracker.run_tracking_active());
-                    if check_for_run_over(&thread_party, enc_tracker.run_tracking_active()) {
-                        enc_tracker.mark_wipe();
-                        thread_wipe_signal.store(true, Ordering::Release);
-                    }
+                    handle_party_events(&thread_party, &mut enc_tracker, &thread_wipe_signal);
                 }
 
                 if last_party_refresh.elapsed().as_secs() >= FORCE_PARTY_CHECK_INTERVAL {
                     last_party_refresh = std::time::Instant::now();
-                    check_for_new_pokemon(&thread_party);
-                    check_for_dead_pokemon(&thread_party, enc_tracker.run_tracking_active());
-                    if check_for_run_over(&thread_party, enc_tracker.run_tracking_active()) {
-                        enc_tracker.mark_wipe();
-                        thread_wipe_signal.store(true, Ordering::Release);
-                    }
+                    handle_party_events(&thread_party, &mut enc_tracker, &thread_wipe_signal);
                 }
 
                 if thread_run_changed.swap(false, Ordering::AcqRel) {
@@ -491,7 +496,7 @@ fn main() {
                 }
 
                 if state_initialized {
-                    enc_tracker.tick(current_state, &thread_party);
+                    enc_tracker.tick(current_state, &thread_party, dupes_clause);
                 }
 
                 std::thread::sleep(std::time::Duration::from_millis(poll_ms));

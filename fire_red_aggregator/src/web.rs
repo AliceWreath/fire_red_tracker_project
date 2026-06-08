@@ -9,7 +9,7 @@
 //! Sprites are embedded directly in the JSON as base64 PNG data URIs, so no
 //! separate HTTP sprite endpoint or browser caching issues exist.
 
-use crate::client::{MonitorSlot, SharedSlots, SpriteCache, encode_png};
+use crate::client::{MonitorSlot, SharedSlots, PngSpriteCache, encode_png};
 use fire_red_states::{is_shiny, ClientMessage, GameState, LockOrRecover, MAX_NATIONAL_DEX_FIRERED};
 use axum::{
     extract::{ConnectInfo, Path, Query, State},
@@ -26,26 +26,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::sync::watch;
 
-// ---------------------------------------------------------------------------
-// Base64 encoding (no extra dependency needed)
-// ---------------------------------------------------------------------------
-
-// Hand-rolled because this is the only call site; no dep added for a single use.
-fn base64_encode(data: &[u8]) -> String {
-    const CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
-    for chunk in data.chunks(3) {
-        let b0 = chunk[0] as u32;
-        let b1 = if chunk.len() > 1 { chunk[1] as u32 } else { 0 };
-        let b2 = if chunk.len() > 2 { chunk[2] as u32 } else { 0 };
-        let n = (b0 << 16) | (b1 << 8) | b2;
-        out.push(CHARS[((n >> 18) & 63) as usize] as char);
-        out.push(CHARS[((n >> 12) & 63) as usize] as char);
-        out.push(if chunk.len() > 1 { CHARS[((n >> 6) & 63) as usize] as char } else { '=' });
-        out.push(if chunk.len() > 2 { CHARS[(n & 63) as usize] as char } else { '=' });
-    }
-    out
-}
+// Base64 encoding delegated to the shared implementation in fire_red_states.
+use fire_red_states::base64_encode;
 
 // ---------------------------------------------------------------------------
 // JSON DTOs
@@ -273,11 +255,11 @@ struct BroadcastLoop {
     caches:               Vec<SlotCache>,
     soul_link_propagated: HashSet<(usize, u32)>,
     last_json:            String,
-    sprites:              SpriteCache,
+    sprites:              PngSpriteCache,
 }
 
 impl BroadcastLoop {
-    fn new(live_slots: SharedSlots, sprites: SpriteCache) -> Self {
+    fn new(live_slots: SharedSlots, sprites: PngSpriteCache) -> Self {
         Self {
             live_slots,
             caches:               Vec::new(),
@@ -482,7 +464,7 @@ impl BroadcastLoop {
                 if let Some(r) = dead_record {
                     (
                         Some(fire_red_database::format_timestamp(r.died_at)),
-                        r.max_hp == 0,
+                        r.is_soul_link_death,
                         r.attack, r.defense, r.speed, r.sp_attack, r.sp_defense,
                     )
                 } else {
@@ -556,7 +538,7 @@ impl BroadcastLoop {
             level:        dp.level,
             nature:       dp.nature.clone(),
             shiny:        dp.is_shiny,
-            soul_link:    dp.max_hp == 0,
+            soul_link:    dp.is_soul_link_death,
             gender:       dp.gender,
             died_at:      fire_red_database::format_timestamp(dp.died_at),
             max_hp:       dp.max_hp,
@@ -965,17 +947,25 @@ fn apply_page_with_theme(html: &str, testing: bool, theme: Option<&str>) -> Stri
 
     // Inject theme attribute and a tiny script that sets it before first paint,
     // preventing a flash of the default (dark) theme.
+    //
+    // Only themes whose names consist entirely of `[a-zA-Z0-9_-]` are accepted.
+    // Any theme containing other characters is rejected and treated as the default
+    // rather than silently concatenating the sanitized fragments (which would
+    // produce confusing output and mask typos).
     let html = match theme {
         None | Some("dark") | Some("") => html.replace("<!-- THEME_SLOT -->", ""),
         Some(t) => {
-            let safe_theme = t.chars()
-                .filter(|c| c.is_alphanumeric() || *c == '-' || *c == '_')
-                .take(32)
-                .collect::<String>();
-            let injection = format!(
-                r#"<script>document.documentElement.dataset.theme="{safe_theme}"</script>"#
-            );
-            html.replace("<!-- THEME_SLOT -->", &injection)
+            let all_safe = t.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
+            let within_len = t.len() <= 32;
+            if all_safe && within_len {
+                let injection = format!(
+                    r#"<script>document.documentElement.dataset.theme="{t}"</script>"#
+                );
+                html.replace("<!-- THEME_SLOT -->", &injection)
+            } else {
+                // Invalid theme — fall back to default (dark) silently.
+                html.replace("<!-- THEME_SLOT -->", "")
+            }
         }
     };
 
@@ -1253,19 +1243,41 @@ async fn api_run_stats(
     axum::Json(result.unwrap_or_else(|_| serde_json::json!({ "error": "Task panicked" })))
 }
 
-/// `GET /api/run/:id/export` — full run export as JSON (metadata, caught, dead, encounters).
+/// `GET /api/run/:id/export` — full run export.
+///
+/// - Without query params (or `?format=json`): returns the full run as JSON
+///   (metadata, caught, dead, encounters).
+/// - `?format=csv`: returns three CSV sections (caught, dead, encounters) joined
+///   by blank lines. Content-Type is `text/csv`.
 async fn api_run_export(
     State(state): State<WebState>,
     Path(run_id): Path<u32>,
-) -> axum::Json<serde_json::Value> {
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
     let conn = match state.db_conn {
         Some(s) => s,
-        None    => return axum::Json(serde_json::json!({ "error": "No database configured" })),
+        None    => return axum::Json(serde_json::json!({ "error": "No database configured" })).into_response(),
     };
-    let result = tokio::task::spawn_blocking(move || {
-        fire_red_database::export_run(&conn, run_id)
-    }).await;
-    axum::Json(result.unwrap_or_else(|_| serde_json::json!({ "error": "Task panicked" })))
+    if params.get("format").map(|s| s.as_str()) == Some("csv") {
+        let result = tokio::task::spawn_blocking(move || {
+            fire_red_database::export_run_csv(&conn, run_id)
+        }).await;
+        match result {
+            Ok(Ok(csv))  => (
+                [("content-type", "text/csv"),
+                 ("content-disposition", &format!("attachment; filename=\"run_{run_id}.csv\""))],
+                csv,
+            ).into_response(),
+            Ok(Err(e))   => (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+            Err(_)       => (axum::http::StatusCode::INTERNAL_SERVER_ERROR, "Task panicked").into_response(),
+        }
+    } else {
+        let result = tokio::task::spawn_blocking(move || {
+            fire_red_database::export_run(&conn, run_id)
+        }).await;
+        axum::Json(result.unwrap_or_else(|_| serde_json::json!({ "error": "Task panicked" }))).into_response()
+    }
 }
 
 /// `GET /api/run/:id/shiny` — shiny odds statistics JSON for a run.
@@ -1279,6 +1291,21 @@ async fn api_shiny_stats(
     };
     let result = tokio::task::spawn_blocking(move || {
         fire_red_database::shiny_stats(&conn, run_id)
+    }).await;
+    axum::Json(result.unwrap_or_else(|_| serde_json::json!({ "error": "Task panicked" })))
+}
+
+/// `GET /api/run/:id/events` — chronological event log for a run.
+async fn api_run_events(
+    State(state): State<WebState>,
+    Path(run_id): Path<u32>,
+) -> axum::Json<serde_json::Value> {
+    let conn = match state.db_conn {
+        Some(s) => s,
+        None    => return axum::Json(serde_json::json!({ "error": "No database configured" })),
+    };
+    let result = tokio::task::spawn_blocking(move || {
+        fire_red_database::list_events_json(&conn, run_id)
     }).await;
     axum::Json(result.unwrap_or_else(|_| serde_json::json!({ "error": "Task panicked" })))
 }
@@ -1363,7 +1390,7 @@ async fn api_db_query(
 // ---------------------------------------------------------------------------
 
 pub fn run(live_slots: SharedSlots, port: u16, db_conn: Option<String>, testing: bool) {
-    let sprites: SpriteCache = Arc::new(Mutex::new(HashMap::new()));
+    let sprites: PngSpriteCache = Arc::new(Mutex::new(HashMap::new()));
 
     // Wire the shared sprite cache into any already-connected slots and keep
     // it available for slots that connect later (BroadcastLoop sets it on drain).
@@ -1408,9 +1435,10 @@ pub fn run(live_slots: SharedSlots, port: u16, db_conn: Option<String>, testing:
             .route("/api/db/query", post(api_db_query))
             .route("/api/runs",            get(api_runs))
             .route("/api/run/import",      post(api_run_import))
-            .route("/api/run/:id/stats",  get(api_run_stats))
-            .route("/api/run/:id/shiny",  get(api_shiny_stats))
-            .route("/api/run/:id/export", get(api_run_export))
+            .route("/api/run/:id/stats",   get(api_run_stats))
+            .route("/api/run/:id/shiny",   get(api_shiny_stats))
+            .route("/api/run/:id/export",  get(api_run_export))
+            .route("/api/run/:id/events",  get(api_run_events))
             .route("/history", get(serve_history))
             .route("/shiny", get(serve_shiny))
             .route("/memorial", get(serve_memorial))
@@ -1482,10 +1510,26 @@ mod tests {
     }
 
     #[test]
-    fn apply_page_with_theme_sanitizes_input() {
+    fn apply_page_with_theme_rejects_invalid_input() {
+        // Themes containing characters outside [a-zA-Z0-9_-] are rejected entirely
+        // rather than being stripped and concatenated, which would produce confusing output.
         let out = apply_page_with_theme(SAMPLE_HTML, false, Some("light<script>alert(1)</script>"));
         assert!(!out.contains("<script>alert"), "XSS not sanitized");
-        assert!(out.contains("lightscriptalert1script"), "sanitized value should remain");
+        assert!(!out.contains("lightscript"), "stripped-and-concatenated theme should not appear");
+        assert!(!out.contains("data-theme"), "rejected theme should not inject any attribute");
+    }
+
+    #[test]
+    fn apply_page_with_theme_rejects_oversized_input() {
+        let long = "a".repeat(33);
+        let out = apply_page_with_theme(SAMPLE_HTML, false, Some(&long));
+        assert!(!out.contains("data-theme"), "theme longer than 32 chars should be rejected");
+    }
+
+    #[test]
+    fn apply_page_with_theme_accepts_hyphen_and_underscore() {
+        let out = apply_page_with_theme(SAMPLE_HTML, false, Some("my_custom-theme"));
+        assert!(out.contains(r#"dataset.theme="my_custom-theme""#), "valid theme with - and _ rejected");
     }
 
     #[test]

@@ -262,6 +262,71 @@ impl<T> LockOrRecover<T> for std::sync::Mutex<T> {
 }
 
 // ---------------------------------------------------------------------------
+// Base64 encoding
+// ---------------------------------------------------------------------------
+
+/// Encodes `data` as standard Base64 (RFC 4648 alphabet, `=` padding).
+///
+/// Hand-rolled to avoid adding a dependency for a single, tight use-site.
+/// Used by the OBS WebSocket auth flow in the tracker and by the web overlay
+/// sprite pipeline in the aggregator — kept here so both crates share one copy.
+pub fn base64_encode(data: &[u8]) -> String {
+    const CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
+    for chunk in data.chunks(3) {
+        let b0 = chunk[0] as u32;
+        let b1 = if chunk.len() > 1 { chunk[1] as u32 } else { 0 };
+        let b2 = if chunk.len() > 2 { chunk[2] as u32 } else { 0 };
+        let n  = (b0 << 16) | (b1 << 8) | b2;
+        out.push(CHARS[((n >> 18) & 63) as usize] as char);
+        out.push(CHARS[((n >> 12) & 63) as usize] as char);
+        out.push(if chunk.len() > 1 { CHARS[((n >>  6) & 63) as usize] as char } else { '=' });
+        out.push(if chunk.len() > 2 { CHARS[( n        & 63) as usize] as char } else { '=' });
+    }
+    out
+}
+
+#[cfg(test)]
+mod base64_tests {
+    use super::base64_encode;
+
+    #[test]
+    fn empty_input() {
+        assert_eq!(base64_encode(&[]), "");
+    }
+
+    #[test]
+    fn three_bytes_no_padding() {
+        // RFC 4648 test vector: "Man" → "TWFu"
+        assert_eq!(base64_encode(b"Man"), "TWFu");
+    }
+
+    #[test]
+    fn one_byte_two_padding_chars() {
+        assert_eq!(base64_encode(b"M"), "TQ==");
+    }
+
+    #[test]
+    fn two_bytes_one_padding_char() {
+        assert_eq!(base64_encode(b"Ma"), "TWE=");
+    }
+
+    #[test]
+    fn output_always_multiple_of_four() {
+        for len in 0..=9usize {
+            let data: Vec<u8> = (0..len as u8).collect();
+            let encoded = base64_encode(&data);
+            assert_eq!(encoded.len() % 4, 0, "length {len} gave non-multiple-of-4 output");
+        }
+    }
+
+    #[test]
+    fn hello_world() {
+        assert_eq!(base64_encode(b"Hello, World!"), "SGVsbG8sIFdvcmxkIQ==");
+    }
+}
+
+// ---------------------------------------------------------------------------
 // GBA value helpers
 // ---------------------------------------------------------------------------
 

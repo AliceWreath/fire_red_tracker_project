@@ -400,20 +400,9 @@ fn try_obs_clip() -> Result<(), String> {
     Ok(())
 }
 
+/// Thin alias so the OBS auth code reads cleanly; delegates to the shared encoder.
 fn obs_b64(data: &[u8]) -> String {
-    const CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
-    for chunk in data.chunks(3) {
-        let b0 = chunk[0] as u32;
-        let b1 = if chunk.len() > 1 { chunk[1] as u32 } else { 0 };
-        let b2 = if chunk.len() > 2 { chunk[2] as u32 } else { 0 };
-        let n  = (b0 << 16) | (b1 << 8) | b2;
-        out.push(CHARS[((n >> 18) & 63) as usize] as char);
-        out.push(CHARS[((n >> 12) & 63) as usize] as char);
-        out.push(if chunk.len() > 1 { CHARS[((n >>  6) & 63) as usize] as char } else { '=' });
-        out.push(if chunk.len() > 2 { CHARS[( n        & 63) as usize] as char } else { '=' });
-    }
-    out
+    fire_red_states::base64_encode(data)
 }
 
 #[cfg(test)]
@@ -533,37 +522,5 @@ mod tests {
         assert!(find_unknown_placeholders(&all).is_empty());
     }
 
-    // ── obs_b64 ──────────────────────────────────────────────────────────────
-
-    #[test]
-    fn obs_b64_empty() {
-        assert_eq!(obs_b64(&[]), "");
-    }
-
-    #[test]
-    fn obs_b64_three_bytes_no_padding() {
-        // RFC 4648 test vector: "Man" → "TWFu"
-        assert_eq!(obs_b64(b"Man"), "TWFu");
-    }
-
-    #[test]
-    fn obs_b64_one_byte_two_padding_chars() {
-        // "M" → "TQ=="
-        assert_eq!(obs_b64(b"M"), "TQ==");
-    }
-
-    #[test]
-    fn obs_b64_two_bytes_one_padding_char() {
-        // "Ma" → "TWE="
-        assert_eq!(obs_b64(b"Ma"), "TWE=");
-    }
-
-    #[test]
-    fn obs_b64_output_is_multiple_of_four() {
-        for len in 0..=9 {
-            let data: Vec<u8> = (0..len as u8).collect();
-            let encoded = obs_b64(&data);
-            assert_eq!(encoded.len() % 4, 0, "length {} gave non-multiple-of-4 output", len);
-        }
-    }
+    // base64 encoding is tested in fire_red_states::base64_tests
 }

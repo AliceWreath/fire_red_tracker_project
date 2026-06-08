@@ -21,6 +21,11 @@
 //! addition, whenever a pokemon in any player's dead table has a partner in
 //! another player's caught table at the same location, `mark_soul_link_dead`
 //! is called automatically so both partners are shown as dead.
+//!
+//! Gift Pokémon (starters, Eevee, Lapras — `met_location = 0`) cannot be
+//! paired by location. Instead they are paired **by order of receipt**: the
+//! first gift caught by Player 1 links to the first gift caught by Player 2,
+//! the second to the second, and so on. This ensures starters are soul-linked.
 
 use crate::client::{MonitorSlot, SharedSlots};
 use crate::config::{AggregatorConfig, save_config};
@@ -329,7 +334,7 @@ impl AggregatorApp {
                     ui.label("No party data");
                 }
 
-                for (idx, pokemon) in gs.party.iter().enumerate() {
+                for pokemon in &gs.party {
                     let others: Vec<_> = all_states
                         .iter()
                         .filter(|(l, _)| l != label)
@@ -337,7 +342,12 @@ impl AggregatorApp {
                         .collect();
                     let dead_record = dead_records.get(&pokemon.box_mon.personality);
                     let is_soul_link_dead = soul_link_dead.contains(&pokemon.box_mon.personality);
-                    Self::draw_party_member(ui, idx, pokemon, dead_record, is_soul_link_dead, textures, &others);
+                    let gift_index = if pokemon.box_mon.secure.misc.met_location == 0 {
+                        gift_party_index(&gs.party, pokemon.box_mon.personality)
+                    } else {
+                        None
+                    };
+                    Self::draw_party_member(ui, gift_index, pokemon, dead_record, is_soul_link_dead, textures, &others);
                     ui.separator();
                 }
 
@@ -386,7 +396,7 @@ impl AggregatorApp {
     /// Draws a single party member row with soul link annotation and full dead record.
     fn draw_party_member(
         ui: &mut Ui,
-        _idx: usize,
+        gift_index: Option<usize>,
         pokemon: &Pokemon,
         dead_record: Option<&DeadPokemon>,
         soul_link_dead: bool,
@@ -405,20 +415,29 @@ impl AggregatorApp {
         let dead = dead_record.is_some() || pokemon.hp == 0 || soul_link_dead;
 
         // Soul-link annotation based on live party state.
+        // Gift Pokémon (met=0) are matched by their position among gifts in each
+        // player's party; all others match by met_location as usual.
         for (other_label, other_state) in other_states {
             if let Some(gs) = other_state {
-                for other_mon in &gs.party {
-                    if other_mon.box_mon.secure.misc.met_location == met {
-                        ui.label(
-                            egui::RichText::new(format!(
-                                "Soul-link: {} ({})",
-                                other_mon.get_nickname_string(),
-                                other_label,
-                            ))
-                            .color(egui::Color32::from_rgb(191, 64, 191))
-                            .size(13.0),
-                        );
-                    }
+                let partner = if met == 0 {
+                    gift_index.and_then(|idx| {
+                        gs.party.iter()
+                            .filter(|p| p.box_mon.secure.misc.met_location == 0)
+                            .nth(idx)
+                    })
+                } else {
+                    gs.party.iter().find(|p| p.box_mon.secure.misc.met_location == met)
+                };
+                if let Some(other_mon) = partner {
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "Soul-link: {} ({})",
+                            other_mon.get_nickname_string(),
+                            other_label,
+                        ))
+                        .color(egui::Color32::from_rgb(191, 64, 191))
+                        .size(13.0),
+                    );
                 }
             }
         }
@@ -764,6 +783,14 @@ impl eframe::App for AggregatorApp {
                 .map(|db| db.mark_soul_link_dead(&partner))
                 .unwrap_or(false);
             if wrote {
+                self.slots[j].db.as_ref().map(|db| db.record_event(
+                    &partner.player_name,
+                    fire_red_database::EventKind::SoulLinkDeath {
+                        species_name: &partner.species_name,
+                        nickname:     &partner.nickname,
+                        level:        partner.level,
+                    },
+                ));
                 self.soul_link_propagated.insert((j, partner.personality));
             }
         }
@@ -779,13 +806,23 @@ impl eframe::App for AggregatorApp {
             for pokemon_i in &gs_i.party {
                 if pokemon_i.hp != 0 { continue; }
                 let met_i = pokemon_i.box_mon.secure.misc.met_location;
-                if met_i == 0 { continue; }
                 for j in 0..n {
                     if j == i { continue; }
                     let Some(gs_j) = &states[j].1 else { continue };
-                    for pokemon_j in &gs_j.party {
-                        if pokemon_j.box_mon.secure.misc.met_location == met_i {
-                            live_soul_link_dead[j].insert(pokemon_j.box_mon.personality);
+                    if met_i == 0 {
+                        // Gift Pokémon: pair by order among gifts in each party.
+                        if let Some(idx) = gift_party_index(&gs_i.party, pokemon_i.box_mon.personality)
+                            && let Some(partner) = gs_j.party.iter()
+                                .filter(|p| p.box_mon.secure.misc.met_location == 0)
+                                .nth(idx)
+                        {
+                            live_soul_link_dead[j].insert(partner.box_mon.personality);
+                        }
+                    } else {
+                        for pokemon_j in &gs_j.party {
+                            if pokemon_j.box_mon.secure.misc.met_location == met_i {
+                                live_soul_link_dead[j].insert(pokemon_j.box_mon.personality);
+                            }
                         }
                     }
                 }
@@ -849,9 +886,30 @@ fn stat_row_job(
     job
 }
 
+/// Returns the position of `personality` among `met_location = 0` Pokémon in
+/// `caught`, sorted by `caught_at` ascending (oldest first). Used to pair
+/// gift Pokémon (starters, Eevee, Lapras) across players by order of receipt.
+fn gift_catch_index(caught: &[CaughtPokemon], personality: u32) -> Option<usize> {
+    let mut gifts: Vec<_> = caught.iter().filter(|c| c.met_location == 0).collect();
+    gifts.sort_by_key(|c| c.caught_at);
+    gifts.iter().position(|c| c.personality == personality)
+}
+
+/// Returns the position of `personality` among `met_location = 0` Pokémon in
+/// `party`, in party-slot order.
+fn gift_party_index(party: &[Pokemon], personality: u32) -> Option<usize> {
+    party.iter()
+        .filter(|p| p.box_mon.secure.misc.met_location == 0)
+        .position(|p| p.box_mon.personality == personality)
+}
+
 /// For every dead pokemon across slots, finds partners in other slots caught
 /// at the same `met_location` that are not yet dead and have not already been
 /// propagated this session.
+///
+/// Gift Pokémon (`met_location = 0`) are paired by order of receipt (`caught_at`)
+/// rather than by location, so the first gift caught by Player 1 links to the
+/// first gift caught by Player 2, etc. This ensures starters are soul-linked.
 ///
 /// Returns `(slot_j, partner)` pairs; the caller is responsible for writing
 /// the DB record and updating `soul_link_propagated`.
@@ -869,17 +927,37 @@ fn soul_link_kill_candidates(
                 .find(|c| c.personality == dead_p)
                 .map(|c| c.met_location)
                 .unwrap_or(0);
-            if met_loc == 0 { continue; }
-            for j in 0..n {
-                if j == i { continue; }
-                if let Some(p) = caught_by_slot[j]
-                    .iter()
-                    .find(|c| c.met_location == met_loc && c.personality != dead_p)
-                    .cloned()
-                    && !all_dead[j].contains_key(&p.personality)
-                    && !already_propagated.contains(&(j, p.personality))
-                {
-                    out.push((j, p));
+
+            if met_loc == 0 {
+                // Gift Pokémon: pair by order of receipt across slots.
+                let Some(gift_idx) = gift_catch_index(&caught_by_slot[i], dead_p) else { continue };
+                for j in 0..n {
+                    if j == i { continue; }
+                    let mut gifts_j: Vec<CaughtPokemon> = caught_by_slot[j]
+                        .iter()
+                        .filter(|c| c.met_location == 0)
+                        .cloned()
+                        .collect();
+                    gifts_j.sort_by_key(|c| c.caught_at);
+                    if let Some(p) = gifts_j.get(gift_idx).cloned()
+                        && !all_dead[j].contains_key(&p.personality)
+                        && !already_propagated.contains(&(j, p.personality))
+                    {
+                        out.push((j, p));
+                    }
+                }
+            } else {
+                for j in 0..n {
+                    if j == i { continue; }
+                    if let Some(p) = caught_by_slot[j]
+                        .iter()
+                        .find(|c| c.met_location == met_loc && c.personality != dead_p)
+                        .cloned()
+                        && !all_dead[j].contains_key(&p.personality)
+                        && !already_propagated.contains(&(j, p.personality))
+                    {
+                        out.push((j, p));
+                    }
                 }
             }
         }
@@ -915,6 +993,10 @@ mod tests {
         }
     }
 
+    fn stub_caught_at(personality: u32, met_location: u8, caught_at: u64) -> CaughtPokemon {
+        CaughtPokemon { caught_at, ..stub_caught(personality, met_location) }
+    }
+
     fn stub_dead() -> DeadPokemon {
         DeadPokemon {
             player_name: String::new(), personality: 0, ot_id: 0, ot_name: String::new(),
@@ -923,6 +1005,7 @@ mod tests {
             speed: 0, sp_attack: 0, sp_defense: 0, moves: [0; 4], pp: [0; 4],
             ivs: IVs::default(), evs: EVs::default(), held_item: 0, ability: 0,
             ability_name: String::new(), friendship: 0, met_location: 0, died_at: 0, gender: 2,
+            is_soul_link_death: false,
         }
     }
 
@@ -990,11 +1073,45 @@ mod tests {
     }
 
     #[test]
-    fn met_location_zero_is_ignored() {
+    fn gift_pokemon_are_soul_linked_by_catch_order() {
+        // Slot 0's starter (personality 1, met=0) dies → links to slot 1's starter (2).
         let all_dead = vec![dead_map(&[1]), HashMap::new()];
         let caught   = vec![
-            vec![stub_caught(1, 0)], // met_location = 0 → untracked
+            vec![stub_caught(1, 0)],
             vec![stub_caught(2, 0)],
+        ];
+        let propagated = HashSet::new();
+        let candidates = soul_link_kill_candidates(&all_dead, &caught, &propagated);
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].0, 1);
+        assert_eq!(candidates[0].1.personality, 2);
+    }
+
+    #[test]
+    fn gift_pokemon_paired_by_catch_order_not_first() {
+        // Slot 0 has two gifts: starter caught first (t=1), Eevee caught second (t=2).
+        // Slot 1 has two gifts in reversed list order but same timestamps.
+        // Slot 0's Eevee (personality 4, gift index 1) dies → should link to slot 1's Eevee (6).
+        let all_dead = vec![dead_map(&[4]), HashMap::new()];
+        let caught   = vec![
+            vec![stub_caught_at(4, 0, 2), stub_caught_at(3, 0, 1)], // Eevee before starter in list
+            vec![stub_caught_at(6, 0, 2), stub_caught_at(5, 0, 1)],
+        ];
+        let propagated = HashSet::new();
+        let candidates = soul_link_kill_candidates(&all_dead, &caught, &propagated);
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].0, 1);
+        assert_eq!(candidates[0].1.personality, 6); // Eevee, not starter
+    }
+
+    #[test]
+    fn gift_with_no_partner_at_same_index_is_skipped() {
+        // Slot 0 has two gifts; slot 1 has only one. Slot 0's second gift (Eevee) dies.
+        // No partner at index 1 for slot 1 → skip.
+        let all_dead = vec![dead_map(&[4]), HashMap::new()];
+        let caught   = vec![
+            vec![stub_caught_at(3, 0, 1), stub_caught_at(4, 0, 2)],
+            vec![stub_caught_at(5, 0, 1)], // only one gift
         ];
         let propagated = HashSet::new();
         assert!(soul_link_kill_candidates(&all_dead, &caught, &propagated).is_empty());
@@ -1002,7 +1119,8 @@ mod tests {
 
     #[test]
     fn dead_pokemon_not_in_caught_cache_is_skipped() {
-        // Personality 99 is dead in slot 0 but has no caught record → met_loc = 0 → skip.
+        // Personality 99 is dead in slot 0 but has no caught record → met_loc falls
+        // back to 0, but gift_catch_index finds no personality 99 among gifts → skip.
         let all_dead = vec![dead_map(&[99]), HashMap::new()];
         let caught   = vec![
             vec![stub_caught(1, 10)], // no entry for personality 99

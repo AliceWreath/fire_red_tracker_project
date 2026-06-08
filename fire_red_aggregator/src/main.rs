@@ -131,16 +131,10 @@ fn main() {
     }
 
     // Priority: base config → [test] overrides → explicit CLI flags.
+    // DB URL normalization (postgresql:// prefix) is handled inside initialize().
     let db = cli.db
         .or_else(|| test.and_then(|t| t.db.clone()))
-        .or(cfg.db)
-        .map(|s| {
-            if s.starts_with("postgresql://") || s.starts_with("postgres://") {
-                s
-            } else {
-                format!("postgresql://{}", s)
-            }
-        });
+        .or(cfg.db);
 
     let listen_port = cli.listen_port
         .or_else(|| test.and_then(|t| t.listen_port))

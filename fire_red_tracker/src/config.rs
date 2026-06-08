@@ -47,6 +47,11 @@ pub struct TrackerConfig {
     /// OBS WebSocket integration — save replay buffer clips on key events.
     #[serde(default, skip_serializing_if = "ObsConfig::is_default")]
     pub obs: ObsConfig,
+    /// Enforce the Nuzlocke dupes clause: skip recording an encounter if the
+    /// species has already been caught at any point in the current run.
+    /// Defaults to `false` (standard Nuzlocke — first encounter per area only).
+    #[serde(default)]
+    pub dupes_clause: bool,
 }
 
 fn default_aggregator_host() -> String { "127.0.0.1".to_string() }
@@ -562,7 +567,8 @@ impl eframe::App for SetupApp {
                         wipe_url:       if self.wipe_url_enabled  && !self.wipe_url.trim().is_empty()  { Some(self.wipe_url.trim().to_string())  } else { None },
                         wipe_template:  if self.wipe_url_enabled  && !self.wipe_template.trim().is_empty()  { Some(self.wipe_template.trim().to_string())  } else { None },
                     },
-                    obs: ObsConfig::default(),
+                    obs:          ObsConfig::default(),
+                    dupes_clause: false,
                 };
 
                 *self.result.lock().unwrap() = Some(config);
@@ -700,6 +706,26 @@ mod tests {
         assert_eq!(cfg2.poll_ms, 200);
     }
 
+    // ── dupes_clause ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn dupes_clause_defaults_to_false_when_absent() {
+        let cfg: TrackerConfig = toml::from_str(&minimal_toml("")).unwrap();
+        assert!(!cfg.dupes_clause);
+    }
+
+    #[test]
+    fn dupes_clause_parsed_as_true() {
+        let cfg: TrackerConfig = toml::from_str(&minimal_toml("dupes_clause = true\n")).unwrap();
+        assert!(cfg.dupes_clause);
+    }
+
+    #[test]
+    fn dupes_clause_parsed_as_false_explicitly() {
+        let cfg: TrackerConfig = toml::from_str(&minimal_toml("dupes_clause = false\n")).unwrap();
+        assert!(!cfg.dupes_clause);
+    }
+
     // ── validate_config ──────────────────────────────────────────────────────
 
     fn cfg_with_rom(rom: &str) -> TrackerConfig {
@@ -716,6 +742,7 @@ mod tests {
             poll_ms:         100,
             webhooks:        WebhookConfig::default(),
             obs:             ObsConfig::default(),
+            dupes_clause:    false,
         }
     }
 

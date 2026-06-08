@@ -264,13 +264,15 @@ function esc(s) {
 
 // Connect to WS to discover runs
 let ws;
+let reconnectDelay = 1000;
 function connect() {
     ws = new WebSocket(WS_BASE);
+    ws.onopen = () => { reconnectDelay = 1000; };
     ws.onmessage = e => {
         const slots = JSON.parse(e.data);
         populateSelector(slots);
     };
-    ws.onclose = () => setTimeout(connect, 3000);
+    ws.onclose = () => { setTimeout(connect, reconnectDelay); reconnectDelay = Math.min(reconnectDelay * 2, 30000); };
 }
 connect();
 

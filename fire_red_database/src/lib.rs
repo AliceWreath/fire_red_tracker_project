@@ -127,7 +127,9 @@ fn is_leap(year: u32) -> bool {
     (year.is_multiple_of(4) && !year.is_multiple_of(100)) || year.is_multiple_of(400)
 }
 
-fn unix_now() -> u64 {
+/// Returns the current time as Unix seconds (seconds since 1970-01-01 00:00:00 UTC).
+/// Returns 0 if the system clock is before the epoch (should never happen in practice).
+pub fn unix_now() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
@@ -195,6 +197,10 @@ pub struct DeadPokemon {
     pub died_at: u64,
     /// `0` = male, `1` = female, `2` = genderless.
     pub gender: u8,
+    /// `true` when this death was caused by a Soul Link rule (the partner Pokémon
+    /// died first) rather than the Pokémon reaching 0 HP itself.
+    /// Stored explicitly to avoid using `max_hp == 0` as a sentinel.
+    pub is_soul_link_death: bool,
 }
 
 /// A wild Pokémon encounter — the first one per area per player is stored for Nuzlocke tracking.
@@ -278,9 +284,20 @@ fn db() -> &'static Mutex<DbState> {
 /// `initialize` has already been called.
 /// Increment this whenever a new migration or data-repair statement is added.
 /// `initialize` skips all SQL when the DB already records this version.
-const SCHEMA_VERSION: &str = "2";
+const SCHEMA_VERSION: &str = "4";
 
 pub fn initialize(connection_string: &str) -> Result<(), String> {
+    // Accept bare `host/dbname` strings — prepend the scheme so callers don't have to.
+    let normalized;
+    let connection_string = if connection_string.starts_with("postgresql://")
+        || connection_string.starts_with("postgres://")
+    {
+        connection_string
+    } else {
+        normalized = format!("postgresql://{connection_string}");
+        &normalized
+    };
+
     let mut client = Client::connect(connection_string, NoTls)
         .map_err(|e| format!(
             "Failed to connect to PostgreSQL: {e}\n\
@@ -453,6 +470,11 @@ pub fn initialize(connection_string: &str) -> Result<(), String> {
         ALTER TABLE caught_pokemon ADD COLUMN IF NOT EXISTS ev_sp_attack INTEGER NOT NULL DEFAULT 0;
         ALTER TABLE caught_pokemon ADD COLUMN IF NOT EXISTS ev_sp_defense INTEGER NOT NULL DEFAULT 0;
 
+        -- Migration: add explicit soul-link-death flag.
+        -- Backfills TRUE for existing records where max_hp = 0 (the old sentinel).
+        ALTER TABLE dead_pokemon ADD COLUMN IF NOT EXISTS is_soul_link_death BOOLEAN NOT NULL DEFAULT FALSE;
+        UPDATE dead_pokemon SET is_soul_link_death = TRUE WHERE max_hp = 0 AND is_soul_link_death = FALSE;
+
         -- Data repair: fix species_name for NIDORAN♀ (29) and NIDORAN♂ (32) that were
         -- stored without the gender symbol due to a bug in the GBA text decoder.
         -- Only updates rows that don't already contain a gender symbol.
@@ -462,6 +484,19 @@ pub fn initialize(connection_string: &str) -> Result<(), String> {
         UPDATE caught_pokemon SET species_name = 'NIDORAN♂' WHERE species = 32 AND species_name NOT LIKE '%♀%' AND species_name NOT LIKE '%♂%';
         UPDATE dead_pokemon   SET species_name = 'NIDORAN♀' WHERE species = 29 AND species_name NOT LIKE '%♀%' AND species_name NOT LIKE '%♂%';
         UPDATE dead_pokemon   SET species_name = 'NIDORAN♂' WHERE species = 32 AND species_name NOT LIKE '%♀%' AND species_name NOT LIKE '%♂%';
+
+        -- Migration: persistent event log — one row per notable gameplay event.
+        -- event_type values: 'catch', 'death', 'soul_link_death', 'shiny', 'wipe'
+        CREATE TABLE IF NOT EXISTS events (
+            id           SERIAL  PRIMARY KEY,
+            run_id       INTEGER NOT NULL REFERENCES runs(id),
+            player_name  TEXT    NOT NULL,
+            event_type   TEXT    NOT NULL,
+            species_name TEXT    NOT NULL DEFAULT '',
+            nickname     TEXT    NOT NULL DEFAULT '',
+            level        INTEGER NOT NULL DEFAULT 0,
+            occurred_at  BIGINT  NOT NULL
+        );
     ").map_err(|e| format!("Failed to create database schema: {e}"))?;
 
     // Record the schema version so future startups can skip all migrations.
@@ -564,8 +599,10 @@ fn query_is_dead(client: &mut Client, run_id: u32, personality: u32) -> bool {
 }
 
 /// Converts a dead_pokemon SELECT row into a [`DeadPokemon`].
+///
 /// Column 0 must be `player_name`; the remaining columns follow the standard
-/// order used by all dead_pokemon queries in this file.
+/// order used by all dead_pokemon queries in this file, with
+/// `is_soul_link_death` appended last (column 44).
 fn row_to_dead_pokemon(row: &postgres::Row) -> DeadPokemon {
     DeadPokemon {
         player_name:  row.get(0),
@@ -613,13 +650,14 @@ fn row_to_dead_pokemon(row: &postgres::Row) -> DeadPokemon {
             sp_attack:  row.get::<_, i32>(35) as u8,
             sp_defense: row.get::<_, i32>(36) as u8,
         },
-        held_item:    row.get::<_, i32>(37) as u16,
-        ability:      row.get::<_, i32>(38) as u8,
-        ability_name: row.get(39),
-        friendship:   row.get::<_, i32>(40) as u8,
-        met_location: row.get::<_, i32>(41) as u8,
-        died_at:      row.get::<_, i64>(42) as u64,
-        gender:       row.get::<_, i32>(43) as u8,
+        held_item:         row.get::<_, i32>(37) as u16,
+        ability:           row.get::<_, i32>(38) as u8,
+        ability_name:      row.get(39),
+        friendship:        row.get::<_, i32>(40) as u8,
+        met_location:      row.get::<_, i32>(41) as u8,
+        died_at:           row.get::<_, i64>(42) as u64,
+        gender:            row.get::<_, i32>(43) as u8,
+        is_soul_link_death: row.get(44),
     }
 }
 
@@ -793,12 +831,14 @@ pub fn mark_dead(pokemon: DeadPokemon) -> bool {
             pp1, pp2, pp3, pp4,
             iv_hp, iv_attack, iv_defense, iv_speed, iv_sp_attack, iv_sp_defense,
             ev_hp, ev_attack, ev_defense, ev_speed, ev_sp_attack, ev_sp_defense,
-            held_item, ability, ability_name, friendship, met_location, died_at, gender
+            held_item, ability, ability_name, friendship, met_location, died_at, gender,
+            is_soul_link_death
         ) VALUES (
             $1,  $2,  $3,  $4,  $5,  $6,  $7,  $8,  $9,  $10, $11,
             $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22,
             $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33,
-            $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45
+            $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45,
+            $46
         ) ON CONFLICT (run_id, personality) DO NOTHING",
         &[
             &(active as i32),
@@ -846,6 +886,7 @@ pub fn mark_dead(pokemon: DeadPokemon) -> bool {
             &(pokemon.met_location as i32),
             &(pokemon.died_at as i64),
             &(pokemon.gender as i32),
+            &pokemon.is_soul_link_death,
         ],
     ) {
         eprintln!("Warning: failed to record dead pokemon (personality={}): {e}", pokemon.personality);
@@ -876,7 +917,8 @@ pub fn get_dead_pokemon(personality: u32) -> Option<DeadPokemon> {
                 move1, move2, move3, move4, pp1, pp2, pp3, pp4,
                 iv_hp, iv_attack, iv_defense, iv_speed, iv_sp_attack, iv_sp_defense,
                 ev_hp, ev_attack, ev_defense, ev_speed, ev_sp_attack, ev_sp_defense,
-                held_item, ability, ability_name, friendship, met_location, died_at, gender
+                held_item, ability, ability_name, friendship, met_location, died_at, gender,
+                is_soul_link_death
              FROM dead_pokemon
              WHERE run_id = $1 AND personality = $2",
             &[&(active as i32), &(personality as i64)],
@@ -896,6 +938,63 @@ pub fn get_dead_pokemon(personality: u32) -> Option<DeadPokemon> {
 /// containing null bytes with `invalid byte sequence for encoding "UTF8": 0x00`.
 fn pg_safe(s: &str) -> String {
     s.replace('\0', "")
+}
+
+/// A notable gameplay event to persist in the `events` table.
+///
+/// Events are a supplementary audit trail alongside the `dead_pokemon`,
+/// `caught_pokemon`, and `encounters` tables. They are append-only and ordered
+/// by `occurred_at`, making them suitable for streaming or timeline displays.
+pub enum EventKind<'a> {
+    /// A Pokémon was caught and added to the party.
+    Catch { species_name: &'a str, nickname: &'a str, level: u8 },
+    /// A Pokémon fainted from direct in-game damage.
+    Death { species_name: &'a str, nickname: &'a str, level: u8 },
+    /// A Pokémon was killed by the Soul Link rule.
+    SoulLinkDeath { species_name: &'a str, nickname: &'a str, level: u8 },
+    /// A shiny Pokémon appeared in the wild.
+    Shiny { species_name: &'a str, level: u8 },
+    /// The party was wiped, ending the run.
+    Wipe,
+}
+
+/// Appends a row to the `events` table for the active run.
+///
+/// No-op if no run is currently active. Returns `true` when the event was
+/// successfully persisted, `false` on any failure or missing run.
+pub fn record_event(event: EventKind<'_>) -> bool {
+    let mut state = db().lock_or_recover();
+    let run_id = match state.run_id {
+        Some(id) => id,
+        None     => return false,
+    };
+    let player      = state.current_player.clone();
+    let occurred_at = unix_now() as i64;
+    let (event_type, species_name, nickname, level) = match &event {
+        EventKind::Catch { species_name, nickname, level } =>
+            ("catch",            *species_name, *nickname, *level as i32),
+        EventKind::Death { species_name, nickname, level } =>
+            ("death",            *species_name, *nickname, *level as i32),
+        EventKind::SoulLinkDeath { species_name, nickname, level } =>
+            ("soul_link_death",  *species_name, *nickname, *level as i32),
+        EventKind::Shiny { species_name, level } =>
+            ("shiny",            *species_name, "",        *level as i32),
+        EventKind::Wipe =>
+            ("wipe",             "",            "",        0),
+    };
+    state.client.execute(
+        "INSERT INTO events (run_id, player_name, event_type, species_name, nickname, level, occurred_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)",
+        &[
+            &(run_id as i32),
+            &player,
+            &event_type,
+            &species_name,
+            &nickname,
+            &level,
+            &occurred_at,
+        ],
+    ).is_ok()
 }
 
 /// Records a Pokemon as caught in the active run.
@@ -1077,6 +1176,27 @@ pub fn set_encounter_caught(map_group: u8, map_name: u8) {
     ) {
         eprintln!("set_encounter_caught: DB error: {}", e);
     }
+}
+
+/// Returns `true` if a Pokémon with this species ID exists in the `caught_pokemon`
+/// table for the active run under any player.
+///
+/// Used to enforce the dupes clause: when enabled, a new encounter is skipped if
+/// the species was already caught at any point in the current run, regardless of
+/// which area it was encountered in.
+pub fn species_caught_any(species: u16) -> bool {
+    let mut state = db().lock_or_recover();
+    let active = match state.run_id {
+        Some(id) => id,
+        None => return false,
+    };
+    state.client
+        .query_one(
+            "SELECT COUNT(*) FROM caught_pokemon WHERE run_id = $1 AND species = $2",
+            &[&(active as i32), &(species as i32)],
+        )
+        .map(|row| row.get::<_, i64>(0) > 0)
+        .unwrap_or(false)
 }
 
 /// Returns `true` if this species has already been recorded as a first encounter
@@ -1329,7 +1449,8 @@ impl DbReader {
                     move1, move2, move3, move4, pp1, pp2, pp3, pp4,
                     iv_hp, iv_attack, iv_defense, iv_speed, iv_sp_attack, iv_sp_defense,
                     ev_hp, ev_attack, ev_defense, ev_speed, ev_sp_attack, ev_sp_defense,
-                    held_item, ability, ability_name, friendship, met_location, died_at, gender
+                    held_item, ability, ability_name, friendship, met_location, died_at, gender,
+                    is_soul_link_death
                  FROM dead_pokemon WHERE run_id = $1 AND player_name = $2",
                 &[&(run_id as i32), &player_name],
             )
@@ -1443,6 +1564,43 @@ impl DbReader {
             ))
     }
 
+    /// Appends a row to the `events` table using this reader's connection and run.
+    ///
+    /// Used by the aggregator process, which does not share the tracker's global
+    /// `DB` singleton. Mirrors the standalone `record_event` function.
+    pub fn record_event(&self, player_name: &str, event: EventKind<'_>) -> bool {
+        let run_id = match *self.run_id.lock_or_recover() {
+            Some(id) => id,
+            None     => return false,
+        };
+        let occurred_at = unix_now() as i64;
+        let (event_type, species_name, nickname, level) = match &event {
+            EventKind::Catch { species_name, nickname, level } =>
+                ("catch",           *species_name, *nickname, *level as i32),
+            EventKind::Death { species_name, nickname, level } =>
+                ("death",           *species_name, *nickname, *level as i32),
+            EventKind::SoulLinkDeath { species_name, nickname, level } =>
+                ("soul_link_death", *species_name, *nickname, *level as i32),
+            EventKind::Shiny { species_name, level } =>
+                ("shiny",           *species_name, "",        *level as i32),
+            EventKind::Wipe =>
+                ("wipe",            "",            "",        0),
+        };
+        self.client.lock_or_recover().execute(
+            "INSERT INTO events (run_id, player_name, event_type, species_name, nickname, level, occurred_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7)",
+            &[
+                &(run_id as i32),
+                &player_name,
+                &event_type,
+                &species_name,
+                &nickname,
+                &level,
+                &occurred_at,
+            ],
+        ).is_ok()
+    }
+
     /// Inserts a soul-link death record for `caught` in this player's active run.
     ///
     /// Battle stats (HP, Attack, etc.) are stored as 0 to signal a soul-link
@@ -1467,7 +1625,8 @@ impl DbReader {
                     pp1, pp2, pp3, pp4,
                     iv_hp, iv_attack, iv_defense, iv_speed, iv_sp_attack, iv_sp_defense,
                     ev_hp, ev_attack, ev_defense, ev_speed, ev_sp_attack, ev_sp_defense,
-                    held_item, ability, ability_name, friendship, met_location, died_at, gender
+                    held_item, ability, ability_name, friendship, met_location, died_at, gender,
+                    is_soul_link_death
                 ) VALUES (
                     $1, $2, $3, '', $4, $5, $6, $7, $8, $9,
                     0, 0, 0, 0, 0, 0, 0,
@@ -1475,7 +1634,8 @@ impl DbReader {
                     0, 0, 0, 0,
                     $10, $11, $12, $13, $14, $15,
                     0, 0, 0, 0, 0, 0,
-                    0, 0, '', 0, $16, $17, $18
+                    0, 0, '', 0, $16, $17, $18,
+                    TRUE
                 ) ON CONFLICT (run_id, personality) DO NOTHING",
                 &[
                     &(run_id as i32),
@@ -1616,7 +1776,7 @@ pub fn run_stats(conn_str: &str, run_id: u32) -> serde_json::Value {
     }).collect();
 
     let dead_rows = client.query(
-        "SELECT level, species_name, met_location, died_at, (max_hp = 0) AS soul_link
+        "SELECT level, species_name, met_location, died_at, is_soul_link_death
          FROM dead_pokemon WHERE run_id = $1 ORDER BY died_at ASC",
         &[&(run_id as i32)],
     ).unwrap_or_default();
@@ -1821,6 +1981,105 @@ pub fn export_run(conn_str: &str, run_id: u32) -> serde_json::Value {
     })
 }
 
+/// Returns a CSV export of a single run: three sections separated by blank lines.
+///
+/// Sections: `caught`, `dead`, `encounters`. Each section has a header row.
+/// Opens its own connection so the live tracker is not blocked.
+pub fn export_run_csv(conn_str: &str, run_id: u32) -> Result<String, String> {
+    let mut client = Client::connect(conn_str, NoTls)
+        .map_err(|e| format!("DB connection failed: {e}"))?;
+    let rid = run_id as i32;
+
+    let mut out = String::new();
+
+    // Caught Pokémon
+    out.push_str("section,player_name,nickname,species_name,level,nature,is_shiny,gender,met_location,location_name,caught_at\n");
+    let caught_rows = client.query(
+        "SELECT nickname, species_name, level, nature, is_shiny, gender, \
+                met_location, location_name, caught_at, player_name \
+         FROM caught_pokemon WHERE run_id = $1 ORDER BY caught_at",
+        &[&rid],
+    ).unwrap_or_default();
+    for r in &caught_rows {
+        out.push_str(&format!(
+            "caught,{},{},{},{},{},{},{},{},{},{}\n",
+            csv_field(r.get::<_, String>(9)),
+            csv_field(r.get::<_, String>(0)),
+            csv_field(r.get::<_, String>(1)),
+            r.get::<_, i32>(2),
+            csv_field(r.get::<_, String>(3)),
+            r.get::<_, bool>(4),
+            r.get::<_, i32>(5),
+            r.get::<_, i32>(6),
+            csv_field(r.get::<_, String>(7)),
+            csv_field(format_timestamp(r.get::<_, i64>(8) as u64)),
+        ));
+    }
+
+    out.push('\n');
+
+    // Dead Pokémon
+    out.push_str("section,player_name,nickname,species_name,level,nature,is_shiny,gender,met_location,soul_link_death,died_at\n");
+    let dead_rows = client.query(
+        "SELECT nickname, species_name, level, nature, is_shiny, gender, \
+                met_location, died_at, player_name, is_soul_link_death \
+         FROM dead_pokemon WHERE run_id = $1 ORDER BY died_at",
+        &[&rid],
+    ).unwrap_or_default();
+    for r in &dead_rows {
+        out.push_str(&format!(
+            "dead,{},{},{},{},{},{},{},{},{},{}\n",
+            csv_field(r.get::<_, String>(8)),
+            csv_field(r.get::<_, String>(0)),
+            csv_field(r.get::<_, String>(1)),
+            r.get::<_, i32>(2),
+            csv_field(r.get::<_, String>(3)),
+            r.get::<_, bool>(4),
+            r.get::<_, i32>(5),
+            r.get::<_, i32>(6),
+            r.get::<_, bool>(9),
+            csv_field(format_timestamp(r.get::<_, i64>(7) as u64)),
+        ));
+    }
+
+    out.push('\n');
+
+    // Encounters
+    out.push_str("section,player_name,species_name,level,map_group,map_name,caught,is_shiny,encountered_at\n");
+    let enc_rows = client.query(
+        "SELECT species_name, level, map_group, map_name, caught, is_shiny, \
+                encountered_at, player_name \
+         FROM encounters WHERE run_id = $1 ORDER BY encountered_at",
+        &[&rid],
+    ).unwrap_or_default();
+    for r in &enc_rows {
+        out.push_str(&format!(
+            "encounter,{},{},{},{},{},{},{},{}\n",
+            csv_field(r.get::<_, String>(7)),
+            csv_field(r.get::<_, String>(0)),
+            r.get::<_, i32>(1),
+            r.get::<_, i32>(2),
+            r.get::<_, i32>(3),
+            r.get::<_, bool>(4),
+            r.get::<_, bool>(5),
+            csv_field(format_timestamp(r.get::<_, i64>(6) as u64)),
+        ));
+    }
+
+    Ok(out)
+}
+
+/// Escapes a field value for CSV: wraps in quotes if it contains a comma, quote,
+/// or newline. Interior double-quotes are doubled per RFC 4180.
+fn csv_field(s: impl AsRef<str>) -> String {
+    let s = s.as_ref();
+    if s.contains([',', '"', '\n', '\r']) {
+        format!("\"{}\"", s.replace('"', "\"\""))
+    } else {
+        s.to_string()
+    }
+}
+
 /// Returns a summary JSON array of every run: id, player_name, started_at,
 /// ended_at, deaths, catches, and encounter count.
 ///
@@ -1956,21 +2215,57 @@ pub fn import_run(conn_str: &str, body: &serde_json::Value) -> serde_json::Value
             let gender       = d.get("gender").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
             let met_location = d.get("met_location").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
             let d_player     = d.get("player_name").and_then(|v| v.as_str()).unwrap_or(player_name);
+            let is_soul_link_death = d.get("soul_link").and_then(|v| v.as_bool()).unwrap_or(false);
             let _ = client.execute(
                 "INSERT INTO dead_pokemon (run_id, player_name, personality, ot_id, \
                                           nickname, species, species_name, is_shiny, \
                                           nature, level, met_location, died_at, \
-                                          gender, max_hp, cause_of_death) \
-                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,0,'') \
+                                          gender, max_hp, is_soul_link_death, \
+                                          experience, attack, defense, speed, sp_attack, sp_defense, \
+                                          move1, move2, move3, move4, pp1, pp2, pp3, pp4, \
+                                          iv_hp, iv_attack, iv_defense, iv_speed, iv_sp_attack, iv_sp_defense, \
+                                          ev_hp, ev_attack, ev_defense, ev_speed, ev_sp_attack, ev_sp_defense, \
+                                          held_item, ability, ability_name, friendship, ot_name) \
+                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,0,$14, \
+                         0,0,0,0,0,0, 0,0,0,0,0,0,0,0, \
+                         0,0,0,0,0,0, 0,0,0,0,0,0, 0,0,'',0,'') \
                  ON CONFLICT (run_id, personality) DO NOTHING",
                 &[&new_id, &d_player, &(new_id as i64), &0i64,
                   &nickname, &0i32, &species_name, &is_shiny,
-                  &nature, &level, &met_location, &started_at, &gender],
+                  &nature, &level, &met_location, &started_at, &gender,
+                  &is_soul_link_death],
             );
         }
     }
 
     serde_json::json!({ "run_id": new_id })
+}
+
+/// Returns a JSON array of events for the given run ID, ordered by time.
+///
+/// Opens its own connection so the live tracker is not blocked.
+pub fn list_events_json(conn_str: &str, run_id: u32) -> serde_json::Value {
+    let mut client = match Client::connect(conn_str, NoTls) {
+        Ok(c)  => c,
+        Err(e) => return serde_json::json!({ "error": format!("DB connection failed: {e}") }),
+    };
+    let rows = match client.query(
+        "SELECT player_name, event_type, species_name, nickname, level, occurred_at
+         FROM events WHERE run_id = $1 ORDER BY occurred_at ASC",
+        &[&(run_id as i32)],
+    ) {
+        Ok(r)  => r,
+        Err(e) => return serde_json::json!({ "error": format!("Query failed: {e}") }),
+    };
+    let events: Vec<serde_json::Value> = rows.iter().map(|row| serde_json::json!({
+        "player_name":   row.get::<_, String>(0),
+        "event_type":    row.get::<_, String>(1),
+        "species_name":  row.get::<_, String>(2),
+        "nickname":      row.get::<_, String>(3),
+        "level":         row.get::<_, i32>(4),
+        "occurred_at":   format_timestamp(row.get::<_, i64>(5) as u64),
+    })).collect();
+    serde_json::json!({ "run_id": run_id, "events": events })
 }
 
 /// Opens a fresh connection and returns a JSON snapshot of every table.
@@ -2062,7 +2357,7 @@ fn dump_dead(client: &mut Client) -> serde_json::Value {
                 max_hp, attack, defense, speed, sp_attack, sp_defense,
                 iv_hp, iv_attack, iv_defense, iv_speed, iv_sp_attack, iv_sp_defense,
                 ev_hp, ev_attack, ev_defense, ev_speed, ev_sp_attack, ev_sp_defense,
-                (max_hp = 0) AS soul_link,
+                is_soul_link_death,
                 died_at, gender
          FROM dead_pokemon ORDER BY died_at ASC",
         &[],
@@ -2178,6 +2473,71 @@ mod tests {
     fn is_leap_not_divisible_by_4() {
         assert!(!is_leap(2023));
         assert!(!is_leap(2019));
+    }
+
+    // ── format_timestamp ─────────────────────────────────────────────────────
+
+    // ── csv_field ─────────────────────────────────────────────────────────────
+
+    #[test]
+    fn csv_field_plain_string_unchanged() {
+        assert_eq!(csv_field("Bulbasaur"), "Bulbasaur");
+    }
+
+    #[test]
+    fn csv_field_string_with_comma_is_quoted() {
+        assert_eq!(csv_field("Route 1, East"), "\"Route 1, East\"");
+    }
+
+    #[test]
+    fn csv_field_string_with_quote_is_escaped() {
+        assert_eq!(csv_field("say \"hello\""), "\"say \"\"hello\"\"\"");
+    }
+
+    #[test]
+    fn csv_field_empty_string_unchanged() {
+        assert_eq!(csv_field(""), "");
+    }
+
+    // ── EventKind dispatch ────────────────────────────────────────────────────
+
+    fn event_type_str(event: &EventKind<'_>) -> &'static str {
+        match event {
+            EventKind::Catch         { .. } => "catch",
+            EventKind::Death         { .. } => "death",
+            EventKind::SoulLinkDeath { .. } => "soul_link_death",
+            EventKind::Shiny         { .. } => "shiny",
+            EventKind::Wipe                 => "wipe",
+        }
+    }
+
+    #[test]
+    fn event_kind_catch_maps_to_correct_type() {
+        let e = EventKind::Catch { species_name: "BULBASAUR", nickname: "Bulby", level: 5 };
+        assert_eq!(event_type_str(&e), "catch");
+    }
+
+    #[test]
+    fn event_kind_death_maps_to_correct_type() {
+        let e = EventKind::Death { species_name: "CHARMANDER", nickname: "Ember", level: 10 };
+        assert_eq!(event_type_str(&e), "death");
+    }
+
+    #[test]
+    fn event_kind_soul_link_death_maps_to_correct_type() {
+        let e = EventKind::SoulLinkDeath { species_name: "SQUIRTLE", nickname: "Shell", level: 8 };
+        assert_eq!(event_type_str(&e), "soul_link_death");
+    }
+
+    #[test]
+    fn event_kind_shiny_maps_to_correct_type() {
+        let e = EventKind::Shiny { species_name: "MEWTWO", level: 70 };
+        assert_eq!(event_type_str(&e), "shiny");
+    }
+
+    #[test]
+    fn event_kind_wipe_maps_to_correct_type() {
+        assert_eq!(event_type_str(&EventKind::Wipe), "wipe");
     }
 
     // ── format_timestamp ─────────────────────────────────────────────────────

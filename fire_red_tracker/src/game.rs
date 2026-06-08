@@ -93,10 +93,7 @@ pub fn check_for_dead_pokemon(thread_party: &Arc<Mutex<Vec<Pokemon>>>, run_track
         .trim()
         .to_string();
 
-        let died_at = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
+        let died_at = fire_red_database::unix_now();
 
         let shiny_flag = is_shiny(personality, ot_id);
         let recorded = fire_red_database::mark_dead(fire_red_database::DeadPokemon {
@@ -147,8 +144,16 @@ pub fn check_for_dead_pokemon(thread_party: &Arc<Mutex<Vec<Pokemon>>>, run_track
             gender:       pokemon.box_mon.gender,
 
             died_at,
+            // Regular in-battle deaths are never soul-link deaths; the aggregator
+            // sets is_soul_link_death = true when it calls mark_soul_link_dead().
+            is_soul_link_death: false,
         });
         if !recorded { continue; }
+        fire_red_database::record_event(fire_red_database::EventKind::Death {
+            species_name: &growth.species_string,
+            nickname:     &pokemon.box_mon.nickname_string,
+            level:        pokemon.level,
+        });
         crate::webhook::fire_event(crate::webhook::WebhookEvent::Death {
             player:    fire_red_loop::get_trainer_name(),
             timestamp: died_at,
@@ -218,10 +223,7 @@ pub fn check_for_new_pokemon(thread_party: &Arc<Mutex<Vec<Pokemon>>>) {
         let iv       = &misc.iv_egg_ability;
         let ev       = &pokemon.box_mon.secure.ev_condition;
 
-        let caught_at = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
+        let caught_at = fire_red_database::unix_now();
 
         let location_name = map_state_from_ewram()
             .map(|s| {
@@ -235,6 +237,11 @@ pub fn check_for_new_pokemon(thread_party: &Arc<Mutex<Vec<Pokemon>>>) {
             .unwrap_or_default();
 
         let shiny_flag = is_shiny(personality, ot_id);
+        fire_red_database::record_event(fire_red_database::EventKind::Catch {
+            species_name: &growth.species_string,
+            nickname:     &pokemon.box_mon.nickname_string,
+            level:        pokemon.level,
+        });
         fire_red_database::mark_caught(fire_red_database::CaughtPokemon {
             player_name:   fire_red_loop::get_trainer_name(),
             personality,
@@ -344,13 +351,11 @@ pub fn check_for_run_over(thread_party: &Arc<Mutex<Vec<Pokemon>>>, run_tracking_
     });
     drop(party);
     if all_dead {
+        fire_red_database::record_event(fire_red_database::EventKind::Wipe);
         fire_red_database::end_run();
         crate::webhook::fire_event(crate::webhook::WebhookEvent::Wipe {
             player:    fire_red_loop::get_trainer_name(),
-            timestamp: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_secs())
-                .unwrap_or(0),
+            timestamp: fire_red_database::unix_now(),
         });
         return true;
     }

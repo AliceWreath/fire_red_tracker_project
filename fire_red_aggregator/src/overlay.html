@@ -278,11 +278,13 @@ const SHOW_DEAD   = SHOW_PARAM === 'dead';
 const SHOW_CAUGHT = SHOW_PARAM === 'caught';
 
 let ws;
+let reconnectDelay = 1000;
 function connect() {
     const wsPath = SHOW_PARAM ? '/ws?show=' + encodeURIComponent(SHOW_PARAM) : '/ws';
     ws = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + wsPath);
+    ws.onopen    = () => { reconnectDelay = 1000; };
     ws.onmessage = e => render(JSON.parse(e.data));
-    ws.onclose   = () => setTimeout(connect, 2000);
+    ws.onclose   = () => { setTimeout(connect, reconnectDelay); reconnectDelay = Math.min(reconnectDelay * 2, 30000); };
 }
 connect();
 

@@ -198,10 +198,12 @@ fetch('/db.json').then(r => r.json()).then(db => {
 
 // WebSocket for live data
 let ws;
+let reconnectDelay = 1000;
 function connect() {
     ws = new WebSocket(WS_URL);
+    ws.onopen    = () => { reconnectDelay = 1000; };
     ws.onmessage = e => renderFromSlots(JSON.parse(e.data));
-    ws.onclose   = () => setTimeout(connect, 3000);
+    ws.onclose   = () => { setTimeout(connect, reconnectDelay); reconnectDelay = Math.min(reconnectDelay * 2, 30000); };
 }
 connect();
 </script>

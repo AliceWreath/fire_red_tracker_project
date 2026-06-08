@@ -32,7 +32,7 @@ pub type SharedSlots = Arc<Mutex<Vec<Arc<MonitorSlot>>>>;
 
 /// PNG-encoded sprite cache shared between the TCP reader thread and the HTTP
 /// sprite endpoint. Keyed by `(species, is_shiny)`.
-pub type SpriteCache = Arc<Mutex<HashMap<(u16, bool), Vec<u8>>>>;
+pub type PngSpriteCache = Arc<Mutex<HashMap<(u16, bool), Vec<u8>>>>;
 
 /// Encodes raw RGBA pixels directly to PNG bytes using the PNG codec.
 pub fn encode_png(pixels: &[u8], width: u32, height: u32) -> Option<Vec<u8>> {
@@ -106,7 +106,7 @@ pub struct MonitorSlot {
     /// Optional sprite cache set by web mode. When populated, the `spawn_client`
     /// reader thread encodes received sprites directly into this cache so the
     /// HTTP sprite endpoint can serve them without a separate drain step.
-    pub sprite_cache: Arc<Mutex<Option<SpriteCache>>>,
+    pub sprite_cache: Arc<Mutex<Option<PngSpriteCache>>>,
     /// Commands queued by the web server to be forwarded to the tracker over TCP.
     pub command_queue: Arc<Mutex<VecDeque<ClientMessage>>>,
     /// Set to `true` when the tracker confirms a run change (EndRun / NewRun),
@@ -195,7 +195,7 @@ pub fn handle_tracker_connection(
     known_species: Arc<Mutex<HashSet<u16>>>,
     texture_request_queue: Arc<Mutex<VecDeque<Vec<u16>>>>,
     label: Arc<Mutex<String>>,
-    sprite_cache: Arc<Mutex<Option<SpriteCache>>>,
+    sprite_cache: Arc<Mutex<Option<PngSpriteCache>>>,
     command_queue: Arc<Mutex<VecDeque<ClientMessage>>>,
     run_changed: Arc<AtomicBool>,
     box_data: Arc<Mutex<Vec<fire_red_states::BoxEntry>>>,
@@ -251,7 +251,7 @@ pub fn handle_tracker_connection(
                 *state.lock_or_recover() = Some(*gs);
             }
             Ok(ServerMessage::Textures(sprites)) => {
-                let maybe_cache: Option<SpriteCache> =
+                let maybe_cache: Option<PngSpriteCache> =
                     sprite_cache.lock_or_recover().clone();
                 let mut pending = pending_textures.lock_or_recover();
                 let mut known   = known_species.lock_or_recover();

@@ -27,6 +27,7 @@ Shows each Pokémon's sprite (shiny-aware), nickname, level, nature, HP (colour-
 ### Encounter tracking
 - **Encounters panel** — shows the wild Pokémon available in the current map area, split by encounter type (grass, water/fishing, Rock Smash). Updates when the player moves to a new map.
 - **First-encounter recording** — records the first wild Pokémon encountered per area per run (Nuzlocke rule). Encounters and deaths are not recorded until the player has obtained 5 or more Pokéballs; once that threshold is crossed the latch stays set for the remainder of the run. Duplicate species are skipped. Catches are detected automatically when the Pokémon joins the party.
+- **Dupes clause** — optional Nuzlocke variant rule. When enabled (`dupes_clause = true` in config), a new encounter is skipped if the species has already been caught at any point in the current run, regardless of which area it was first encountered in. Disabled by default (standard Nuzlocke).
 - **Shiny detection** — the Gen III shiny formula (`p_high ^ p_low ^ id_high ^ id_low < 8`) is evaluated when an encounter is recorded. Shiny encounters are flagged in the database and trigger a shiny alert toast.
 - **Route completion board** — a grid showing every Nuzlocke-relevant zone colour-coded as caught (green), failed/fled (red), or not yet visited (grey), grouped by region. Available at `/:index/routes`.
 
@@ -283,6 +284,8 @@ The following pages are available:
 
 The per-player pages can all be added as separate Browser Sources in OBS and positioned independently. The alerts overlay is fully transparent when idle — nothing appears until an event fires.
 
+All overlay pages reconnect automatically if the aggregator restarts. The WebSocket client uses **exponential backoff**: first retry after 1 s, then 2 s, 4 s, 8 s, …, capped at 30 s. The delay resets to 1 s on every successful connection. OBS Browser Sources survive aggregator restarts without needing a manual refresh.
+
 #### Overlay themes
 
 All overlay pages (`/`, `/:index/party`, `/:index/encounters`, `/:index/dead`, `/:index/caught`, `/:index/box`) accept a `?theme=` query parameter.
@@ -315,6 +318,8 @@ All endpoints are served on the same port as the WebSocket overlay (`--ws-port`)
 | `/api/db/query` | `POST` | Runs arbitrary SQL against the database. Request body: `{ "sql": "SELECT ..." }`. Response: `{ "columns": ["col1", ...], "rows": [{ "col1": "val", ... }, ...], "rows_affected": N }` or `{ "error": "..." }` on failure. All values are returned as strings. Requires `--db` |
 | `/api/run/:id/stats` | `GET` | Per-run statistics for run `id`. Returns `{ playtime_secs, zones_entered, caught, catch_rate, deaths, avg_death_level, zone_stats: [...], deaths: [...] }`. Requires `--db` |
 | `/api/run/:id/shiny` | `GET` | Shiny encounter statistics for run `id`. Returns `{ total_shinies, encounters_since_last_shiny, last_shiny: {...}, since_last_shiny: [...] }`. Requires `--db` |
+| `/api/run/:id/export` | `GET` | Full run export. Without query params: returns the complete run as JSON (metadata + caught + dead + encounters). With `?format=csv`: returns the same data as three CSV sections (caught, dead, encounters) in a single file with `Content-Disposition: attachment`. Requires `--db` |
+| `/api/run/:id/events` | `GET` | Chronological event log for a run. Returns `{ run_id, events: [{ player_name, event_type, species_name, nickname, level, occurred_at }, ...] }`. Event types: `catch`, `death`, `soul_link_death`, `shiny`, `wipe`. Requires `--db` |
 | `/db.json` | `GET` | Full database snapshot — all four tables (runs, caught, dead, encounters) formatted for the browser viewer. Requires `--db` |
 | `/db/clear` | `POST` | Deletes all records from every table and removes the active-run meta key. No confirmation, no undo. Requires `--db` |
 | `/api/runs` | `GET` | JSON array of all stored run summaries: `id`, `player`, `started_at`, `ended_at`, `deaths`, `catches`, `encounters`. Requires `--db` |
@@ -403,6 +408,8 @@ A **Soul Link** is a Nuzlocke variant played with a partner: each player's catch
 2. **Database propagation** (requires `--db`) — once the tracker writes a death record, the aggregator cross-references it against the caught table and writes a corresponding soul-link death record for the partner. This persists across sessions.
 
 > **Limitation:** Soul Link matching uses `met_location` as the pairing key. This is reliable on standard FireRed but may produce false positives on heavily modified ROMs where multiple areas share a location ID.
+
+> **Gift Pokémon:** Starters, Eevee, Lapras, and other gifted Pokémon (`met_location = 0`) cannot be paired by location. Instead they are paired **by order of receipt**: Player 1's first gift (the starter) links to Player 2's first gift, the second gift to the second, and so on. If one player has received more gifts than the other, the unmatched gifts are not linked. Death propagation uses the `caught_at` timestamp to determine order; the live GUI display uses party-slot order.
 
 ---
 

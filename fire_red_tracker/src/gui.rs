@@ -515,8 +515,9 @@ impl WindowInfo {
                         wipe_url:       if s.wipe_url_enabled  && !s.wipe_url.trim().is_empty()  { Some(s.wipe_url.trim().to_string())  } else { None },
                         wipe_template:  if s.wipe_url_enabled  && !s.wipe_template.trim().is_empty()  { Some(s.wipe_template.trim().to_string())  } else { None },
                     },
-                    poll_ms: 100,
-                    obs: crate::config::ObsConfig::default(),
+                    poll_ms:      100,
+                    obs:          crate::config::ObsConfig::default(),
+                    dupes_clause: false,
                 };
                 save_config(&cfg, &self.config_path);
                 self.settings_open = false;

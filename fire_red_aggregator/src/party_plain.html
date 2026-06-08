@@ -108,10 +108,12 @@ const parts = window.location.pathname.split('/').filter(Boolean);
 const playerIndex = parseInt(parts[0]) || 0;
 
 let ws;
+let reconnectDelay = 1000;
 function connect() {
     ws = new WebSocket('ws://' + location.host + '/ws');
+    ws.onopen    = () => { reconnectDelay = 1000; };
     ws.onmessage = e => render(JSON.parse(e.data));
-    ws.onclose   = () => setTimeout(connect, 2000);
+    ws.onclose   = () => { setTimeout(connect, reconnectDelay); reconnectDelay = Math.min(reconnectDelay * 2, 30000); };
 }
 connect();
 
