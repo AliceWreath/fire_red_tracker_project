@@ -168,7 +168,7 @@ pub enum Mode {
 // Wire helpers — length-prefixed bincode frames
 // ---------------------------------------------------------------------------
 
-/// Serialilzes and sends a message over a TCP stream.
+/// Serializes and sends a message over a TCP stream.
 /// 
 /// Messages are encoded using 'bincode' and prefixed with a 4-byte
 /// big-endian length header.
@@ -205,7 +205,7 @@ pub fn send_message<T: serde::Serialize>(stream: &mut TcpStream, msg: &T) -> std
 /// 
 /// # Type Parameters
 /// 
-/// * 'T' - Message type implementing 'DeserializedOwned'.
+/// * `T` - Message type implementing [`serde::de::DeserializeOwned`].
 /// 
 /// # Arguments
 /// 

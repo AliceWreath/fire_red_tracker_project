@@ -203,6 +203,9 @@ html, body {
 .iv-p     { color: #ffd040; }
 .iv-z     { color: #e06060; }
 .iv-label { color: rgba(200,200,200,0.45); }
+.moves-row   { display: flex; flex-wrap: wrap; gap: 2px 6px; margin-top: 2px; }
+.move-entry  { font-size: 10px; color: #b0d0ff; font-weight: 500; }
+.prev-hint   { font-size: 10px; color: #d0a860; font-style: italic; margin-bottom: 2px; }
 /* ── light theme ──────────────────────────────────────────────────────── */
 html[data-theme=light],html[data-theme=light] body{color:#111;text-shadow:none}
 html[data-theme=light] .col{background:rgba(238,238,238,.93);border:1px solid rgba(0,0,0,.12)}
@@ -235,6 +238,8 @@ html[data-theme=light] .box-name{color:#222}
 html[data-theme=light] .box-slot{background:rgba(0,0,0,.06)}
 html[data-theme=light] .box-slot.shiny{background:rgba(180,140,0,.15)}
 html[data-theme=light] .box-slot.egg{background:rgba(0,120,0,.12)}
+html[data-theme=light] .move-entry{color:#2244aa}
+html[data-theme=light] .prev-hint{color:#884400}
 /* ── minimal theme ────────────────────────────────────────────────────── */
 html[data-theme=minimal] .col{background:rgba(0,0,0,.55);border-radius:6px}
 html[data-theme=minimal] .mon-sprite,html[data-theme=minimal] .enc-sprite,html[data-theme=minimal] .db-enc-sprite,html[data-theme=minimal] .box-sprite{filter:drop-shadow(0 1px 2px rgba(0,0,0,.85))}
@@ -245,12 +250,16 @@ html[data-theme=minimal] .mon-sprite,html[data-theme=minimal] .enc-sprite,html[d
 <div id="root"></div>
 <script>
 (function(){const t=new URLSearchParams(window.location.search).get('theme');if(t==='light'||t==='minimal'||t==='dark')document.documentElement.dataset.theme=t;}());
-const READONLY = !new URLSearchParams(window.location.search).has('manage');
-const SHOW_BOX = new URLSearchParams(window.location.search).get('show') === 'box';
+const READONLY   = !new URLSearchParams(window.location.search).has('manage');
+const SHOW_PARAM = new URLSearchParams(window.location.search).get('show');
+const SHOW_BOX    = SHOW_PARAM === 'box';
+const SHOW_DEAD   = SHOW_PARAM === 'dead';
+const SHOW_CAUGHT = SHOW_PARAM === 'caught';
 
 let ws;
 function connect() {
-    ws = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws');
+    const wsPath = SHOW_PARAM ? '/ws?show=' + encodeURIComponent(SHOW_PARAM) : '/ws';
+    ws = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + wsPath);
     ws.onmessage = e => render(JSON.parse(e.data));
     ws.onclose   = () => setTimeout(connect, 2000);
 }
@@ -329,6 +338,10 @@ function buildCol(slot, slotIndex) {
         } else {
             if (SHOW_BOX) {
                 buildBoxContent(col, slot);
+            } else if (SHOW_DEAD) {
+                buildDeadContent(col, slot);
+            } else if (SHOW_CAUGHT) {
+                buildCaughtContent(col, slot);
             } else {
             const brow = el('div', 'badges');
             brow.appendChild(document.createTextNode('Badges: ' + slot.badges.filter(Boolean).length + '/8  '));
@@ -339,8 +352,9 @@ function buildCol(slot, slotIndex) {
 
             if (slot.next_gym) {
                 const g = slot.next_gym;
+                const gymType = GYM_TYPES[g.leader] ? ' [' + GYM_TYPES[g.leader] + ']' : '';
                 col.appendChild(el('div', 'next-gym',
-                    'Next: ' + g.leader + ' (' + g.city + ') — Lv.' + g.max_level));
+                    'Next: ' + g.leader + gymType + ' (' + g.city + ') — Lv.' + g.max_level));
             }
 
             for (const mon of slot.party) {
@@ -409,6 +423,15 @@ function buildCol(slot, slotIndex) {
                     if (mon.held_item && mon.held_item !== 'None') content.appendChild(el('div', 'mon-sub-sm', 'Held: ' + mon.held_item));
                     if (mon.growth_rate) content.appendChild(el('div', 'mon-sub-sm', 'Growth: ' + mon.growth_rate));
                     if (mon.ev_hp != null) content.appendChild(evRowEl('mon-sub-sm', mon.ev_hp, mon.ev_atk, mon.ev_def, mon.ev_spe, mon.ev_spa, mon.ev_spd));
+                    if (mon.moves && mon.moves.some(m => m && m !== '—')) {
+                        const movesDiv = el('div', 'moves-row');
+                        for (let mi = 0; mi < 4; mi++) {
+                            const name = mon.moves[mi];
+                            if (!name || name === '—') continue;
+                            movesDiv.appendChild(el('span', 'move-entry', name + ' ' + mon.pp[mi]));
+                        }
+                        content.appendChild(movesDiv);
+                    }
                 }
 
                 inner.appendChild(content);
@@ -418,6 +441,16 @@ function buildCol(slot, slotIndex) {
             // Encounter section
             if (slot.encounters && slot.encounters.length > 0) {
                 const encSec = el('div', 'enc-section');
+                if (slot.prev_run_encounters && slot.prev_run_encounters.length > 0) {
+                    const prevMatch = slot.prev_run_encounters.find(
+                        e => e.map_group === slot.current_map_group && e.map_name === slot.current_map_name);
+                    if (prevMatch) {
+                        const note = prevMatch.caught
+                            ? 'Last run: ' + prevMatch.species_name + ' Lv.' + prevMatch.level + ' caught'
+                            : 'Last run: ' + prevMatch.species_name + ' Lv.' + prevMatch.level + ' fled';
+                        encSec.appendChild(el('div', 'prev-hint', note));
+                    }
+                }
                 for (const group of slot.encounters) {
                     encSec.appendChild(el('div', 'enc-heading', group.label));
                     const row = el('div', 'enc-row');
@@ -435,7 +468,7 @@ function buildCol(slot, slotIndex) {
                 }
                 col.appendChild(encSec);
             }
-            } // end !SHOW_BOX
+            } // end show branch
         }
         return col;
 }
@@ -482,6 +515,21 @@ const NATURE_MODS = {
     'Quiet':   { up: 'SpA', down: 'Spe' }, 'Rash':    { up: 'SpA', down: 'SpD' },
     'Calm':    { up: 'SpD', down: 'Atk' }, 'Gentle':  { up: 'SpD', down: 'Def' },
     'Sassy':   { up: 'SpD', down: 'Spe' }, 'Careful': { up: 'SpD', down: 'SpA' },
+};
+
+const GYM_TYPES = {
+    'Brock':     'Rock',
+    'Misty':     'Water',
+    'Lt. Surge': 'Electric',
+    'Erika':     'Grass',
+    'Koga':      'Poison',
+    'Sabrina':   'Psychic',
+    'Blaine':    'Fire',
+    'Giovanni':  'Ground',
+    'Lorelei':   'Ice',
+    'Bruno':     'Fighting',
+    'Agatha':    'Ghost',
+    'Lance':     'Dragon',
 };
 
 function statRowEl(cls, nature, hp, atk, def, spe, spa, spd) {
@@ -599,6 +647,73 @@ function buildBoxContent(col, slot) {
             grid.appendChild(cell);
         }
         col.appendChild(grid);
+    }
+}
+
+function buildDeadContent(col, slot) {
+    if (!slot.dead || slot.dead.length === 0) {
+        col.appendChild(el('div', 'disconnected', 'No deaths recorded'));
+        return;
+    }
+    for (const mon of slot.dead) {
+        const mdiv = el('div', 'mon dead');
+        const inner = el('div', 'mon-inner');
+        if (mon.sprite) {
+            const img = document.createElement('img');
+            img.className = 'mon-sprite';
+            img.src = mon.sprite;
+            inner.appendChild(img);
+        }
+        const content = el('div', 'mon-content');
+        const nr = el('div', 'mon-name-row');
+        nr.appendChild(document.createTextNode(mon.nickname));
+        const gs = genderSym(mon.gender);
+        if (gs.sym) nr.appendChild(el('span', gs.cls, gs.sym));
+        if (mon.shiny) nr.appendChild(el('span', 'shiny', '✨'));
+        content.appendChild(nr);
+        content.appendChild(el('div', 'mon-sub',
+            'Lv.' + mon.level + ' ' + mon.species_name + ' — ' + mon.nature + (mon.shiny ? ' ★' : '')));
+        if (mon.soul_link) {
+            content.appendChild(el('div', 'mon-sub-sm', 'Soul Link'));
+        } else if (mon.max_hp > 0) {
+            content.appendChild(statRowEl('mon-sub-sm', mon.nature, mon.max_hp, mon.attack, mon.defense, mon.speed, mon.sp_attack, mon.sp_defense));
+        }
+        if (mon.died_at) content.appendChild(el('div', 'mon-sub-sm', 'Died: ' + mon.died_at));
+        inner.appendChild(content);
+        mdiv.appendChild(inner);
+        col.appendChild(mdiv);
+    }
+}
+
+function buildCaughtContent(col, slot) {
+    if (!slot.caught || slot.caught.length === 0) {
+        col.appendChild(el('div', 'disconnected', 'No catches recorded'));
+        return;
+    }
+    for (const mon of slot.caught) {
+        const mdiv = el('div', 'mon');
+        const inner = el('div', 'mon-inner');
+        if (mon.sprite) {
+            const img = document.createElement('img');
+            img.className = 'mon-sprite';
+            img.src = mon.sprite;
+            inner.appendChild(img);
+        }
+        const content = el('div', 'mon-content');
+        const nr = el('div', 'mon-name-row');
+        nr.appendChild(document.createTextNode(mon.nickname));
+        const gs = genderSym(mon.gender);
+        if (gs.sym) nr.appendChild(el('span', gs.cls, gs.sym));
+        if (mon.shiny) nr.appendChild(el('span', 'shiny', '✨'));
+        nr.appendChild(el('span', 'lv', 'Lv' + mon.level));
+        content.appendChild(nr);
+        content.appendChild(el('div', 'mon-sub',
+            mon.species_name + ' — ' + mon.nature + (mon.shiny ? ' ★' : '')));
+        if (mon.met_location_name) content.appendChild(el('div', 'mon-sub-sm', mon.met_location_name));
+        if (mon.caught_at) content.appendChild(el('div', 'mon-sub-sm', 'Caught: ' + mon.caught_at));
+        inner.appendChild(content);
+        mdiv.appendChild(inner);
+        col.appendChild(mdiv);
     }
 }
 </script>

@@ -240,6 +240,10 @@ struct MemberDto {
     /// Status condition bitmask (Gen III encoding):
     /// bits 0-2 = sleep turns, bit 3 = PSN, bit 4 = BRN, bit 5 = FRZ, bit 6 = PAR, bit 7 = TOX.
     status:            u32,
+    /// Current move names (empty string for empty slots).
+    moves:             [String; 4],
+    /// Current PP for each move slot.
+    pp:                [u8; 4],
 }
 
 // ---------------------------------------------------------------------------
@@ -528,6 +532,16 @@ impl BroadcastLoop {
                 sprite,
                 personality,
                 status:            p.status,
+                moves: {
+                    let m = &p.box_mon.secure.attack.moves;
+                    [
+                        fire_red_database::move_name(m[0]).to_string(),
+                        fire_red_database::move_name(m[1]).to_string(),
+                        fire_red_database::move_name(m[2]).to_string(),
+                        fire_red_database::move_name(m[3]).to_string(),
+                    ]
+                },
+                pp:                p.box_mon.secure.attack.pp,
             }
         }).collect()
     }
@@ -1039,8 +1053,10 @@ async fn ws_handler(
 /// not render, reducing per-tick payload size for narrow views.
 fn filter_slots_json(json: &str, show: &str) -> String {
     let strip: &[&str] = match show {
-        "box" => &["party", "encounters", "dead", "caught", "db_encounters", "prev_run_encounters"],
-        _     => return json.to_owned(),
+        "box"    => &["party", "encounters", "dead", "caught", "db_encounters", "prev_run_encounters"],
+        "dead"   => &["encounters", "box_pokemon", "caught", "prev_run_encounters"],
+        "caught" => &["encounters", "box_pokemon", "dead", "prev_run_encounters"],
+        _        => return json.to_owned(),
     };
     let Ok(mut slots) = serde_json::from_str::<Vec<serde_json::Value>>(json) else {
         return json.to_owned();
