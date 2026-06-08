@@ -136,6 +136,36 @@ pub fn unix_now() -> u64 {
         .unwrap_or(0)
 }
 
+/// Parses a timestamp string produced by [`format_timestamp`] back to Unix seconds.
+///
+/// Accepts `"YYYY-MM-DD HH:MM:SS UTC"`. Returns `None` if the string cannot be parsed.
+/// Used by `import_run` to preserve original event times on round-trip.
+pub fn parse_timestamp(s: &str) -> Option<u64> {
+    let s = s.trim_end_matches(" UTC");
+    let (date, time) = s.split_once(' ')?;
+    let mut dp = date.splitn(3, '-');
+    let year:  u32 = dp.next()?.parse().ok()?;
+    let month: u32 = dp.next()?.parse().ok()?;
+    let day:   u32 = dp.next()?.parse().ok()?;
+    let mut tp = time.splitn(3, ':');
+    let hour: u64 = tp.next()?.parse().ok()?;
+    let min:  u64 = tp.next()?.parse().ok()?;
+    let sec:  u64 = tp.next()?.parse().ok()?;
+    let mut days: u64 = 0;
+    for y in 1970..year {
+        days += if is_leap(y) { 366 } else { 365 };
+    }
+    let month_days_arr: [u32; 12] = [
+        31, if is_leap(year) { 29 } else { 28 }, 31, 30,
+        31, 30, 31, 31, 30, 31, 30, 31,
+    ];
+    for m in 1..month {
+        days += month_days_arr[(m - 1) as usize] as u64;
+    }
+    days += (day - 1) as u64;
+    Some(days * 86400 + hour * 3600 + min * 60 + sec)
+}
+
 // ---------------------------------------------------------------------------
 // Data types
 // ---------------------------------------------------------------------------
@@ -958,6 +988,24 @@ pub enum EventKind<'a> {
     Wipe,
 }
 
+impl<'a> EventKind<'a> {
+    /// Extracts `(event_type, species_name, nickname, level)` for a DB INSERT.
+    fn row_parts(&self) -> (&'static str, &'a str, &'a str, i32) {
+        match self {
+            EventKind::Catch { species_name, nickname, level } =>
+                ("catch",            species_name, nickname,  *level as i32),
+            EventKind::Death { species_name, nickname, level } =>
+                ("death",            species_name, nickname,  *level as i32),
+            EventKind::SoulLinkDeath { species_name, nickname, level } =>
+                ("soul_link_death",  species_name, nickname,  *level as i32),
+            EventKind::Shiny { species_name, level } =>
+                ("shiny",            species_name, "",         *level as i32),
+            EventKind::Wipe =>
+                ("wipe",             "",            "",         0),
+        }
+    }
+}
+
 /// Appends a row to the `events` table for the active run.
 ///
 /// No-op if no run is currently active. Returns `true` when the event was
@@ -970,18 +1018,7 @@ pub fn record_event(event: EventKind<'_>) -> bool {
     };
     let player      = state.current_player.clone();
     let occurred_at = unix_now() as i64;
-    let (event_type, species_name, nickname, level) = match &event {
-        EventKind::Catch { species_name, nickname, level } =>
-            ("catch",            *species_name, *nickname, *level as i32),
-        EventKind::Death { species_name, nickname, level } =>
-            ("death",            *species_name, *nickname, *level as i32),
-        EventKind::SoulLinkDeath { species_name, nickname, level } =>
-            ("soul_link_death",  *species_name, *nickname, *level as i32),
-        EventKind::Shiny { species_name, level } =>
-            ("shiny",            *species_name, "",        *level as i32),
-        EventKind::Wipe =>
-            ("wipe",             "",            "",        0),
-    };
+    let (event_type, species_name, nickname, level) = event.row_parts();
     state.client.execute(
         "INSERT INTO events (run_id, player_name, event_type, species_name, nickname, level, occurred_at)
          VALUES ($1, $2, $3, $4, $5, $6, $7)",
@@ -1574,18 +1611,7 @@ impl DbReader {
             None     => return false,
         };
         let occurred_at = unix_now() as i64;
-        let (event_type, species_name, nickname, level) = match &event {
-            EventKind::Catch { species_name, nickname, level } =>
-                ("catch",           *species_name, *nickname, *level as i32),
-            EventKind::Death { species_name, nickname, level } =>
-                ("death",           *species_name, *nickname, *level as i32),
-            EventKind::SoulLinkDeath { species_name, nickname, level } =>
-                ("soul_link_death", *species_name, *nickname, *level as i32),
-            EventKind::Shiny { species_name, level } =>
-                ("shiny",           *species_name, "",        *level as i32),
-            EventKind::Wipe =>
-                ("wipe",            "",            "",        0),
-        };
+        let (event_type, species_name, nickname, level) = event.row_parts();
         self.client.lock_or_recover().execute(
             "INSERT INTO events (run_id, player_name, event_type, species_name, nickname, level, occurred_at)
              VALUES ($1, $2, $3, $4, $5, $6, $7)",
@@ -1606,19 +1632,21 @@ impl DbReader {
     /// Battle stats (HP, Attack, etc.) are stored as 0 to signal a soul-link
     /// kill rather than a direct in-game death. Safe to call if the record
     /// already exists — the insert is a no-op in that case.
-    /// Returns `true` if the insert was attempted (run_id was known), `false` if
-    /// the run has not been identified yet (caller should retry next frame).
+    ///
+    /// Returns `true` only when a new row was actually inserted. Returns `false`
+    /// if the run ID is not yet known (retry next frame), if the record already
+    /// exists (`ON CONFLICT DO NOTHING`), or if the DB write fails.
     pub fn mark_soul_link_dead(&self, caught: &CaughtPokemon) -> bool {
         let run_id = match *self.run_id.lock_or_recover() {
             Some(id) => id,
             None => return false,
         };
         let now = unix_now();
-        if let Err(e) = self.client
+        match self.client
             .lock_or_recover()
             .execute(
                 "INSERT INTO dead_pokemon (
-                    run_id, personality, ot_id, ot_name, nickname,
+                    run_id, player_name, personality, ot_id, ot_name, nickname,
                     species, species_name, is_shiny, nature,
                     level, experience, max_hp, attack, defense, speed, sp_attack, sp_defense,
                     move1, move2, move3, move4,
@@ -1628,17 +1656,18 @@ impl DbReader {
                     held_item, ability, ability_name, friendship, met_location, died_at, gender,
                     is_soul_link_death
                 ) VALUES (
-                    $1, $2, $3, '', $4, $5, $6, $7, $8, $9,
+                    $1, $2, $3, $4, '', $5, $6, $7, $8, $9, $10,
                     0, 0, 0, 0, 0, 0, 0,
                     0, 0, 0, 0,
                     0, 0, 0, 0,
-                    $10, $11, $12, $13, $14, $15,
+                    $11, $12, $13, $14, $15, $16,
                     0, 0, 0, 0, 0, 0,
-                    0, 0, '', 0, $16, $17, $18,
+                    0, 0, '', 0, $17, $18, $19,
                     TRUE
                 ) ON CONFLICT (run_id, personality) DO NOTHING",
                 &[
                     &(run_id as i32),
+                    &caught.player_name,
                     &(caught.personality as i64),
                     &(caught.ot_id as i64),
                     &caught.nickname,
@@ -1659,9 +1688,13 @@ impl DbReader {
                 ],
             )
         {
-            eprintln!("mark_caught: DB error: {}", e);
+            Ok(1) => true,
+            Ok(_) => false, // ON CONFLICT DO NOTHING — row already existed, no event to fire
+            Err(e) => {
+                eprintln!("mark_soul_link_dead: DB error: {e}");
+                false
+            }
         }
-        true
     }
 }
 
@@ -1919,14 +1952,14 @@ pub fn export_run(conn_str: &str, run_id: u32) -> serde_json::Value {
 
     let caught_rows = client.query(
         "SELECT nickname, species_name, level, nature, is_shiny, gender, \
-                met_location, location_name, caught_at, player_name \
+                met_location, location_name, caught_at, player_name, personality \
          FROM caught_pokemon WHERE run_id = $1 ORDER BY caught_at",
         &[&rid],
     ).unwrap_or_default();
 
     let dead_rows = client.query(
         "SELECT nickname, species_name, level, nature, is_shiny, gender, \
-                met_location, died_at, player_name \
+                met_location, died_at, player_name, is_soul_link_death, personality \
          FROM dead_pokemon WHERE run_id = $1 ORDER BY died_at",
         &[&rid],
     ).unwrap_or_default();
@@ -1956,17 +1989,20 @@ pub fn export_run(conn_str: &str, run_id: u32) -> serde_json::Value {
             "location_name": r.get::<_, String>(7),
             "caught_at":     format_timestamp(r.get::<_, i64>(8) as u64),
             "player_name":   r.get::<_, String>(9),
+            "personality":   r.get::<_, i64>(10),
         })).collect::<Vec<_>>(),
         "dead": dead_rows.iter().map(|r| serde_json::json!({
-            "nickname":     r.get::<_, String>(0),
-            "species_name": r.get::<_, String>(1),
-            "level":        r.get::<_, i32>(2),
-            "nature":       r.get::<_, String>(3),
-            "is_shiny":     r.get::<_, bool>(4),
-            "gender":       r.get::<_, i32>(5),
-            "met_location": r.get::<_, i32>(6),
-            "died_at":      format_timestamp(r.get::<_, i64>(7) as u64),
-            "player_name":  r.get::<_, String>(8),
+            "nickname":          r.get::<_, String>(0),
+            "species_name":      r.get::<_, String>(1),
+            "level":             r.get::<_, i32>(2),
+            "nature":            r.get::<_, String>(3),
+            "is_shiny":          r.get::<_, bool>(4),
+            "gender":            r.get::<_, i32>(5),
+            "met_location":      r.get::<_, i32>(6),
+            "died_at":           format_timestamp(r.get::<_, i64>(7) as u64),
+            "player_name":       r.get::<_, String>(8),
+            "is_soul_link_death": r.get::<_, bool>(9),
+            "personality":       r.get::<_, i64>(10),
         })).collect::<Vec<_>>(),
         "encounters": enc_rows.iter().map(|r| serde_json::json!({
             "species_name":   r.get::<_, String>(0),
@@ -2124,8 +2160,13 @@ pub fn list_all_runs_json(conn_str: &str) -> serde_json::Value {
 /// Imports a run from the JSON format produced by [`export_run`].
 ///
 /// Creates a new `runs` row and re-inserts every caught, dead, and encounter
-/// record from the export.  The original run id is **not** preserved — a new
+/// record from the export. The original run id is **not** preserved — a new
 /// id is assigned so there are no conflicts with existing data.
+///
+/// Original `personality` values, timestamps (`caught_at`, `died_at`,
+/// `encountered_at`), `is_soul_link_death`, and the run's `started_at`/`ended_at`
+/// are all preserved from the export JSON. Exports produced before these fields
+/// were added fall back to safe defaults (synthetic personalities, import time).
 ///
 /// Returns `{ "run_id": <new_id> }` on success or `{ "error": "..." }` on failure.
 pub fn import_run(conn_str: &str, body: &serde_json::Value) -> serde_json::Value {
@@ -2142,11 +2183,22 @@ pub fn import_run(conn_str: &str, body: &serde_json::Value) -> serde_json::Value
     let player_name = run_obj.get("player_name")
         .and_then(|v| v.as_str())
         .unwrap_or("Imported");
-    let started_at = unix_now() as i64;
+
+    // Preserve original run timestamps; fall back to now if absent (old exports).
+    let now = unix_now() as i64;
+    let started_at: i64 = run_obj.get("started_at")
+        .and_then(|v| v.as_str())
+        .and_then(parse_timestamp)
+        .map(|t| t as i64)
+        .unwrap_or(now);
+    let ended_at: Option<i64> = run_obj.get("ended_at")
+        .and_then(|v| v.as_str())
+        .and_then(parse_timestamp)
+        .map(|t| t as i64);
 
     let new_id: i32 = match client.query_one(
-        "INSERT INTO runs (player_name, started_at) VALUES ($1, $2) RETURNING id",
-        &[&player_name, &started_at],
+        "INSERT INTO runs (player_name, started_at, ended_at) VALUES ($1, $2, $3) RETURNING id",
+        &[&player_name, &started_at, &ended_at],
     ) {
         Ok(row) => row.get(0),
         Err(e)  => return serde_json::json!({ "error": format!("Failed to create run: {e}") }),
@@ -2155,26 +2207,31 @@ pub fn import_run(conn_str: &str, body: &serde_json::Value) -> serde_json::Value
     // Re-insert encounters.
     if let Some(encounters) = body.get("encounters").and_then(|v| v.as_array()) {
         for enc in encounters {
-            let species_name = enc.get("species_name").and_then(|v| v.as_str()).unwrap_or("");
-            let level        = enc.get("level").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
-            let map_group    = enc.get("map_group").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
-            let map_name     = enc.get("map_name").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
-            let caught       = enc.get("caught").and_then(|v| v.as_bool()).unwrap_or(false);
-            let is_shiny     = enc.get("is_shiny").and_then(|v| v.as_bool()).unwrap_or(false);
-            let enc_player   = enc.get("player_name").and_then(|v| v.as_str()).unwrap_or(player_name);
+            let species_name  = enc.get("species_name").and_then(|v| v.as_str()).unwrap_or("");
+            let level         = enc.get("level").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+            let map_group     = enc.get("map_group").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+            let map_name      = enc.get("map_name").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+            let caught        = enc.get("caught").and_then(|v| v.as_bool()).unwrap_or(false);
+            let is_shiny      = enc.get("is_shiny").and_then(|v| v.as_bool()).unwrap_or(false);
+            let enc_player    = enc.get("player_name").and_then(|v| v.as_str()).unwrap_or(player_name);
+            let encountered_at: i64 = enc.get("encountered_at")
+                .and_then(|v| v.as_str())
+                .and_then(parse_timestamp)
+                .map(|t| t as i64)
+                .unwrap_or(now);
             let _ = client.execute(
                 "INSERT INTO encounters (run_id, player_name, species_name, level, \
                                         map_group, map_name, caught, is_shiny, encountered_at) \
                  VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
                 &[&new_id, &enc_player, &species_name, &level,
-                  &map_group, &map_name, &caught, &is_shiny, &started_at],
+                  &map_group, &map_name, &caught, &is_shiny, &encountered_at],
             );
         }
     }
 
     // Re-insert caught.
     if let Some(caught_list) = body.get("caught").and_then(|v| v.as_array()) {
-        for c in caught_list {
+        for (idx, c) in caught_list.iter().enumerate() {
             let nickname      = c.get("nickname").and_then(|v| v.as_str()).unwrap_or("");
             let species_name  = c.get("species_name").and_then(|v| v.as_str()).unwrap_or("");
             let level         = c.get("level").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
@@ -2184,6 +2241,16 @@ pub fn import_run(conn_str: &str, body: &serde_json::Value) -> serde_json::Value
             let met_location  = c.get("met_location").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
             let location_name = c.get("location_name").and_then(|v| v.as_str()).unwrap_or("");
             let c_player      = c.get("player_name").and_then(|v| v.as_str()).unwrap_or(player_name);
+            // Use original personality; fall back to a synthetic unique value for
+            // exports produced before this field was added.
+            let personality: i64 = c.get("personality")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(new_id as i64 * 10_000 + idx as i64 + 1);
+            let caught_at: i64 = c.get("caught_at")
+                .and_then(|v| v.as_str())
+                .and_then(parse_timestamp)
+                .map(|t| t as i64)
+                .unwrap_or(now);
             let _ = client.execute(
                 "INSERT INTO caught_pokemon (run_id, player_name, personality, ot_id, \
                                             nickname, species, species_name, is_shiny, \
@@ -2196,17 +2263,17 @@ pub fn import_run(conn_str: &str, body: &serde_json::Value) -> serde_json::Value
                  VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12, \
                          0,0,0,0,0,0, 0,0,0,0,0,0, $13,$14) \
                  ON CONFLICT (run_id, personality) DO NOTHING",
-                &[&new_id, &c_player, &(new_id as i64), &0i64,
+                &[&new_id, &c_player, &personality, &0i64,
                   &nickname, &0i32, &species_name, &is_shiny,
                   &nature, &level, &met_location, &location_name,
-                  &started_at, &gender],
+                  &caught_at, &gender],
             );
         }
     }
 
     // Re-insert dead.
     if let Some(dead_list) = body.get("dead").and_then(|v| v.as_array()) {
-        for d in dead_list {
+        for (idx, d) in dead_list.iter().enumerate() {
             let nickname     = d.get("nickname").and_then(|v| v.as_str()).unwrap_or("");
             let species_name = d.get("species_name").and_then(|v| v.as_str()).unwrap_or("");
             let level        = d.get("level").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
@@ -2215,7 +2282,19 @@ pub fn import_run(conn_str: &str, body: &serde_json::Value) -> serde_json::Value
             let gender       = d.get("gender").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
             let met_location = d.get("met_location").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
             let d_player     = d.get("player_name").and_then(|v| v.as_str()).unwrap_or(player_name);
-            let is_soul_link_death = d.get("soul_link").and_then(|v| v.as_bool()).unwrap_or(false);
+            // Accept "is_soul_link_death" (current) or "soul_link" (old exports).
+            let is_soul_link_death = d.get("is_soul_link_death")
+                .or_else(|| d.get("soul_link"))
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            let personality: i64 = d.get("personality")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(new_id as i64 * 10_000 + 5_000 + idx as i64 + 1);
+            let died_at: i64 = d.get("died_at")
+                .and_then(|v| v.as_str())
+                .and_then(parse_timestamp)
+                .map(|t| t as i64)
+                .unwrap_or(now);
             let _ = client.execute(
                 "INSERT INTO dead_pokemon (run_id, player_name, personality, ot_id, \
                                           nickname, species, species_name, is_shiny, \
@@ -2230,9 +2309,9 @@ pub fn import_run(conn_str: &str, body: &serde_json::Value) -> serde_json::Value
                          0,0,0,0,0,0, 0,0,0,0,0,0,0,0, \
                          0,0,0,0,0,0, 0,0,0,0,0,0, 0,0,'',0,'') \
                  ON CONFLICT (run_id, personality) DO NOTHING",
-                &[&new_id, &d_player, &(new_id as i64), &0i64,
+                &[&new_id, &d_player, &personality, &0i64,
                   &nickname, &0i32, &species_name, &is_shiny,
-                  &nature, &level, &met_location, &started_at, &gender,
+                  &nature, &level, &met_location, &died_at, &gender,
                   &is_soul_link_death],
             );
         }
@@ -2540,7 +2619,7 @@ mod tests {
         assert_eq!(event_type_str(&EventKind::Wipe), "wipe");
     }
 
-    // ── format_timestamp ─────────────────────────────────────────────────────
+    // ── format_timestamp / parse_timestamp round-trip ────────────────────────
 
     #[test]
     fn format_timestamp_unix_epoch() {
@@ -2563,5 +2642,28 @@ mod tests {
     fn format_timestamp_leap_day() {
         // 2024-02-29 00:00:00 UTC = 1709164800
         assert_eq!(format_timestamp(1709164800), "2024-02-29 00:00:00 UTC");
+    }
+
+    #[test]
+    fn parse_timestamp_roundtrips_epoch() {
+        assert_eq!(parse_timestamp("1970-01-01 00:00:00 UTC"), Some(0));
+    }
+
+    #[test]
+    fn parse_timestamp_roundtrips_arbitrary() {
+        for secs in [1, 86400, 90061, 1704067200u64, 1709164800] {
+            let formatted = format_timestamp(secs);
+            assert_eq!(
+                parse_timestamp(&formatted),
+                Some(secs),
+                "round-trip failed for secs={secs} (formatted={formatted})"
+            );
+        }
+    }
+
+    #[test]
+    fn parse_timestamp_returns_none_on_garbage() {
+        assert_eq!(parse_timestamp("not a date"), None);
+        assert_eq!(parse_timestamp(""), None);
     }
 }

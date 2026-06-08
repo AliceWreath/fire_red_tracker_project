@@ -930,6 +930,17 @@ const SOULLINK_HTML:     &str = include_str!("soullink.html");
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
+/// Extracts the DB connection string from `WebState::db_conn`, returning an
+/// error JSON response if none is configured. Used in every DB-backed handler.
+macro_rules! require_db {
+    ($state:expr) => {
+        match $state.db_conn {
+            Some(s) => s,
+            None => return axum::Json(serde_json::json!({ "error": "No database configured" })),
+        }
+    };
+}
+
 const TESTING_BANNER: &str = r#"<div id="testing-banner" style="position:fixed;top:0;left:0;right:0;z-index:9999;background:#b00;color:#fff;font-weight:bold;text-align:center;padding:4px 0;font-family:sans-serif;font-size:14px;">[TESTING]</div>"#;
 
 fn apply_page(html: &str, testing: bool) -> String {
@@ -1233,10 +1244,7 @@ async fn api_run_stats(
     State(state): State<WebState>,
     Path(run_id): Path<u32>,
 ) -> axum::Json<serde_json::Value> {
-    let conn = match state.db_conn {
-        Some(s) => s,
-        None    => return axum::Json(serde_json::json!({ "error": "No database configured" })),
-    };
+    let conn = require_db!(state);
     let result = tokio::task::spawn_blocking(move || {
         fire_red_database::run_stats(&conn, run_id)
     }).await;
@@ -1285,10 +1293,7 @@ async fn api_shiny_stats(
     State(state): State<WebState>,
     Path(run_id): Path<u32>,
 ) -> axum::Json<serde_json::Value> {
-    let conn = match state.db_conn {
-        Some(s) => s,
-        None    => return axum::Json(serde_json::json!({ "error": "No database configured" })),
-    };
+    let conn = require_db!(state);
     let result = tokio::task::spawn_blocking(move || {
         fire_red_database::shiny_stats(&conn, run_id)
     }).await;
@@ -1300,10 +1305,7 @@ async fn api_run_events(
     State(state): State<WebState>,
     Path(run_id): Path<u32>,
 ) -> axum::Json<serde_json::Value> {
-    let conn = match state.db_conn {
-        Some(s) => s,
-        None    => return axum::Json(serde_json::json!({ "error": "No database configured" })),
-    };
+    let conn = require_db!(state);
     let result = tokio::task::spawn_blocking(move || {
         fire_red_database::list_events_json(&conn, run_id)
     }).await;
@@ -1314,10 +1316,7 @@ async fn api_run_events(
 async fn api_runs(
     State(state): State<WebState>,
 ) -> axum::Json<serde_json::Value> {
-    let conn = match state.db_conn {
-        Some(s) => s,
-        None    => return axum::Json(serde_json::json!({ "error": "No database configured" })),
-    };
+    let conn = require_db!(state);
     let result = tokio::task::spawn_blocking(move || {
         fire_red_database::list_all_runs_json(&conn)
     }).await;
@@ -1332,10 +1331,7 @@ async fn api_run_import(
     State(state): State<WebState>,
     axum::Json(body): axum::Json<serde_json::Value>,
 ) -> axum::Json<serde_json::Value> {
-    let conn = match state.db_conn {
-        Some(s) => s,
-        None    => return axum::Json(serde_json::json!({ "error": "No database configured" })),
-    };
+    let conn = require_db!(state);
     let result = tokio::task::spawn_blocking(move || {
         fire_red_database::import_run(&conn, &body)
     }).await;
@@ -1373,10 +1369,7 @@ async fn api_db_query(
     if !addr.ip().is_loopback() {
         return axum::Json(serde_json::json!({ "error": "Forbidden: endpoint only available on localhost" }));
     }
-    let conn = match state.db_conn {
-        Some(s) => s,
-        None    => return axum::Json(serde_json::json!({ "error": "No database configured" })),
-    };
+    let conn = require_db!(state);
     let sql = match body["sql"].as_str() {
         Some(s) => s.to_string(),
         None    => return axum::Json(serde_json::json!({ "error": "Missing 'sql' field" })),

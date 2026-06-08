@@ -783,14 +783,16 @@ impl eframe::App for AggregatorApp {
                 .map(|db| db.mark_soul_link_dead(&partner))
                 .unwrap_or(false);
             if wrote {
-                self.slots[j].db.as_ref().map(|db| db.record_event(
-                    &partner.player_name,
-                    fire_red_database::EventKind::SoulLinkDeath {
-                        species_name: &partner.species_name,
-                        nickname:     &partner.nickname,
-                        level:        partner.level,
-                    },
-                ));
+                if let Some(db) = &self.slots[j].db {
+                    db.record_event(
+                        &partner.player_name,
+                        fire_red_database::EventKind::SoulLinkDeath {
+                            species_name: &partner.species_name,
+                            nickname:     &partner.nickname,
+                            level:        partner.level,
+                        },
+                    );
+                }
                 self.soul_link_propagated.insert((j, partner.personality));
             }
         }
@@ -798,8 +800,12 @@ impl eframe::App for AggregatorApp {
         // ── Live soul link dead detection ─────────────────────────────────────
         // For each slot, collect personalities whose soul link partner already
         // has hp == 0 in another slot's live game state. This makes the partner
-        // show as dead instantly without waiting for the DB write (which can lag
-        // up to 5 seconds due to the tracker's FORCE_PARTY_CHECK_INTERVAL).
+        // show as dead instantly without waiting for the DB write.
+        //
+        // Gift Pokémon (met_location = 0) are paired by caught_at order, matching
+        // the DB-kill path in soul_link_kill_candidates. Using party-slot order
+        // here instead would cause the live UI and the DB to disagree on which
+        // Pokémon is the partner.
         let mut live_soul_link_dead: Vec<HashSet<u32>> = vec![HashSet::new(); n];
         for i in 0..n {
             let Some(gs_i) = &states[i].1 else { continue };
@@ -808,17 +814,23 @@ impl eframe::App for AggregatorApp {
                 let met_i = pokemon_i.box_mon.secure.misc.met_location;
                 for j in 0..n {
                     if j == i { continue; }
-                    let Some(gs_j) = &states[j].1 else { continue };
                     if met_i == 0 {
-                        // Gift Pokémon: pair by order among gifts in each party.
-                        if let Some(idx) = gift_party_index(&gs_i.party, pokemon_i.box_mon.personality)
-                            && let Some(partner) = gs_j.party.iter()
-                                .filter(|p| p.box_mon.secure.misc.met_location == 0)
-                                .nth(idx)
-                        {
-                            live_soul_link_dead[j].insert(partner.box_mon.personality);
+                        // Gift Pokémon: pair by order of receipt (caught_at) — same
+                        // ordering used by soul_link_kill_candidates.
+                        let Some(idx) = gift_catch_index(
+                            &self.db_caches[i].caught,
+                            pokemon_i.box_mon.personality,
+                        ) else { continue };
+                        let mut gifts_j: Vec<&CaughtPokemon> = self.db_caches[j].caught
+                            .iter()
+                            .filter(|c| c.met_location == 0)
+                            .collect();
+                        gifts_j.sort_by_key(|c| c.caught_at);
+                        if let Some(partner) = gifts_j.get(idx) {
+                            live_soul_link_dead[j].insert(partner.personality);
                         }
                     } else {
+                        let Some(gs_j) = &states[j].1 else { continue };
                         for pokemon_j in &gs_j.party {
                             if pokemon_j.box_mon.secure.misc.met_location == met_i {
                                 live_soul_link_dead[j].insert(pokemon_j.box_mon.personality);
@@ -919,6 +931,19 @@ fn soul_link_kill_candidates(
     already_propagated: &HashSet<(usize, u32)>,
 ) -> Vec<(usize, CaughtPokemon)> {
     let n = all_dead.len();
+
+    // Pre-sort gift Pokémon per slot by caught_at once so the inner loop does
+    // not re-sort on every dead personality.
+    let sorted_gifts: Vec<Vec<&CaughtPokemon>> = caught_by_slot.iter()
+        .map(|slot| {
+            let mut gifts: Vec<&CaughtPokemon> = slot.iter()
+                .filter(|c| c.met_location == 0)
+                .collect();
+            gifts.sort_by_key(|c| c.caught_at);
+            gifts
+        })
+        .collect();
+
     let mut out = Vec::new();
     for i in 0..n {
         for &dead_p in all_dead[i].keys() {
@@ -930,16 +955,11 @@ fn soul_link_kill_candidates(
 
             if met_loc == 0 {
                 // Gift Pokémon: pair by order of receipt across slots.
-                let Some(gift_idx) = gift_catch_index(&caught_by_slot[i], dead_p) else { continue };
+                let Some(gift_idx) = sorted_gifts[i].iter().position(|c| c.personality == dead_p)
+                    else { continue };
                 for j in 0..n {
                     if j == i { continue; }
-                    let mut gifts_j: Vec<CaughtPokemon> = caught_by_slot[j]
-                        .iter()
-                        .filter(|c| c.met_location == 0)
-                        .cloned()
-                        .collect();
-                    gifts_j.sort_by_key(|c| c.caught_at);
-                    if let Some(p) = gifts_j.get(gift_idx).cloned()
+                    if let Some(p) = sorted_gifts[j].get(gift_idx).map(|c| (*c).clone())
                         && !all_dead[j].contains_key(&p.personality)
                         && !already_propagated.contains(&(j, p.personality))
                     {

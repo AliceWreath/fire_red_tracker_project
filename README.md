@@ -764,6 +764,17 @@ Add `http://localhost:9090/cmd` in a browser tab to manage runs — **End Run** 
 
 ## Project status
 
+**v0.8.81** — bug-fix and correctness pass (aggregator + database):
+
+- **`/api/run/import` data loss fixed** — all caught and dead Pokémon were silently discarded on import except the first, because every row was assigned the run ID as its personality value. Import now reads the original `personality` from the export JSON (preserved by `export_run` since this release); old exports without the field fall back to safe synthetic values.
+- **Soul-link deaths now visible per-player** — `mark_soul_link_dead` was inserting rows without `player_name`, causing `list_dead_with_records` to never find them. The column is now populated from the caught record.
+- **`is_soul_link_death` preserved on JSON export/import round-trip** — `export_run` now includes the flag in the dead-Pokémon list; `import_run` reads it under the correct key (`is_soul_link_death`, with fallback to the old `soul_link` key for existing exports).
+- **Gift Pokémon soul-link pairing consistent across live UI and DB** — the live overlay was pairing gift Pokémon by party-slot order while the DB-kill path used caught-at timestamp order, which could mark the wrong partner dead. Both paths now use caught-at order.
+- **No spurious soul-link events on reconnect** — `mark_soul_link_dead` now returns `true` only when a row is actually inserted (not on `ON CONFLICT DO NOTHING` or on DB error), preventing duplicate event log entries after an aggregator restart.
+- **Original timestamps preserved on import** — `import_run` now parses `caught_at`, `died_at`, `encountered_at`, `started_at`, and `ended_at` from the export JSON using the new `parse_timestamp` inverse of `format_timestamp`, rather than stamping everything with the import time.
+- **`record_event` dispatch deduplicated** — `EventKind::row_parts()` centralises the variant-to-columns mapping shared between the global and `DbReader` versions.
+- **`require_db!` macro** consolidates the six identical DB-guard blocks across web API handlers.
+
 **v0.8.80** — robustness pass: removed `unwrap()` panics in the webhook template renderer, party-monitor encryption helper, and bag-scan dev tool; tightened port-0 validation in the setup dialog; improved the species lookup error message in `fire_red_text`.
 
 Personal project built for Nuzlocke and Soul Link runs. The codebase is functional but not hardened for general distribution:
