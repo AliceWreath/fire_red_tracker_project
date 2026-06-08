@@ -1020,6 +1020,10 @@ mod tests {
         CaughtPokemon { caught_at, ..stub_caught(personality, met_location) }
     }
 
+    fn slices(v: &[Vec<CaughtPokemon>]) -> Vec<&[CaughtPokemon]> {
+        v.iter().map(|s| s.as_slice()).collect()
+    }
+
     fn stub_dead() -> DeadPokemon {
         DeadPokemon {
             player_name: String::new(), personality: 0, ot_id: 0, ot_name: String::new(),
@@ -1043,7 +1047,7 @@ mod tests {
         let all_dead  = vec![HashMap::new(), HashMap::new()];
         let caught    = vec![vec![stub_caught(1, 10)], vec![stub_caught(2, 10)]];
         let propagated = HashSet::new();
-        assert!(soul_link_kill_candidates(&all_dead, &caught, &propagated).is_empty());
+        assert!(soul_link_kill_candidates(&all_dead, &slices(&caught), &propagated).is_empty());
     }
 
     #[test]
@@ -1054,7 +1058,7 @@ mod tests {
             vec![stub_caught(2, 99)], // different location
         ];
         let propagated = HashSet::new();
-        assert!(soul_link_kill_candidates(&all_dead, &caught, &propagated).is_empty());
+        assert!(soul_link_kill_candidates(&all_dead, &slices(&caught), &propagated).is_empty());
     }
 
     #[test]
@@ -1065,7 +1069,7 @@ mod tests {
             vec![stub_caught(2, 10)], // soul-link partner, caught at 10 by slot 1
         ];
         let propagated = HashSet::new();
-        let candidates = soul_link_kill_candidates(&all_dead, &caught, &propagated);
+        let candidates = soul_link_kill_candidates(&all_dead, &slices(&caught), &propagated);
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0].0, 1);
         assert_eq!(candidates[0].1.personality, 2);
@@ -1080,7 +1084,7 @@ mod tests {
             vec![stub_caught(2, 10)],
         ];
         let propagated = HashSet::new();
-        assert!(soul_link_kill_candidates(&all_dead, &caught, &propagated).is_empty());
+        assert!(soul_link_kill_candidates(&all_dead, &slices(&caught), &propagated).is_empty());
     }
 
     #[test]
@@ -1092,7 +1096,7 @@ mod tests {
         ];
         let mut propagated = HashSet::new();
         propagated.insert((1usize, 2u32)); // already handled this session
-        assert!(soul_link_kill_candidates(&all_dead, &caught, &propagated).is_empty());
+        assert!(soul_link_kill_candidates(&all_dead, &slices(&caught), &propagated).is_empty());
     }
 
     #[test]
@@ -1104,7 +1108,7 @@ mod tests {
             vec![stub_caught(2, 0)],
         ];
         let propagated = HashSet::new();
-        let candidates = soul_link_kill_candidates(&all_dead, &caught, &propagated);
+        let candidates = soul_link_kill_candidates(&all_dead, &slices(&caught), &propagated);
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0].0, 1);
         assert_eq!(candidates[0].1.personality, 2);
@@ -1121,7 +1125,7 @@ mod tests {
             vec![stub_caught_at(6, 0, 2), stub_caught_at(5, 0, 1)],
         ];
         let propagated = HashSet::new();
-        let candidates = soul_link_kill_candidates(&all_dead, &caught, &propagated);
+        let candidates = soul_link_kill_candidates(&all_dead, &slices(&caught), &propagated);
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0].0, 1);
         assert_eq!(candidates[0].1.personality, 6); // Eevee, not starter
@@ -1137,7 +1141,7 @@ mod tests {
             vec![stub_caught_at(5, 0, 1)], // only one gift
         ];
         let propagated = HashSet::new();
-        assert!(soul_link_kill_candidates(&all_dead, &caught, &propagated).is_empty());
+        assert!(soul_link_kill_candidates(&all_dead, &slices(&caught), &propagated).is_empty());
     }
 
     #[test]
@@ -1150,7 +1154,7 @@ mod tests {
             vec![stub_caught(2, 10)],
         ];
         let propagated = HashSet::new();
-        assert!(soul_link_kill_candidates(&all_dead, &caught, &propagated).is_empty());
+        assert!(soul_link_kill_candidates(&all_dead, &slices(&caught), &propagated).is_empty());
     }
 
     #[test]
@@ -1163,7 +1167,7 @@ mod tests {
             vec![stub_caught(3, 10)],
         ];
         let propagated = HashSet::new();
-        let mut candidates = soul_link_kill_candidates(&all_dead, &caught, &propagated);
+        let mut candidates = soul_link_kill_candidates(&all_dead, &slices(&caught), &propagated);
         candidates.sort_by_key(|(j, _)| *j);
         assert_eq!(candidates.len(), 2);
         assert_eq!(candidates[0].0, 1);
@@ -1181,7 +1185,7 @@ mod tests {
             vec![stub_caught(2, 99), stub_caught(3, 10)], // only personality 3 links
         ];
         let propagated = HashSet::new();
-        let candidates = soul_link_kill_candidates(&all_dead, &caught, &propagated);
+        let candidates = soul_link_kill_candidates(&all_dead, &slices(&caught), &propagated);
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0].1.personality, 3);
     }
