@@ -265,7 +265,7 @@ fn main() {
         }
     }
 
-    webhook::init(cfg.webhooks.clone());
+    webhook::init(cfg.webhooks.clone(), cfg.obs.clone());
 
     let is_clean            = cfg.clean || cli.clean;
     let rom_path            = cli.rom.unwrap_or(cfg.rom);

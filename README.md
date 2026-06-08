@@ -38,6 +38,24 @@ A dedicated transparent OBS source (`/:index/alerts`) that shows timed toast not
 - **Shiny encounter** — fires when a new encounter is recorded with the shiny flag set. Shows species, level, and zone name. Stays visible for 10 seconds.
 - **Party wipe / blackout** — fires when every party member is dead simultaneously. The tracker detects the wipe and calls `end_run()` automatically; the overlay displays the "PARTY WIPED" banner in response to the resulting run-state change.
 
+### OBS clip trigger
+
+The tracker can automatically save the OBS replay buffer on key events. Configure the optional `[obs]` section in `~/.config/fire_red_tracker/config.toml`:
+
+```toml
+[obs]
+host          = "localhost"   # OBS WebSocket host (default: localhost)
+port          = 4455          # OBS WebSocket port (default: 4455)
+password      = "secret"      # omit if OBS authentication is disabled
+clip_on_death = true          # save replay buffer when a party member faints
+clip_on_shiny = true          # save replay buffer on shiny encounter
+clip_on_wipe  = true          # save replay buffer on party wipe
+```
+
+All three trigger flags default to `false`. The `[obs]` section is omitted from the config file entirely when all three are disabled.
+
+Clips are fired on the same background thread as webhooks. The tracker connects to OBS via plain TCP WebSocket (OBS WebSocket v5 protocol), authenticates with SHA-256 if a password is set, and sends a `SaveReplayBuffer` request. OBS must have **Replay Buffer** enabled and running (Tools → Replay Buffer → Start). Connection errors are printed to stderr and do not interrupt the game-polling loop.
+
 ### Webhooks
 
 The tracker can POST to a user-configured URL whenever a key event occurs. Each event type has its own independent optional URL; any combination can be enabled. Configuration is done via the setup dialog or the in-app ⚙ Settings panel. All keys live under `[webhooks]` in `~/.config/fire_red_tracker/config.toml`. The section is omitted from the file entirely when nothing is configured.
@@ -252,11 +270,16 @@ The following pages are available:
 | `http://localhost:PORT/1/dead` | Player 2's dead Pokémon log |
 | `http://localhost:PORT/1/caught` | Player 2's caught Pokémon log |
 | `http://localhost:PORT/1/box` | Player 2's PC box contents |
-| `http://localhost:PORT/0/routes` | Player 1's route completion board — all Nuzlocke zones colour-coded caught / failed / unvisited |
+| `http://localhost:PORT/0/routes` | Player 1's route completion board — all Nuzlocke zones colour-coded caught / failed / unvisited, with encountered species shown inline on each zone card |
 | `http://localhost:PORT/1/routes` | Player 2's route completion board |
 | `http://localhost:PORT/0/alerts` | Player 1's alerts overlay — transparent OBS source for zone, death, shiny, and wipe toasts |
 | `http://localhost:PORT/1/alerts` | Player 2's alerts overlay |
 | `http://localhost:PORT/history` | Run history — all past runs with expandable catch / death / encounter logs |
+| `http://localhost:PORT/shiny` | Shiny odds tracker — encounter count since last shiny encounter, last shiny detail card, full encounter list since last shiny |
+| `http://localhost:PORT/memorial` | Memorial grid — dead Pokémon from the active run as sprite cards with nickname, species, level, and death date |
+| `http://localhost:PORT/run/:id/memorial` | Memorial grid for a specific run by ID |
+| `http://localhost:PORT/run/:id/stats` | Per-run statistics — playtime, catch rate by zone, zone encounter log table, death log |
+| `http://localhost:PORT/soullink` | Soul Link health overview — OBS Browser Source showing all active soul-link pairs side-by-side with sprites, HP bars, and live dead/alive state |
 
 The per-player pages can all be added as separate Browser Sources in OBS and positioned independently. The alerts overlay is fully transparent when idle — nothing appears until an event fires.
 
@@ -284,14 +307,33 @@ All endpoints are served on the same port as the WebSocket overlay (`--ws-port`)
 
 | Endpoint | Method | Description |
 |---|---|---|
-| `/ws` | `GET` (WS upgrade) | WebSocket stream. Sends the full state JSON immediately on connect, then pushes updates whenever state changes (~10×/s while playing, zero bandwidth when idle). Accepts `{ "cmd": "end_run" }` and `{ "cmd": "new_run" }` text frames from the client |
+| `/ws` | `GET` (WS upgrade) | WebSocket stream. Sends the full state JSON immediately on connect, then pushes updates whenever state changes (~10×/s while playing, zero bandwidth when idle). Accepts `{ "cmd": "end_run" }` and `{ "cmd": "new_run" }` text frames from the client. Append `?show=<mode>` to strip unused payload fields (see below) |
 | `/api/state` | `GET` | Full current state as a JSON array of slot objects — the same payload the WebSocket pushes. Each slot contains party, encounters, dead, caught, box, badges, run summary, and encounter-zone fields |
 | `/api/slot/:index` | `GET` | Single slot object by zero-based index. Returns `404` if the index is out of range |
 | `/api/command/end_run` | `POST` | Broadcasts `EndRun` to all connected tracker slots. Returns plain text: `"Command 'end_run' sent to N slot(s)"` |
 | `/api/command/new_run` | `POST` | Broadcasts `NewRun` to all connected tracker slots. Returns plain text: `"Command 'new_run' sent to N slot(s)"` |
 | `/api/db/query` | `POST` | Runs arbitrary SQL against the database. Request body: `{ "sql": "SELECT ..." }`. Response: `{ "columns": ["col1", ...], "rows": [{ "col1": "val", ... }, ...], "rows_affected": N }` or `{ "error": "..." }` on failure. All values are returned as strings. Requires `--db` |
+| `/api/run/:id/stats` | `GET` | Per-run statistics for run `id`. Returns `{ playtime_secs, zones_entered, caught, catch_rate, deaths, avg_death_level, zone_stats: [...], deaths: [...] }`. Requires `--db` |
+| `/api/run/:id/shiny` | `GET` | Shiny encounter statistics for run `id`. Returns `{ total_shinies, encounters_since_last_shiny, last_shiny: {...}, since_last_shiny: [...] }`. Requires `--db` |
 | `/db.json` | `GET` | Full database snapshot — all four tables (runs, caught, dead, encounters) formatted for the browser viewer. Requires `--db` |
 | `/db/clear` | `POST` | Deletes all records from every table and removes the active-run meta key. No confirmation, no undo. Requires `--db` |
+
+##### WebSocket payload filtering (`?show=`)
+
+Pages that only need a subset of the state can append `?show=<mode>` to the `/ws` URL. The server strips unused top-level arrays from each push, reducing bandwidth:
+
+| `?show=` value | Arrays stripped from payload |
+|---|---|
+| `party` | `encounters`, `box_pokemon`, `caught`, `dead`, `prev_run_encounters`, `db_encounters` |
+| `encounters` | `box_pokemon`, `caught`, `dead`, `prev_run_encounters` |
+| `dead` | `encounters`, `box_pokemon`, `caught`, `prev_run_encounters`, `db_encounters` |
+| `caught` | `encounters`, `box_pokemon`, `dead`, `prev_run_encounters`, `db_encounters` |
+| `box` | `encounters`, `caught`, `dead`, `prev_run_encounters`, `db_encounters` |
+| `alerts` | `box_pokemon`, `caught`, `dead`, `prev_run_encounters` |
+| `routes` | `box_pokemon`, `caught`, `dead` |
+| `memorial` | `encounters`, `box_pokemon`, `caught`, `prev_run_encounters`, `db_encounters` |
+| `soullink` | `encounters`, `box_pokemon`, `db_encounters`, `prev_run_encounters` |
+| *(omitted)* | No stripping — full payload |
 
 ##### Slot object fields
 
@@ -405,7 +447,7 @@ A **Soul Link** is a Nuzlocke variant played with a partner: each player's catch
 | `textures.rs` | `PendingTexture`, sprite compression, `build_sprite_data` |
 | `gui.rs` | `WindowInfo`, `eframe::App` impl, party panel, encounters viewport |
 | `server.rs` | Aggregator connection handler — manages the bidirectional push stream over an established TCP connection |
-| `webhook.rs` | `WebhookEvent` enum, channel-backed background sender, `init` / `fire_event` — HTTP POST dispatch for death, catch, shiny, and wipe events; `render_template` for `{placeholder}` substitution when a custom body template is configured |
+| `webhook.rs` | `WebhookEvent` enum, channel-backed background sender, `init` / `fire_event` — HTTP POST dispatch for death, catch, shiny, and wipe events; `render_template` for `{placeholder}` substitution when a custom body template is configured; OBS WebSocket v5 clip trigger (`SaveReplayBuffer`) via plain TCP `tungstenite` with SHA-256 authentication |
 
 ### Key external dependencies
 
@@ -429,6 +471,8 @@ A **Soul Link** is a Nuzlocke variant played with a partner: each player's catch
 | `self_update` | GitHub release auto-updater; powers the `--update` flag on both binaries and the passive background version check that updates the window title when a newer release is available |
 | `once_cell` | Lazy static initialisation for shared name buffers and ROM data |
 | `reqwest` | Blocking HTTP client used by the tracker's webhook sender to POST event payloads; TLS via rustls |
+| `tungstenite` | Plain TCP WebSocket client (no TLS, no default features) used by the OBS clip trigger in `webhook.rs` to speak the OBS WebSocket v5 protocol |
+| `sha2` | SHA-256 implementation used when computing OBS WebSocket authentication tokens |
 
 ---
 
@@ -650,6 +694,8 @@ Both binaries (`tracker` and `aggregator`) are produced in `target/release/`.
 
 Both `tracker` and `aggregator` store their settings in a config file (`~/.config/fire_red_tracker/config.toml` and `~/.config/fire_red_aggregator/config.toml`). A setup dialog is shown on first launch to create the file. Settings can be overridden for a single run with CLI flags without modifying the saved config.
 
+The tracker config supports three optional sections: `[webhooks]` for HTTP event callbacks, `[obs]` for OBS replay buffer clips, and top-level keys for ROM path, database connection, and aggregator host/port. Sections are omitted from the file entirely when nothing in them is configured.
+
 ### Quick start — solo Nuzlocke
 
 ```
@@ -686,8 +732,12 @@ Then in OBS add Browser Sources for whichever pages you need:
 - `http://localhost:9090/0/party` and `http://localhost:9090/1/party` — per-player party panels (level cap highlight, status conditions, XP to next level)
 - `http://localhost:9090/0/encounters` and `http://localhost:9090/1/encounters` — current area encounter table
 - `http://localhost:9090/0/dead` and `http://localhost:9090/1/dead` — death logs
-- `http://localhost:9090/0/routes` and `http://localhost:9090/1/routes` — route completion board
+- `http://localhost:9090/0/routes` and `http://localhost:9090/1/routes` — route completion board with species shown inline on each zone card
 - `http://localhost:9090/0/alerts` and `http://localhost:9090/1/alerts` — transparent alerts overlay (add on top of everything else; invisible when idle)
+- `http://localhost:9090/soullink` — Soul Link health overview (transparent OBS Browser Source showing live soul-link pairs with HP bars)
+- `http://localhost:9090/shiny` — shiny odds tracker showing encounter count since the last shiny
+- `http://localhost:9090/memorial` or `http://localhost:9090/run/:id/memorial` — memorial grid of dead Pokémon with sprites and nicknames
+- `http://localhost:9090/run/:id/stats` — per-run statistics (catch rate, death log, playtime)
 
 Add `http://localhost:9090/cmd` in a browser tab to manage runs — **End Run** and **New Run** buttons apply to all connected trackers simultaneously. The party wipe detector in the alerts overlay also ends the run automatically.
 

@@ -1541,6 +1541,172 @@ pub fn run_sql(conn_str: &str, sql: &str) -> serde_json::Value {
     serde_json::json!({ "columns": columns, "rows": rows, "rows_affected": rows_affected })
 }
 
+/// Returns per-run statistics for the given run ID as JSON.
+///
+/// Opens its own connection (like `dump_all`) so live tracker connections are not blocked.
+pub fn run_stats(conn_str: &str, run_id: u32) -> serde_json::Value {
+    let mut client = match Client::connect(conn_str, NoTls) {
+        Ok(c)  => c,
+        Err(e) => return serde_json::json!({ "error": format!("DB connection failed: {e}") }),
+    };
+
+    let run_row = match client.query_opt(
+        "SELECT player_name, started_at, ended_at FROM runs WHERE id = $1",
+        &[&(run_id as i32)],
+    ) {
+        Ok(Some(r)) => r,
+        Ok(None)    => return serde_json::json!({ "error": "Run not found" }),
+        Err(e)      => return serde_json::json!({ "error": format!("Query error: {e}") }),
+    };
+
+    let player_name: String  = run_row.get(0);
+    let started_at:  i64     = run_row.get(1);
+    let ended_at:    Option<i64> = run_row.get(2);
+
+    let now = unix_now() as i64;
+    let duration_secs = ended_at.unwrap_or(now) - started_at;
+    let playtime = format!("{}h {}m", duration_secs / 3600, (duration_secs % 3600) / 60);
+
+    let enc_rows = client.query(
+        "SELECT map_group, map_name, species_name, level, caught, is_shiny, encountered_at
+         FROM encounters WHERE run_id = $1 ORDER BY encountered_at ASC",
+        &[&(run_id as i32)],
+    ).unwrap_or_default();
+
+    let total_encounters = enc_rows.len();
+    let total_caught: usize = enc_rows.iter().filter(|r| r.get::<_, bool>(4)).count();
+    let catch_rate = if total_encounters > 0 {
+        (total_caught as f64 / total_encounters as f64 * 100.0).round()
+    } else {
+        0.0
+    };
+
+    let zone_stats: Vec<serde_json::Value> = enc_rows.iter().map(|row| {
+        let mg  = row.get::<_, i32>(0) as u8;
+        let mn  = row.get::<_, i32>(1) as u8;
+        let raw = fire_red_location_names::map_area_name(mg, mn);
+        let area = if raw.is_empty() { format!("{}:{}", mg, mn) } else { raw.to_string() };
+        serde_json::json!({
+            "area":          area,
+            "species_name":  row.get::<_, String>(2),
+            "level":         row.get::<_, i32>(3),
+            "caught":        row.get::<_, bool>(4),
+            "is_shiny":      row.get::<_, bool>(5),
+            "encountered_at": format_timestamp(row.get::<_, i64>(6) as u64),
+        })
+    }).collect();
+
+    let dead_rows = client.query(
+        "SELECT level, species_name, met_location, died_at, (max_hp = 0) AS soul_link
+         FROM dead_pokemon WHERE run_id = $1 ORDER BY died_at ASC",
+        &[&(run_id as i32)],
+    ).unwrap_or_default();
+
+    let total_deaths = dead_rows.len();
+    let avg_death_level = if total_deaths > 0 {
+        let total: i64 = dead_rows.iter().map(|r| r.get::<_, i32>(0) as i64).sum();
+        (total as f64 / total_deaths as f64).round()
+    } else {
+        0.0
+    };
+
+    let deaths: Vec<serde_json::Value> = dead_rows.iter().map(|row| {
+        let met_loc  = row.get::<_, i32>(2) as u8;
+        let raw      = fire_red_location_names::location_name(met_loc);
+        let location = if raw.is_empty() { format!("loc {}", met_loc) } else { raw.to_string() };
+        serde_json::json!({
+            "level":        row.get::<_, i32>(0),
+            "species_name": row.get::<_, String>(1),
+            "location":     location,
+            "died_at":      format_timestamp(row.get::<_, i64>(3) as u64),
+            "soul_link":    row.get::<_, bool>(4),
+        })
+    }).collect();
+
+    serde_json::json!({
+        "run_id":          run_id,
+        "player_name":     player_name,
+        "started_at":      format_timestamp(started_at as u64),
+        "ended_at":        ended_at.map(|t| format_timestamp(t as u64)),
+        "playtime":        playtime,
+        "total_encounters": total_encounters,
+        "total_caught":    total_caught,
+        "catch_rate_pct":  catch_rate,
+        "total_deaths":    total_deaths,
+        "avg_death_level": avg_death_level,
+        "zone_stats":      zone_stats,
+        "deaths":          deaths,
+    })
+}
+
+/// Returns shiny encounter statistics for the given run ID as JSON.
+///
+/// Counts total encounters, total shinies, and encounters since the last shiny.
+/// Opens its own connection so live tracker connections are not blocked.
+pub fn shiny_stats(conn_str: &str, run_id: u32) -> serde_json::Value {
+    let mut client = match Client::connect(conn_str, NoTls) {
+        Ok(c)  => c,
+        Err(e) => return serde_json::json!({ "error": format!("DB connection failed: {e}") }),
+    };
+
+    let rows = client.query(
+        "SELECT species_name, encountered_at, is_shiny, map_group, map_name, level, caught
+         FROM encounters WHERE run_id = $1 ORDER BY encountered_at ASC",
+        &[&(run_id as i32)],
+    ).unwrap_or_default();
+
+    let total_encounters = rows.len();
+    let total_shinies: usize = rows.iter().filter(|r| r.get::<_, bool>(2)).count();
+
+    let last_shiny_idx = rows.iter().enumerate()
+        .filter(|(_, r)| r.get::<_, bool>(2))
+        .map(|(i, _)| i)
+        .last();
+
+    let (encounters_since_shiny, last_shiny) = match last_shiny_idx {
+        Some(idx) => {
+            let sr  = &rows[idx];
+            let mg  = sr.get::<_, i32>(3) as u8;
+            let mn  = sr.get::<_, i32>(4) as u8;
+            let raw = fire_red_location_names::map_area_name(mg, mn);
+            let area = if raw.is_empty() { format!("{}:{}", mg, mn) } else { raw.to_string() };
+            let shiny = serde_json::json!({
+                "species_name":  sr.get::<_, String>(0),
+                "encountered_at": format_timestamp(sr.get::<_, i64>(1) as u64),
+                "area":          area,
+                "level":         sr.get::<_, i32>(5),
+                "caught":        sr.get::<_, bool>(6),
+            });
+            (total_encounters - idx - 1, Some(shiny))
+        }
+        None => (total_encounters, None),
+    };
+
+    let recent_start = last_shiny_idx.map(|i| i + 1).unwrap_or(0);
+    let since_last_shiny: Vec<serde_json::Value> = rows[recent_start..].iter().map(|row| {
+        let mg  = row.get::<_, i32>(3) as u8;
+        let mn  = row.get::<_, i32>(4) as u8;
+        let raw = fire_red_location_names::map_area_name(mg, mn);
+        let area = if raw.is_empty() { format!("{}:{}", mg, mn) } else { raw.to_string() };
+        serde_json::json!({
+            "species_name":  row.get::<_, String>(0),
+            "encountered_at": format_timestamp(row.get::<_, i64>(1) as u64),
+            "area":          area,
+            "level":         row.get::<_, i32>(5),
+            "caught":        row.get::<_, bool>(6),
+        })
+    }).collect();
+
+    serde_json::json!({
+        "run_id":                   run_id,
+        "total_encounters":         total_encounters,
+        "total_shinies":            total_shinies,
+        "encounters_since_last_shiny": encounters_since_shiny,
+        "last_shiny":               last_shiny,
+        "since_last_shiny":         since_last_shiny,
+    })
+}
+
 pub fn clear_all_records(conn_str: &str) -> Result<(), String> {
     let mut client = Client::connect(conn_str, NoTls)
         .map_err(|e| format!("DB connection failed: {e}"))?;

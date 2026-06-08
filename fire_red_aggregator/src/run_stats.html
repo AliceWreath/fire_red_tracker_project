@@ -1,0 +1,280 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Run Statistics — FireRed Nuzlocke</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body {
+    background: #0f0f0f;
+    font-family: 'Segoe UI', Tahoma, sans-serif;
+    color: #e0e0e0;
+    min-height: 100vh;
+}
+#root { max-width: 1000px; margin: 0 auto; padding: 16px; }
+.page-header {
+    display: flex; align-items: center; gap: 12px;
+    padding-bottom: 12px; border-bottom: 1px solid rgba(255,255,255,0.1);
+    margin-bottom: 20px;
+}
+.page-title { font-size: 20px; font-weight: bold; color: #fff; }
+.run-selector { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+.run-selector select {
+    background: #1a1a2e; border: 1px solid rgba(255,255,255,0.15);
+    color: #e0e0e0; border-radius: 5px; padding: 4px 8px; font-size: 13px;
+}
+.error { padding: 16px; background: rgba(80,20,20,0.4); border-radius: 6px; color: #e06060; }
+.empty { text-align: center; color: #555; padding: 40px; font-size: 14px; }
+.loading { color: #888; font-size: 13px; padding: 20px; }
+
+/* Summary cards */
+.summary-row {
+    display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 24px;
+}
+.stat-card {
+    flex: 1; min-width: 130px;
+    background: rgba(255,255,255,0.04);
+    border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 8px; padding: 14px 16px;
+    display: flex; flex-direction: column; gap: 4px;
+}
+.stat-card .val { font-size: 24px; font-weight: bold; }
+.stat-card .lbl { font-size: 11px; color: #888; text-transform: uppercase; letter-spacing: 0.5px; }
+.val-green  { color: #60d060; }
+.val-red    { color: #e06060; }
+.val-yellow { color: #d0a040; }
+.val-blue   { color: #5090e0; }
+.val-white  { color: #fff; }
+
+/* Section */
+.section { margin-bottom: 24px; }
+.section-title {
+    font-size: 12px; font-weight: 700; color: #aaa;
+    text-transform: uppercase; letter-spacing: 0.5px;
+    margin-bottom: 10px; padding-bottom: 5px;
+    border-bottom: 1px solid rgba(255,255,255,0.06);
+}
+
+/* Zone table */
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th {
+    text-align: left; color: #888; font-size: 11px; font-weight: 600;
+    text-transform: uppercase; letter-spacing: 0.4px;
+    padding: 5px 8px; border-bottom: 1px solid rgba(255,255,255,0.08);
+}
+td { padding: 6px 8px; border-bottom: 1px solid rgba(255,255,255,0.04); }
+tr:last-child td { border-bottom: none; }
+tr:hover td { background: rgba(255,255,255,0.03); }
+.badge-caught { color: #60d060; font-weight: 600; }
+.badge-failed { color: #e06060; font-weight: 600; }
+.badge-shiny  { color: #ffd700; }
+
+/* Death list */
+.death-row {
+    display: flex; align-items: center; gap: 10px;
+    padding: 6px 8px; border-radius: 5px; font-size: 13px;
+    border-bottom: 1px solid rgba(255,255,255,0.04);
+}
+.death-row:last-child { border-bottom: none; }
+.death-row:hover { background: rgba(255,255,255,0.03); }
+.death-level { font-size: 11px; color: #888; min-width: 40px; }
+.death-species { font-weight: 600; flex: 1; }
+.death-loc { font-size: 11px; color: #999; }
+.death-at { font-size: 10px; color: #666; margin-left: auto; }
+.soul-link-badge {
+    font-size: 9px; font-weight: 700; padding: 1px 5px;
+    background: rgba(80,20,80,0.6); border: 1px solid rgba(150,60,150,0.5);
+    border-radius: 8px; color: #d080d0;
+}
+
+.back-link {
+    font-size: 12px; color: #5090e0; text-decoration: none; margin-left: auto;
+}
+.back-link:hover { text-decoration: underline; }
+</style>
+</head>
+<body>
+<div id="root">
+  <div class="page-header">
+    <div class="page-title">Run Statistics</div>
+    <div class="run-selector">
+      Run:&nbsp;<select id="run-select"></select>
+    </div>
+    <a class="back-link" href="/history">← History</a>
+  </div>
+  <div id="content"><div class="loading">Loading…</div></div>
+</div>
+<script>
+const WS_BASE = 'ws://' + location.host + '/ws';
+const API_BASE = location.origin;
+
+// Pull run ID from URL path (/run/:id/stats) or query string (?run=N)
+function runIdFromUrl() {
+    const m = location.pathname.match(/\/run\/(\d+)\/stats/);
+    if (m) return parseInt(m[1]);
+    return parseInt(new URLSearchParams(location.search).get('run') || '0') || null;
+}
+
+let currentRunId = runIdFromUrl();
+let slotData = [];
+
+// Populate run selector from WS slot data (first slot that has a run_summary)
+function populateSelector(slots) {
+    slotData = slots;
+    // Fetch all run IDs from DB viewer JSON if possible
+    fetch('/db.json').then(r => r.json()).then(db => {
+        if (!db.runs) return;
+        const sel = document.getElementById('run-select');
+        const prev = sel.value;
+        sel.innerHTML = '';
+        const sorted = [...db.runs].sort((a, b) => b.id - a.id);
+        for (const r of sorted) {
+            const opt = document.createElement('option');
+            opt.value = r.id;
+            const active = !r.ended ? ' (active)' : '';
+            opt.textContent = 'Run #' + r.id + ' — ' + r.player + active;
+            sel.appendChild(opt);
+        }
+        if (currentRunId) sel.value = currentRunId;
+        else if (sorted.length) { currentRunId = sorted[0].id; sel.value = currentRunId; }
+        if (sel.value !== prev) loadStats();
+    }).catch(() => {
+        // No DB JSON — populate from WS data
+        const sel = document.getElementById('run-select');
+        if (sel.options.length) return;
+        for (const slot of slots) {
+            if (slot.run_summary) {
+                const opt = document.createElement('option');
+                opt.value = slot.run_summary.run_id;
+                opt.textContent = 'Run #' + slot.run_summary.run_id + ' — ' + slot.run_summary.player_name;
+                sel.appendChild(opt);
+            }
+        }
+        if (!currentRunId && sel.options.length) { currentRunId = parseInt(sel.options[0].value); loadStats(); }
+    });
+}
+
+document.getElementById('run-select').addEventListener('change', e => {
+    currentRunId = parseInt(e.target.value);
+    history.replaceState(null, '', '/run/' + currentRunId + '/stats');
+    loadStats();
+});
+
+function loadStats() {
+    if (!currentRunId) return;
+    document.getElementById('content').innerHTML = '<div class="loading">Loading…</div>';
+    fetch('/api/run/' + currentRunId + '/stats')
+        .then(r => r.json())
+        .then(renderStats)
+        .catch(e => {
+            document.getElementById('content').innerHTML =
+                '<div class="error">Failed to load stats: ' + e + '</div>';
+        });
+}
+
+function renderStats(data) {
+    if (data.error) {
+        document.getElementById('content').innerHTML = '<div class="error">' + data.error + '</div>';
+        return;
+    }
+
+    const catchPct = data.catch_rate_pct;
+    const catchColor = catchPct >= 70 ? 'val-green' : catchPct >= 40 ? 'val-yellow' : 'val-red';
+
+    let html = `
+<div class="summary-row">
+  <div class="stat-card">
+    <div class="val val-blue">${data.playtime}</div>
+    <div class="lbl">Playtime</div>
+  </div>
+  <div class="stat-card">
+    <div class="val val-white">${data.total_encounters}</div>
+    <div class="lbl">Zones Entered</div>
+  </div>
+  <div class="stat-card">
+    <div class="val val-green">${data.total_caught}</div>
+    <div class="lbl">Caught</div>
+  </div>
+  <div class="stat-card">
+    <div class="val ${catchColor}">${catchPct}%</div>
+    <div class="lbl">Catch Rate</div>
+  </div>
+  <div class="stat-card">
+    <div class="val val-red">${data.total_deaths}</div>
+    <div class="lbl">Deaths</div>
+  </div>
+  <div class="stat-card">
+    <div class="val val-yellow">${data.avg_death_level > 0 ? 'Lv.' + data.avg_death_level : '—'}</div>
+    <div class="lbl">Avg. Death Level</div>
+  </div>
+</div>`;
+
+    // Zone catch-rate table
+    if (data.zone_stats && data.zone_stats.length) {
+        html += `<div class="section">
+<div class="section-title">Zone Encounter Log</div>
+<table>
+<thead><tr>
+  <th>Zone</th><th>Species</th><th>Lv</th><th>Result</th><th>Seen at</th>
+</tr></thead>
+<tbody>`;
+        for (const z of data.zone_stats) {
+            const result = z.caught
+                ? '<span class="badge-caught">✓ Caught</span>'
+                : '<span class="badge-failed">✗ Failed</span>';
+            const shiny = z.is_shiny ? ' <span class="badge-shiny">★</span>' : '';
+            html += `<tr>
+  <td>${esc(z.area)}</td>
+  <td>${esc(z.species_name)}${shiny}</td>
+  <td>${z.level}</td>
+  <td>${result}</td>
+  <td style="font-size:11px;color:#666">${esc(z.encountered_at)}</td>
+</tr>`;
+        }
+        html += '</tbody></table></div>';
+    }
+
+    // Deaths
+    if (data.deaths && data.deaths.length) {
+        html += `<div class="section">
+<div class="section-title">Deaths (${data.deaths.length})</div>`;
+        for (const d of data.deaths) {
+            const sl = d.soul_link ? '<span class="soul-link-badge">soul link</span> ' : '';
+            html += `<div class="death-row">
+  <span class="death-level">Lv.${d.level}</span>
+  <span class="death-species">${sl}${esc(d.species_name)}</span>
+  <span class="death-loc">${esc(d.location)}</span>
+  <span class="death-at">${esc(d.died_at)}</span>
+</div>`;
+        }
+        html += '</div>';
+    } else if (data.total_deaths === 0) {
+        html += `<div class="section">
+<div class="section-title">Deaths</div>
+<div class="empty">No deaths recorded 🎉</div>
+</div>`;
+    }
+
+    document.getElementById('content').innerHTML = html;
+}
+
+function esc(s) {
+    return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+// Connect to WS to discover runs
+let ws;
+function connect() {
+    ws = new WebSocket(WS_BASE);
+    ws.onmessage = e => {
+        const slots = JSON.parse(e.data);
+        populateSelector(slots);
+    };
+    ws.onclose = () => setTimeout(connect, 3000);
+}
+connect();
+
+if (currentRunId) loadStats();
+</script>
+</body>
+</html>

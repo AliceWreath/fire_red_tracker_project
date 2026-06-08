@@ -39,6 +39,9 @@ pub struct TrackerConfig {
     /// Webhook URLs fired on game events.
     #[serde(default, skip_serializing_if = "WebhookConfig::is_empty")]
     pub webhooks: WebhookConfig,
+    /// OBS WebSocket integration — save replay buffer clips on key events.
+    #[serde(default, skip_serializing_if = "ObsConfig::is_default")]
+    pub obs: ObsConfig,
 }
 
 fn default_aggregator_host() -> String { "127.0.0.1".to_string() }
@@ -87,6 +90,60 @@ impl WebhookConfig {
             && self.shiny_template.is_none()
             && self.wipe_url.is_none()
             && self.wipe_template.is_none()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// OBS WebSocket config
+// ---------------------------------------------------------------------------
+
+/// Optional OBS WebSocket integration — saves a replay buffer clip on game events.
+///
+/// Enable in `config.toml`:
+/// ```toml
+/// [obs]
+/// clip_on_death = true
+/// clip_on_shiny = true
+/// clip_on_wipe  = true
+/// # host = "localhost"   # default
+/// # port = 4455          # default (OBS v5 WebSocket)
+/// # password = "secret"  # only if authentication is enabled in OBS
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ObsConfig {
+    #[serde(default = "default_obs_host")]
+    pub host: String,
+    #[serde(default = "default_obs_port")]
+    pub port: u16,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub password: Option<String>,
+    #[serde(default)]
+    pub clip_on_death: bool,
+    #[serde(default)]
+    pub clip_on_shiny: bool,
+    #[serde(default)]
+    pub clip_on_wipe: bool,
+}
+
+fn default_obs_host() -> String { "localhost".to_string() }
+fn default_obs_port() -> u16 { 4455 }
+
+impl Default for ObsConfig {
+    fn default() -> Self {
+        Self {
+            host:         default_obs_host(),
+            port:         default_obs_port(),
+            password:     None,
+            clip_on_death: false,
+            clip_on_shiny: false,
+            clip_on_wipe:  false,
+        }
+    }
+}
+
+impl ObsConfig {
+    pub fn is_default(&self) -> bool {
+        !self.clip_on_death && !self.clip_on_shiny && !self.clip_on_wipe
     }
 }
 
@@ -432,6 +489,7 @@ impl eframe::App for SetupApp {
                         wipe_url:       if self.wipe_url_enabled  && !self.wipe_url.trim().is_empty()  { Some(self.wipe_url.trim().to_string())  } else { None },
                         wipe_template:  if self.wipe_url_enabled  && !self.wipe_template.trim().is_empty()  { Some(self.wipe_template.trim().to_string())  } else { None },
                     },
+                    obs: ObsConfig::default(),
                 };
 
                 *self.result.lock().unwrap() = Some(config);

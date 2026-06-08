@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Shiny Odds — FireRed Nuzlocke</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body {
+    background: #0f0f0f;
+    font-family: 'Segoe UI', Tahoma, sans-serif;
+    color: #e0e0e0;
+    min-height: 100vh;
+}
+#root { max-width: 860px; margin: 0 auto; padding: 16px; }
+.page-header {
+    display: flex; align-items: center; gap: 12px;
+    padding-bottom: 12px; border-bottom: 1px solid rgba(255,255,255,0.1);
+    margin-bottom: 20px;
+}
+.page-title { font-size: 20px; font-weight: bold; color: #fff; }
+.run-selector { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+.run-selector select {
+    background: #1a1a2e; border: 1px solid rgba(255,255,255,0.15);
+    color: #e0e0e0; border-radius: 5px; padding: 4px 8px; font-size: 13px;
+}
+.loading { color: #888; font-size: 13px; padding: 20px; }
+.error { padding: 16px; background: rgba(80,20,20,0.4); border-radius: 6px; color: #e06060; }
+
+/* Hero counter */
+.hero {
+    text-align: center;
+    padding: 32px 20px;
+    background: rgba(255,215,0,0.05);
+    border: 1px solid rgba(255,215,0,0.15);
+    border-radius: 12px;
+    margin-bottom: 24px;
+}
+.hero-count { font-size: 72px; font-weight: 900; color: #ffd700; line-height: 1; }
+.hero-label { font-size: 16px; color: #bbb; margin-top: 8px; }
+.hero-odds  { font-size: 12px; color: #888; margin-top: 6px; }
+
+/* Last shiny card */
+.last-shiny-card {
+    background: rgba(255,215,0,0.07);
+    border: 1px solid rgba(255,215,0,0.2);
+    border-radius: 8px; padding: 14px 18px;
+    margin-bottom: 24px;
+    display: flex; align-items: center; gap: 16px;
+}
+.ls-star  { font-size: 32px; }
+.ls-info  { flex: 1; }
+.ls-name  { font-size: 16px; font-weight: 700; color: #ffd700; }
+.ls-sub   { font-size: 12px; color: #999; margin-top: 2px; }
+.ls-badge-caught  { color: #60d060; font-weight: 600; }
+.ls-badge-failed  { color: #e06060; font-weight: 600; }
+
+/* Section */
+.section { margin-bottom: 24px; }
+.section-title {
+    font-size: 12px; font-weight: 700; color: #aaa;
+    text-transform: uppercase; letter-spacing: 0.5px;
+    margin-bottom: 10px; padding-bottom: 5px;
+    border-bottom: 1px solid rgba(255,255,255,0.06);
+}
+.empty { text-align: center; color: #555; padding: 30px; font-size: 13px; }
+
+/* Encounter list */
+.enc-row {
+    display: flex; align-items: center; gap: 10px;
+    padding: 6px 8px; border-radius: 5px; font-size: 13px;
+    border-bottom: 1px solid rgba(255,255,255,0.04);
+}
+.enc-row:last-child { border-bottom: none; }
+.enc-row:hover { background: rgba(255,255,255,0.03); }
+.enc-num    { font-size: 11px; color: #555; min-width: 26px; text-align: right; }
+.enc-species { font-weight: 600; flex: 1; }
+.enc-zone   { font-size: 11px; color: #999; }
+.enc-level  { font-size: 11px; color: #888; min-width: 36px; text-align: right; }
+.enc-caught { color: #60d060; font-size: 11px; }
+.enc-failed { color: #e06060; font-size: 11px; }
+
+.summary-row { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 20px; }
+.stat-card {
+    flex: 1; min-width: 120px;
+    background: rgba(255,255,255,0.04);
+    border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 8px; padding: 12px 14px;
+    display: flex; flex-direction: column; gap: 4px;
+}
+.stat-card .val { font-size: 22px; font-weight: bold; }
+.stat-card .lbl { font-size: 11px; color: #888; text-transform: uppercase; letter-spacing: 0.5px; }
+
+.back-link { font-size: 12px; color: #5090e0; text-decoration: none; margin-left: auto; }
+.back-link:hover { text-decoration: underline; }
+</style>
+</head>
+<body>
+<div id="root">
+  <div class="page-header">
+    <div class="page-title">✨ Shiny Odds Tracker</div>
+    <div class="run-selector">
+      Run:&nbsp;<select id="run-select"></select>
+    </div>
+    <a class="back-link" href="/history">← History</a>
+  </div>
+  <div id="content"><div class="loading">Loading…</div></div>
+</div>
+<script>
+const BASE = location.origin;
+let currentRunId = null;
+
+function runIdFromUrl() {
+    return parseInt(new URLSearchParams(location.search).get('run') || '0') || null;
+}
+currentRunId = runIdFromUrl();
+
+document.getElementById('run-select').addEventListener('change', e => {
+    currentRunId = parseInt(e.target.value);
+    history.replaceState(null, '', '/shiny?run=' + currentRunId);
+    loadShiny();
+});
+
+function loadShiny() {
+    if (!currentRunId) return;
+    document.getElementById('content').innerHTML = '<div class="loading">Loading…</div>';
+    fetch('/api/run/' + currentRunId + '/shiny')
+        .then(r => r.json())
+        .then(renderShiny)
+        .catch(e => {
+            document.getElementById('content').innerHTML =
+                '<div class="error">Failed to load: ' + e + '</div>';
+        });
+}
+
+function renderShiny(data) {
+    if (data.error) {
+        document.getElementById('content').innerHTML = '<div class="error">' + esc(data.error) + '</div>';
+        return;
+    }
+
+    const n   = data.encounters_since_last_shiny;
+    const tot = data.total_encounters;
+    const oddsBase = 8192; // Gen III full-odds
+
+    let html = `
+<div class="hero">
+  <div class="hero-count">${n}</div>
+  <div class="hero-label">encounters since last shiny</div>
+  <div class="hero-odds">Full odds: 1 in ${oddsBase.toLocaleString()} per encounter · ${tot} total zone encounters this run</div>
+</div>`;
+
+    // Summary stats
+    html += `<div class="summary-row">
+  <div class="stat-card">
+    <div class="val" style="color:#ffd700">${data.total_shinies}</div>
+    <div class="lbl">Total Shinies</div>
+  </div>
+  <div class="stat-card">
+    <div class="val" style="color:#e0e0e0">${tot}</div>
+    <div class="lbl">Total Zone Encounters</div>
+  </div>
+</div>`;
+
+    // Last shiny
+    if (data.last_shiny) {
+        const ls = data.last_shiny;
+        const res = ls.caught
+            ? '<span class="ls-badge-caught">✓ Caught</span>'
+            : '<span class="ls-badge-failed">✗ Fled / Failed</span>';
+        html += `<div class="last-shiny-card">
+  <div class="ls-star">✨</div>
+  <div class="ls-info">
+    <div class="ls-name">${esc(ls.species_name)} (Lv.${ls.level})</div>
+    <div class="ls-sub">${esc(ls.area)} · ${esc(ls.encountered_at)} · ${res}</div>
+  </div>
+</div>`;
+    } else {
+        html += `<div class="last-shiny-card">
+  <div class="ls-star">🔍</div>
+  <div class="ls-info">
+    <div class="ls-name" style="color:#bbb">No shinies found yet</div>
+    <div class="ls-sub">Keep hunting!</div>
+  </div>
+</div>`;
+    }
+
+    // Encounters since last shiny
+    if (data.since_last_shiny && data.since_last_shiny.length) {
+        html += `<div class="section">
+<div class="section-title">Encounters since last shiny (${data.since_last_shiny.length})</div>`;
+        const list = data.since_last_shiny;
+        for (let i = 0; i < list.length; i++) {
+            const e = list[i];
+            const res = e.caught
+                ? '<span class="enc-caught">✓</span>'
+                : '<span class="enc-failed">✗</span>';
+            html += `<div class="enc-row">
+  <span class="enc-num">#${i + 1}</span>
+  <span class="enc-species">${esc(e.species_name)}</span>
+  <span class="enc-zone">${esc(e.area)}</span>
+  <span class="enc-level">Lv.${e.level}</span>
+  ${res}
+</div>`;
+        }
+        html += '</div>';
+    } else if (data.last_shiny) {
+        html += `<div class="section">
+<div class="section-title">Encounters since last shiny</div>
+<div class="empty">No encounters since the last shiny.</div>
+</div>`;
+    }
+
+    document.getElementById('content').innerHTML = html;
+}
+
+function esc(s) {
+    return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+// Populate run selector
+fetch('/db.json').then(r => r.json()).then(db => {
+    if (!db.runs) return;
+    const sel = document.getElementById('run-select');
+    sel.innerHTML = '';
+    const sorted = [...db.runs].sort((a, b) => b.id - a.id);
+    for (const r of sorted) {
+        const opt = document.createElement('option');
+        opt.value = r.id;
+        opt.textContent = 'Run #' + r.id + ' — ' + r.player + (!r.ended ? ' (active)' : '');
+        sel.appendChild(opt);
+    }
+    if (currentRunId) sel.value = currentRunId;
+    else if (sorted.length) { currentRunId = sorted[0].id; sel.value = currentRunId; }
+    loadShiny();
+}).catch(() => {
+    // Fallback: try WS
+    const ws = new WebSocket('ws://' + location.host + '/ws');
+    ws.onmessage = e => {
+        const slots = JSON.parse(e.data);
+        ws.close();
+        const sel = document.getElementById('run-select');
+        if (sel.options.length) return;
+        for (const slot of slots) {
+            if (slot.run_summary) {
+                const opt = document.createElement('option');
+                opt.value = slot.run_summary.run_id;
+                opt.textContent = 'Run #' + slot.run_summary.run_id + ' — ' + slot.run_summary.player_name;
+                sel.appendChild(opt);
+            }
+        }
+        if (!currentRunId && sel.options.length) { currentRunId = parseInt(sel.options[0].value); }
+        loadShiny();
+    };
+});
+</script>
+</body>
+</html>

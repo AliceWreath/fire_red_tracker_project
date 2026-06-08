@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Soul Link — FireRed Nuzlocke</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body {
+    background: rgba(14, 10, 20, 0.93);
+    font-family: 'Segoe UI', Tahoma, sans-serif;
+    color: #e0e0e0;
+    padding: 12px;
+    text-shadow: 0 1px 3px rgba(0,0,0,0.9);
+}
+h2 {
+    font-size: 13px; font-weight: bold; color: #c090e0;
+    margin-bottom: 10px; border-bottom: 1px solid rgba(200,150,255,0.15);
+    padding-bottom: 5px;
+    display: flex; align-items: center; gap: 6px;
+}
+.disconnected { font-size: 12px; color: #e06060; padding: 6px 0; }
+.empty        { font-size: 12px; color: #666; padding: 10px 0; }
+
+/* Pair card */
+.pair-list  { display: flex; flex-direction: column; gap: 8px; }
+.pair-card {
+    display: flex; align-items: center; gap: 6px;
+    background: rgba(255,255,255,0.04);
+    border: 1px solid rgba(200,150,255,0.15);
+    border-radius: 7px; padding: 6px 10px;
+}
+.pair-card.dead-pair {
+    background: rgba(80,20,20,0.35);
+    border-color: rgba(200,60,60,0.3);
+    opacity: 0.7;
+}
+.pair-card.half-dead {
+    background: rgba(80,50,20,0.35);
+    border-color: rgba(200,140,40,0.35);
+}
+
+.mon {
+    display: flex; flex-direction: column; align-items: center; gap: 2px;
+    min-width: 68px;
+}
+.mon-sprite { width: 48px; height: 48px; image-rendering: pixelated; }
+.mon-sprite.dead-sprite { filter: grayscale(90%) brightness(0.55); }
+.mon-name   { font-size: 10px; font-weight: 700; text-align: center; max-width: 72px; }
+.mon-sub    { font-size: 9px; color: #999; }
+.mon-player { font-size: 9px; color: #c090e0; }
+.mon-dead-label { font-size: 9px; color: #e06060; font-weight: 600; }
+.placeholder-sprite {
+    width: 48px; height: 48px;
+    background: rgba(255,255,255,0.06); border-radius: 4px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 20px; color: #555;
+}
+.chain-icon { font-size: 18px; color: #c090e0; flex-shrink: 0; }
+.chain-icon.broken { color: #666; text-decoration: line-through; }
+
+.hp-bar-wrap { width: 100%; height: 4px; background: rgba(255,255,255,0.08); border-radius: 2px; margin-top: 1px; }
+.hp-bar { height: 4px; border-radius: 2px; }
+
+.shiny-mark { color: #ffd700; font-size: 9px; }
+</style>
+</head>
+<body>
+<h2>🔗 Soul Link Pairs</h2>
+<div id="root"></div>
+<script>
+const WS_URL = 'ws://' + location.host + '/ws?show=soullink';
+
+function hpColor(pct) {
+    if (pct > 0.5) return '#40cc40';
+    if (pct > 0.25) return '#e0c040';
+    return '#cc4040';
+}
+
+function renderPairs(slots) {
+    const root = document.getElementById('root');
+    root.innerHTML = '';
+
+    // Filter to connected slots with party data
+    const active = slots.filter(s => s.connected && s.party && s.party.length > 0);
+    if (active.length < 2) {
+        root.innerHTML = '<div class="empty">Waiting for 2 connected players…</div>';
+        return;
+    }
+
+    // Build all soul-link pairs: iterate slot A party and look for partners in slot B
+    const seen = new Set();
+    const pairs = [];
+
+    for (let i = 0; i < active.length; i++) {
+        for (const monA of active[i].party) {
+            if (!monA.soul_link_partner) continue;
+            // Find the partner mon in any other slot
+            for (let j = 0; j < active.length; j++) {
+                if (j === i) continue;
+                const monB = active[j].party.find(m =>
+                    m.nickname === monA.soul_link_partner.nickname
+                );
+                if (!monB) continue;
+                const key = [monA.personality, monB.personality].sort().join('-');
+                if (seen.has(key)) continue;
+                seen.add(key);
+                pairs.push({
+                    playerA: active[i].label,
+                    monA,
+                    playerB: active[j].label,
+                    monB,
+                });
+            }
+        }
+    }
+
+    // Also find pairs where one member is dead (party shows dead=true) but partner is alive
+    for (let i = 0; i < active.length; i++) {
+        for (const monA of active[i].party) {
+            if (monA.dead && !monA.soul_link_partner) {
+                // Dead mon — find its caught-list partner if any
+                // We can't directly reconstruct the pair, but if the partner slot
+                // has a soul_link_kill flagged mon that matches, show it.
+                // For now, show dead party members with no partner found.
+                const key = String(monA.personality) + '-dead';
+                if (seen.has(key)) continue;
+                seen.add(key);
+                pairs.push({
+                    playerA: active[i].label,
+                    monA,
+                    playerB: null,
+                    monB: null,
+                });
+            }
+        }
+    }
+
+    if (!pairs.length) {
+        root.innerHTML = '<div class="empty">No soul-link pairs detected yet. Pairs form when two Pokémon share a capture location.</div>';
+        return;
+    }
+
+    const list = document.createElement('div');
+    list.className = 'pair-list';
+
+    for (const p of pairs) {
+        const bothDead = p.monA?.dead && p.monB?.dead;
+        const oneDead  = (p.monA?.dead || p.monB?.dead) && !bothDead;
+        const card = document.createElement('div');
+        card.className = 'pair-card' + (bothDead ? ' dead-pair' : oneDead ? ' half-dead' : '');
+        card.innerHTML = monHtml(p.monA, p.playerA) + chainHtml(bothDead || oneDead) + monHtml(p.monB, p.playerB);
+        list.appendChild(card);
+    }
+
+    root.appendChild(list);
+}
+
+function monHtml(mon, player) {
+    if (!mon) return `<div class="mon"><div class="placeholder-sprite">❓</div><div class="mon-name" style="color:#555">—</div></div>`;
+
+    const dead = mon.dead;
+    const spriteClass = dead ? ' dead-sprite' : '';
+    const shiny = mon.shiny ? '<span class="shiny-mark">✨</span>' : '';
+    const sprite = mon.sprite
+        ? `<img class="mon-sprite${spriteClass}" src="${mon.sprite}" alt="${esc(mon.species_name)}">`
+        : `<div class="placeholder-sprite">${dead ? '💀' : '?'}</div>`;
+
+    let hpHtml = '';
+    if (!dead && mon.max_hp > 0) {
+        const pct = Math.max(0, mon.hp / mon.max_hp);
+        hpHtml = `<div class="hp-bar-wrap"><div class="hp-bar" style="width:${(pct*100).toFixed(0)}%;background:${hpColor(pct)}"></div></div>`;
+    }
+
+    const statusLabel = dead
+        ? `<div class="mon-dead-label">✞ Fallen</div>`
+        : `<div class="mon-sub">Lv.${mon.level}</div>`;
+
+    return `<div class="mon">
+  ${sprite}
+  <div class="mon-name">${shiny}${esc(mon.nickname)}</div>
+  <div class="mon-sub" style="color:#bbb">${esc(mon.species_name)}</div>
+  ${statusLabel}
+  ${hpHtml}
+  <div class="mon-player">${esc(player || '')}</div>
+</div>`;
+}
+
+function chainHtml(broken) {
+    return `<div class="chain-icon${broken ? ' broken' : ''}">🔗</div>`;
+}
+
+function esc(s) {
+    return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+let ws;
+function connect() {
+    ws = new WebSocket(WS_URL);
+    ws.onmessage = e => renderPairs(JSON.parse(e.data));
+    ws.onclose   = () => setTimeout(connect, 2000);
+}
+connect();
+</script>
+</body>
+</html>

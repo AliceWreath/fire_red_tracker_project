@@ -21,10 +21,13 @@ h2 { font-size: 14px; font-weight: bold; color: #ccc; margin-bottom: 8px; border
     padding: 4px 8px; border-radius: 5px;
     border: 1px solid transparent;
     white-space: nowrap;
+    display: flex; flex-direction: column; gap: 1px;
+    min-width: 80px;
 }
 .zone-unvisited { background: rgba(80,80,80,0.4);  border-color: rgba(120,120,120,0.3); color: #999; }
 .zone-caught    { background: rgba(20,80,20,0.55);  border-color: rgba(60,180,60,0.4);  color: #88ee88; }
 .zone-failed    { background: rgba(80,15,15,0.55);  border-color: rgba(180,50,50,0.4);  color: #ee8888; }
+.zone-species   { font-size: 9px; font-weight: normal; opacity: 0.85; }
 .disconnected { font-size: 12px; color: #e06060; padding: 6px 0; }
 #header { font-size: 13px; font-weight: bold; margin-bottom: 10px; display: flex; align-items: center; gap: 8px; }
 .run-ind { font-size: 10px; color: #60e060; font-weight: normal; }
@@ -247,9 +250,17 @@ function render(slots) {
             else                 cls = 'zone-card zone-failed';
 
             const card = document.createElement('div');
-            card.className   = cls;
-            card.textContent = z.name;
-            if (rec) card.title = rec.species_name + ' Lv.' + rec.level + (rec.caught ? ' ✓' : ' ✗') + ' — ' + rec.encountered_at;
+            card.className = cls;
+            const nameEl = document.createElement('span');
+            nameEl.textContent = z.name;
+            card.appendChild(nameEl);
+            if (rec) {
+                card.title = rec.species_name + ' Lv.' + rec.level + (rec.caught ? ' ✓' : ' ✗') + ' — ' + rec.encountered_at;
+                const specEl = document.createElement('span');
+                specEl.className = 'zone-species';
+                specEl.textContent = rec.species_name + ' Lv.' + rec.level;
+                card.appendChild(specEl);
+            }
             grid.appendChild(card);
         }
 

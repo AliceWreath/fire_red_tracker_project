@@ -941,6 +941,10 @@ const ROUTES_HTML:       &str = include_str!("routes.html");
 const PARTY_PLAIN_HTML:  &str = include_str!("party_plain.html");
 const CMD_HTML:          &str = include_str!("cmd.html");
 const DBQUERY_HTML:      &str = include_str!("dbquery.html");
+const RUNSTATS_HTML:     &str = include_str!("run_stats.html");
+const SHINY_HTML:        &str = include_str!("shiny.html");
+const MEMORIAL_HTML:     &str = include_str!("memorial.html");
+const SOULLINK_HTML:     &str = include_str!("soullink.html");
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -1053,10 +1057,12 @@ async fn ws_handler(
 /// not render, reducing per-tick payload size for narrow views.
 fn filter_slots_json(json: &str, show: &str) -> String {
     let strip: &[&str] = match show {
-        "box"    => &["party", "encounters", "dead", "caught", "db_encounters", "prev_run_encounters"],
-        "dead"   => &["encounters", "box_pokemon", "caught", "prev_run_encounters"],
-        "caught" => &["encounters", "box_pokemon", "dead", "prev_run_encounters"],
-        _        => return json.to_owned(),
+        "box"       => &["party", "encounters", "dead", "caught", "db_encounters", "prev_run_encounters"],
+        "dead"      => &["encounters", "box_pokemon", "caught", "prev_run_encounters"],
+        "caught"    => &["encounters", "box_pokemon", "dead", "prev_run_encounters"],
+        "memorial"  => &["encounters", "box_pokemon", "caught", "prev_run_encounters", "db_encounters"],
+        "soullink"  => &["encounters", "box_pokemon", "db_encounters", "prev_run_encounters"],
+        _           => return json.to_owned(),
     };
     let Ok(mut slots) = serde_json::from_str::<Vec<serde_json::Value>>(json) else {
         return json.to_owned();
@@ -1138,6 +1144,52 @@ async fn serve_cmd(State(state): State<WebState>) -> Html<String> {
 
 async fn serve_db_query(State(state): State<WebState>) -> Html<String> {
     Html(apply_page(DBQUERY_HTML, state.testing))
+}
+
+async fn serve_run_stats(State(state): State<WebState>) -> Html<String> {
+    Html(apply_page(RUNSTATS_HTML, state.testing))
+}
+
+async fn serve_shiny(State(state): State<WebState>) -> Html<String> {
+    Html(apply_page(SHINY_HTML, state.testing))
+}
+
+async fn serve_memorial(State(state): State<WebState>) -> Html<String> {
+    Html(apply_page(MEMORIAL_HTML, state.testing))
+}
+
+async fn serve_soullink(State(state): State<WebState>) -> Html<String> {
+    Html(apply_page(SOULLINK_HTML, state.testing))
+}
+
+/// `GET /api/run/:id/stats` — per-run statistics JSON.
+async fn api_run_stats(
+    State(state): State<WebState>,
+    Path(run_id): Path<u32>,
+) -> axum::Json<serde_json::Value> {
+    let conn = match state.db_conn {
+        Some(s) => s,
+        None    => return axum::Json(serde_json::json!({ "error": "No database configured" })),
+    };
+    let result = tokio::task::spawn_blocking(move || {
+        fire_red_database::run_stats(&conn, run_id)
+    }).await;
+    axum::Json(result.unwrap_or_else(|_| serde_json::json!({ "error": "Task panicked" })))
+}
+
+/// `GET /api/run/:id/shiny` — shiny odds statistics JSON for a run.
+async fn api_shiny_stats(
+    State(state): State<WebState>,
+    Path(run_id): Path<u32>,
+) -> axum::Json<serde_json::Value> {
+    let conn = match state.db_conn {
+        Some(s) => s,
+        None    => return axum::Json(serde_json::json!({ "error": "No database configured" })),
+    };
+    let result = tokio::task::spawn_blocking(move || {
+        fire_red_database::shiny_stats(&conn, run_id)
+    }).await;
+    axum::Json(result.unwrap_or_else(|_| serde_json::json!({ "error": "Task panicked" })))
 }
 
 /// Broadcasts `end_run` or `new_run` to all connected tracker slots.
@@ -1230,7 +1282,12 @@ pub fn run(live_slots: SharedSlots, port: u16, db_conn: Option<String>, testing:
             .route("/api/slot/:index", get(api_slot))
             .route("/api/command/:cmd", post(api_command))
             .route("/api/db/query", post(api_db_query))
+            .route("/api/run/:id/stats", get(api_run_stats))
+            .route("/api/run/:id/shiny", get(api_shiny_stats))
             .route("/history", get(serve_history))
+            .route("/shiny", get(serve_shiny))
+            .route("/memorial", get(serve_memorial))
+            .route("/soullink", get(serve_soullink))
             .route("/alerts", get(serve_alerts))
             .route("/:index/alerts", get(serve_alerts))
             .route("/:index/routes", get(serve_routes))
@@ -1239,6 +1296,8 @@ pub fn run(live_slots: SharedSlots, port: u16, db_conn: Option<String>, testing:
             .route("/:index/dead", get(serve_focused))
             .route("/:index/caught", get(serve_focused))
             .route("/:index/box", get(serve_focused))
+            .route("/run/:id/stats", get(serve_run_stats))
+            .route("/run/:id/memorial", get(serve_memorial))
             .with_state(web_state);
 
         let addr = format!("0.0.0.0:{}", port);
