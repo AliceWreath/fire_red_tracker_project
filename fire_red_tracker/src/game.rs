@@ -498,9 +498,9 @@ pub fn scan_for_security_key(expected_qty: u16) {
         let base    = pocket_start + slot * 4;
         let item_id = u16::from_le_bytes([ewram[base], ewram[base + 1]]);
         if (1..=12).contains(&item_id) {
-            raw_qty = Some(u16::from_le_bytes([ewram[base + 2], ewram[base + 3]]));
-            println!("Slot {:2}: item_id={:2}  raw_qty_bytes=0x{:04X}",
-                slot, item_id, raw_qty.unwrap());
+            let qty = u16::from_le_bytes([ewram[base + 2], ewram[base + 3]]);
+            raw_qty = Some(qty);
+            println!("Slot {:2}: item_id={:2}  raw_qty_bytes=0x{:04X}", slot, item_id, qty);
             break;
         }
     }

@@ -528,8 +528,8 @@ impl eframe::App for SetupApp {
         ui.add_space(4.0);
 
         let rom_ok = !self.rom.trim().is_empty();
-        let port_parse: Result<u16, _> = self.aggregator_port.parse();
-        let port_ok = self.mode != ConfigMode::Connected || port_parse.is_ok();
+        let port_val: Option<u16> = self.aggregator_port.trim().parse().ok().filter(|&p| p > 0);
+        let port_ok = self.mode != ConfigMode::Connected || port_val.is_some();
         let player_parse: Option<u8> = self.preferred_player.trim()
             .parse().ok()
             .filter(|&n: &u8| n >= 1);
@@ -552,7 +552,7 @@ impl eframe::App for SetupApp {
                     clean:            self.clean,
                     mode:             self.mode.clone(),
                     aggregator_host:  self.aggregator_host.trim().to_string(),
-                    aggregator_port:  port_parse.unwrap_or(7878),
+                    aggregator_port:  port_val.unwrap_or(7878),
                     preferred_player: player_parse,
                     default_test:     self.default_test,
                     test:             self.test.clone(),

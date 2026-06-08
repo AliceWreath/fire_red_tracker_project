@@ -74,7 +74,7 @@ pub fn char_gba_to_ascii(character: u8) -> char {
 /// ```
 pub fn get_pokemon_name_by_number(species: usize) -> Result<String, String> {
     if species > fire_red_pokemon_name_buffer::get_name_repo().len() - 1 {
-        return Err(String::from(" "));
+        return Err(format!("species index {species} out of range"));
     }
     Ok(String::from(fire_red_pokemon_name_buffer::get_name_repo()[species].clone().trim()))
 }

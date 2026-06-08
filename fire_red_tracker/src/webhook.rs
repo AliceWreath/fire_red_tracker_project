@@ -158,9 +158,9 @@ fn render_template(template: &str, event: &WebhookEvent) -> String {
                 }
             }
             if !matched {
-                let c = rest.chars().next().unwrap();
-                out.push(c);
-                rest = &rest[c.len_utf8()..];
+                // rest starts with '{' here; copy it literally and advance past it
+                out.push('{');
+                rest = &rest[1..];
             }
         } else if rest.starts_with('}') {
             // bare `}` not part of `}}`; copy literally

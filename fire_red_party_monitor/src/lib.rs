@@ -972,8 +972,8 @@ mod tests {
     /// XOR-encrypt a 48-byte block word-by-word with the given key.
     fn encrypt_block(plain: &[u8; 48], key: u32) -> [u8; 48] {
         let mut out = [0u8; 48];
-        for i in 0..12 {
-            let word = u32::from_le_bytes(plain[i * 4..i * 4 + 4].try_into().unwrap());
+        for (i, chunk) in plain.chunks_exact(4).enumerate() {
+            let word = u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
             out[i * 4..i * 4 + 4].copy_from_slice(&(word ^ key).to_le_bytes());
         }
         out

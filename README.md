@@ -764,6 +764,8 @@ Add `http://localhost:9090/cmd` in a browser tab to manage runs — **End Run** 
 
 ## Project status
 
+**v0.8.80** — robustness pass: removed `unwrap()` panics in the webhook template renderer, party-monitor encryption helper, and bag-scan dev tool; tightened port-0 validation in the setup dialog; improved the species lookup error message in `fire_red_text`.
+
 Personal project built for Nuzlocke and Soul Link runs. The codebase is functional but not hardened for general distribution:
 
 - ROM scanning and all hardcoded addresses are calibrated for **FireRed USA (Rev 1)**. **LeafGreen** (`BPGE` game code) is detected automatically — runtime EWRAM/SaveBlock addresses are shared between the two games, so party, badge, and encounter data read correctly; ROM table addresses (base stats, Pokémon names, sprite pointers) are currently placeholders and will return incorrect data for LeafGreen. Other regional releases or ROM hacks will likely require address adjustments. Two scan tools are provided for this:
