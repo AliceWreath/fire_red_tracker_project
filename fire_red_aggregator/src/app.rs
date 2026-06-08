@@ -779,19 +779,23 @@ impl eframe::App for AggregatorApp {
             &caught_by_slot,
             &self.soul_link_propagated,
         ) {
-            let wrote = self.slots[j].db.as_ref()
-                .map(|db| db.mark_soul_link_dead(&partner))
-                .unwrap_or(false);
-            if wrote {
-                if let Some(db) = &self.slots[j].db {
-                    db.record_event(
-                        &partner.player_name,
-                        fire_red_database::EventKind::SoulLinkDeath {
-                            species_name: &partner.species_name,
-                            nickname:     &partner.nickname,
-                            level:        partner.level,
-                        },
-                    );
+            // None = run_id unknown or DB error → retry next frame.
+            // Some(true)  = newly inserted → fire event and mark propagated.
+            // Some(false) = already existed (ON CONFLICT) → mark propagated only,
+            //               so we stop re-querying on every frame after a restart.
+            let result = self.slots[j].db.as_ref()
+                .and_then(|db| db.mark_soul_link_dead(&partner));
+            if result.is_some() {
+                if result == Some(true)
+                    && let Some(db) = &self.slots[j].db {
+                        db.record_event(
+                            &partner.player_name,
+                            fire_red_database::EventKind::SoulLinkDeath {
+                                species_name: &partner.species_name,
+                                nickname:     &partner.nickname,
+                                level:        partner.level,
+                            },
+                        );
                 }
                 self.soul_link_propagated.insert((j, partner.personality));
             }
@@ -806,6 +810,20 @@ impl eframe::App for AggregatorApp {
         // the DB-kill path in soul_link_kill_candidates. Using party-slot order
         // here instead would cause the live UI and the DB to disagree on which
         // Pokémon is the partner.
+        //
+        // Pre-sort gifts per slot once so the inner j loop does not re-sort on
+        // every (dead_pokemon, j) combination.
+        let live_sorted_gifts: Vec<Vec<&CaughtPokemon>> = (0..n)
+            .map(|k| {
+                let mut gifts: Vec<&CaughtPokemon> = self.db_caches[k].caught
+                    .iter()
+                    .filter(|c| c.met_location == 0)
+                    .collect();
+                gifts.sort_by_key(|c| c.caught_at);
+                gifts
+            })
+            .collect();
+
         let mut live_soul_link_dead: Vec<HashSet<u32>> = vec![HashSet::new(); n];
         for i in 0..n {
             let Some(gs_i) = &states[i].1 else { continue };
@@ -817,16 +835,10 @@ impl eframe::App for AggregatorApp {
                     if met_i == 0 {
                         // Gift Pokémon: pair by order of receipt (caught_at) — same
                         // ordering used by soul_link_kill_candidates.
-                        let Some(idx) = gift_catch_index(
-                            &self.db_caches[i].caught,
-                            pokemon_i.box_mon.personality,
-                        ) else { continue };
-                        let mut gifts_j: Vec<&CaughtPokemon> = self.db_caches[j].caught
-                            .iter()
-                            .filter(|c| c.met_location == 0)
-                            .collect();
-                        gifts_j.sort_by_key(|c| c.caught_at);
-                        if let Some(partner) = gifts_j.get(idx) {
+                        let Some(idx) = live_sorted_gifts[i].iter()
+                            .position(|c| c.personality == pokemon_i.box_mon.personality)
+                            else { continue };
+                        if let Some(partner) = live_sorted_gifts[j].get(idx) {
                             live_soul_link_dead[j].insert(partner.personality);
                         }
                     } else {
@@ -896,15 +908,6 @@ fn stat_row_job(
         });
     }
     job
-}
-
-/// Returns the position of `personality` among `met_location = 0` Pokémon in
-/// `caught`, sorted by `caught_at` ascending (oldest first). Used to pair
-/// gift Pokémon (starters, Eevee, Lapras) across players by order of receipt.
-fn gift_catch_index(caught: &[CaughtPokemon], personality: u32) -> Option<usize> {
-    let mut gifts: Vec<_> = caught.iter().filter(|c| c.met_location == 0).collect();
-    gifts.sort_by_key(|c| c.caught_at);
-    gifts.iter().position(|c| c.personality == personality)
 }
 
 /// Returns the position of `personality` among `met_location = 0` Pokémon in

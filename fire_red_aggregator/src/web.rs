@@ -383,12 +383,13 @@ impl BroadcastLoop {
                         let already_dead       = all_dead[j].contains_key(&p.personality);
                         let already_propagated = self.soul_link_propagated.contains(&key);
                         if !already_dead && !already_propagated {
-                            let wrote = slots[j]
+                            // Some(_) = run_id known and DB responded (new or pre-existing row).
+                            // None    = run_id unknown or error; retry next frame.
+                            let result = slots[j]
                                 .db
                                 .as_ref()
-                                .map(|db| db.mark_soul_link_dead(&p))
-                                .unwrap_or(false);
-                            if wrote {
+                                .and_then(|db| db.mark_soul_link_dead(&p));
+                            if result.is_some() {
                                 self.soul_link_propagated.insert(key);
                             }
                         }

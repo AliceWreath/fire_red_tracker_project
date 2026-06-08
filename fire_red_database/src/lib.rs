@@ -151,6 +151,9 @@ pub fn parse_timestamp(s: &str) -> Option<u64> {
     let hour: u64 = tp.next()?.parse().ok()?;
     let min:  u64 = tp.next()?.parse().ok()?;
     let sec:  u64 = tp.next()?.parse().ok()?;
+    if month == 0 || month > 12 { return None; }
+    if day   == 0               { return None; }
+    if hour  > 23 || min > 59 || sec > 59 { return None; }
     let mut days: u64 = 0;
     for y in 1970..year {
         days += if is_leap(y) { 366 } else { 365 };
@@ -1633,14 +1636,13 @@ impl DbReader {
     /// kill rather than a direct in-game death. Safe to call if the record
     /// already exists — the insert is a no-op in that case.
     ///
-    /// Returns `true` only when a new row was actually inserted. Returns `false`
-    /// if the run ID is not yet known (retry next frame), if the record already
-    /// exists (`ON CONFLICT DO NOTHING`), or if the DB write fails.
-    pub fn mark_soul_link_dead(&self, caught: &CaughtPokemon) -> bool {
-        let run_id = match *self.run_id.lock_or_recover() {
-            Some(id) => id,
-            None => return false,
-        };
+    /// Returns:
+    /// - `Some(true)` — row was newly inserted; caller should fire the event and mark as propagated.
+    /// - `Some(false)` — row already existed (`ON CONFLICT DO NOTHING`); caller should mark as
+    ///   propagated but **not** re-fire the event.
+    /// - `None` — run ID not yet known or DB write failed; caller should retry next frame.
+    pub fn mark_soul_link_dead(&self, caught: &CaughtPokemon) -> Option<bool> {
+        let run_id = (*self.run_id.lock_or_recover())?;
         let now = unix_now();
         match self.client
             .lock_or_recover()
@@ -1688,11 +1690,11 @@ impl DbReader {
                 ],
             )
         {
-            Ok(1) => true,
-            Ok(_) => false, // ON CONFLICT DO NOTHING — row already existed, no event to fire
+            Ok(1) => Some(true),
+            Ok(_) => Some(false), // ON CONFLICT DO NOTHING — row already existed
             Err(e) => {
                 eprintln!("mark_soul_link_dead: DB error: {e}");
-                false
+                None
             }
         }
     }
@@ -2581,13 +2583,7 @@ mod tests {
     // ── EventKind dispatch ────────────────────────────────────────────────────
 
     fn event_type_str(event: &EventKind<'_>) -> &'static str {
-        match event {
-            EventKind::Catch         { .. } => "catch",
-            EventKind::Death         { .. } => "death",
-            EventKind::SoulLinkDeath { .. } => "soul_link_death",
-            EventKind::Shiny         { .. } => "shiny",
-            EventKind::Wipe                 => "wipe",
-        }
+        event.row_parts().0
     }
 
     #[test]
@@ -2665,5 +2661,15 @@ mod tests {
     fn parse_timestamp_returns_none_on_garbage() {
         assert_eq!(parse_timestamp("not a date"), None);
         assert_eq!(parse_timestamp(""), None);
+    }
+
+    #[test]
+    fn parse_timestamp_rejects_out_of_range_fields() {
+        assert_eq!(parse_timestamp("2025-00-01 00:00:00 UTC"), None); // month 0
+        assert_eq!(parse_timestamp("2025-13-01 00:00:00 UTC"), None); // month 13
+        assert_eq!(parse_timestamp("2025-06-00 00:00:00 UTC"), None); // day 0
+        assert_eq!(parse_timestamp("2025-06-01 24:00:00 UTC"), None); // hour 24
+        assert_eq!(parse_timestamp("2025-06-01 00:60:00 UTC"), None); // min 60
+        assert_eq!(parse_timestamp("2025-06-01 00:00:60 UTC"), None); // sec 60
     }
 }

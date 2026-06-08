@@ -764,6 +764,13 @@ Add `http://localhost:9090/cmd` in a browser tab to manage runs — **End Run** 
 
 ## Project status
 
+**v0.8.82** — second bug-fix pass (aggregator + database):
+
+- **Soul-link propagation no longer retries every frame after restart** — `mark_soul_link_dead` previously returned `false` for both "run ID not yet known" (retry) and "row already existed in DB" (skip). These are now distinguished via `Option<bool>`: `Some(true)` = newly inserted (fire event), `Some(false)` = already existed (mark propagated, no duplicate event), `None` = retry next frame. Previously, every soul-link death from a prior session would trigger one wasted DB write per frame indefinitely after an aggregator restart.
+- **`parse_timestamp` rejects invalid calendar fields** — day 0, month 0 or >12, hour >23, minute/second >59 now return `None` instead of silently producing a wrong timestamp or underflowing (day=0 previously wrapped to `u32::MAX`).
+- **Live soul-link gift detection pre-sorts once per slot** — in `update()`, the gifts vector for each partner slot was rebuilt and re-sorted for every `(dead_pokemon, j)` pair in the inner loop. It is now pre-sorted once per slot before the loop, matching the existing optimization in `soul_link_kill_candidates`. `gift_catch_index` (now unused) has been removed.
+- **`event_type_str` test helper deduplicates against `row_parts`** — the function previously repeated the same five match arms already in `EventKind::row_parts()`. It now delegates to `row_parts().0`, eliminating the duplicate.
+
 **v0.8.81** — bug-fix and correctness pass (aggregator + database):
 
 - **`/api/run/import` data loss fixed** — all caught and dead Pokémon were silently discarded on import except the first, because every row was assigned the run ID as its personality value. Import now reads the original `personality` from the export JSON (preserved by `export_run` since this release); old exports without the field fall back to safe synthetic values.
