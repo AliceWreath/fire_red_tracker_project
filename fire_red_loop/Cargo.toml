@@ -9,6 +9,7 @@ edition = "2024"
 [dependencies]
 fire_red_pokemon_data.workspace        = true
 fire_red_map_data.workspace            = true
+fire_red_states.workspace              = true
 fire_red_text.workspace                = true
 fire_red_rom_buffer.workspace          = true
 fire_red_pokemon_name_buffer.workspace = true

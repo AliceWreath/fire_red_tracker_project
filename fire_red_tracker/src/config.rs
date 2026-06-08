@@ -178,6 +178,71 @@ pub fn default_config_path() -> PathBuf {
 }
 
 // ---------------------------------------------------------------------------
+// Validation
+// ---------------------------------------------------------------------------
+
+/// A single validation error returned by [`validate_config`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct ConfigError {
+    pub field:   &'static str,
+    pub message: String,
+}
+
+impl std::fmt::Display for ConfigError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}: {}", self.field, self.message)
+    }
+}
+
+/// Validates a [`TrackerConfig`] for obvious early errors.
+///
+/// Returns a list of errors; an empty list means the config is valid.
+/// Checks performed:
+/// - ROM path is non-empty and the file exists and is readable.
+/// - Each configured webhook URL starts with `http://` or `https://`.
+pub fn validate_config(cfg: &TrackerConfig) -> Vec<ConfigError> {
+    let mut errors = Vec::new();
+
+    // ROM path
+    if cfg.rom.trim().is_empty() {
+        errors.push(ConfigError { field: "rom", message: "path is empty".to_string() });
+    } else {
+        let path = std::path::Path::new(&cfg.rom);
+        if !path.exists() {
+            errors.push(ConfigError {
+                field:   "rom",
+                message: format!("file not found: {}", cfg.rom),
+            });
+        } else if std::fs::File::open(path).is_err() {
+            errors.push(ConfigError {
+                field:   "rom",
+                message: format!("file exists but cannot be opened: {}", cfg.rom),
+            });
+        }
+    }
+
+    // Webhook URLs
+    let wh_fields: &[(&'static str, &Option<String>)] = &[
+        ("webhooks.death_url",  &cfg.webhooks.death_url),
+        ("webhooks.catch_url",  &cfg.webhooks.catch_url),
+        ("webhooks.shiny_url",  &cfg.webhooks.shiny_url),
+        ("webhooks.wipe_url",   &cfg.webhooks.wipe_url),
+    ];
+    for (field, url_opt) in wh_fields {
+        if let Some(url) = url_opt
+            && !url.starts_with("http://") && !url.starts_with("https://")
+        {
+            errors.push(ConfigError {
+                field,
+                message: format!("URL must start with http:// or https:// (got: {url})"),
+            });
+        }
+    }
+
+    errors
+}
+
+// ---------------------------------------------------------------------------
 // Load / save
 // ---------------------------------------------------------------------------
 
@@ -633,6 +698,92 @@ mod tests {
         let s = toml::to_string(&cfg).unwrap();
         let cfg2: TrackerConfig = toml::from_str(&s).unwrap();
         assert_eq!(cfg2.poll_ms, 200);
+    }
+
+    // ── validate_config ──────────────────────────────────────────────────────
+
+    fn cfg_with_rom(rom: &str) -> TrackerConfig {
+        TrackerConfig {
+            rom:             rom.to_string(),
+            db:              "postgresql://localhost/test".to_string(),
+            clean:           false,
+            mode:            ConfigMode::default(),
+            aggregator_host: "127.0.0.1".to_string(),
+            aggregator_port: 7878,
+            preferred_player: None,
+            default_test:    false,
+            test:            None,
+            poll_ms:         100,
+            webhooks:        WebhookConfig::default(),
+            obs:             ObsConfig::default(),
+        }
+    }
+
+    #[test]
+    fn validate_config_empty_rom_is_error() {
+        let cfg = cfg_with_rom("");
+        let errs = validate_config(&cfg);
+        assert!(errs.iter().any(|e| e.field == "rom"), "expected rom error, got: {errs:?}");
+    }
+
+    #[test]
+    fn validate_config_nonexistent_rom_is_error() {
+        let cfg = cfg_with_rom("/tmp/__nonexistent_rom_test_file__.gba");
+        let errs = validate_config(&cfg);
+        assert!(errs.iter().any(|e| e.field == "rom"), "expected rom error, got: {errs:?}");
+    }
+
+    #[test]
+    fn validate_config_valid_rom_no_error() {
+        // Create a temporary file so the path exists.
+        let path = "/tmp/__test_rom_validate__.gba";
+        std::fs::write(path, b"FAKE").unwrap();
+        let cfg = cfg_with_rom(path);
+        let errs = validate_config(&cfg);
+        std::fs::remove_file(path).ok();
+        assert!(!errs.iter().any(|e| e.field == "rom"), "unexpected rom error: {errs:?}");
+    }
+
+    #[test]
+    fn validate_config_valid_webhook_url_no_error() {
+        let mut cfg = cfg_with_rom("/tmp/__test_rom_validate2__.gba");
+        std::fs::write("/tmp/__test_rom_validate2__.gba", b"FAKE").unwrap();
+        cfg.webhooks.death_url = Some("https://discord.com/api/webhooks/123/abc".to_string());
+        let errs = validate_config(&cfg);
+        std::fs::remove_file("/tmp/__test_rom_validate2__.gba").ok();
+        assert!(!errs.iter().any(|e| e.field.contains("death_url")), "unexpected error: {errs:?}");
+    }
+
+    #[test]
+    fn validate_config_invalid_webhook_url_is_error() {
+        let mut cfg = cfg_with_rom("");
+        cfg.webhooks.death_url = Some("ftp://bad-scheme.example.com".to_string());
+        let errs = validate_config(&cfg);
+        assert!(
+            errs.iter().any(|e| e.field == "webhooks.death_url"),
+            "expected webhook url error, got: {errs:?}"
+        );
+    }
+
+    #[test]
+    fn validate_config_http_webhook_url_is_valid() {
+        let mut cfg = cfg_with_rom("");
+        cfg.webhooks.wipe_url = Some("http://localhost:9000/hook".to_string());
+        let errs = validate_config(&cfg);
+        assert!(
+            !errs.iter().any(|e| e.field == "webhooks.wipe_url"),
+            "http:// should be valid, got: {errs:?}"
+        );
+    }
+
+    #[test]
+    fn validate_config_multiple_errors_collected() {
+        let mut cfg = cfg_with_rom("");
+        cfg.webhooks.death_url = Some("bad-url".to_string());
+        cfg.webhooks.catch_url = Some("also-bad".to_string());
+        let errs = validate_config(&cfg);
+        // rom + death_url + catch_url = at least 3 errors
+        assert!(errs.len() >= 3, "expected >= 3 errors, got: {errs:?}");
     }
 
     // ── WebhookConfig::is_empty ───────────────────────────────────────────────

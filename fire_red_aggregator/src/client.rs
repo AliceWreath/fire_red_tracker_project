@@ -14,22 +14,7 @@
 //! returns. The caller (TCP listener loop) can then accept the next connection
 //! and reuse the same slot.
 
-use fire_red_states::{ClientMessage, GameState, ServerMessage, recv_message, send_message};
-
-trait LockOrRecover<T> {
-    fn lock_or_recover(&self) -> std::sync::MutexGuard<'_, T>;
-}
-
-impl<T> LockOrRecover<T> for std::sync::Mutex<T> {
-    #[track_caller]
-    fn lock_or_recover(&self) -> std::sync::MutexGuard<'_, T> {
-        self.lock().unwrap_or_else(|e| {
-            let loc = std::panic::Location::caller();
-            eprintln!("Warning: mutex poisoned at {}:{}: {e}", loc.file(), loc.line());
-            e.into_inner()
-        })
-    }
-}
+use fire_red_states::{ClientMessage, GameState, LockOrRecover, ServerMessage, recv_message, send_message};
 use image::ImageEncoder;
 use image::codecs::png::PngEncoder;
 use std::collections::{HashMap, HashSet, VecDeque};

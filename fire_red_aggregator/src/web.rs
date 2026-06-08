@@ -951,7 +951,34 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 const TESTING_BANNER: &str = r#"<div id="testing-banner" style="position:fixed;top:0;left:0;right:0;z-index:9999;background:#b00;color:#fff;font-weight:bold;text-align:center;padding:4px 0;font-family:sans-serif;font-size:14px;">[TESTING]</div>"#;
 
 fn apply_page(html: &str, testing: bool) -> String {
+    apply_page_with_theme(html, testing, None)
+}
+
+/// Renders an HTML page, injecting the version, optional testing banner,
+/// and an optional theme by setting `data-theme` on `<html>` and replacing
+/// the `<!-- THEME_SLOT -->` placeholder with a `<script>` that applies it.
+///
+/// Supported theme values: `dark` (default, no-op), `light`, and any custom
+/// string that maps to a CSS `data-theme` attribute value.
+fn apply_page_with_theme(html: &str, testing: bool, theme: Option<&str>) -> String {
     let html = html.replace("__VERSION__", VERSION);
+
+    // Inject theme attribute and a tiny script that sets it before first paint,
+    // preventing a flash of the default (dark) theme.
+    let html = match theme {
+        None | Some("dark") | Some("") => html.replace("<!-- THEME_SLOT -->", ""),
+        Some(t) => {
+            let safe_theme = t.chars()
+                .filter(|c| c.is_alphanumeric() || *c == '-' || *c == '_')
+                .take(32)
+                .collect::<String>();
+            let injection = format!(
+                r#"<script>document.documentElement.dataset.theme="{safe_theme}"</script>"#
+            );
+            html.replace("<!-- THEME_SLOT -->", &injection)
+        }
+    };
+
     if testing {
         html.replacen("<body>", &format!("<body>{}", TESTING_BANNER), 1)
     } else {
@@ -959,19 +986,22 @@ fn apply_page(html: &str, testing: bool) -> String {
     }
 }
 
-async fn serve_html(State(state): State<WebState>) -> Html<String> {
-    Html(apply_page(OVERLAY_HTML, state.testing))
+async fn serve_html(State(state): State<WebState>, Query(params): Query<HashMap<String, String>>) -> Html<String> {
+    let theme = params.get("theme").map(String::as_str);
+    Html(apply_page_with_theme(OVERLAY_HTML, state.testing, theme))
 }
 
-async fn serve_focused(State(state): State<WebState>) -> Html<String> {
-    Html(apply_page(FOCUSED_HTML, state.testing))
+async fn serve_focused(State(state): State<WebState>, Query(params): Query<HashMap<String, String>>) -> Html<String> {
+    let theme = params.get("theme").map(String::as_str);
+    Html(apply_page_with_theme(FOCUSED_HTML, state.testing, theme))
 }
 
 async fn serve_party(State(state): State<WebState>, Query(params): Query<HashMap<String, String>>) -> Html<String> {
+    let theme = params.get("theme").map(String::as_str);
     if params.contains_key("plain-view") {
-        Html(apply_page(PARTY_PLAIN_HTML, state.testing))
+        Html(apply_page_with_theme(PARTY_PLAIN_HTML, state.testing, theme))
     } else {
-        Html(apply_page(FOCUSED_HTML, state.testing))
+        Html(apply_page_with_theme(FOCUSED_HTML, state.testing, theme))
     }
 }
 
@@ -1042,6 +1072,52 @@ async fn api_slot(
         ).into_response(),
         None => (StatusCode::NOT_FOUND, "slot index out of range").into_response(),
     }
+}
+
+/// `GET /api/slot/:index/odds` — wildmon encounter table for the given slot's current map.
+///
+/// Returns the full [`WildPokemonHeader`] for whichever map the tracker in that
+/// slot is currently on, broken down by encounter type (land, water, rock-smash,
+/// fishing). Each encounter entry includes species id, min/max level, and the
+/// party-wide encounter rate for the type.
+///
+/// Returns `{ "error": "..." }` if the slot is out of range, disconnected, or
+/// the current map has no wild encounters.
+async fn api_slot_odds(
+    State(state): State<WebState>,
+    Path(index): Path<usize>,
+) -> axum::Json<serde_json::Value> {
+    let slots = state.live_slots.lock_or_recover().clone();
+    let slot = match slots.get(index) {
+        Some(s) => s.clone(),
+        None    => return axum::Json(serde_json::json!({ "error": "slot index out of range" })),
+    };
+    let gs = match slot.state.lock_or_recover().clone() {
+        Some(gs) => gs,
+        None     => return axum::Json(serde_json::json!({ "error": "slot not connected" })),
+    };
+    let h = &gs.encounters;
+    let make_list = |info: &fire_red_pokemon_data::WildPokemonInfo| -> serde_json::Value {
+        if info.encounter_rate == 0 {
+            return serde_json::Value::Null;
+        }
+        serde_json::json!({
+            "encounter_rate": info.encounter_rate,
+            "slots": info.wild_pokemon_list.iter().map(|p| serde_json::json!({
+                "species":    p.species,
+                "min_level":  p.min_level,
+                "max_level":  p.max_level,
+            })).collect::<Vec<_>>()
+        })
+    };
+    axum::Json(serde_json::json!({
+        "map_group": h.map_group,
+        "map_name":  h.map_num,
+        "land":        make_list(&h.land_mon_encounters),
+        "water":       make_list(&h.water_mon_encounters),
+        "rock_smash":  make_list(&h.rock_smash_encounters),
+        "fishing":     make_list(&h.fishing_encounters),
+    }))
 }
 
 async fn ws_handler(
@@ -1207,6 +1283,38 @@ async fn api_shiny_stats(
     axum::Json(result.unwrap_or_else(|_| serde_json::json!({ "error": "Task panicked" })))
 }
 
+/// `GET /api/runs` — summary list of all runs (id, player, dates, deaths, catches, encounters).
+async fn api_runs(
+    State(state): State<WebState>,
+) -> axum::Json<serde_json::Value> {
+    let conn = match state.db_conn {
+        Some(s) => s,
+        None    => return axum::Json(serde_json::json!({ "error": "No database configured" })),
+    };
+    let result = tokio::task::spawn_blocking(move || {
+        fire_red_database::list_all_runs_json(&conn)
+    }).await;
+    axum::Json(result.unwrap_or_else(|_| serde_json::json!({ "error": "Task panicked" })))
+}
+
+/// `POST /api/run/import` — import a run from the JSON format produced by `/api/run/:id/export`.
+///
+/// Creates a new run with a fresh id and re-inserts caught, dead, and encounter records.
+/// Returns `{ "run_id": <new_id> }` on success.
+async fn api_run_import(
+    State(state): State<WebState>,
+    axum::Json(body): axum::Json<serde_json::Value>,
+) -> axum::Json<serde_json::Value> {
+    let conn = match state.db_conn {
+        Some(s) => s,
+        None    => return axum::Json(serde_json::json!({ "error": "No database configured" })),
+    };
+    let result = tokio::task::spawn_blocking(move || {
+        fire_red_database::import_run(&conn, &body)
+    }).await;
+    axum::Json(result.unwrap_or_else(|_| serde_json::json!({ "error": "Task panicked" })))
+}
+
 /// Broadcasts `end_run` or `new_run` to all connected tracker slots.
 async fn api_command(
     State(state): State<WebState>,
@@ -1295,8 +1403,11 @@ pub fn run(live_slots: SharedSlots, port: u16, db_conn: Option<String>, testing:
             .route("/cmd", get(serve_cmd))
             .route("/api/state", get(api_state))
             .route("/api/slot/:index", get(api_slot))
+            .route("/api/slot/:index/odds", get(api_slot_odds))
             .route("/api/command/:cmd", post(api_command))
             .route("/api/db/query", post(api_db_query))
+            .route("/api/runs",            get(api_runs))
+            .route("/api/run/import",      post(api_run_import))
             .route("/api/run/:id/stats",  get(api_run_stats))
             .route("/api/run/:id/shiny",  get(api_shiny_stats))
             .route("/api/run/:id/export", get(api_run_export))
@@ -1330,4 +1441,63 @@ pub fn run(live_slots: SharedSlots, port: u16, db_conn: Option<String>, testing:
             eprintln!("WebSocket server error: {e}");
         }
     });
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const SAMPLE_HTML: &str = r#"<!DOCTYPE html><html><head><!-- THEME_SLOT --></head><body>__VERSION__</body></html>"#;
+
+    #[test]
+    fn apply_page_replaces_version() {
+        let out = apply_page(SAMPLE_HTML, false);
+        assert!(out.contains(VERSION), "VERSION not injected");
+        assert!(!out.contains("__VERSION__"), "__VERSION__ not replaced");
+    }
+
+    #[test]
+    fn apply_page_no_theme_removes_slot() {
+        let out = apply_page(SAMPLE_HTML, false);
+        assert!(!out.contains("<!-- THEME_SLOT -->"), "theme slot should be removed");
+        assert!(!out.contains("data-theme"), "no theme attr expected");
+    }
+
+    #[test]
+    fn apply_page_with_theme_dark_removes_slot() {
+        let out = apply_page_with_theme(SAMPLE_HTML, false, Some("dark"));
+        assert!(!out.contains("<!-- THEME_SLOT -->"));
+        assert!(!out.contains("data-theme"));
+    }
+
+    #[test]
+    fn apply_page_with_theme_light_injects_attr() {
+        let out = apply_page_with_theme(SAMPLE_HTML, false, Some("light"));
+        assert!(!out.contains("<!-- THEME_SLOT -->"));
+        assert!(out.contains(r#"dataset.theme="light""#), "light theme not injected: {out}");
+    }
+
+    #[test]
+    fn apply_page_with_theme_sanitizes_input() {
+        let out = apply_page_with_theme(SAMPLE_HTML, false, Some("light<script>alert(1)</script>"));
+        assert!(!out.contains("<script>alert"), "XSS not sanitized");
+        assert!(out.contains("lightscriptalert1script"), "sanitized value should remain");
+    }
+
+    #[test]
+    fn apply_page_testing_injects_banner() {
+        let out = apply_page(SAMPLE_HTML, true);
+        assert!(out.contains("[TESTING]"), "testing banner missing");
+    }
+
+    #[test]
+    fn apply_page_theme_and_testing_both_applied() {
+        let out = apply_page_with_theme(SAMPLE_HTML, true, Some("light"));
+        assert!(out.contains("[TESTING]"));
+        assert!(out.contains(r#"dataset.theme="light""#));
+    }
 }

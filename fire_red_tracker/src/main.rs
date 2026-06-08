@@ -49,6 +49,7 @@ mod webhook;
 use clap::Parser;
 use cli::{Cli, Command};
 use colored::Colorize;
+
 use fire_red_loop::*;
 use fire_red_states::*;
 use game::{check_for_dead_pokemon, check_for_new_pokemon, check_for_run_over, fill_party_list, game_is_loaded, is_shiny, map_state_from_ewram};
@@ -149,6 +150,13 @@ fn do_update() {
 }
 
 fn main() {
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+        )
+        .init();
+
     let cli = Cli::parse();
 
     if cli.update {
@@ -156,7 +164,7 @@ fn main() {
         return;
     }
 
-    println!("FireRed Tracker v{}", env!("CARGO_PKG_VERSION"));
+    tracing::info!("FireRed Tracker v{}", env!("CARGO_PKG_VERSION"));
 
     // Load config (prompts on first run), then overlay any CLI overrides.
     let config_path = cli.config.as_deref()
@@ -171,6 +179,16 @@ fn main() {
     let cfg             = config::load_or_prompt(&config_path);
     let cfg_gui         = cfg.clone();
     let config_path_gui = config_path.clone();
+
+    // Validate config early so misconfigurations surface before any threads start.
+    let validation_errors = config::validate_config(&cfg);
+    if !validation_errors.is_empty() {
+        eprintln!("Config validation failed:");
+        for e in &validation_errors {
+            eprintln!("  - {e}");
+        }
+        std::process::exit(1);
+    }
 
     // test section: applied on top of base config, below explicit CLI flags.
     let use_test = cli.test || cfg.default_test;
@@ -306,19 +324,19 @@ fn main() {
 
         let main_thread = std::thread::spawn(move || {
             match start_loop(rom_path.as_str(), is_clean) {
-                0    => println!("Monitor loop started."),
+                0    => tracing::info!("Monitor loop started."),
                 code => {
-                    eprintln!("Failed to start monitor loop (code {}).", code);
+                    tracing::error!("Failed to start monitor loop (code {}).", code);
                     std::process::exit(1);
                 }
             }
 
-            println!("Waiting for initial map state...");
+            tracing::info!("Waiting for initial map state...");
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
             loop {
                 if map_state_from_ewram().is_some() { break; }
                 if std::time::Instant::now() > deadline {
-                    eprintln!("Warning: map state did not populate within 5 seconds.");
+                    tracing::warn!("Map state did not populate within 5 seconds.");
                     break;
                 }
                 std::thread::sleep(std::time::Duration::from_millis(50));
@@ -497,10 +515,10 @@ fn main() {
         let net_thread = std::thread::spawn(move || {
             let mut delay_secs: u64 = 5;
             loop {
-                println!("Connecting to aggregator at {}...", addr);
+                tracing::info!("Connecting to aggregator at {}...", addr);
                 match TcpStream::connect(&addr) {
                     Ok(stream) => {
-                        println!("Connected to aggregator.");
+                        tracing::info!("Connected to aggregator.");
                         delay_secs = 5;
                         handle_client(
                             stream,
@@ -513,9 +531,9 @@ fn main() {
                             net_wipe_signal.clone(),
                             preferred_player,
                         );
-                        println!("Disconnected from aggregator.");
+                        tracing::info!("Disconnected from aggregator.");
                     }
-                    Err(e) => eprintln!("Failed to connect to aggregator: {e}"),
+                    Err(e) => tracing::warn!("Failed to connect to aggregator: {e}"),
                 }
                 std::thread::sleep(std::time::Duration::from_secs(delay_secs));
                 delay_secs = (delay_secs * 2).min(60);

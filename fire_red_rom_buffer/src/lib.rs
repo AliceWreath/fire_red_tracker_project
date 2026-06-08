@@ -48,9 +48,35 @@ pub enum RomRevision {
     /// differ between the two.
     FireRedUsaRev0,
 
+    /// Pokémon LeafGreen (USA) Rev 1 (game code `BPGE`, revision byte `0x01`).
+    ///
+    /// EWRAM/IWRAM runtime addresses and save-block offsets are identical to
+    /// the FireRed tables.  ROM data-table addresses (Pokémon names, base
+    /// stats, etc.) are different and are currently mapped to the FireRed
+    /// values as a fallback; ROM lookups that depend on those offsets may
+    /// return incorrect data until LeafGreen-specific values are confirmed.
+    LeafGreenUsaRev1,
+
+    /// Pokémon LeafGreen (USA) Rev 0 (game code `BPGE`, revision byte `0x00`).
+    ///
+    /// Same notes as [`LeafGreenUsaRev1`].
+    LeafGreenUsaRev0,
+
     /// ROM header did not match any known game code, or the ROM was too small
     /// to read the header.  Addresses fall back to [`FireRedUsaRev1`].
     Unknown,
+}
+
+impl RomRevision {
+    /// Returns `true` if this revision is a LeafGreen ROM.
+    pub fn is_leaf_green(self) -> bool {
+        matches!(self, RomRevision::LeafGreenUsaRev1 | RomRevision::LeafGreenUsaRev0)
+    }
+
+    /// Returns `true` if this revision is a FireRed ROM.
+    pub fn is_fire_red(self) -> bool {
+        matches!(self, RomRevision::FireRedUsaRev1 | RomRevision::FireRedUsaRev0)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -133,6 +159,38 @@ const FIRERED_USA_REV1: RomAddresses = RomAddresses {
 /// EWRAM variable addresses are identical between the two revisions.
 const FIRERED_USA_REV0: RomAddresses = FIRERED_USA_REV1;
 
+/// Address table for Pokémon LeafGreen (USA).
+///
+/// **EWRAM/IWRAM runtime addresses and save-block offsets are identical to
+/// FireRed.**  The ROM data-table addresses (`pokemon_names_addr` …
+/// `base_stats_addr`) are currently set to the FireRed values as a safe
+/// fallback so party monitoring, death tracking, and badge detection all
+/// work correctly.  ROM-based lookups (ability names, base stats, item data)
+/// will return incorrect results until LeafGreen-specific offsets are
+/// confirmed and added here.
+const LEAFGREEN_USA_REV1: RomAddresses = RomAddresses {
+    // TODO: confirm LeafGreen-specific ROM table offsets from pokeleafgreen decompilation.
+    // Until then, runtime-only features (party, badges, box) are fully functional.
+    pokemon_names_addr:      0x245F5B, // placeholder — same as FireRed
+    ability_names_addr:      0x24FCB0, // placeholder
+    item_data_addr:          0x3DB098, // placeholder
+    base_stats_addr:         0x2547F4, // placeholder
+    // EWRAM/IWRAM runtime addresses — confirmed identical to FireRed.
+    party_size_addr:         0x02024029,
+    party_addr:              0x02024284,
+    player_data_addr:        0x02024298,
+    map_group_and_name_addr: 0x02031DBC,
+    save_block_1_ptr:        0x03005008,
+    save_block_3_ptr:        0x03005010,
+    flags_offset:            0x0EE0,
+    badge_flag_start:        0x820,
+    box_data_offset:         0x4,
+    e4_flag_start:           0x3E3,
+    game_clear_flag:         0x083,
+};
+
+const LEAFGREEN_USA_REV0: RomAddresses = LEAFGREEN_USA_REV1;
+
 // ---------------------------------------------------------------------------
 // Detection
 // ---------------------------------------------------------------------------
@@ -159,8 +217,8 @@ pub fn detect_rom_revision(rom: &[u8]) -> RomRevision {
     };
     let revision = rom.get(REVISION_OFFSET).copied().unwrap_or(0xFF);
 
-    if game_code == b"BPRE" {
-        match revision {
+    match game_code {
+        b"BPRE" => match revision {
             1 => RomRevision::FireRedUsaRev1,
             0 => RomRevision::FireRedUsaRev0,
             r => {
@@ -171,24 +229,53 @@ pub fn detect_rom_revision(rom: &[u8]) -> RomRevision {
                 );
                 RomRevision::Unknown
             }
+        },
+        b"BPGE" => match revision {
+            1 => {
+                eprintln!(
+                    "ROM auto-detect: LeafGreen USA Rev 1 detected. \
+                     EWRAM/save features are fully supported; ROM table lookups \
+                     (base stats, ability names) use FireRed addresses as a placeholder."
+                );
+                RomRevision::LeafGreenUsaRev1
+            }
+            0 => {
+                eprintln!(
+                    "ROM auto-detect: LeafGreen USA Rev 0 detected. \
+                     EWRAM/save features are fully supported; ROM table lookups \
+                     (base stats, ability names) use FireRed addresses as a placeholder."
+                );
+                RomRevision::LeafGreenUsaRev0
+            }
+            r => {
+                eprintln!(
+                    "ROM auto-detect: game code BPGE rev {:#04X} is not a known LeafGreen revision \
+                     — defaulting to LeafGreen Rev 1 addresses.",
+                    r
+                );
+                RomRevision::LeafGreenUsaRev1
+            }
+        },
+        _ => {
+            let code_str = std::str::from_utf8(game_code).unwrap_or("????");
+            eprintln!(
+                "ROM auto-detect: unrecognized game code {:?} rev {:#04X} \
+                 — defaulting to FireRed USA Rev 1 addresses; some lookups may be wrong.",
+                code_str, revision
+            );
+            RomRevision::Unknown
         }
-    } else {
-        let code_str = std::str::from_utf8(game_code).unwrap_or("????");
-        eprintln!(
-            "ROM auto-detect: unrecognized game code {:?} rev {:#04X} \
-             — defaulting to FireRed USA Rev 1 addresses; some lookups may be wrong.",
-            code_str, revision
-        );
-        RomRevision::Unknown
     }
 }
 
 /// Returns the [`RomAddresses`] table for the given revision.
 fn addresses_for(rev: RomRevision) -> RomAddresses {
     match rev {
-        RomRevision::FireRedUsaRev1 => FIRERED_USA_REV1,
-        RomRevision::FireRedUsaRev0 => FIRERED_USA_REV0,
-        RomRevision::Unknown        => FIRERED_USA_REV1,
+        RomRevision::FireRedUsaRev1    => FIRERED_USA_REV1,
+        RomRevision::FireRedUsaRev0    => FIRERED_USA_REV0,
+        RomRevision::LeafGreenUsaRev1  => LEAFGREEN_USA_REV1,
+        RomRevision::LeafGreenUsaRev0  => LEAFGREEN_USA_REV0,
+        RomRevision::Unknown           => FIRERED_USA_REV1,
     }
 }
 
@@ -312,4 +399,93 @@ pub fn get_rom() -> &'static [u8] {
 /// Returns the ROM buffer if it has been initialized, or `None` otherwise.
 pub fn try_get_rom() -> Option<&'static [u8]> {
     ROM_BUFFER.get().map(Vec::as_slice)
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_header(game_code: &[u8; 4], revision: u8) -> Vec<u8> {
+        let mut rom = vec![0u8; 0x200];
+        rom[GAME_CODE_OFFSET..GAME_CODE_OFFSET + 4].copy_from_slice(game_code);
+        rom[REVISION_OFFSET] = revision;
+        rom
+    }
+
+    #[test]
+    fn detect_firered_rev1() {
+        let rom = make_header(b"BPRE", 1);
+        assert_eq!(detect_rom_revision(&rom), RomRevision::FireRedUsaRev1);
+    }
+
+    #[test]
+    fn detect_firered_rev0() {
+        let rom = make_header(b"BPRE", 0);
+        assert_eq!(detect_rom_revision(&rom), RomRevision::FireRedUsaRev0);
+    }
+
+    #[test]
+    fn detect_leafgreen_rev1() {
+        let rom = make_header(b"BPGE", 1);
+        assert_eq!(detect_rom_revision(&rom), RomRevision::LeafGreenUsaRev1);
+    }
+
+    #[test]
+    fn detect_leafgreen_rev0() {
+        let rom = make_header(b"BPGE", 0);
+        assert_eq!(detect_rom_revision(&rom), RomRevision::LeafGreenUsaRev0);
+    }
+
+    #[test]
+    fn detect_unknown_game_code() {
+        let rom = make_header(b"AXVE", 0); // Ruby
+        assert_eq!(detect_rom_revision(&rom), RomRevision::Unknown);
+    }
+
+    #[test]
+    fn detect_too_small_rom_returns_unknown() {
+        assert_eq!(detect_rom_revision(&[0u8; 4]), RomRevision::Unknown);
+    }
+
+    #[test]
+    fn is_fire_red_true_for_firered_variants() {
+        assert!(RomRevision::FireRedUsaRev1.is_fire_red());
+        assert!(RomRevision::FireRedUsaRev0.is_fire_red());
+        assert!(!RomRevision::LeafGreenUsaRev1.is_fire_red());
+        assert!(!RomRevision::LeafGreenUsaRev0.is_fire_red());
+        assert!(!RomRevision::Unknown.is_fire_red());
+    }
+
+    #[test]
+    fn is_leaf_green_true_for_leafgreen_variants() {
+        assert!(RomRevision::LeafGreenUsaRev1.is_leaf_green());
+        assert!(RomRevision::LeafGreenUsaRev0.is_leaf_green());
+        assert!(!RomRevision::FireRedUsaRev1.is_leaf_green());
+        assert!(!RomRevision::FireRedUsaRev0.is_leaf_green());
+        assert!(!RomRevision::Unknown.is_leaf_green());
+    }
+
+    #[test]
+    fn leafgreen_rev1_ewram_addresses_match_firered() {
+        // Runtime addresses must be identical between FireRed and LeafGreen.
+        assert_eq!(LEAFGREEN_USA_REV1.party_size_addr,         FIRERED_USA_REV1.party_size_addr);
+        assert_eq!(LEAFGREEN_USA_REV1.party_addr,              FIRERED_USA_REV1.party_addr);
+        assert_eq!(LEAFGREEN_USA_REV1.player_data_addr,        FIRERED_USA_REV1.player_data_addr);
+        assert_eq!(LEAFGREEN_USA_REV1.map_group_and_name_addr, FIRERED_USA_REV1.map_group_and_name_addr);
+        assert_eq!(LEAFGREEN_USA_REV1.save_block_1_ptr,        FIRERED_USA_REV1.save_block_1_ptr);
+        assert_eq!(LEAFGREEN_USA_REV1.save_block_3_ptr,        FIRERED_USA_REV1.save_block_3_ptr);
+        assert_eq!(LEAFGREEN_USA_REV1.flags_offset,            FIRERED_USA_REV1.flags_offset);
+        assert_eq!(LEAFGREEN_USA_REV1.badge_flag_start,        FIRERED_USA_REV1.badge_flag_start);
+        assert_eq!(LEAFGREEN_USA_REV1.box_data_offset,         FIRERED_USA_REV1.box_data_offset);
+    }
+
+    #[test]
+    fn firered_rev0_rev1_unknown_revision_returns_unknown() {
+        let rom = make_header(b"BPRE", 0xFF);
+        assert_eq!(detect_rom_revision(&rom), RomRevision::Unknown);
+    }
 }

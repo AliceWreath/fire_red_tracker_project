@@ -20,23 +20,10 @@ mod web;
 use app::AggregatorApp;
 use clap::Parser;
 use client::{MonitorSlot, SharedSlots, handle_tracker_connection};
+use fire_red_states::LockOrRecover;
 use std::net::TcpListener;
 use std::sync::{Arc, Mutex};
 
-trait LockOrRecover<T> {
-    fn lock_or_recover(&self) -> std::sync::MutexGuard<'_, T>;
-}
-
-impl<T> LockOrRecover<T> for Mutex<T> {
-    #[track_caller]
-    fn lock_or_recover(&self) -> std::sync::MutexGuard<'_, T> {
-        self.lock().unwrap_or_else(|e| {
-            let loc = std::panic::Location::caller();
-            eprintln!("Warning: mutex poisoned at {}:{}: {e}", loc.file(), loc.line());
-            e.into_inner()
-        })
-    }
-}
 
 // ---------------------------------------------------------------------------
 // CLI definition
@@ -109,6 +96,13 @@ fn do_update() {
 }
 
 fn main() {
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+        )
+        .init();
+
     let cli = Cli::parse();
 
     if cli.update {
@@ -161,10 +155,10 @@ fn main() {
     // TCP listener — accepts incoming tracker connections.
     let listener = TcpListener::bind(format!("0.0.0.0:{}", listen_port))
         .unwrap_or_else(|e| {
-            eprintln!("Failed to bind port {}: {}", listen_port, e);
+            tracing::error!("Failed to bind port {}: {}", listen_port, e);
             std::process::exit(1);
         });
-    println!("Aggregator listening on port {} for tracker connections.", listen_port);
+    tracing::info!("Aggregator listening on port {} for tracker connections.", listen_port);
 
     let listener_slots = shared_slots.clone();
     let listener_db    = db.clone();
@@ -173,7 +167,7 @@ fn main() {
             let stream = match stream {
                 Ok(s)  => s,
                 Err(e) => {
-                    eprintln!("Accept error: {}", e);
+                    tracing::warn!("Accept error: {}", e);
                     std::thread::sleep(std::time::Duration::from_millis(100));
                     continue;
                 }
@@ -181,7 +175,7 @@ fn main() {
             let peer = stream.peer_addr()
                 .map(|a| a.to_string())
                 .unwrap_or_else(|_| "unknown".to_string());
-            println!("Tracker connected from {}", peer);
+            tracing::info!("Tracker connected from {}", peer);
 
             // Reuse the first disconnected slot, or create a new one.
             let slot_arc = {
@@ -221,10 +215,10 @@ fn main() {
                     );
                 }));
                 if result.is_err() {
-                    eprintln!("Tracker thread for {} panicked — clearing slot state.", peer);
+                    tracing::error!("Tracker thread for {} panicked — clearing slot state.", peer);
                     *state.lock_or_recover() = None;
                 }
-                println!("Tracker from {} disconnected.", peer);
+                tracing::info!("Tracker from {} disconnected.", peer);
             });
         }
     });

@@ -317,6 +317,9 @@ All endpoints are served on the same port as the WebSocket overlay (`--ws-port`)
 | `/api/run/:id/shiny` | `GET` | Shiny encounter statistics for run `id`. Returns `{ total_shinies, encounters_since_last_shiny, last_shiny: {...}, since_last_shiny: [...] }`. Requires `--db` |
 | `/db.json` | `GET` | Full database snapshot — all four tables (runs, caught, dead, encounters) formatted for the browser viewer. Requires `--db` |
 | `/db/clear` | `POST` | Deletes all records from every table and removes the active-run meta key. No confirmation, no undo. Requires `--db` |
+| `/api/runs` | `GET` | JSON array of all stored run summaries: `id`, `player`, `started_at`, `ended_at`, `deaths`, `catches`, `encounters`. Requires `--db` |
+| `/api/run/import` | `POST` | Import a previously-exported run. Accepts the JSON body produced by `/api/run/:id/export`; creates a new run and re-inserts all encounter, caught, and dead records. Returns `{ "run_id": <new_id> }`. Requires `--db` |
+| `/api/slot/:index/odds` | `GET` | Wild-encounter table for the specified slot's current map area — land, water, rock-smash, and fishing slots with encounter rates. Returns `404` if the slot index is out of range or the slot is disconnected |
 
 ##### WebSocket payload filtering (`?show=`)
 
@@ -696,6 +699,15 @@ Both `tracker` and `aggregator` store their settings in a config file (`~/.confi
 
 The tracker config supports three optional sections: `[webhooks]` for HTTP event callbacks, `[obs]` for OBS replay buffer clips, and top-level keys for ROM path, database connection, and aggregator host/port. Sections are omitted from the file entirely when nothing in them is configured.
 
+**Startup validation** — the tracker validates the config before the main loop starts. If the ROM path is missing or not readable, or if any webhook URL does not start with `http://` or `https://`, all errors are printed together and the process exits with a non-zero status. This prevents the tracker from running with a silently broken config.
+
+**Structured logging** — both binaries use `tracing` for diagnostic output. Log level is set via the `RUST_LOG` environment variable (default: `info`). Examples:
+
+```
+RUST_LOG=debug ./tracker firered.gba       # verbose — logs every state change
+RUST_LOG=warn  ./aggregator --ws-port 9090 # quiet  — warnings and errors only
+```
+
 ### Quick start — solo Nuzlocke
 
 ```
@@ -747,7 +759,7 @@ Add `http://localhost:9090/cmd` in a browser tab to manage runs — **End Run** 
 
 Personal project built for Nuzlocke and Soul Link runs. The codebase is functional but not hardened for general distribution:
 
-- ROM scanning and all hardcoded addresses are calibrated for **FireRed USA (Rev 1)**. Other regional releases or ROM hacks will likely require address adjustments. Two scan tools are provided for this:
+- ROM scanning and all hardcoded addresses are calibrated for **FireRed USA (Rev 1)**. **LeafGreen** (`BPGE` game code) is detected automatically — runtime EWRAM/SaveBlock addresses are shared between the two games, so party, badge, and encounter data read correctly; ROM table addresses (base stats, Pokémon names, sprite pointers) are currently placeholders and will return incorrect data for LeafGreen. Other regional releases or ROM hacks will likely require address adjustments. Two scan tools are provided for this:
   - `tracker <rom> --scan-balls-pocket` — run with at least one ball in the bag to locate `BALLS_POCKET_SAVE_BLOCK_OFFSET` in `game.rs`. The scanner checks item IDs only; quantities are XOR-encrypted.
   - `tracker <rom> --scan-security-key=<QTY>` — run with exactly `QTY` balls in the bag to locate `SECURITY_KEY_OFFSET` in `game.rs`. The scanner finds all SaveBlock2-relative offsets where `raw_qty ^ offset_value == QTY` and prints the candidates for verification.
 - Map area names (`map_area_name` in `fire_red_location_names`) are sourced from the FireRed/LeafGreen map groups document and cross-checked in-game for a subset of locations. All Kanto routes, major caves, and Sevii Island wild areas are covered. Individual dungeon floors (e.g. which floor of Rock Tunnel a given personality came from) have been confirmed for Diglett's Cave and inferred for the rest; verify with `READ_CORE_MEMORY 0x2031DBC 2` when entering each floor in-game.

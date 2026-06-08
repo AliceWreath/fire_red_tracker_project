@@ -33,26 +33,12 @@
 
 use fire_red_party_monitor::*;
 use fire_red_rom_buffer::*;
+use fire_red_states::LockOrRecover;
 use std::ffi::{CStr, CString, c_uchar};
 use std::os::raw::c_char;
 use std::os::raw::c_int;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
-
-trait LockOrRecover<T> {
-    fn lock_or_recover(&self) -> std::sync::MutexGuard<'_, T>;
-}
-
-impl<T> LockOrRecover<T> for Mutex<T> {
-    #[track_caller]
-    fn lock_or_recover(&self) -> std::sync::MutexGuard<'_, T> {
-        self.lock().unwrap_or_else(|e| {
-            let loc = std::panic::Location::caller();
-            eprintln!("Warning: mutex poisoned at {}:{}: {e}", loc.file(), loc.line());
-            e.into_inner()
-        })
-    }
-}
 use fire_red_pokemon_data::*;
 use fire_red_scanner::{find_wild_headers, find_map_groups_table};
 use fire_red_map_data::{CurrentMapGroupAndName, MapHeader};

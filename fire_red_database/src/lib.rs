@@ -1,21 +1,7 @@
+use fire_red_states::LockOrRecover;
 use postgres::{Client, NoTls};
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
-
-trait LockOrRecover<T> {
-    fn lock_or_recover(&self) -> std::sync::MutexGuard<'_, T>;
-}
-
-impl<T> LockOrRecover<T> for Mutex<T> {
-    #[track_caller]
-    fn lock_or_recover(&self) -> std::sync::MutexGuard<'_, T> {
-        self.lock().unwrap_or_else(|e| {
-            let loc = std::panic::Location::caller();
-            eprintln!("Warning: mutex poisoned at {}:{}: {e}", loc.file(), loc.line());
-            e.into_inner()
-        })
-    }
-}
 
 const NATURES: [&str; 25] = [
     "Hardy",   "Lonely", "Brave",   "Adamant", "Naughty",
@@ -1833,6 +1819,158 @@ pub fn export_run(conn_str: &str, run_id: u32) -> serde_json::Value {
             "player_name":    r.get::<_, String>(7),
         })).collect::<Vec<_>>(),
     })
+}
+
+/// Returns a summary JSON array of every run: id, player_name, started_at,
+/// ended_at, deaths, catches, and encounter count.
+///
+/// Opens its own connection so the live tracker is not blocked.
+pub fn list_all_runs_json(conn_str: &str) -> serde_json::Value {
+    let mut client = match Client::connect(conn_str, NoTls) {
+        Ok(c)  => c,
+        Err(e) => return serde_json::json!({ "error": format!("DB connection failed: {e}") }),
+    };
+    let rows = match client.query(
+        "SELECT r.id, r.player_name, r.started_at, r.ended_at,
+                COUNT(DISTINCT d.personality)  AS deaths,
+                COUNT(DISTINCT c.personality)  AS catches,
+                COUNT(DISTINCT e.id)           AS encounters
+         FROM runs r
+         LEFT JOIN dead_pokemon  d ON d.run_id = r.id
+         LEFT JOIN caught_pokemon c ON c.run_id = r.id
+         LEFT JOIN encounters     e ON e.run_id = r.id
+         GROUP BY r.id
+         ORDER BY r.id DESC",
+        &[],
+    ) {
+        Ok(r)  => r,
+        Err(e) => return serde_json::json!({ "error": format!("Query failed: {e}") }),
+    };
+    let runs: Vec<serde_json::Value> = rows.iter().map(|row| {
+        let started: i64         = row.get(2);
+        let ended:   Option<i64> = row.get(3);
+        serde_json::json!({
+            "id":          row.get::<_, i32>(0),
+            "player_name": row.get::<_, String>(1),
+            "started_at":  format_timestamp(started as u64),
+            "ended_at":    ended.map(|t| format_timestamp(t as u64)),
+            "deaths":      row.get::<_, i64>(4),
+            "catches":     row.get::<_, i64>(5),
+            "encounters":  row.get::<_, i64>(6),
+        })
+    }).collect();
+    serde_json::json!({ "runs": runs })
+}
+
+/// Imports a run from the JSON format produced by [`export_run`].
+///
+/// Creates a new `runs` row and re-inserts every caught, dead, and encounter
+/// record from the export.  The original run id is **not** preserved — a new
+/// id is assigned so there are no conflicts with existing data.
+///
+/// Returns `{ "run_id": <new_id> }` on success or `{ "error": "..." }` on failure.
+pub fn import_run(conn_str: &str, body: &serde_json::Value) -> serde_json::Value {
+    let mut client = match Client::connect(conn_str, NoTls) {
+        Ok(c)  => c,
+        Err(e) => return serde_json::json!({ "error": format!("DB connection failed: {e}") }),
+    };
+
+    let run_obj = match body.get("run") {
+        Some(v) => v,
+        None    => return serde_json::json!({ "error": "missing 'run' field" }),
+    };
+
+    let player_name = run_obj.get("player_name")
+        .and_then(|v| v.as_str())
+        .unwrap_or("Imported");
+    let started_at = unix_now() as i64;
+
+    let new_id: i32 = match client.query_one(
+        "INSERT INTO runs (player_name, started_at) VALUES ($1, $2) RETURNING id",
+        &[&player_name, &started_at],
+    ) {
+        Ok(row) => row.get(0),
+        Err(e)  => return serde_json::json!({ "error": format!("Failed to create run: {e}") }),
+    };
+
+    // Re-insert encounters.
+    if let Some(encounters) = body.get("encounters").and_then(|v| v.as_array()) {
+        for enc in encounters {
+            let species_name = enc.get("species_name").and_then(|v| v.as_str()).unwrap_or("");
+            let level        = enc.get("level").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+            let map_group    = enc.get("map_group").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+            let map_name     = enc.get("map_name").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+            let caught       = enc.get("caught").and_then(|v| v.as_bool()).unwrap_or(false);
+            let is_shiny     = enc.get("is_shiny").and_then(|v| v.as_bool()).unwrap_or(false);
+            let enc_player   = enc.get("player_name").and_then(|v| v.as_str()).unwrap_or(player_name);
+            let _ = client.execute(
+                "INSERT INTO encounters (run_id, player_name, species_name, level, \
+                                        map_group, map_name, caught, is_shiny, encountered_at) \
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+                &[&new_id, &enc_player, &species_name, &level,
+                  &map_group, &map_name, &caught, &is_shiny, &started_at],
+            );
+        }
+    }
+
+    // Re-insert caught.
+    if let Some(caught_list) = body.get("caught").and_then(|v| v.as_array()) {
+        for c in caught_list {
+            let nickname      = c.get("nickname").and_then(|v| v.as_str()).unwrap_or("");
+            let species_name  = c.get("species_name").and_then(|v| v.as_str()).unwrap_or("");
+            let level         = c.get("level").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+            let nature        = c.get("nature").and_then(|v| v.as_str()).unwrap_or("");
+            let is_shiny      = c.get("is_shiny").and_then(|v| v.as_bool()).unwrap_or(false);
+            let gender        = c.get("gender").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+            let met_location  = c.get("met_location").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+            let location_name = c.get("location_name").and_then(|v| v.as_str()).unwrap_or("");
+            let c_player      = c.get("player_name").and_then(|v| v.as_str()).unwrap_or(player_name);
+            let _ = client.execute(
+                "INSERT INTO caught_pokemon (run_id, player_name, personality, ot_id, \
+                                            nickname, species, species_name, is_shiny, \
+                                            nature, level, met_location, location_name, \
+                                            iv_hp, iv_attack, iv_defense, iv_speed, \
+                                            iv_sp_attack, iv_sp_defense, \
+                                            ev_hp, ev_attack, ev_defense, ev_speed, \
+                                            ev_sp_attack, ev_sp_defense, \
+                                            caught_at, gender) \
+                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12, \
+                         0,0,0,0,0,0, 0,0,0,0,0,0, $13,$14) \
+                 ON CONFLICT (run_id, personality) DO NOTHING",
+                &[&new_id, &c_player, &(new_id as i64), &0i64,
+                  &nickname, &0i32, &species_name, &is_shiny,
+                  &nature, &level, &met_location, &location_name,
+                  &started_at, &gender],
+            );
+        }
+    }
+
+    // Re-insert dead.
+    if let Some(dead_list) = body.get("dead").and_then(|v| v.as_array()) {
+        for d in dead_list {
+            let nickname     = d.get("nickname").and_then(|v| v.as_str()).unwrap_or("");
+            let species_name = d.get("species_name").and_then(|v| v.as_str()).unwrap_or("");
+            let level        = d.get("level").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+            let nature       = d.get("nature").and_then(|v| v.as_str()).unwrap_or("");
+            let is_shiny     = d.get("is_shiny").and_then(|v| v.as_bool()).unwrap_or(false);
+            let gender       = d.get("gender").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+            let met_location = d.get("met_location").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+            let d_player     = d.get("player_name").and_then(|v| v.as_str()).unwrap_or(player_name);
+            let _ = client.execute(
+                "INSERT INTO dead_pokemon (run_id, player_name, personality, ot_id, \
+                                          nickname, species, species_name, is_shiny, \
+                                          nature, level, met_location, died_at, \
+                                          gender, max_hp, cause_of_death) \
+                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,0,'') \
+                 ON CONFLICT (run_id, personality) DO NOTHING",
+                &[&new_id, &d_player, &(new_id as i64), &0i64,
+                  &nickname, &0i32, &species_name, &is_shiny,
+                  &nature, &level, &met_location, &started_at, &gender],
+            );
+        }
+    }
+
+    serde_json::json!({ "run_id": new_id })
 }
 
 /// Opens a fresh connection and returns a JSON snapshot of every table.

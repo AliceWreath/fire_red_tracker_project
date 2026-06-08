@@ -408,6 +408,7 @@ mod tests {
     /// commands enabled on port 55355. The test waits 2 seconds for the first
     /// poll to complete before asserting lengths.
     #[test]
+    #[ignore = "requires live RetroArch with UDP memory commands on port 55355"]
     fn test_read() {
         // +1 because the address ranges are inclusive on both ends.
         let iwram_len = (IWRAM_END - IWRAM_START + 1) as usize;

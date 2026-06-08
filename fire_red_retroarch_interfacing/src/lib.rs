@@ -226,17 +226,20 @@ mod tests {
 
     #[test]
     fn make_socket_binds_to_loopback_with_ephemeral_port() {
-        let sock = make_socket().unwrap();
-        let addr = sock.local_addr().unwrap();
+        let sock = make_socket().expect("make_socket should succeed");
+        let addr = sock.local_addr().expect("socket should have a local address");
         assert_eq!(addr.ip().to_string(), "127.0.0.1");
         assert_ne!(addr.port(), 0);
     }
 
     #[test]
     fn make_socket_two_calls_get_different_ports() {
-        let s1 = make_socket().unwrap();
-        let s2 = make_socket().unwrap();
+        let s1 = make_socket().expect("first make_socket should succeed");
+        let s2 = make_socket().expect("second make_socket should succeed");
         // OS assigns different ephemeral ports each time.
-        assert_ne!(s1.local_addr().unwrap().port(), s2.local_addr().unwrap().port());
+        assert_ne!(
+            s1.local_addr().expect("s1 local_addr").port(),
+            s2.local_addr().expect("s2 local_addr").port()
+        );
     }
 }
