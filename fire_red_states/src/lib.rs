@@ -260,36 +260,3 @@ impl<T> LockOrRecover<T> for std::sync::Mutex<T> {
         })
     }
 }
-
-/*
-/// Sends a serialized [`GameState`] packet over a TCP stream.
-///
-/// Deprecated in favor of the generic [`send_message`] helper.
-pub fn send_state(stream: &mut TcpStream, state: &GameState) -> std::io::Result<()> {
-    let encoded =
-        bincode::serialize(state).map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
-    let len = encoded.len() as u32;
-    stream.write_all(&len.to_be_bytes())?;
-    stream.write_all(&encoded)?;
-    Ok(())
-}
-
-/// Receives a serialized [`GameState`] packet from a TCP stream.
-///
-/// Deprecated in favor of the generic [`recv_message`] helper.
-pub fn recv_state(stream: &mut TcpStream) -> std::io::Result<GameState> {
-    let mut len_buf = [0u8; 4];
-    stream.read_exact(&mut len_buf)?;
-    let len = u32::from_be_bytes(len_buf) as usize;
-    if len > MAX_MESSAGE_SIZE {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            "state packet too large",
-        ));
-    }
-    let mut buf = vec![0u8; len];
-    stream.read_exact(&mut buf)?;
-
-    bincode::deserialize(&buf).map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
-}
-*/
