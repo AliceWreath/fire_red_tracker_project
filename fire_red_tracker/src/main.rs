@@ -177,6 +177,11 @@ fn main() {
     let test_ov  = if use_test { cfg.test.clone() } else { None };
     let test     = test_ov.as_ref();
     if use_test {
+        if cli.run_id.is_some() {
+            eprintln!("error: --run-id and test mode are mutually exclusive \
+                       (test mode always starts a new run; drop --run-id or disable test mode).");
+            std::process::exit(1);
+        }
         println!("Test mode active — using [test] config overrides and starting a new run.");
     }
 
@@ -268,6 +273,7 @@ fn main() {
     webhook::init(cfg.webhooks.clone(), cfg.obs.clone());
 
     let is_clean            = cfg.clean || cli.clean;
+    let poll_ms             = cfg.poll_ms.clamp(20, 2000);
     let rom_path            = cli.rom.unwrap_or(cfg.rom);
     #[cfg(feature = "dev-tools")]
     let do_scan_balls   = cli.scan_balls_pocket;
@@ -341,6 +347,8 @@ fn main() {
             let mut last_party_refresh = std::time::Instant::now();
             let mut state_initialized  = false;
             let mut enc_tracker        = encounter::EncounterTracker::new();
+            // Track the last player name to detect save-file switches mid-session.
+            let mut last_player_name   = String::new();
 
             // Set player name before the startup party scan so records written
             // to caught_pokemon have the correct player attribution. The trainer
@@ -392,8 +400,25 @@ fn main() {
                 if !player_name_set {
                     let name = get_trainer_name();
                     if !name.trim().is_empty() {
+                        // Warn if the player name changed since the last time the
+                        // game was loaded — this typically means the user soft-reset
+                        // into a different save file during the same tracker session.
+                        if !last_player_name.is_empty() && name != last_player_name {
+                            eprintln!(
+                                "Warning: player name changed from '{}' to '{}' after reload — \
+                                 possible save-file switch. Death/encounter records may now \
+                                 belong to a different run.",
+                                last_player_name, name
+                            );
+                        }
+                        last_player_name = name.clone();
                         fire_red_database::set_player_name(&name);
                         player_name_set = true;
+                        // Re-seed the encounter latch so that if the tracker was
+                        // started (or restarted) while the player already had balls
+                        // and encounters in the DB, deaths are recorded immediately
+                        // without waiting for the next wild encounter.
+                        enc_tracker.seed_from_db();
                     }
                 }
 
@@ -451,7 +476,7 @@ fn main() {
                     enc_tracker.tick(current_state, &thread_party);
                 }
 
-                std::thread::sleep(std::time::Duration::from_millis(100));
+                std::thread::sleep(std::time::Duration::from_millis(poll_ms));
             }
         });
 

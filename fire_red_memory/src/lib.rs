@@ -272,7 +272,10 @@ fn update_memory() -> Result<(), &'static str> {
 /// - `Some((chunk_start, bytes))` on success.
 /// - `None` if [`MAX_RETRIES`] consecutive failures occur.
 fn read_chunk(start: u32, chunk_start: u32, chunk_size: u32) -> Option<(u32, Vec<u8>)> {
-    let socket = make_socket();
+    let socket = match make_socket() {
+        Ok(s) => s,
+        Err(e) => { eprintln!("Failed to create UDP socket: {e}"); return None; }
+    };
     let command = generate_command(start + chunk_start, chunk_size as usize);
     let mut retries = 0u32;
 

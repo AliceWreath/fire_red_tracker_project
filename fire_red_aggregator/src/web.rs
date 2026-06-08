@@ -1177,6 +1177,21 @@ async fn api_run_stats(
     axum::Json(result.unwrap_or_else(|_| serde_json::json!({ "error": "Task panicked" })))
 }
 
+/// `GET /api/run/:id/export` — full run export as JSON (metadata, caught, dead, encounters).
+async fn api_run_export(
+    State(state): State<WebState>,
+    Path(run_id): Path<u32>,
+) -> axum::Json<serde_json::Value> {
+    let conn = match state.db_conn {
+        Some(s) => s,
+        None    => return axum::Json(serde_json::json!({ "error": "No database configured" })),
+    };
+    let result = tokio::task::spawn_blocking(move || {
+        fire_red_database::export_run(&conn, run_id)
+    }).await;
+    axum::Json(result.unwrap_or_else(|_| serde_json::json!({ "error": "Task panicked" })))
+}
+
 /// `GET /api/run/:id/shiny` — shiny odds statistics JSON for a run.
 async fn api_shiny_stats(
     State(state): State<WebState>,
@@ -1282,8 +1297,9 @@ pub fn run(live_slots: SharedSlots, port: u16, db_conn: Option<String>, testing:
             .route("/api/slot/:index", get(api_slot))
             .route("/api/command/:cmd", post(api_command))
             .route("/api/db/query", post(api_db_query))
-            .route("/api/run/:id/stats", get(api_run_stats))
-            .route("/api/run/:id/shiny", get(api_shiny_stats))
+            .route("/api/run/:id/stats",  get(api_run_stats))
+            .route("/api/run/:id/shiny",  get(api_shiny_stats))
+            .route("/api/run/:id/export", get(api_run_export))
             .route("/history", get(serve_history))
             .route("/shiny", get(serve_shiny))
             .route("/memorial", get(serve_memorial))

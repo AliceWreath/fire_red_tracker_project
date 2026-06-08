@@ -290,6 +290,10 @@ fn db() -> &'static Mutex<DbState> {
 ///
 /// Returns an error string if the connection fails, schema setup fails, or
 /// `initialize` has already been called.
+/// Increment this whenever a new migration or data-repair statement is added.
+/// `initialize` skips all SQL when the DB already records this version.
+const SCHEMA_VERSION: &str = "2";
+
 pub fn initialize(connection_string: &str) -> Result<(), String> {
     let mut client = Client::connect(connection_string, NoTls)
         .map_err(|e| format!(
@@ -297,6 +301,24 @@ pub fn initialize(connection_string: &str) -> Result<(), String> {
              Ensure the server is reachable and the database exists.\n\
              Create it with:  psql -c 'CREATE DATABASE nuzlocke;'"
         ))?;
+
+    // If the meta table already records the current schema version, all
+    // migrations have already been applied — skip the batch entirely.
+    let already_current = client
+        .query_opt(
+            "SELECT value FROM meta WHERE key = 'schema_version'",
+            &[],
+        )
+        .ok()
+        .flatten()
+        .map(|row| row.get::<_, String>(0))
+        .as_deref() == Some(SCHEMA_VERSION);
+
+    if already_current {
+        return DB
+            .set(Mutex::new(DbState { client, run_id: None, current_player: String::new() }))
+            .map_err(|_| "fire_red_database::initialize called more than once".to_string());
+    }
 
     client.batch_execute("
         CREATE TABLE IF NOT EXISTS runs (
@@ -455,6 +477,13 @@ pub fn initialize(connection_string: &str) -> Result<(), String> {
         UPDATE dead_pokemon   SET species_name = 'NIDORAN♀' WHERE species = 29 AND species_name NOT LIKE '%♀%' AND species_name NOT LIKE '%♂%';
         UPDATE dead_pokemon   SET species_name = 'NIDORAN♂' WHERE species = 32 AND species_name NOT LIKE '%♀%' AND species_name NOT LIKE '%♂%';
     ").map_err(|e| format!("Failed to create database schema: {e}"))?;
+
+    // Record the schema version so future startups can skip all migrations.
+    client.execute(
+        "INSERT INTO meta (key, value) VALUES ('schema_version', $1)
+         ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value",
+        &[&SCHEMA_VERSION],
+    ).map_err(|e| format!("Failed to write schema_version: {e}"))?;
 
     DB.set(Mutex::new(DbState { client, run_id: None, current_player: String::new() }))
         .map_err(|_| "fire_red_database::initialize called more than once".to_string())?;
@@ -755,12 +784,14 @@ pub fn list_runs() -> Result<Vec<(u32, String, u64, usize)>, String> {
 
 /// Records a Pokemon as permanently dead in the active run.
 ///
-/// No-op if the Pokemon (identified by personality) is already recorded.
-pub fn mark_dead(pokemon: DeadPokemon) {
+/// Returns `true` if the row was newly inserted; `false` if there is no active
+/// run, the DB write failed, or the record already existed (ON CONFLICT).
+/// Callers should only fire downstream events (webhooks, etc.) on `true`.
+pub fn mark_dead(pokemon: DeadPokemon) -> bool {
     let mut state = db().lock_or_recover();
     let active = match state.run_id {
         Some(id) => id,
-        None => return,
+        None => return false,
     };
     let player       = pg_safe(&state.current_player);
     let ot_name      = pg_safe(&pokemon.ot_name);
@@ -832,7 +863,9 @@ pub fn mark_dead(pokemon: DeadPokemon) {
         ],
     ) {
         eprintln!("Warning: failed to record dead pokemon (personality={}): {e}", pokemon.personality);
+        return false;
     }
+    true
 }
 
 /// Returns `true` if the Pokemon with this personality is dead in the active run.
@@ -1717,6 +1750,89 @@ pub fn clear_all_records(conn_str: &str) -> Result<(), String> {
         DELETE FROM runs;
         DELETE FROM meta WHERE key = 'active_run_id';
     ").map_err(|e| format!("Clear failed: {e}"))
+}
+
+/// Returns a JSON export of a single run: metadata, caught, dead, and encounter lists.
+///
+/// Opens its own connection so the live tracker connection is not blocked.
+pub fn export_run(conn_str: &str, run_id: u32) -> serde_json::Value {
+    let mut client = match Client::connect(conn_str, NoTls) {
+        Ok(c)  => c,
+        Err(e) => return serde_json::json!({ "error": format!("DB connection failed: {e}") }),
+    };
+    let rid = run_id as i32;
+
+    let run_row = match client.query_opt(
+        "SELECT id, player_name, started_at, ended_at FROM runs WHERE id = $1",
+        &[&rid],
+    ) {
+        Ok(Some(r)) => r,
+        Ok(None) => return serde_json::json!({ "error": format!("Run {run_id} not found") }),
+        Err(e)   => return serde_json::json!({ "error": format!("Query failed: {e}") }),
+    };
+
+    let caught_rows = client.query(
+        "SELECT nickname, species_name, level, nature, is_shiny, gender, \
+                met_location, location_name, caught_at, player_name \
+         FROM caught_pokemon WHERE run_id = $1 ORDER BY caught_at",
+        &[&rid],
+    ).unwrap_or_default();
+
+    let dead_rows = client.query(
+        "SELECT nickname, species_name, level, nature, is_shiny, gender, \
+                met_location, died_at, player_name \
+         FROM dead_pokemon WHERE run_id = $1 ORDER BY died_at",
+        &[&rid],
+    ).unwrap_or_default();
+
+    let enc_rows = client.query(
+        "SELECT species_name, level, map_group, map_name, caught, is_shiny, \
+                encountered_at, player_name \
+         FROM encounters WHERE run_id = $1 ORDER BY encountered_at",
+        &[&rid],
+    ).unwrap_or_default();
+
+    serde_json::json!({
+        "run": {
+            "id":          run_row.get::<_, i32>(0),
+            "player_name": run_row.get::<_, String>(1),
+            "started_at":  format_timestamp(run_row.get::<_, i64>(2) as u64),
+            "ended_at":    run_row.get::<_, Option<i64>>(3).map(|t| format_timestamp(t as u64)),
+        },
+        "caught": caught_rows.iter().map(|r| serde_json::json!({
+            "nickname":      r.get::<_, String>(0),
+            "species_name":  r.get::<_, String>(1),
+            "level":         r.get::<_, i32>(2),
+            "nature":        r.get::<_, String>(3),
+            "is_shiny":      r.get::<_, bool>(4),
+            "gender":        r.get::<_, i32>(5),
+            "met_location":  r.get::<_, i32>(6),
+            "location_name": r.get::<_, String>(7),
+            "caught_at":     format_timestamp(r.get::<_, i64>(8) as u64),
+            "player_name":   r.get::<_, String>(9),
+        })).collect::<Vec<_>>(),
+        "dead": dead_rows.iter().map(|r| serde_json::json!({
+            "nickname":     r.get::<_, String>(0),
+            "species_name": r.get::<_, String>(1),
+            "level":        r.get::<_, i32>(2),
+            "nature":       r.get::<_, String>(3),
+            "is_shiny":     r.get::<_, bool>(4),
+            "gender":       r.get::<_, i32>(5),
+            "met_location": r.get::<_, i32>(6),
+            "died_at":      format_timestamp(r.get::<_, i64>(7) as u64),
+            "player_name":  r.get::<_, String>(8),
+        })).collect::<Vec<_>>(),
+        "encounters": enc_rows.iter().map(|r| serde_json::json!({
+            "species_name":   r.get::<_, String>(0),
+            "level":          r.get::<_, i32>(1),
+            "map_group":      r.get::<_, i32>(2),
+            "map_name":       r.get::<_, i32>(3),
+            "caught":         r.get::<_, bool>(4),
+            "is_shiny":       r.get::<_, bool>(5),
+            "encountered_at": format_timestamp(r.get::<_, i64>(6) as u64),
+            "player_name":    r.get::<_, String>(7),
+        })).collect::<Vec<_>>(),
+    })
 }
 
 /// Opens a fresh connection and returns a JSON snapshot of every table.

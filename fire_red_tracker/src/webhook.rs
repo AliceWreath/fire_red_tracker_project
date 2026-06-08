@@ -85,6 +85,7 @@ enum PostBody {
     Raw(String),
 }
 
+
 enum WorkerTask {
     Webhook { url: String, body: PostBody },
     ObsClip,
@@ -161,8 +162,12 @@ fn render_template(template: &str, event: &WebhookEvent) -> String {
                 out.push(c);
                 rest = &rest[c.len_utf8()..];
             }
+        } else if rest.starts_with('}') {
+            // bare `}` not part of `}}`; copy literally
+            out.push('}');
+            rest = &rest[1..];
         } else {
-            let end = rest.find('{').unwrap_or(rest.len());
+            let end = rest.find(['{', '}']).unwrap_or(rest.len());
             out.push_str(&rest[..end]);
             rest = &rest[end..];
         }
@@ -171,12 +176,72 @@ fn render_template(template: &str, event: &WebhookEvent) -> String {
 }
 
 // ---------------------------------------------------------------------------
+// Template validation
+// ---------------------------------------------------------------------------
+
+const KNOWN_PLACEHOLDERS: &[&str] = &[
+    "{event}", "{player}", "{timestamp}",
+    "{pokemon.nickname}", "{pokemon.species}", "{pokemon.level}",
+    "{pokemon.shiny}", "{pokemon.nature}",
+];
+
+/// Returns a list of unrecognized placeholder names found in `template`.
+///
+/// Unknown placeholders (e.g. `{pokemon.nckname}`) are left verbatim at
+/// render time, which is almost always a template typo. Warn at init so the
+/// user sees the problem before the first event fires.
+fn find_unknown_placeholders(template: &str) -> Vec<String> {
+    let mut unknown = Vec::new();
+    let mut rest = template;
+    while let Some(open) = rest.find('{') {
+        rest = &rest[open..];
+        if rest.starts_with("{{") { rest = &rest[2..]; continue; }
+        if let Some(close) = rest.find('}') {
+            let candidate = &rest[..=close];
+            if candidate != "}}" && !KNOWN_PLACEHOLDERS.contains(&candidate) {
+                unknown.push(candidate.to_string());
+            }
+            rest = &rest[close + 1..];
+        } else {
+            break;
+        }
+    }
+    unknown
+}
+
+fn validate_templates(config: &WebhookConfig) {
+    let pairs = [
+        ("death",  config.death_template.as_deref()),
+        ("catch",  config.catch_template.as_deref()),
+        ("shiny",  config.shiny_template.as_deref()),
+        ("wipe",   config.wipe_template.as_deref()),
+    ];
+    for (event, template) in pairs {
+        if let Some(t) = template {
+            let bad = find_unknown_placeholders(t);
+            if !bad.is_empty() {
+                eprintln!(
+                    "Warning: {event}_template contains unknown placeholder(s): {}  \
+                     (known: {})",
+                    bad.join(", "),
+                    KNOWN_PLACEHOLDERS.join(", "),
+                );
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
 /// Initialize the webhook sender. Must be called once before any [`fire_event`]
 /// calls; subsequent calls are a no-op (the first config wins).
+///
+/// Validates any configured templates and prints a warning for unknown
+/// placeholders so typos are caught before the first event fires.
 pub fn init(config: WebhookConfig, obs_config: ObsConfig) {
+    validate_templates(&config);
     let (tx, rx) = channel::<WorkerTask>();
     if STATE.set(WebhookState { tx, config, obs_config }).is_err() {
         return; // already initialized
@@ -189,15 +254,27 @@ pub fn init(config: WebhookConfig, obs_config: ObsConfig) {
         for task in rx {
             match task {
                 WorkerTask::Webhook { url, body } => {
-                    let result = match body {
-                        PostBody::Json(event) => client.post(&url).json(&event).send(),
-                        PostBody::Raw(text)   => client.post(&url)
-                            .header("content-type", "application/json")
-                            .body(text)
-                            .send(),
-                    };
-                    if let Err(e) = result {
-                        eprintln!("Webhook POST to {url} failed: {e}");
+                    // Retry up to 2 additional times (3 total) with a 2 s pause.
+                    let mut attempts = 0u32;
+                    loop {
+                        let result = match &body {
+                            PostBody::Json(event) => client.post(&url).json(event).send(),
+                            PostBody::Raw(text)   => client.post(&url)
+                                .header("content-type", "application/json")
+                                .body(text.clone())
+                                .send(),
+                        };
+                        match result {
+                            Ok(_) => break,
+                            Err(e) => {
+                                attempts += 1;
+                                if attempts >= 3 {
+                                    eprintln!("Webhook POST to {url} failed after {attempts} attempt(s): {e}");
+                                    break;
+                                }
+                                std::thread::sleep(std::time::Duration::from_secs(2));
+                            }
+                        }
                     }
                 }
                 WorkerTask::ObsClip => obs_clip_inner(),
@@ -337,4 +414,156 @@ fn obs_b64(data: &[u8]) -> String {
         out.push(if chunk.len() > 2 { CHARS[( n        & 63) as usize] as char } else { '=' });
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn death_event() -> WebhookEvent {
+        WebhookEvent::Death {
+            player:    "Alice".to_string(),
+            timestamp: 1000,
+            pokemon: PokemonInfo {
+                nickname: "Sparky".to_string(),
+                species:  "Pikachu".to_string(),
+                level:    25,
+                shiny:    false,
+                nature:   "Timid".to_string(),
+            },
+        }
+    }
+
+    fn wipe_event() -> WebhookEvent {
+        WebhookEvent::Wipe { player: "Alice".to_string(), timestamp: 2000 }
+    }
+
+    // ── render_template ──────────────────────────────────────────────────────
+
+    #[test]
+    fn render_template_all_placeholders() {
+        let tmpl = "{event}|{player}|{timestamp}|{pokemon.nickname}|{pokemon.species}|{pokemon.level}|{pokemon.shiny}|{pokemon.nature}";
+        assert_eq!(
+            render_template(tmpl, &death_event()),
+            "death|Alice|1000|Sparky|Pikachu|25|false|Timid",
+        );
+    }
+
+    #[test]
+    fn render_template_wipe_pokemon_fields_are_empty() {
+        let tmpl = "{event}|{player}|{pokemon.nickname}|{pokemon.level}";
+        assert_eq!(render_template(tmpl, &wipe_event()), "wipe|Alice||");
+    }
+
+    #[test]
+    fn render_template_escape_braces() {
+        assert_eq!(render_template("{{literal}} and {event}", &death_event()), "{literal} and death");
+    }
+
+    #[test]
+    fn render_template_unknown_placeholder_passes_through() {
+        // Unknown placeholder: opening `{` is copied verbatim, remaining chars as plain text.
+        let result = render_template("{pokemon.nckname} vs {pokemon.nickname}", &death_event());
+        assert_eq!(result, "{pokemon.nckname} vs Sparky");
+    }
+
+    #[test]
+    fn render_template_shiny_true() {
+        let event = WebhookEvent::Shiny {
+            player: "Alice".to_string(),
+            timestamp: 3000,
+            pokemon: PokemonInfo {
+                nickname: "Gleam".to_string(),
+                species:  "Gyarados".to_string(),
+                level:    30,
+                shiny:    true,
+                nature:   "Bold".to_string(),
+            },
+        };
+        assert_eq!(render_template("{pokemon.shiny}", &event), "true");
+    }
+
+    #[test]
+    fn render_template_plain_text_no_placeholders() {
+        assert_eq!(render_template("hello world", &death_event()), "hello world");
+    }
+
+    #[test]
+    fn render_template_discord_style_template() {
+        let tmpl = r#"{"content": "{player} lost {pokemon.nickname} at level {pokemon.level}!"}"#;
+        let result = render_template(tmpl, &death_event());
+        assert_eq!(result, r#"{"content": "Alice lost Sparky at level 25!"}"#);
+    }
+
+    // ── find_unknown_placeholders ────────────────────────────────────────────
+
+    #[test]
+    fn find_unknown_none_when_all_known() {
+        let tmpl = "{event} {player} {timestamp} {pokemon.nickname}";
+        assert!(find_unknown_placeholders(tmpl).is_empty());
+    }
+
+    #[test]
+    fn find_unknown_detects_typo() {
+        let result = find_unknown_placeholders("{pokemon.nckname}");
+        assert_eq!(result, vec!["{pokemon.nckname}"]);
+    }
+
+    #[test]
+    fn find_unknown_skips_escape_sequences() {
+        assert!(find_unknown_placeholders("{{not_a_placeholder}} {event}").is_empty());
+    }
+
+    #[test]
+    fn find_unknown_returns_all_bad_placeholders() {
+        let result = find_unknown_placeholders("{pokemon.hp} and {pokemon.speed}");
+        assert_eq!(result.len(), 2);
+        assert!(result.contains(&"{pokemon.hp}".to_string()));
+        assert!(result.contains(&"{pokemon.speed}".to_string()));
+    }
+
+    #[test]
+    fn find_unknown_empty_template() {
+        assert!(find_unknown_placeholders("").is_empty());
+    }
+
+    #[test]
+    fn find_unknown_all_known_placeholders_are_accepted() {
+        let all = KNOWN_PLACEHOLDERS.join(" ");
+        assert!(find_unknown_placeholders(&all).is_empty());
+    }
+
+    // ── obs_b64 ──────────────────────────────────────────────────────────────
+
+    #[test]
+    fn obs_b64_empty() {
+        assert_eq!(obs_b64(&[]), "");
+    }
+
+    #[test]
+    fn obs_b64_three_bytes_no_padding() {
+        // RFC 4648 test vector: "Man" → "TWFu"
+        assert_eq!(obs_b64(b"Man"), "TWFu");
+    }
+
+    #[test]
+    fn obs_b64_one_byte_two_padding_chars() {
+        // "M" → "TQ=="
+        assert_eq!(obs_b64(b"M"), "TQ==");
+    }
+
+    #[test]
+    fn obs_b64_two_bytes_one_padding_char() {
+        // "Ma" → "TWE="
+        assert_eq!(obs_b64(b"Ma"), "TWE=");
+    }
+
+    #[test]
+    fn obs_b64_output_is_multiple_of_four() {
+        for len in 0..=9 {
+            let data: Vec<u8> = (0..len as u8).collect();
+            let encoded = obs_b64(&data);
+            assert_eq!(encoded.len() % 4, 0, "length {} gave non-multiple-of-4 output", len);
+        }
+    }
 }

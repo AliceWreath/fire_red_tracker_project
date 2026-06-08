@@ -99,7 +99,7 @@ pub fn check_for_dead_pokemon(thread_party: &Arc<Mutex<Vec<Pokemon>>>, run_track
             .unwrap_or(0);
 
         let shiny_flag = is_shiny(personality, ot_id);
-        fire_red_database::mark_dead(fire_red_database::DeadPokemon {
+        let recorded = fire_red_database::mark_dead(fire_red_database::DeadPokemon {
             player_name:   fire_red_loop::get_trainer_name(),
             personality,
             ot_id,
@@ -148,6 +148,7 @@ pub fn check_for_dead_pokemon(thread_party: &Arc<Mutex<Vec<Pokemon>>>, run_track
 
             died_at,
         });
+        if !recorded { continue; }
         crate::webhook::fire_event(crate::webhook::WebhookEvent::Death {
             player:    fire_red_loop::get_trainer_name(),
             timestamp: died_at,

@@ -36,6 +36,11 @@ pub struct TrackerConfig {
     /// Settings applied when `--test` is passed (overrides base config; explicit CLI flags still win).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub test: Option<TrackerTestOverrides>,
+    /// How often the game-polling loop ticks, in milliseconds.
+    /// Lower values give more responsive HP/death detection at the cost of CPU.
+    /// Defaults to 100 ms. Valid range: 20–2000.
+    #[serde(default = "default_poll_ms", skip_serializing_if = "is_default_poll_ms")]
+    pub poll_ms: u64,
     /// Webhook URLs fired on game events.
     #[serde(default, skip_serializing_if = "WebhookConfig::is_empty")]
     pub webhooks: WebhookConfig,
@@ -46,6 +51,8 @@ pub struct TrackerConfig {
 
 fn default_aggregator_host() -> String { "127.0.0.1".to_string() }
 fn default_aggregator_port() -> u16 { 7878 }
+fn default_poll_ms() -> u64 { 100 }
+fn is_default_poll_ms(v: &u64) -> bool { *v == 100 }
 
 // ---------------------------------------------------------------------------
 // Webhook config
@@ -479,6 +486,7 @@ impl eframe::App for SetupApp {
                     preferred_player: player_parse,
                     default_test:     self.default_test,
                     test:             self.test.clone(),
+                    poll_ms:  default_poll_ms(),
                     webhooks: WebhookConfig {
                         death_url:      if self.death_url_enabled && !self.death_url.trim().is_empty() { Some(self.death_url.trim().to_string()) } else { None },
                         death_template: if self.death_url_enabled && !self.death_template.trim().is_empty() { Some(self.death_template.trim().to_string()) } else { None },
@@ -581,4 +589,81 @@ pub fn run_config_editor(path: &PathBuf) {
         None          => show_setup_dialog(),
     };
     save_config(&new_cfg, path);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn minimal_toml(extra: &str) -> String {
+        format!("rom = \"test.gba\"\ndb = \"postgresql://localhost/test\"\n{extra}")
+    }
+
+    // ── poll_ms ───────────────────────────────────────────────────────────────
+
+    #[test]
+    fn poll_ms_defaults_to_100_when_absent() {
+        let cfg: TrackerConfig = toml::from_str(&minimal_toml("")).unwrap();
+        assert_eq!(cfg.poll_ms, 100);
+    }
+
+    #[test]
+    fn poll_ms_parsed_when_present() {
+        let cfg: TrackerConfig = toml::from_str(&minimal_toml("poll_ms = 250\n")).unwrap();
+        assert_eq!(cfg.poll_ms, 250);
+    }
+
+    #[test]
+    fn poll_ms_not_serialized_at_default() {
+        let cfg: TrackerConfig = toml::from_str(&minimal_toml("")).unwrap();
+        let serialized = toml::to_string(&cfg).unwrap();
+        assert!(!serialized.contains("poll_ms"), "poll_ms should be omitted when default");
+    }
+
+    #[test]
+    fn poll_ms_serialized_when_nondefault() {
+        let cfg: TrackerConfig = toml::from_str(&minimal_toml("poll_ms = 500\n")).unwrap();
+        let serialized = toml::to_string(&cfg).unwrap();
+        assert!(serialized.contains("poll_ms = 500"));
+    }
+
+    #[test]
+    fn poll_ms_roundtrips() {
+        let cfg: TrackerConfig = toml::from_str(&minimal_toml("poll_ms = 200\n")).unwrap();
+        let s = toml::to_string(&cfg).unwrap();
+        let cfg2: TrackerConfig = toml::from_str(&s).unwrap();
+        assert_eq!(cfg2.poll_ms, 200);
+    }
+
+    // ── WebhookConfig::is_empty ───────────────────────────────────────────────
+
+    #[test]
+    fn webhook_config_is_empty_when_default() {
+        assert!(WebhookConfig::default().is_empty());
+    }
+
+    #[test]
+    fn webhook_config_not_empty_when_death_url_set() {
+        let cfg = WebhookConfig { death_url: Some("https://example.com".to_string()), ..Default::default() };
+        assert!(!cfg.is_empty());
+    }
+
+    #[test]
+    fn webhook_config_not_empty_when_template_set() {
+        let cfg = WebhookConfig { death_template: Some("{event}".to_string()), ..Default::default() };
+        assert!(!cfg.is_empty());
+    }
+
+    // ── ObsConfig::is_default ────────────────────────────────────────────────
+
+    #[test]
+    fn obs_config_is_default_when_no_clips_enabled() {
+        assert!(ObsConfig::default().is_default());
+    }
+
+    #[test]
+    fn obs_config_not_default_when_clip_on_death() {
+        let cfg = ObsConfig { clip_on_death: true, ..Default::default() };
+        assert!(!cfg.is_default());
+    }
 }

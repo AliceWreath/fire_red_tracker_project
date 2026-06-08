@@ -101,16 +101,13 @@ pub fn generate_command(ptr: u32, len: usize) -> String {
 /// correctly. Using `send_to`/`recv_from` on an unconnected socket avoids
 /// this issue.
 ///
-/// # Panics
+/// # Errors
 ///
-/// Panics if the socket cannot be bound or the timeout cannot be set.
-pub fn make_socket() -> UdpSocket {
-    let socket = UdpSocket::bind("127.0.0.1:0")
-        .expect("Failed to bind UDP socket.");
-    socket
-        .set_read_timeout(Some(std::time::Duration::from_millis(500)))
-        .expect("Failed to set socket read timeout.");
-    socket
+/// Returns an `Err` if the OS cannot bind the socket or set the read timeout.
+pub fn make_socket() -> std::io::Result<UdpSocket> {
+    let socket = UdpSocket::bind("127.0.0.1:0")?;
+    socket.set_read_timeout(Some(std::time::Duration::from_millis(500)))?;
+    Ok(socket)
 }
 
 /// Retrieves the current map group and map number from RetroArch.
@@ -130,7 +127,7 @@ pub fn make_socket() -> UdpSocket {
 ///   as uppercase hex strings.
 /// - `None` if communication fails or the response is malformed.
 pub fn get_map_info() -> Option<Vec<String>> {
-    let socket = make_socket();
+    let socket = make_socket().ok()?;
     let command = generate_command(MAP_GROUP_AND_NAME_ADDR, std::mem::size_of::<u32>());
     // +2 accounts for the "READ_CORE_MEMORY <addr>" prefix tokens in the response.
     get_from_retroarch(&socket, command.as_str(), std::mem::size_of::<u32>() + 2)
@@ -191,5 +188,55 @@ pub fn get_from_retroarch(
             eprintln!("Unexpected socket error: {}", e);
             None
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── generate_command ─────────────────────────────────────────────────────
+
+    #[test]
+    fn generate_command_formats_address() {
+        assert_eq!(generate_command(0x02024284, 4), "READ_CORE_MEMORY 0x02024284 4");
+    }
+
+    #[test]
+    fn generate_command_zero_address() {
+        assert_eq!(generate_command(0, 1), "READ_CORE_MEMORY 0x00000000 1");
+    }
+
+    #[test]
+    fn generate_command_max_address() {
+        assert_eq!(generate_command(0xFFFFFFFF, 16), "READ_CORE_MEMORY 0xFFFFFFFF 16");
+    }
+
+    #[test]
+    fn generate_command_large_length() {
+        assert_eq!(generate_command(0x02000000, 4096), "READ_CORE_MEMORY 0x02000000 4096");
+    }
+
+    // ── make_socket ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn make_socket_returns_ok() {
+        assert!(make_socket().is_ok());
+    }
+
+    #[test]
+    fn make_socket_binds_to_loopback_with_ephemeral_port() {
+        let sock = make_socket().unwrap();
+        let addr = sock.local_addr().unwrap();
+        assert_eq!(addr.ip().to_string(), "127.0.0.1");
+        assert_ne!(addr.port(), 0);
+    }
+
+    #[test]
+    fn make_socket_two_calls_get_different_ports() {
+        let s1 = make_socket().unwrap();
+        let s2 = make_socket().unwrap();
+        // OS assigns different ephemeral ports each time.
+        assert_ne!(s1.local_addr().unwrap().port(), s2.local_addr().unwrap().port());
     }
 }
