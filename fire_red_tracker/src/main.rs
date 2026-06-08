@@ -470,11 +470,13 @@ fn main() {
         let net_wipe_signal   = wipe_signal.clone();
 
         let net_thread = std::thread::spawn(move || {
+            let mut delay_secs: u64 = 5;
             loop {
                 println!("Connecting to aggregator at {}...", addr);
                 match TcpStream::connect(&addr) {
                     Ok(stream) => {
                         println!("Connected to aggregator.");
+                        delay_secs = 5;
                         handle_client(
                             stream,
                             net_party.clone(),
@@ -488,9 +490,10 @@ fn main() {
                         );
                         println!("Disconnected from aggregator.");
                     }
-                    Err(e) => eprintln!("Failed to connect to aggregator: {}", e),
+                    Err(e) => eprintln!("Failed to connect to aggregator: {e}"),
                 }
-                std::thread::sleep(std::time::Duration::from_secs(5));
+                std::thread::sleep(std::time::Duration::from_secs(delay_secs));
+                delay_secs = (delay_secs * 2).min(60);
             }
         });
 
