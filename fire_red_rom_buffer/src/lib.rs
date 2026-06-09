@@ -51,15 +51,15 @@ pub enum RomRevision {
     /// Pokémon LeafGreen (USA) Rev 1 (game code `BPGE`, revision byte `0x01`).
     ///
     /// EWRAM/IWRAM runtime addresses and save-block offsets are identical to
-    /// the FireRed tables.  ROM data-table addresses (Pokémon names, base
-    /// stats, etc.) are different and are currently mapped to the FireRed
-    /// values as a fallback; ROM lookups that depend on those offsets may
-    /// return incorrect data until LeafGreen-specific values are confirmed.
+    /// FireRed.  ROM data-table addresses (Pokémon names, base stats, ability
+    /// names, item data) have been confirmed by ROM scan against the retail
+    /// LeafGreen USA Rev 1 ROM and differ from FireRed by small fixed offsets.
     LeafGreenUsaRev1,
 
     /// Pokémon LeafGreen (USA) Rev 0 (game code `BPGE`, revision byte `0x00`).
     ///
-    /// Same notes as [`LeafGreenUsaRev1`].
+    /// Uses the same address table as Rev 1; Rev 0 and Rev 1 share identical
+    /// data-table and EWRAM-variable layouts.
     LeafGreenUsaRev0,
 
     /// ROM header did not match any known game code, or the ROM was too small
@@ -161,21 +161,15 @@ const FIRERED_USA_REV0: RomAddresses = FIRERED_USA_REV1;
 
 /// Address table for Pokémon LeafGreen (USA).
 ///
-/// **EWRAM/IWRAM runtime addresses and save-block offsets are identical to
-/// FireRed.**  The ROM data-table addresses (`pokemon_names_addr` …
-/// `base_stats_addr`) are currently set to the FireRed values as a safe
-/// fallback so party monitoring, death tracking, and badge detection all
-/// work correctly.  ROM-based lookups (ability names, base stats, item data)
-/// will return incorrect results until LeafGreen-specific offsets are
-/// confirmed and added here.
+/// ROM data-table offsets confirmed by live scan of the retail LeafGreen USA
+/// Rev 1 ROM (BPGE, rev byte 0x01).  All four tables sit 0x24 bytes earlier
+/// than FireRed for the name/stats tables; the item table has a larger shift.
+/// EWRAM/IWRAM runtime addresses and save-block offsets are identical to FireRed.
 const LEAFGREEN_USA_REV1: RomAddresses = RomAddresses {
-    // TODO: confirm LeafGreen-specific ROM table offsets from pokeleafgreen decompilation.
-    // Until then, runtime-only features (party, badges, box) are fully functional.
-    pokemon_names_addr:      0x245F5B, // placeholder — same as FireRed
-    ability_names_addr:      0x24FCB0, // placeholder
-    item_data_addr:          0x3DB098, // placeholder
-    base_stats_addr:         0x2547F4, // placeholder
-    // EWRAM/IWRAM runtime addresses — confirmed identical to FireRed.
+    pokemon_names_addr:      0x245F37,
+    ability_names_addr:      0x24FC8C,
+    item_data_addr:          0x3DAED4,
+    base_stats_addr:         0x2547D0,
     party_size_addr:         0x02024029,
     party_addr:              0x02024284,
     player_data_addr:        0x02024298,
@@ -232,19 +226,11 @@ pub fn detect_rom_revision(rom: &[u8]) -> RomRevision {
         },
         b"BPGE" => match revision {
             1 => {
-                tracing::info!(
-                    "ROM auto-detect: LeafGreen USA Rev 1 detected. \
-                     EWRAM/save features are fully supported; ROM table lookups \
-                     (base stats, ability names) use FireRed addresses as a placeholder."
-                );
+                tracing::info!("ROM auto-detect: LeafGreen USA Rev 1 detected.");
                 RomRevision::LeafGreenUsaRev1
             }
             0 => {
-                tracing::info!(
-                    "ROM auto-detect: LeafGreen USA Rev 0 detected. \
-                     EWRAM/save features are fully supported; ROM table lookups \
-                     (base stats, ability names) use FireRed addresses as a placeholder."
-                );
+                tracing::info!("ROM auto-detect: LeafGreen USA Rev 0 detected.");
                 RomRevision::LeafGreenUsaRev0
             }
             r => {
@@ -481,6 +467,20 @@ mod tests {
         assert_eq!(LEAFGREEN_USA_REV1.flags_offset,            FIRERED_USA_REV1.flags_offset);
         assert_eq!(LEAFGREEN_USA_REV1.badge_flag_start,        FIRERED_USA_REV1.badge_flag_start);
         assert_eq!(LEAFGREEN_USA_REV1.box_data_offset,         FIRERED_USA_REV1.box_data_offset);
+    }
+
+    #[test]
+    fn leafgreen_rev1_rom_table_addresses_confirmed() {
+        // ROM data-table addresses confirmed by live scan of LeafGreen USA Rev 1 ROM.
+        // These must not equal the FireRed values (which were the old placeholders).
+        assert_eq!(LEAFGREEN_USA_REV1.pokemon_names_addr, 0x245F37);
+        assert_eq!(LEAFGREEN_USA_REV1.ability_names_addr, 0x24FC8C);
+        assert_eq!(LEAFGREEN_USA_REV1.base_stats_addr,    0x2547D0);
+        assert_eq!(LEAFGREEN_USA_REV1.item_data_addr,     0x3DAED4);
+        assert_ne!(LEAFGREEN_USA_REV1.pokemon_names_addr, FIRERED_USA_REV1.pokemon_names_addr);
+        assert_ne!(LEAFGREEN_USA_REV1.ability_names_addr, FIRERED_USA_REV1.ability_names_addr);
+        assert_ne!(LEAFGREEN_USA_REV1.base_stats_addr,    FIRERED_USA_REV1.base_stats_addr);
+        assert_ne!(LEAFGREEN_USA_REV1.item_data_addr,     FIRERED_USA_REV1.item_data_addr);
     }
 
     #[test]
