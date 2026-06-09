@@ -158,3 +158,35 @@ Columns: `id`, `run_id`, `player_name`, `event_type`, `species_name`, `nickname`
 ### Badge boot guard
 
 The game-polling thread tracks badge state with a `last_badge_mask: Option<u8>`. `None` means "uninitialized". `check_for_new_badges` silently adopts the current badge state on the first call with `None`, preventing false-positive events on tracker startup and after a wipe or run change. The mask is reset to `None` on: game unload, wipe detected, and `thread_run_changed` signal.
+
+## Design Notes
+
+### `LockOrRecover`
+
+`pub trait LockOrRecover<T>` lives in `fire_red_states` and is the single shared implementation of poison-recovering mutex locking. All crates that need it import `fire_red_states::LockOrRecover` — do **not** define a local copy.
+
+### Wild encounter pointer field naming
+
+`WildHeaderRom` in `fire_red_pokemon_data` uses `land_mon_encounters_rom_ptr` (note: corrected from the historical typo `enounters`). The public `EncounterHeader` field remains `land_mon_encounters`.
+
+### Error visibility
+
+- Sprite decompression failures in the aggregator's `decompress_pixels` are logged at `WARN` level via `tracing::warn!`.
+- Database dump task panics in `serve_db_json` are logged at `ERROR` level via `tracing::error!`.
+- `eframe::run_native` errors in the aggregator are printed to stderr.
+
+### Wild encounter header scanner
+
+`looks_like_header` in `fire_red_scanner` requires **all four** encounter table pointers to be either zero or a valid GBA ROM address. A zero pointer is valid and means "no encounters of that type on this map". Partial validity (some zero, some non-ROM) would indicate corrupted or misidentified data.
+
+### Randomizer mode
+
+When `TrackerConfig::randomizer_mode` is `true`, `EncounterTracker::tick()` skips both the `species_encountered` check and the dupes-clause species check. The per-area deduplication (one entry per dungeon floor set per run) still applies. This allows multiple routes to record the same species without marking them as duplicates — necessary for randomized ROMs.
+
+### Bot summary endpoint
+
+`GET /api/bot/:index` returns a plain-text string: `"<player> — <hp>/<max_hp> HP — <zone>"`. It reads from `SharedSlots` directly (same source as `/api/slot/:index`) but formats the result as a single human-readable line instead of JSON, making it easy to consume from a Twitch chat bot or stream overlay widget.
+
+### Run comparison page (`/compare`)
+
+`GET /compare` serves `compare.html`, a self-contained JavaScript page. It fetches the run list from `/api/runs` and loads per-run stats from `/api/run/:id/stats` on demand. Stats are cached in-page to avoid repeat round-trips. Numeric comparisons highlight the better value green and worse value red using a `higherIsBetter` flag per metric.

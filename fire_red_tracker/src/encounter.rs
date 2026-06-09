@@ -66,7 +66,7 @@ impl EncounterTracker {
     /// - `PerPlayer` — skip if *this* player has previously caught this species.
     /// - `Shared` — skip if *any* player in the shared run has caught this species
     ///   (Soul Link / co-op: one catch covers the whole group).
-    pub fn tick(&mut self, current_state: FireRedState, thread_party: &Arc<Mutex<Vec<Pokemon>>>, dupes_clause: DupesClauseMode) {
+    pub fn tick(&mut self, current_state: FireRedState, thread_party: &Arc<Mutex<Vec<Pokemon>>>, dupes_clause: DupesClauseMode, randomizer_mode: bool) {
         if self.wipe_detected { return; }
         if let Some(enemy) = crate::game::get_wild_enemy_pokemon()
             && enemy.box_mon.personality != self.last_enemy_personality
@@ -82,13 +82,17 @@ impl EncounterTracker {
             }
 
             let species = enemy.box_mon.secure.growth.species;
-            if fire_red_database::species_encountered(species) {
+            if !randomizer_mode && fire_red_database::species_encountered(species) {
                 return;
             }
-            let skip = match dupes_clause {
-                DupesClauseMode::Off       => false,
-                DupesClauseMode::PerPlayer => fire_red_database::species_caught_by_self(species),
-                DupesClauseMode::Shared    => fire_red_database::species_caught_any(species),
+            let skip = if randomizer_mode {
+                false
+            } else {
+                match dupes_clause {
+                    DupesClauseMode::Off       => false,
+                    DupesClauseMode::PerPlayer => fire_red_database::species_caught_by_self(species),
+                    DupesClauseMode::Shared    => fire_red_database::species_caught_any(species),
+                }
             };
             if skip { return; }
 

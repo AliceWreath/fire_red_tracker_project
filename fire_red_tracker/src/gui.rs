@@ -11,24 +11,10 @@ use crate::textures::{
 };
 use fire_red_states::SpriteVariant;
 use fire_red_states::MAX_NATIONAL_DEX_FIRERED;
+use fire_red_states::LockOrRecover;
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-
-trait LockOrRecover<T> {
-    fn lock_or_recover(&self) -> std::sync::MutexGuard<'_, T>;
-}
-
-impl<T> LockOrRecover<T> for Mutex<T> {
-    #[track_caller]
-    fn lock_or_recover(&self) -> std::sync::MutexGuard<'_, T> {
-        self.lock().unwrap_or_else(|e| {
-            let loc = std::panic::Location::caller();
-            eprintln!("Warning: mutex poisoned at {}:{}: {e}", loc.file(), loc.line());
-            e.into_inner()
-        })
-    }
-}
 
 /// Default target window size for the party panel, in logical pixels.
 pub const PARTY_WINDOW: (f32, f32) = (400.0, 800.0);
@@ -47,6 +33,7 @@ struct SettingsDraft {
     // Run / polling
     poll_ms:          String,
     dupes_clause:     crate::config::DupesClauseMode,
+    randomizer_mode:  bool,
     // Test mode
     default_test:     bool,
     test_db:          String,
@@ -95,6 +82,7 @@ impl SettingsDraft {
             preferred_player: cfg.preferred_player.map(|n| n.to_string()).unwrap_or_default(),
             poll_ms:          if cfg.poll_ms == 100 { String::new() } else { cfg.poll_ms.to_string() },
             dupes_clause:     cfg.dupes_clause,
+            randomizer_mode:  cfg.randomizer_mode,
             default_test:     cfg.default_test,
             test_db:       cfg.test.as_ref().and_then(|t| t.db.as_ref())
                                .map(|s| s.trim_start_matches("postgresql://").trim_start_matches("postgres://").to_string())
@@ -496,6 +484,13 @@ impl WindowInfo {
                 });
                 ui.end_row();
 
+                ui.label("Randomizer mode:");
+                ui.vertical(|ui| {
+                    ui.checkbox(&mut s.randomizer_mode, "Bypass species dedup (for randomized runs)");
+                    ui.small("The same species may be recorded on multiple routes. Each route still allows only one encounter.");
+                });
+                ui.end_row();
+
                 // ── Test mode ─────────────────────────────────────────────────
                 ui.separator();
                 ui.end_row();
@@ -700,6 +695,7 @@ impl WindowInfo {
                         clip_on_badge: s.obs_clip_badge,
                     },
                     dupes_clause: s.dupes_clause,
+                    randomizer_mode: s.randomizer_mode,
                 };
                 save_config(&cfg, &self.config_path);
                 self.settings_open = false;

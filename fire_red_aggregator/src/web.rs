@@ -963,6 +963,7 @@ const SHINY_HTML:        &str = include_str!("shiny.html");
 const MEMORIAL_HTML:     &str = include_str!("memorial.html");
 const SOULLINK_HTML:     &str = include_str!("soullink.html");
 const ABOUT_HTML:        &str = include_str!("about.html");
+const COMPARE_HTML:      &str = include_str!("compare.html");
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -1064,7 +1065,10 @@ async fn serve_db_json(State(state): State<WebState>) -> axum::Json<serde_json::
         None    => return axum::Json(serde_json::json!({ "error": "No database configured" })),
     };
     let result = tokio::task::spawn_blocking(move || fire_red_database::dump_all(&conn)).await;
-    axum::Json(result.unwrap_or_else(|_| serde_json::json!({ "error": "Query failed" })))
+    axum::Json(result.unwrap_or_else(|e| {
+        tracing::error!("db dump task failed: {e}");
+        serde_json::json!({ "error": "Query failed" })
+    }))
 }
 
 async fn clear_db(
@@ -1155,6 +1159,34 @@ async fn api_slot_odds(
         "rock_smash":  make_list(&h.rock_smash_encounters),
         "fishing":     make_list(&h.fishing_encounters),
     }))
+}
+
+/// Returns a plain-text one-line summary of a tracker slot, suitable for chat
+/// bots or stream commands. Format: `"<Player> — <HP>/<MaxHP> — <MapName>"`.
+/// Returns `"Slot <n> not found"` or `"Slot <n> not connected"` on error.
+async fn api_bot_summary(
+    State(state): State<WebState>,
+    Path(index): Path<usize>,
+) -> String {
+    let slots = state.live_slots.lock_or_recover().clone();
+    let slot = match slots.get(index) {
+        Some(s) => s.clone(),
+        None    => return format!("Slot {index} not found"),
+    };
+    let gs = match slot.state.lock_or_recover().clone() {
+        Some(gs) => gs,
+        None     => return format!("Slot {index} not connected"),
+    };
+    let player = &gs.player_name;
+    let map    = if gs.zone_name.is_empty() { "Unknown location" } else { &gs.zone_name };
+    let (hp, max_hp) = gs.party.first()
+        .map(|p| (p.hp, p.max_hp))
+        .unwrap_or((0, 0));
+    format!("{player} — {hp}/{max_hp} HP — {map}")
+}
+
+async fn serve_compare(State(state): State<WebState>) -> Html<String> {
+    Html(apply_page(COMPARE_HTML, state.testing))
 }
 
 async fn ws_handler(
@@ -1514,6 +1546,7 @@ pub fn run(live_slots: SharedSlots, port: u16, db_conn: Option<String>, testing:
             .route("/api/state", get(api_state))
             .route("/api/slot/:index", get(api_slot))
             .route("/api/slot/:index/odds", get(api_slot_odds))
+            .route("/api/bot/:index", get(api_bot_summary))
             .route("/api/command/:cmd", post(api_command))
             .route("/api/db/query", post(api_db_query))
             .route("/api/runs",            get(api_runs))
@@ -1538,6 +1571,7 @@ pub fn run(live_slots: SharedSlots, port: u16, db_conn: Option<String>, testing:
             .route("/run/:id/stats", get(serve_run_stats))
             .route("/run/:id/memorial", get(serve_memorial))
             .route("/about", get(serve_about))
+            .route("/compare", get(serve_compare))
             .with_state(web_state);
 
         let addr = format!("0.0.0.0:{}", port);

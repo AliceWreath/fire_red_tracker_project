@@ -393,7 +393,7 @@ fn fill_static_buffer(buffer: Vec<u8>) -> &'static [u8] {
 /// println!("ROM size: {} bytes", rom.len());
 /// ```
 pub fn get_rom() -> &'static [u8] {
-    ROM_BUFFER.get().expect("Vector not intialized")
+    ROM_BUFFER.get().expect("Vector not initialized")
 }
 
 /// Returns the ROM buffer if it has been initialized, or `None` otherwise.

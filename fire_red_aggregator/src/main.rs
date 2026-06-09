@@ -250,10 +250,12 @@ fn main() {
                 .with_inner_size([640.0, 1000.0]),
             ..Default::default()
         };
-        let _ = eframe::run_native(
+        if let Err(e) = eframe::run_native(
             "Fire Red Aggregator",
             options,
             Box::new(move |cc| Ok(Box::new(AggregatorApp::new(cc, shared_slots, config_path, &cfg_ref, update_available)))),
-        );
+        ) {
+            eprintln!("GUI exited with error: {e}");
+        }
     }
 }

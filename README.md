@@ -34,6 +34,7 @@ Shows each Pokémon's sprite (shiny-aware), nickname, level, nature, HP (colour-
   - `"shared"` — shared / cross-player: a new encounter is skipped if *any player* in the shared run has caught the species. Designed for Soul Link and co-op runs — one catch covers the whole group.
   
   Old boolean values (`true`/`false`) are still accepted and map to `"shared"` / `"off"` respectively for backward compatibility.
+- **Randomizer mode** — set `randomizer_mode = true` in `config.toml` (or toggle in the setup wizard / Settings panel) to disable species-based deduplication entirely. Each area still allows only one encounter entry per run, but the same species may be recorded on multiple different routes. Intended for randomized ROMs where repeating species across routes is expected and valid.
 - **Shiny detection** — the Gen III shiny formula (`p_high ^ p_low ^ id_high ^ id_low < 8`) is evaluated when an encounter is recorded. Shiny encounters are flagged in the database and trigger a shiny alert toast.
 - **Route completion board** — a grid showing every Nuzlocke-relevant zone colour-coded as caught (green), failed/fled (red), or not yet visited (grey), grouped by region. Available at `/:index/routes`.
 
@@ -779,6 +780,40 @@ Add `http://localhost:9090/cmd` in a browser tab to manage runs — **End Run** 
 ---
 
 ## Project status
+
+**v0.8.91** — new features: randomizer mode, bot summary endpoint, run-compare page, HP bar, CSV export link:
+
+- **Randomizer mode** — a new `randomizer_mode = true` config flag (also exposed in the setup wizard and Settings panel) disables species-based encounter deduplication. Each area still allows only one first-encounter entry, but the same species may now be recorded on multiple routes. Designed for randomized ROM runs where the standard dupes-clause species check is meaningless.
+- **`/api/bot/:index` endpoint** — plain-text one-liner returning `"<player> — <hp>/<max_hp> HP — <zone>"` for the given tracker slot. Suitable for Twitch/stream chat bots answering `!status` commands without parsing JSON.
+- **`/compare` run-comparison page** — side-by-side stats for any two completed (or active) runs. Selects from a dropdown populated by `/api/runs`; pulls per-run stats from `/api/run/:id/stats`. Highlighted green/red cells indicate which run has the better value for each metric. Encounter and death logs are listed inline for each run.
+- **HP bar in party overlay** — the `/:index/party` overlay now shows a colour-coded HP bar (green → yellow → red) below each party slot's HP text in both dark and light themes. Width transitions smoothly on update.
+- **CSV download link in `/db`** — each row in the Runs table now has a `CSV` link that triggers a direct browser download of `/api/run/:id/export?format=csv` for that run.
+
+---
+
+### Possible future features
+
+- **Type-matchup warning overlay** — compare party types against the next gym leader's team (ROM trainer data already loaded) and highlight dangerous weaknesses.
+- **Trainer battle log** — track which named trainers have been defeated per run (data already in ROM via `fire_red_trainer_data`); useful for completionist or bingo Nuzlocke variants.
+- **Death cause analysis** — record the move/type that caused each death by capturing battle state at the moment a party slot goes to 0 HP.
+- **Discord Rich Presence** — push current location + party size to Discord via the local RPC socket (small background thread, no new dependency needed).
+- **LiveSplit integration** — optional TCP connection to LiveSplit to auto-split on gym badges or game clear.
+- **Overlay visual editor** — drag-and-drop config page in the web UI to position/resize overlay widgets without editing TOML.
+- **Multi-revision auto-detect** — automatically pick the ROM revision on startup by hashing the loaded ROM rather than requiring manual selection.
+
+---
+
+**v0.8.90** — code quality: dedup `LockOrRecover`, log silenced errors, fix field typo, doc/comment cleanup:
+
+- **Removed duplicate `LockOrRecover` trait in `gui.rs`** — the trait was defined locally in `fire_red_tracker/src/gui.rs` and identically in `fire_red_states`. The local copy has been removed; `gui.rs` now imports the canonical version from `fire_red_states`.
+- **Scanner comment corrected** — the comment above the four-pointer validation in `fire_red_scanner` said "At least one valid pointer" when the code (correctly) requires all four. Comment now matches the code.
+- **Sprite decompression failures now logged** — `decompress_pixels` in the aggregator previously discarded zlib errors silently via `unwrap_or(0)`. It now calls `tracing::warn!` on failure so bad sprite data shows up in logs.
+- **DB dump task failure now logged** — `serve_db_json` in `web.rs` previously swallowed the `JoinError` from the blocking task with `|_|`. The handler now calls `tracing::error!` before returning the fallback JSON.
+- **`eframe::run_native` error surfaced** — the aggregator's `let _ = eframe::run_native(...)` now matches on `Err` and prints to stderr.
+- **`land_mon_enounters_rom_ptr` → `land_mon_encounters_rom_ptr`** — the private `WildHeaderRom` field in `fire_red_pokemon_data` had a persistent typo ("enounters"). Renamed across all five use sites in the file.
+- **Doc/comment typo sweep** — fixed "tokes", "teh", "signel", "decrompressed", "shinty", "nmame", "intialized", "mpa/sotred", "strucct", "falg", "vallues", "destinatino" across `fire_red_get_values`, `fire_red_image_data`, `fire_red_text`, `fire_red_rom_buffer`, `fire_red_map_data`, and `fire_red_scanner`.
+
+---
 
 **v0.8.89** — bug fixes: timeline endpoint, typed errors, badge sentinel, schema cleanup:
 

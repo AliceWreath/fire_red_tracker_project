@@ -81,7 +81,7 @@ fn looks_like_header(rom: &[u8], offset: usize) -> bool {
     let rock  = read_u32_le(rom, offset + 12);
     let fish  = read_u32_le(rom, offset + 16);
 
-    // At least one valid pointer
+    // All four encounter table pointers must be valid (zero = no encounters for that type)
     is_valid_gba_ptr(grass)
         && is_valid_gba_ptr(water)
         && is_valid_gba_ptr(rock)

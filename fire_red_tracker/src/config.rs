@@ -126,6 +126,12 @@ pub struct TrackerConfig {
     /// Old boolean values are still accepted: `true` maps to `"shared"`, `false` to `"off"`.
     #[serde(default)]
     pub dupes_clause: DupesClauseMode,
+    /// When true, bypass species-based encounter deduplication. Each area still
+    /// allows only one encounter entry, but the same species may be recorded on
+    /// multiple different routes. Intended for randomized ROM runs where the same
+    /// species can legitimately appear on several routes.
+    #[serde(default)]
+    pub randomizer_mode: bool,
 }
 
 fn default_aggregator_host() -> String { "127.0.0.1".to_string() }
@@ -398,6 +404,7 @@ struct SetupApp {
     // Run / polling
     poll_ms:          String,
     dupes_clause:     DupesClauseMode,
+    randomizer_mode:  bool,
     // Test mode
     default_test:     bool,
     test_db:          String,
@@ -441,6 +448,7 @@ impl SetupApp {
             heading:          "First-Run Setup",
             poll_ms:          String::new(),
             dupes_clause:     DupesClauseMode::Off,
+            randomizer_mode:  false,
             default_test:     false,
             test_db:          String::new(),
             test_agg_host:    String::new(),
@@ -486,6 +494,7 @@ impl SetupApp {
             heading:          "Edit Config",
             poll_ms: if cfg.poll_ms == 100 { String::new() } else { cfg.poll_ms.to_string() },
             dupes_clause:     cfg.dupes_clause,
+            randomizer_mode:  cfg.randomizer_mode,
             default_test:     cfg.default_test,
             test_db:       cfg.test.as_ref().and_then(|t| t.db.as_ref())
                                .map(|s| s.trim_start_matches("postgresql://").trim_start_matches("postgres://").to_string())
@@ -630,6 +639,13 @@ impl eframe::App for SetupApp {
                     ui.selectable_value(&mut self.dupes_clause, DupesClauseMode::Off,       "Off — standard Nuzlocke (first encounter per area)");
                     ui.selectable_value(&mut self.dupes_clause, DupesClauseMode::PerPlayer, "Per Player — skip if you already caught this species");
                     ui.selectable_value(&mut self.dupes_clause, DupesClauseMode::Shared,    "Shared — skip if any player caught this species (Soul Link / co-op)");
+                });
+                ui.end_row();
+
+                ui.label("Randomizer mode:");
+                ui.vertical(|ui| {
+                    ui.checkbox(&mut self.randomizer_mode, "Bypass species dedup (for randomized runs)");
+                    ui.small("The same species may be recorded on multiple routes. Each route still allows only one encounter.");
                 });
                 ui.end_row();
 
@@ -846,6 +862,7 @@ impl eframe::App for SetupApp {
                         clip_on_badge: false,
                     },
                     dupes_clause: self.dupes_clause,
+                    randomizer_mode: self.randomizer_mode,
                 };
 
                 *self.result.lock().unwrap() = Some(config);
@@ -1033,6 +1050,7 @@ mod tests {
             webhooks:        WebhookConfig::default(),
             obs:             ObsConfig::default(),
             dupes_clause:    DupesClauseMode::Off,
+            randomizer_mode: false,
         }
     }
 
