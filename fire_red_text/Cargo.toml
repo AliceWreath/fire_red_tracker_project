@@ -5,6 +5,7 @@ crate-type = ["cdylib", "rlib"]
 name = "fire_red_text"
 version = "0.1.0"
 edition = "2024"
+license.workspace = true
 
 [dependencies]
 libc.workspace                         = true

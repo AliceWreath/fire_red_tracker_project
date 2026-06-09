@@ -1,7 +1,8 @@
 [package]
 name = "fire_red_tracker"
-version = "0.8.86"
+version = "0.8.87"
 edition = "2024"
+license.workspace = true
 
 [dependencies]
 eframe.workspace               = true

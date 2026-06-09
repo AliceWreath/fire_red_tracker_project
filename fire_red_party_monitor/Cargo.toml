@@ -5,6 +5,7 @@ crate-type = ["cdylib", "rlib"]
 name = "fire_red_party_monitor"
 version = "0.1.0"
 edition = "2024"
+license.workspace = true
 
 [dev-dependencies]
 fire_red_pokemon_name_buffer.workspace = true

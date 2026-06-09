@@ -30,6 +30,9 @@ jobs:
       - name: Install cargo-zigbuild
         run: cargo install cargo-zigbuild --locked
 
+      - name: Install cargo-about
+        run: cargo install cargo-about --locked --features cli
+
       - name: Cache cargo registry and build
         uses: actions/cache@v4
         with:
@@ -43,11 +46,15 @@ jobs:
       - name: Build release binaries
         run: cargo zigbuild --release --target x86_64-unknown-linux-gnu.2.17 -p fire_red_aggregator -p fire_red_tracker
 
+      - name: Generate third-party license attribution
+        run: cargo about generate about.hbs -o THIRD_PARTY_LICENSES.html
+
       - name: Package binaries
         run: |
           cd target/x86_64-unknown-linux-gnu/release
-          tar czf fire_red_aggregator-x86_64-unknown-linux-gnu.tar.gz fire_red_aggregator
-          tar czf fire_red_tracker-x86_64-unknown-linux-gnu.tar.gz    fire_red_tracker
+          cp ../../../THIRD_PARTY_LICENSES.html .
+          tar czf fire_red_aggregator-x86_64-unknown-linux-gnu.tar.gz fire_red_aggregator THIRD_PARTY_LICENSES.html
+          tar czf fire_red_tracker-x86_64-unknown-linux-gnu.tar.gz    fire_red_tracker    THIRD_PARTY_LICENSES.html
 
       - name: Publish GitHub release
         uses: softprops/action-gh-release@v2

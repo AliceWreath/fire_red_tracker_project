@@ -127,6 +127,7 @@ pub struct AggregatorApp {
     frame_db_connected:        Vec<bool>,
     config_path:   PathBuf,
     settings_open: bool,
+    about_open:    bool,
     settings:      SettingsDraft,
     /// Latest release version string if a newer version is available, set by the
     /// background update-check thread.
@@ -154,6 +155,7 @@ impl AggregatorApp {
             frame_db_connected:        Vec::new(),
             config_path,
             settings_open: false,
+            about_open:    false,
             settings:      SettingsDraft::from_config(config),
             update_available,
             title_set: false,
@@ -549,6 +551,23 @@ impl AggregatorApp {
         });
     }
 
+    fn draw_about(ui: &mut egui::Ui) {
+        ui.vertical_centered(|ui| {
+            ui.heading("Fire Red Aggregator");
+            ui.label(format!("v{}", env!("CARGO_PKG_VERSION")));
+            ui.add_space(8.0);
+            ui.label("© 2026 AliceWreath");
+            ui.label("MIT License");
+            ui.add_space(8.0);
+            ui.separator();
+            ui.add_space(4.0);
+            ui.label(egui::RichText::new("Third-party licenses").strong());
+            ui.label("This binary includes open-source dependencies.");
+            ui.label("See THIRD_PARTY_LICENSES.html bundled with this");
+            ui.label("release for full attribution.");
+        });
+    }
+
     fn draw_settings(&mut self, ui: &mut egui::Ui) {
         let s = &mut self.settings;
         egui::Grid::new("settings_grid")
@@ -654,6 +673,9 @@ impl eframe::App for AggregatorApp {
                     if ui.button("⚙ Settings").clicked() {
                         self.settings_open = !self.settings_open;
                     }
+                    if ui.button("ℹ About").clicked() {
+                        self.about_open = !self.about_open;
+                    }
                 });
             });
         });
@@ -696,6 +718,20 @@ impl eframe::App for AggregatorApp {
                     self.draw_settings(ui);
                 });
             self.settings_open = open;
+        }
+
+        // About modal window
+        if self.about_open {
+            let mut open = self.about_open;
+            egui::Window::new("About")
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .open(&mut open)
+                .show(ui.ctx(), |ui| {
+                    Self::draw_about(ui);
+                });
+            self.about_open = open;
         }
     }
 

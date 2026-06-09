@@ -138,6 +138,7 @@ pub struct WindowInfo {
     pub texture_request_queue: Option<Arc<Mutex<VecDeque<Vec<u16>>>>>,
     pub config_path:   PathBuf,
     pub settings_open: bool,
+    pub about_open:    bool,
     settings:          SettingsDraft,
     /// Latest release version string if a newer version is available, set by the
     /// background update-check thread.
@@ -168,6 +169,7 @@ impl WindowInfo {
             texture_request_queue,
             config_path,
             settings_open: false,
+            about_open:    false,
             settings: SettingsDraft::from_config(config),
             update_available,
             title_set: false,
@@ -662,6 +664,23 @@ impl WindowInfo {
         ui.small("Changes take effect on next launch.");
     }
 
+    fn draw_about(ui: &mut egui::Ui) {
+        ui.vertical_centered(|ui| {
+            ui.heading("Fire Red Tracker");
+            ui.label(format!("v{}", env!("CARGO_PKG_VERSION")));
+            ui.add_space(8.0);
+            ui.label("© 2026 AliceWreath");
+            ui.label("MIT License");
+            ui.add_space(8.0);
+            ui.separator();
+            ui.add_space(4.0);
+            ui.label(egui::RichText::new("Third-party licenses").strong());
+            ui.label("This binary includes open-source dependencies.");
+            ui.label("See THIRD_PARTY_LICENSES.html bundled with this");
+            ui.label("release for full attribution.");
+        });
+    }
+
     /// Draws the party panel.
     ///
     /// Renders badge summary, next gym info, then for each party member:
@@ -672,6 +691,9 @@ impl WindowInfo {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui.button("⚙").on_hover_text("Settings").clicked() {
                     self.settings_open = !self.settings_open;
+                }
+                if ui.button("ℹ").on_hover_text("About").clicked() {
+                    self.about_open = !self.about_open;
                 }
             });
         });
@@ -684,6 +706,16 @@ impl WindowInfo {
                 .open(&mut open)
                 .show(ui.ctx(), |ui| { self.draw_settings(ui); });
             self.settings_open = open;
+        }
+
+        if self.about_open {
+            let mut open = self.about_open;
+            egui::Window::new("About")
+                .collapsible(false)
+                .resizable(false)
+                .open(&mut open)
+                .show(ui.ctx(), |ui| { Self::draw_about(ui); });
+            self.about_open = open;
         }
 
         // ── Badge summary ─────────────────────────────────────────────────────
