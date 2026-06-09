@@ -2,6 +2,7 @@
 name = "fire_red_states"
 version = "0.1.0"
 edition = "2024"
+license.workspace = true
 
 [dependencies]
 bincode.workspace                = true

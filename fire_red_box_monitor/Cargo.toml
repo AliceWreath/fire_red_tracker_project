@@ -5,6 +5,7 @@ crate-type = ["cdylib", "rlib"]
 name = "fire_red_box_monitor"
 version = "0.1.0"
 edition = "2024"
+license.workspace = true
 
 [dependencies]
 fire_red_get_values.workspace    = true
