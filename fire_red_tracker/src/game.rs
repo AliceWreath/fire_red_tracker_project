@@ -43,9 +43,6 @@ const SAVE_BLOCK_2_BASE: usize = 0x02024298;
 /// Confirmed empirically via --scan-security-key: raw_qty 0x91B5 ^ key_low 0x91B0 = 5.
 const SECURITY_KEY_OFFSET: usize = 0x0E4C;
 
-/// Minimum number of Pokéballs required for the run-start latch to trigger.
-const RUN_START_BALL_THRESHOLD: u32 = 5;
-
 /// Returns `true` if the pokemon with `personality` and `ot_id` is shiny.
 ///
 /// Uses the Gen III formula: `(p_high ^ p_low ^ id_high ^ id_low) < 8`.
@@ -546,8 +543,8 @@ pub fn scan_for_security_key(expected_qty: u16) {
         if val == candidate_key {
             let gba_addr  = EWRAM_BASE + off;
             let sb2_rel   = off as isize - sb2_base_offset as isize;
-            println!("  EWRAM offset 0x{:05X}  GBA 0x{:08X}  SaveBlock2+0x{:04X}",
-                off, gba_addr, sb2_rel as usize);
+            println!("  EWRAM offset 0x{:05X}  GBA 0x{:08X}  SaveBlock2{:+#06X}",
+                off, gba_addr, sb2_rel);
             found_any = true;
         }
         off += 2;
@@ -632,13 +629,12 @@ pub fn count_pokeballs() -> u32 {
     total
 }
 
-/// Returns `true` if the player has at least `RUN_START_BALL_THRESHOLD` Pokéballs.
+/// Returns `true` if the player has at least `threshold` Pokéballs.
 ///
-/// Used to gate encounter and death tracking — the run officially begins once
-/// the player has accumulated enough balls to be considered ready.
-/// Returns `false` on read failure so pre-ball encounters are silently skipped.
-pub fn has_pokeballs() -> bool {
-    count_pokeballs() >= RUN_START_BALL_THRESHOLD
+/// Same as [`has_pokeballs`] but with a caller-supplied threshold, allowing
+/// the run-start ball count to be configured per-session.
+pub fn has_pokeballs_threshold(threshold: u32) -> bool {
+    count_pokeballs() >= threshold
 }
 
 /// Returns the wild Pokémon currently engaged in battle, or `None` when not

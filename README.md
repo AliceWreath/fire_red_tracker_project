@@ -27,7 +27,7 @@ Shows each Pokémon's sprite (shiny-aware), nickname, level, nature, HP (colour-
 
 ### Encounter tracking
 - **Encounters panel** — shows the wild Pokémon available in the current map area, split by encounter type (grass, water/fishing, Rock Smash). Updates when the player moves to a new map.
-- **First-encounter recording** — records the first wild Pokémon encountered per area per run (Nuzlocke rule). Encounters and deaths are not recorded until the player has obtained 5 or more Pokéballs; once that threshold is crossed the latch stays set for the remainder of the run. Duplicate species are skipped. Catches are detected automatically when the Pokémon joins the party.
+- **First-encounter recording** — records the first wild Pokémon encountered per area per run (Nuzlocke rule). Encounters and deaths are not recorded until the player has obtained enough Pokéballs (default: 5, configurable via `run_start_balls` in `config.toml`); once that threshold is crossed the latch stays set for the remainder of the run. Duplicate species are skipped. Catches are detected automatically when the Pokémon joins the party.
 - **Dupes clause** — optional Nuzlocke variant rule, configured via `dupes_clause` in `config.toml`. Three modes are available:
   - `"off"` *(default)* — standard Nuzlocke, first encounter per area, no species check.
   - `"per_player"` — per-player: a new encounter is skipped if *this player* has already caught the species anywhere in the current run.
@@ -35,6 +35,12 @@ Shows each Pokémon's sprite (shiny-aware), nickname, level, nature, HP (colour-
   
   Old boolean values (`true`/`false`) are still accepted and map to `"shared"` / `"off"` respectively for backward compatibility.
 - **`allow_species_repeats`** — set `allow_species_repeats = true` in `config.toml` (or toggle in the setup wizard / Settings panel) to skip the global "already seen this species in the run" check. Each area still allows only one encounter entry, and the dupes clause still applies independently. Useful for randomized ROMs or variants where the same species legitimately appears on multiple routes.
+- **`run_start_balls`** — optional integer (default `5`). Sets how many Pokéballs are required before the run-start latch triggers. Increase if your starter gift delays picking up the first balls.
+- **`preset`** — optional shorthand that sets `dupes_clause` and `allow_species_repeats` together. Applied at load time; individual fields still win if set afterward in code.
+  - `"standard"` — `dupes_clause = "off"`, `allow_species_repeats = false` (default behaviour)
+  - `"hardcore"` — `dupes_clause = "per_player"`, `allow_species_repeats = false`
+  - `"randomizer"` — `dupes_clause = "off"`, `allow_species_repeats = true`
+  - `"soul_link"` — `dupes_clause = "shared"`, `allow_species_repeats = false`
 - **Shiny detection** — the Gen III shiny formula (`p_high ^ p_low ^ id_high ^ id_low < 8`) is evaluated when an encounter is recorded. Shiny encounters are flagged in the database and trigger a shiny alert toast.
 - **Route completion board** — a grid showing every Nuzlocke-relevant zone colour-coded as caught (green), failed/fled (red), or not yet visited (grey), grouped by region. Available at `/:index/routes`.
 
@@ -332,6 +338,7 @@ All endpoints are served on the same port as the WebSocket overlay (`--ws-port`)
 | `/api/command/new_run` | `POST` | Broadcasts `NewRun` to all connected tracker slots. Returns plain text: `"Command 'new_run' sent to N slot(s)"` |
 | `/api/db/query` | `POST` | Runs arbitrary SQL against the database. Request body: `{ "sql": "SELECT ..." }`. Response: `{ "columns": ["col1", ...], "rows": [{ "col1": "val", ... }, ...], "rows_affected": N }` or `{ "error": "..." }` on failure. All values are returned as strings. Requires `--db` |
 | `/api/run/:id/stats` | `GET` | Per-run statistics for run `id`. Returns `{ playtime_secs, zones_entered, caught, catch_rate, deaths, avg_death_level, zone_stats: [...], deaths: [...] }`. Requires `--db` |
+| `/api/run/:id/route_stats` | `GET` | Per-route catch statistics for run `id`. Returns `{ run_id, zones: [{ map_group, map_name, area, total, caught, catch_rate_pct }] }`. Requires `--db` |
 | `/api/run/:id/shiny` | `GET` | Shiny encounter statistics for run `id`. Returns `{ total_shinies, encounters_since_last_shiny, last_shiny: {...}, since_last_shiny: [...] }`. Requires `--db` |
 | `/api/run/:id/export` | `GET` | Full run export. Without query params: returns the complete run as JSON (metadata + caught + dead + encounters). With `?format=csv`: returns the same data as three CSV sections (caught, dead, encounters) in a single file with `Content-Disposition: attachment`. Requires `--db` |
 | `/api/run/:id/events` | `GET` | Chronological event log for a run. Returns `{ run_id, events: [{ player_name, event_type, species_name, nickname, old_nickname, level, occurred_at }, ...] }`. `old_nickname` is populated for `nickname_change` events and empty for all others. Event types: `catch`, `death`, `soul_link_death`, `shiny`, `wipe`, `badge`, `nickname_change`. Requires `--db` |
@@ -780,6 +787,20 @@ Add `http://localhost:9090/cmd` in a browser tab to manage runs — **End Run** 
 ---
 
 ## Project status
+
+**v0.8.92** — bug fixes, webhook backoff, configurable run-start threshold, Nuzlocke presets, per-route catch stats:
+
+- **`MAX_CONCURRENT_CHUNKS` corrected** (`fire_red_memory`) — the constant was set to 32 despite the comment above it (and empirical testing) documenting 8 as the reliable ceiling. Fixed to 8, matching the comment. The mismatch caused RetroArch to drop responses under load, leading to stale reads and occasional retry storms.
+- **Scan format fix** (`fire_red_tracker`, dev-tools only) — `scan_for_security_key`'s first loop printed `SaveBlock2+0x{:04X}` with `sb2_rel as usize`, which wraps badly for negative offsets (scan start is 0x200 bytes before SaveBlock2). Changed to `SaveBlock2{:+#06X}` with the signed `isize` value, matching the full-EWRAM fallback loop.
+- **Instant arithmetic panics fixed** (`fire_red_aggregator`) — `SlotDbCache::new()` and `SlotCache::new()` initialised `last_refresh` using bare `-` subtraction on `Instant`, which panics if the process starts within 60 seconds of system boot. Both now use `.checked_sub(...).unwrap_or_else(Instant::now)`.
+- **Placeholder validator dead check removed** (`fire_red_tracker`) — `find_unknown_placeholders` compared `candidate` against `"}}"` before the known-set check. Because the loop already skips `{{` continuations and only enters the branch when an opening `{` is found, `candidate` structurally can never equal `"}}"` at that point. The dead check is removed.
+- **libpq key-value connection strings now pass through** (`fire_red_database`) — `initialize()` prepended `postgresql://` to any string not starting with a URI scheme, which mangled `host=localhost user=alice dbname=nuzlocke`-style strings. Strings containing `=` are now passed through unchanged, allowing both URI and key-value formats.
+- **Webhook exponential backoff** (`fire_red_tracker`) — retries now wait 1 s then 2 s (was a flat 2 s for both pauses). The raw-body string is also pre-cloned before the retry loop instead of being cloned on every iteration.
+- **Configurable run-start ball threshold** — `run_start_balls` (optional, default 5) can now be set in `config.toml` to change how many Pokéballs trigger the run-start latch. `encounter.rs` passes the value through to `game::has_pokeballs_threshold(n)`.
+- **Nuzlocke rule presets** — a new `preset` key in `config.toml` sets `dupes_clause` and `allow_species_repeats` together: `"standard"` (off, false), `"hardcore"` (per_player, false), `"randomizer"` (off, true), `"soul_link"` (shared, false). Individual fields can still be set separately; the preset is applied at load time and does not overwrite explicit field values after that.
+- **`GET /api/run/:id/route_stats`** — new endpoint returning per-area catch statistics for a completed or active run. Each zone entry includes `map_group`, `map_name`, `area` (human-readable name), `total` encounters, `caught` count, and `catch_rate_pct`.
+
+---
 
 **v0.8.91** — new features: randomizer mode, bot summary endpoint, run-compare page, HP bar, CSV export link:
 

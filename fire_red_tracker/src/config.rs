@@ -75,6 +75,35 @@ impl fmt::Display for DupesClauseMode {
     }
 }
 
+/// Built-in Nuzlocke rule presets. When `preset` is set in the config file it
+/// overrides `dupes_clause` and `allow_species_repeats` at load time.
+///
+/// ```toml
+/// preset = "standard"   # first-encounter-per-area, no species check (default)
+/// preset = "hardcore"   # per-player dupes clause
+/// preset = "randomizer" # allow same species on multiple routes
+/// preset = "soul_link"  # shared dupes clause for co-op partner runs
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NuzlockePreset {
+    Standard,
+    Hardcore,
+    Randomizer,
+    SoulLink,
+}
+
+impl NuzlockePreset {
+    pub fn settings(self) -> (DupesClauseMode, bool) {
+        match self {
+            NuzlockePreset::Standard   => (DupesClauseMode::Off,       false),
+            NuzlockePreset::Hardcore   => (DupesClauseMode::PerPlayer, false),
+            NuzlockePreset::Randomizer => (DupesClauseMode::Off,       true),
+            NuzlockePreset::SoulLink   => (DupesClauseMode::Shared,    false),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub enum ConfigMode {
@@ -133,6 +162,15 @@ pub struct TrackerConfig {
     /// Nuzlocke variants that don't restrict by species).
     #[serde(default)]
     pub allow_species_repeats: bool,
+    /// Convenience preset that sets `dupes_clause` and `allow_species_repeats`
+    /// together. Applied at load time; the individual fields can still be
+    /// overridden afterward in code.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preset: Option<NuzlockePreset>,
+    /// Minimum Pokéball count required for the run-start latch to trigger.
+    /// Defaults to 5. Increase if your starter gift delays the first catch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_start_balls: Option<u8>,
 }
 
 fn default_aggregator_host() -> String { "127.0.0.1".to_string() }
@@ -359,10 +397,16 @@ pub fn load_or_prompt(path: &PathBuf) -> TrackerConfig {
             eprintln!("Failed to read config file {}: {}", path.display(), e);
             std::process::exit(1);
         });
-        toml::from_str(&content).unwrap_or_else(|e| {
+        let mut config: TrackerConfig = toml::from_str(&content).unwrap_or_else(|e| {
             eprintln!("Failed to parse config file {}: {}", path.display(), e);
             std::process::exit(1);
-        })
+        });
+        if let Some(preset) = config.preset {
+            let (dc, asr) = preset.settings();
+            config.dupes_clause = dc;
+            config.allow_species_repeats = asr;
+        }
+        config
     } else {
         let config = show_setup_dialog();
         save_config(&config, path);
@@ -864,6 +908,8 @@ impl eframe::App for SetupApp {
                     },
                     dupes_clause: self.dupes_clause,
                     allow_species_repeats: self.allow_species_repeats,
+                    preset: None,
+                    run_start_balls: None,
                 };
 
                 *self.result.lock().unwrap() = Some(config);
@@ -1052,6 +1098,8 @@ mod tests {
             obs:             ObsConfig::default(),
             dupes_clause:    DupesClauseMode::Off,
             allow_species_repeats: false,
+            preset: None,
+            run_start_balls: None,
         }
     }
 

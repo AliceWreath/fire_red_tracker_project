@@ -40,7 +40,10 @@ Game-polling thread (100 ms)
   │    → WildPokemonHeader  (land/water/rock/fish encounter lists)
   │    → Arc<Mutex<WildPokemonHeader>>
   │
-  ├─ EncounterTracker::tick()
+  ├─ EncounterTracker::tick(…, run_start_balls: u32)
+  │    if !run_tracking_active:
+  │      has_pokeballs_threshold(run_start_balls)? → set run_tracking_active = true
+  │      else → return (pre-ball phase, nothing recorded)
   │    compares enemy personality to last_enemy_personality
   │    if changed → new battle detected
   │      is_wild? (compare enemy ot_id to party lead ot_id)

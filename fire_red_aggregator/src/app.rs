@@ -78,7 +78,8 @@ impl SlotDbCache {
             caught:       Vec::new(),
             // Initialise far in the past so the very first frame triggers a refresh.
             last_refresh: std::time::Instant::now()
-                - std::time::Duration::from_secs(60),
+                .checked_sub(std::time::Duration::from_secs(60))
+                .unwrap_or_else(std::time::Instant::now),
         }
     }
 }

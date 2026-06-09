@@ -325,6 +325,7 @@ pub fn initialize(connection_string: &str) -> Result<(), String> {
     let normalized;
     let connection_string = if connection_string.starts_with("postgresql://")
         || connection_string.starts_with("postgres://")
+        || connection_string.contains('=')
     {
         connection_string
     } else {
@@ -1917,6 +1918,52 @@ pub fn run_stats(conn_str: &str, run_id: u32) -> serde_json::Value {
         "zone_stats":      zone_stats,
         "deaths":          deaths,
     })
+}
+
+/// Returns per-route catch statistics for the given run ID as JSON.
+///
+/// Each entry in `zones` covers one (map_group, map_name) pair and includes
+/// the encounter count, catch count, and catch-rate percentage. Opens its own
+/// connection so live tracker connections are not blocked.
+pub fn route_stats(conn_str: &str, run_id: u32) -> serde_json::Value {
+    let mut client = match Client::connect(conn_str, NoTls) {
+        Ok(c)  => c,
+        Err(e) => return serde_json::json!({ "error": format!("DB connection failed: {e}") }),
+    };
+
+    let rows = match client.query(
+        "SELECT map_group, map_name,
+                COUNT(*) AS total,
+                SUM(CASE WHEN caught THEN 1 ELSE 0 END) AS caught_count
+         FROM encounters
+         WHERE run_id = $1
+         GROUP BY map_group, map_name
+         ORDER BY map_group, map_name",
+        &[&(run_id as i32)],
+    ) {
+        Ok(r)  => r,
+        Err(e) => return serde_json::json!({ "error": format!("Query error: {e}") }),
+    };
+
+    let zones: Vec<serde_json::Value> = rows.iter().map(|row| {
+        let mg:    u8  = row.get::<_, i32>(0) as u8;
+        let mn:    u8  = row.get::<_, i32>(1) as u8;
+        let total: i64 = row.get(2);
+        let caught: i64 = row.get(3);
+        let raw  = fire_red_location_names::map_area_name(mg, mn);
+        let area = if raw.is_empty() { format!("{}:{}", mg, mn) } else { raw.to_string() };
+        let catch_rate = if total > 0 { (caught as f64 / total as f64 * 100.0).round() } else { 0.0 };
+        serde_json::json!({
+            "map_group":      mg,
+            "map_name":       mn,
+            "area":           area,
+            "total":          total,
+            "caught":         caught,
+            "catch_rate_pct": catch_rate,
+        })
+    }).collect();
+
+    serde_json::json!({ "run_id": run_id, "zones": zones })
 }
 
 /// Returns shiny encounter statistics for the given run ID as JSON.

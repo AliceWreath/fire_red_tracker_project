@@ -246,7 +246,9 @@ impl SlotCache {
             caught:          Vec::new(),
             encounters:      Vec::new(),
             prev_encounters: Vec::new(),
-            last_refresh:    Instant::now() - Duration::from_secs(60),
+            last_refresh:    Instant::now()
+                .checked_sub(Duration::from_secs(60))
+                .unwrap_or_else(Instant::now),
         }
     }
 }
@@ -1323,6 +1325,18 @@ async fn api_run_stats(
     axum::Json(result.unwrap_or_else(|_| serde_json::json!({ "error": "Task panicked" })))
 }
 
+/// `GET /api/run/:id/route_stats` — per-route catch-rate statistics JSON.
+async fn api_run_route_stats(
+    State(state): State<WebState>,
+    Path(run_id): Path<u32>,
+) -> axum::Json<serde_json::Value> {
+    let conn = require_db!(state);
+    let result = tokio::task::spawn_blocking(move || {
+        fire_red_database::route_stats(&conn, run_id)
+    }).await;
+    axum::Json(result.unwrap_or_else(|_| serde_json::json!({ "error": "Task panicked" })))
+}
+
 /// `GET /api/run/:id/export` — full run export.
 ///
 /// - Without query params (or `?format=json`): returns the full run as JSON
@@ -1551,8 +1565,9 @@ pub fn run(live_slots: SharedSlots, port: u16, db_conn: Option<String>, testing:
             .route("/api/db/query", post(api_db_query))
             .route("/api/runs",            get(api_runs))
             .route("/api/run/import",      post(api_run_import))
-            .route("/api/run/:id/stats",   get(api_run_stats))
-            .route("/api/run/:id/shiny",   get(api_shiny_stats))
+            .route("/api/run/:id/stats",        get(api_run_stats))
+            .route("/api/run/:id/route_stats",  get(api_run_route_stats))
+            .route("/api/run/:id/shiny",        get(api_shiny_stats))
             .route("/api/run/:id/export",  get(api_run_export))
             .route("/api/run/:id/events",  get(api_run_events))
             .route("/api/timeline",        get(api_active_timeline))

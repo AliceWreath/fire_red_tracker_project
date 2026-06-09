@@ -696,6 +696,8 @@ impl WindowInfo {
                     },
                     dupes_clause: s.dupes_clause,
                     allow_species_repeats: s.allow_species_repeats,
+                    preset: None,
+                    run_start_balls: None,
                 };
                 save_config(&cfg, &self.config_path);
                 self.settings_open = false;

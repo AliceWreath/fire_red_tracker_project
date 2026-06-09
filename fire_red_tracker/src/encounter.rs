@@ -66,7 +66,10 @@ impl EncounterTracker {
     /// - `PerPlayer` — skip if *this* player has previously caught this species.
     /// - `Shared` — skip if *any* player in the shared run has caught this species
     ///   (Soul Link / co-op: one catch covers the whole group).
-    pub fn tick(&mut self, current_state: FireRedState, thread_party: &Arc<Mutex<Vec<Pokemon>>>, dupes_clause: DupesClauseMode, allow_species_repeats: bool) {
+    ///
+    /// `run_start_balls` is the minimum Pokéball count that triggers the
+    /// run-start latch (configurable via `TrackerConfig::run_start_balls`).
+    pub fn tick(&mut self, current_state: FireRedState, thread_party: &Arc<Mutex<Vec<Pokemon>>>, dupes_clause: DupesClauseMode, allow_species_repeats: bool, run_start_balls: u32) {
         if self.wipe_detected { return; }
         if let Some(enemy) = crate::game::get_wild_enemy_pokemon()
             && enemy.box_mon.personality != self.last_enemy_personality
@@ -74,7 +77,7 @@ impl EncounterTracker {
             self.last_enemy_personality = enemy.box_mon.personality;
 
             if !self.run_tracking_active {
-                if crate::game::has_pokeballs() {
+                if crate::game::has_pokeballs_threshold(run_start_balls) {
                     self.run_tracking_active = true;
                 } else {
                     return;

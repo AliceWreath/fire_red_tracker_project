@@ -215,7 +215,7 @@ fn find_unknown_placeholders(template: &str) -> Vec<String> {
         if rest.starts_with("{{") { rest = &rest[2..]; continue; }
         if let Some(close) = rest.find('}') {
             let candidate = &rest[..=close];
-            if candidate != "}}" && !KNOWN_PLACEHOLDERS.contains(&candidate) {
+            if !KNOWN_PLACEHOLDERS.contains(&candidate) {
                 unknown.push(candidate.to_string());
             }
             rest = &rest[close + 1..];
@@ -273,14 +273,16 @@ pub fn init(config: WebhookConfig, obs_config: ObsConfig) {
         for task in rx {
             match task {
                 WorkerTask::Webhook { url, body } => {
-                    // Retry up to 2 additional times (3 total) with a 2 s pause.
+                    // Pre-clone raw body text once so the retry loop doesn't
+                    // need to borrow through the enum match each iteration.
+                    let raw_text = if let PostBody::Raw(t) = &body { Some(t.clone()) } else { None };
                     let mut attempts = 0u32;
                     loop {
                         let result = match &body {
                             PostBody::Json(event) => client.post(&url).json(event).send(),
-                            PostBody::Raw(text)   => client.post(&url)
+                            PostBody::Raw(_)      => client.post(&url)
                                 .header("content-type", "application/json")
-                                .body(text.clone())
+                                .body(raw_text.clone().unwrap_or_default())
                                 .send(),
                         };
                         match result {
@@ -291,7 +293,8 @@ pub fn init(config: WebhookConfig, obs_config: ObsConfig) {
                                     eprintln!("Webhook POST to {url} failed after {attempts} attempt(s): {e}");
                                     break;
                                 }
-                                std::thread::sleep(std::time::Duration::from_secs(2));
+                                // Exponential backoff: 1 s, 2 s between retries.
+                                std::thread::sleep(std::time::Duration::from_secs(1 << (attempts - 1)));
                             }
                         }
                     }

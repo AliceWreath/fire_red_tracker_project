@@ -84,7 +84,7 @@ const MAX_CHUNK_SIZE: usize = 4_096;
 /// testing, 8 concurrent chunks is a reliable ceiling before responses start
 /// being lost. Tune downward if retries increase, upward if RetroArch handles
 /// more load without issue.
-const MAX_CONCURRENT_CHUNKS: usize = 32;
+const MAX_CONCURRENT_CHUNKS: usize = 8;
 
 /// GBA IWRAM address range (inclusive on both ends).
 const IWRAM_START: u32 = 0x03000000;
