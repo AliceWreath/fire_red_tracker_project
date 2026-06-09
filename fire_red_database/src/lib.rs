@@ -520,7 +520,7 @@ pub fn initialize(connection_string: &str) -> Result<(), String> {
         UPDATE dead_pokemon   SET species_name = 'NIDORAN♂' WHERE species = 32 AND species_name NOT LIKE '%♀%' AND species_name NOT LIKE '%♂%';
 
         -- Migration: persistent event log — one row per notable gameplay event.
-        -- event_type values: 'catch', 'death', 'soul_link_death', 'shiny', 'wipe'
+        -- event_type values: 'catch', 'death', 'soul_link_death', 'shiny', 'wipe', 'badge', 'nickname_change'
         CREATE TABLE IF NOT EXISTS events (
             id           SERIAL  PRIMARY KEY,
             run_id       INTEGER NOT NULL REFERENCES runs(id),
@@ -990,6 +990,10 @@ pub enum EventKind<'a> {
     Shiny { species_name: &'a str, level: u8 },
     /// The party was wiped, ending the run.
     Wipe,
+    /// A gym badge (or E4 win) was earned.
+    Badge { badge_name: &'a str },
+    /// A caught Pokémon's nickname was changed in-game.
+    NicknameChange { species_name: &'a str, old_name: &'a str, new_name: &'a str },
 }
 
 impl<'a> EventKind<'a> {
@@ -997,15 +1001,19 @@ impl<'a> EventKind<'a> {
     fn row_parts(&self) -> (&'static str, &'a str, &'a str, i32) {
         match self {
             EventKind::Catch { species_name, nickname, level } =>
-                ("catch",            species_name, nickname,  *level as i32),
+                ("catch",            species_name,  nickname,  *level as i32),
             EventKind::Death { species_name, nickname, level } =>
-                ("death",            species_name, nickname,  *level as i32),
+                ("death",            species_name,  nickname,  *level as i32),
             EventKind::SoulLinkDeath { species_name, nickname, level } =>
-                ("soul_link_death",  species_name, nickname,  *level as i32),
+                ("soul_link_death",  species_name,  nickname,  *level as i32),
             EventKind::Shiny { species_name, level } =>
-                ("shiny",            species_name, "",         *level as i32),
+                ("shiny",            species_name,  "",         *level as i32),
             EventKind::Wipe =>
-                ("wipe",             "",            "",         0),
+                ("wipe",             "",             "",         0),
+            EventKind::Badge { badge_name } =>
+                ("badge",            badge_name,    "",         0),
+            EventKind::NicknameChange { species_name, old_name: _, new_name } =>
+                ("nickname_change",  species_name,  new_name,  0),
         }
     }
 }
@@ -1096,17 +1104,35 @@ pub fn mark_caught(pokemon: CaughtPokemon) {
 ///
 /// No-op if the Pokémon is not registered, the run is not active, or the
 /// nickname matches what is already stored.
-pub fn update_caught_nickname(personality: u32, nickname: &str) {
+/// Updates the in-game nickname of a caught Pokémon.
+///
+/// Returns `Some(old_name)` when the stored nickname differed and was updated,
+/// or `None` if the name was already up to date, the Pokémon is not found, or
+/// no active run is set.
+pub fn update_caught_nickname(personality: u32, nickname: &str) -> Option<String> {
     let mut state = db().lock_or_recover();
-    let active = match state.run_id {
-        Some(id) => id,
-        None => return,
-    };
-    let _ = state.client.execute(
-        "UPDATE caught_pokemon SET nickname = $1
-         WHERE run_id = $2 AND personality = $3 AND nickname != $1",
-        &[&nickname, &(active as i32), &(personality as i64)],
-    );
+    let active = state.run_id?;
+    // Read the current name first so we can return it as the "old" value.
+    let old: Option<String> = state.client
+        .query_opt(
+            "SELECT nickname FROM caught_pokemon
+             WHERE run_id = $1 AND personality = $2 AND nickname != $3",
+            &[&(active as i32), &(personality as i64), &nickname],
+        )
+        .ok()
+        .flatten()
+        .map(|row| row.get(0));
+
+    if let Some(ref old_name) = old {
+        let _ = state.client.execute(
+            "UPDATE caught_pokemon SET nickname = $1
+             WHERE run_id = $2 AND personality = $3",
+            &[&nickname, &(active as i32), &(personality as i64)],
+        );
+        Some(old_name.clone())
+    } else {
+        None
+    }
 }
 
 /// Updates the EVs of a caught Pokémon if any have changed.
@@ -2369,6 +2395,43 @@ pub fn list_events_json(conn_str: &str, run_id: u32) -> serde_json::Value {
         "level":         row.get::<_, i32>(4),
         "occurred_at":   format_timestamp(row.get::<_, i64>(5) as u64),
     })).collect();
+    serde_json::json!({ "run_id": run_id, "events": events })
+}
+
+/// Returns the chronological event timeline for the **currently active** run.
+///
+/// Includes both `occurred_at` as a Unix integer and a human-readable
+/// `occurred_at_human` string. Returns `{ "error": "..." }` when there is no
+/// active run or the connection fails.
+pub fn active_run_timeline_json(conn_str: &str) -> serde_json::Value {
+    let run_id = match active_run_id() {
+        Some(id) => id,
+        None     => return serde_json::json!({ "error": "no active run" }),
+    };
+    let mut client = match Client::connect(conn_str, NoTls) {
+        Ok(c)  => c,
+        Err(e) => return serde_json::json!({ "error": format!("DB connection failed: {e}") }),
+    };
+    let rows = match client.query(
+        "SELECT player_name, event_type, species_name, nickname, level, occurred_at
+         FROM events WHERE run_id = $1 ORDER BY occurred_at ASC",
+        &[&(run_id as i32)],
+    ) {
+        Ok(r)  => r,
+        Err(e) => return serde_json::json!({ "error": format!("Query failed: {e}") }),
+    };
+    let events: Vec<serde_json::Value> = rows.iter().map(|row| {
+        let ts = row.get::<_, i64>(5) as u64;
+        serde_json::json!({
+            "player_name":       row.get::<_, String>(0),
+            "event_type":        row.get::<_, String>(1),
+            "species_name":      row.get::<_, String>(2),
+            "nickname":          row.get::<_, String>(3),
+            "level":             row.get::<_, i32>(4),
+            "occurred_at":       ts,
+            "occurred_at_human": format_timestamp(ts),
+        })
+    }).collect();
     serde_json::json!({ "run_id": run_id, "events": events })
 }
 

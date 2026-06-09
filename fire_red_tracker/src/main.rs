@@ -44,6 +44,7 @@ mod game;
 mod gui;
 mod server;
 mod textures;
+mod type_coverage;
 mod webhook;
 
 use clap::Parser;
@@ -385,6 +386,8 @@ fn main() {
             let mut last_party_refresh = std::time::Instant::now();
             let mut state_initialized  = false;
             let mut enc_tracker        = encounter::EncounterTracker::new();
+            // Bitmask of badges seen so far; used by check_for_new_badges.
+            let mut last_badge_mask: u8 = 0;
             // Track the last player name to detect save-file switches mid-session.
             let mut last_player_name   = String::new();
 
@@ -492,11 +495,13 @@ fn main() {
 
                 if thread_run_changed.swap(false, Ordering::AcqRel) {
                     enc_tracker.reset();
+                    last_badge_mask = 0;
                     player_name_set = false;
                 }
 
                 if state_initialized {
                     enc_tracker.tick(current_state, &thread_party, dupes_clause);
+                    last_badge_mask = game::check_for_new_badges(last_badge_mask);
                 }
 
                 std::thread::sleep(std::time::Duration::from_millis(poll_ms));

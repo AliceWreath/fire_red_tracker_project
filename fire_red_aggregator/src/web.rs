@@ -1335,6 +1335,21 @@ async fn api_shiny_stats(
     axum::Json(result.unwrap_or_else(|_| serde_json::json!({ "error": "Task panicked" })))
 }
 
+/// `GET /api/timeline` — chronological event log for the **active** run.
+///
+/// Includes both a Unix integer timestamp (`occurred_at`) and a human-readable
+/// `occurred_at_human` string. Returns `{ "error": "no active run" }` when no
+/// run is currently active.
+async fn api_active_timeline(
+    State(state): State<WebState>,
+) -> axum::Json<serde_json::Value> {
+    let conn = require_db!(state);
+    let result = tokio::task::spawn_blocking(move || {
+        fire_red_database::active_run_timeline_json(&conn)
+    }).await;
+    axum::Json(result.unwrap_or_else(|_| serde_json::json!({ "error": "Task panicked" })))
+}
+
 /// `GET /api/run/:id/events` — chronological event log for a run.
 async fn api_run_events(
     State(state): State<WebState>,
@@ -1467,6 +1482,7 @@ pub fn run(live_slots: SharedSlots, port: u16, db_conn: Option<String>, testing:
             .route("/api/run/:id/shiny",   get(api_shiny_stats))
             .route("/api/run/:id/export",  get(api_run_export))
             .route("/api/run/:id/events",  get(api_run_events))
+            .route("/api/timeline",        get(api_active_timeline))
             .route("/history", get(serve_history))
             .route("/shiny", get(serve_shiny))
             .route("/memorial", get(serve_memorial))

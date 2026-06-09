@@ -62,6 +62,12 @@ const ABILITY_1_OFFSET: u32 = 0x16;
 /// Byte offset of ability slot 2 within a base stat entry.
 const ABILITY_2_OFFSET: u32 = 0x17;
 
+/// Byte offset of the primary type within a base stat entry.
+const TYPE1_OFFSET: u32 = 0x06;
+
+/// Byte offset of the secondary type within a base stat entry (equals type1 for mono-types).
+const TYPE2_OFFSET: u32 = 0x07;
+
 /// Byte offset of the gender ratio within a base stat entry.
 ///
 /// 0 = always male, 254 = always female, 255 = genderless.
@@ -380,6 +386,51 @@ pub fn get_gender(rom_buffer: &[u8], species: u16, personality: u32) -> u8 {
         254 => 1, // always female
         0   => 0, // always male
         r   => if personality & 0xFF < r as u32 { 1 } else { 0 },
+    }
+}
+
+/// Returns the Gen III type IDs for `species` as `(type1, type2)`.
+///
+/// Reads from the ROM base stat table at offsets `TYPE1_OFFSET` (6) and
+/// `TYPE2_OFFSET` (7). For mono-type species both bytes are identical.
+/// Returns `(0, 0)` (Normal/Normal) for species ID 0 or out-of-range offsets.
+pub fn get_species_types(rom_buffer: &[u8], species: u16) -> (u8, u8) {
+    if species == 0 {
+        return (0, 0);
+    }
+    let entry_addr = fire_red_rom_buffer::get_rom_addresses().base_stats_addr
+        + species as usize * BASE_STATS_ENTRY_SIZE;
+    let t1_off = entry_addr + TYPE1_OFFSET as usize;
+    let t2_off = entry_addr + TYPE2_OFFSET as usize;
+    if t2_off >= rom_buffer.len() {
+        return (0, 0);
+    }
+    (rom_buffer[t1_off], rom_buffer[t2_off])
+}
+
+/// Returns the display name of a Gen III type ID (0–17).
+///
+/// Unknown IDs are returned as `"???"`.
+pub fn type_name(id: u8) -> &'static str {
+    match id {
+        0  => "Normal",
+        1  => "Fighting",
+        2  => "Flying",
+        3  => "Poison",
+        4  => "Ground",
+        5  => "Rock",
+        6  => "Bug",
+        7  => "Ghost",
+        8  => "Steel",
+        9  => "Fire",
+        10 => "Water",
+        11 => "Grass",
+        12 => "Electric",
+        13 => "Psychic",
+        14 => "Ice",
+        15 => "Dragon",
+        16 => "Dark",
+        _  => "???",
     }
 }
 

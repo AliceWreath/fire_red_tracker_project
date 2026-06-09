@@ -164,6 +164,19 @@ pub struct WebhookConfig {
     /// Custom body template for wipe events (pokemon placeholders expand to empty string).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wipe_template: Option<String>,
+    /// POSTed when a gym badge (or E4 member) is defeated and recorded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub badge_url: Option<String>,
+    /// Custom body template for badge events. Supported placeholder: `{badge.name}`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub badge_template: Option<String>,
+    /// POSTed when a caught Pokémon's nickname is changed in-game.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nickname_url: Option<String>,
+    /// Custom body template for nickname-change events.
+    /// Supported placeholders: `{pokemon.species}`, `{pokemon.old_name}`, `{pokemon.new_name}`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nickname_template: Option<String>,
 }
 
 impl WebhookConfig {
@@ -176,6 +189,10 @@ impl WebhookConfig {
             && self.shiny_template.is_none()
             && self.wipe_url.is_none()
             && self.wipe_template.is_none()
+            && self.badge_url.is_none()
+            && self.badge_template.is_none()
+            && self.nickname_url.is_none()
+            && self.nickname_template.is_none()
     }
 }
 
@@ -209,6 +226,9 @@ pub struct ObsConfig {
     pub clip_on_shiny: bool,
     #[serde(default)]
     pub clip_on_wipe: bool,
+    /// Save a replay-buffer clip whenever a new badge is earned.
+    #[serde(default)]
+    pub clip_on_badge: bool,
 }
 
 fn default_obs_host() -> String { "localhost".to_string() }
@@ -217,19 +237,20 @@ fn default_obs_port() -> u16 { 4455 }
 impl Default for ObsConfig {
     fn default() -> Self {
         Self {
-            host:         default_obs_host(),
-            port:         default_obs_port(),
-            password:     None,
+            host:          default_obs_host(),
+            port:          default_obs_port(),
+            password:      None,
             clip_on_death: false,
             clip_on_shiny: false,
             clip_on_wipe:  false,
+            clip_on_badge: false,
         }
     }
 }
 
 impl ObsConfig {
     pub fn is_default(&self) -> bool {
-        !self.clip_on_death && !self.clip_on_shiny && !self.clip_on_wipe
+        !self.clip_on_death && !self.clip_on_shiny && !self.clip_on_wipe && !self.clip_on_badge
     }
 }
 
@@ -810,6 +831,10 @@ impl eframe::App for SetupApp {
                         shiny_template: if self.shiny_url_enabled && !self.shiny_template.trim().is_empty() { Some(self.shiny_template.trim().to_string()) } else { None },
                         wipe_url:       if self.wipe_url_enabled  && !self.wipe_url.trim().is_empty()  { Some(self.wipe_url.trim().to_string())  } else { None },
                         wipe_template:  if self.wipe_url_enabled  && !self.wipe_template.trim().is_empty()  { Some(self.wipe_template.trim().to_string())  } else { None },
+                        badge_url:      None,
+                        badge_template: None,
+                        nickname_url:      None,
+                        nickname_template: None,
                     },
                     obs: ObsConfig {
                         host:          self.obs_host.trim().to_string(),
@@ -818,6 +843,7 @@ impl eframe::App for SetupApp {
                         clip_on_death: self.obs_clip_death,
                         clip_on_shiny: self.obs_clip_shiny,
                         clip_on_wipe:  self.obs_clip_wipe,
+                        clip_on_badge: false,
                     },
                     dupes_clause: self.dupes_clause,
                 };

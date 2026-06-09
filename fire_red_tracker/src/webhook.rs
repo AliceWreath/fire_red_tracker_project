@@ -68,10 +68,14 @@ pub struct PokemonInfo {
 #[derive(Clone, Serialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
 pub enum WebhookEvent {
-    Death { player: String, timestamp: u64, pokemon: PokemonInfo },
-    Catch { player: String, timestamp: u64, pokemon: PokemonInfo },
-    Shiny { player: String, timestamp: u64, pokemon: PokemonInfo },
-    Wipe  { player: String, timestamp: u64 },
+    Death          { player: String, timestamp: u64, pokemon: PokemonInfo },
+    Catch          { player: String, timestamp: u64, pokemon: PokemonInfo },
+    Shiny          { player: String, timestamp: u64, pokemon: PokemonInfo },
+    Wipe           { player: String, timestamp: u64 },
+    /// A gym badge (or E4 member) was just earned.
+    Badge          { player: String, timestamp: u64, badge_name: String },
+    /// A caught Pokémon was renamed in-game.
+    NicknameChange { player: String, timestamp: u64, species: String, old_name: String, new_name: String },
 }
 
 // ---------------------------------------------------------------------------
@@ -104,14 +108,22 @@ static STATE: OnceLock<WebhookState> = OnceLock::new();
 // ---------------------------------------------------------------------------
 
 fn render_template(template: &str, event: &WebhookEvent) -> String {
-    let (event_name, player, timestamp, pokemon) = match event {
-        WebhookEvent::Death { player, timestamp, pokemon } => ("death", player.as_str(), *timestamp, Some(pokemon)),
-        WebhookEvent::Catch { player, timestamp, pokemon } => ("catch", player.as_str(), *timestamp, Some(pokemon)),
-        WebhookEvent::Shiny { player, timestamp, pokemon } => ("shiny", player.as_str(), *timestamp, Some(pokemon)),
-        WebhookEvent::Wipe  { player, timestamp }          => ("wipe",  player.as_str(), *timestamp, None),
+    let (event_name, player, timestamp, pokemon, badge_name_val, old_name_val, new_name_val) = match event {
+        WebhookEvent::Death { player, timestamp, pokemon } =>
+            ("death",            player.as_str(), *timestamp, Some(pokemon), "", "", ""),
+        WebhookEvent::Catch { player, timestamp, pokemon } =>
+            ("catch",            player.as_str(), *timestamp, Some(pokemon), "", "", ""),
+        WebhookEvent::Shiny { player, timestamp, pokemon } =>
+            ("shiny",            player.as_str(), *timestamp, Some(pokemon), "", "", ""),
+        WebhookEvent::Wipe  { player, timestamp } =>
+            ("wipe",             player.as_str(), *timestamp, None, "", "", ""),
+        WebhookEvent::Badge { player, timestamp, badge_name } =>
+            ("badge",            player.as_str(), *timestamp, None, badge_name.as_str(), "", ""),
+        WebhookEvent::NicknameChange { player, timestamp, species: _, old_name, new_name } =>
+            ("nickname_change",  player.as_str(), *timestamp, None, "", old_name.as_str(), new_name.as_str()),
     };
     let ts = timestamp.to_string();
-    // Allocate these only when there is a pokemon, so wipe events pay nothing.
+    // Allocate these only when there is a pokemon, so non-pokemon events pay nothing.
     let level_buf;
     let shiny_buf;
     let (nickname, species, level, shiny, nature): (&str, &str, &str, &str, &str) = if let Some(p) = pokemon {
@@ -131,6 +143,9 @@ fn render_template(template: &str, event: &WebhookEvent) -> String {
         ("{pokemon.level}",    level),
         ("{pokemon.shiny}",    shiny),
         ("{pokemon.nature}",   nature),
+        ("{badge.name}",       badge_name_val),
+        ("{pokemon.old_name}", old_name_val),
+        ("{pokemon.new_name}", new_name_val),
     ];
 
     // Single-pass scan: {{ → {, }} → }, known placeholders → value, else copy.
@@ -183,6 +198,8 @@ const KNOWN_PLACEHOLDERS: &[&str] = &[
     "{event}", "{player}", "{timestamp}",
     "{pokemon.nickname}", "{pokemon.species}", "{pokemon.level}",
     "{pokemon.shiny}", "{pokemon.nature}",
+    "{badge.name}",
+    "{pokemon.old_name}", "{pokemon.new_name}",
 ];
 
 /// Returns a list of unrecognized placeholder names found in `template`.
@@ -211,10 +228,12 @@ fn find_unknown_placeholders(template: &str) -> Vec<String> {
 
 fn validate_templates(config: &WebhookConfig) {
     let pairs = [
-        ("death",  config.death_template.as_deref()),
-        ("catch",  config.catch_template.as_deref()),
-        ("shiny",  config.shiny_template.as_deref()),
-        ("wipe",   config.wipe_template.as_deref()),
+        ("death",           config.death_template.as_deref()),
+        ("catch",           config.catch_template.as_deref()),
+        ("shiny",           config.shiny_template.as_deref()),
+        ("wipe",            config.wipe_template.as_deref()),
+        ("badge",           config.badge_template.as_deref()),
+        ("nickname_change", config.nickname_template.as_deref()),
     ];
     for (event, template) in pairs {
         if let Some(t) = template {
@@ -312,6 +331,16 @@ pub fn fire_event(event: WebhookEvent) {
             state.config.wipe_url.as_deref(),
             state.config.wipe_template.as_deref(),
             state.obs_config.clip_on_wipe,
+        ),
+        WebhookEvent::Badge { .. } => (
+            state.config.badge_url.as_deref(),
+            state.config.badge_template.as_deref(),
+            state.obs_config.clip_on_badge,
+        ),
+        WebhookEvent::NicknameChange { .. } => (
+            state.config.nickname_url.as_deref(),
+            state.config.nickname_template.as_deref(),
+            false,
         ),
     };
 
