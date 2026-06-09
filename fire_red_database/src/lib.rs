@@ -2093,14 +2093,18 @@ pub fn export_run(conn_str: &str, run_id: u32) -> serde_json::Value {
 
     let caught_rows = client.query(
         "SELECT nickname, species_name, level, nature, is_shiny, gender, \
-                met_location, location_name, caught_at, player_name, personality \
+                met_location, location_name, caught_at, player_name, personality, \
+                iv_hp, iv_attack, iv_defense, iv_speed, iv_sp_attack, iv_sp_defense, \
+                ev_hp, ev_attack, ev_defense, ev_speed, ev_sp_attack, ev_sp_defense \
          FROM caught_pokemon WHERE run_id = $1 ORDER BY caught_at",
         &[&rid],
     ).unwrap_or_default();
 
     let dead_rows = client.query(
         "SELECT nickname, species_name, level, nature, is_shiny, gender, \
-                met_location, died_at, player_name, is_soul_link_death, personality \
+                met_location, died_at, player_name, is_soul_link_death, personality, \
+                iv_hp, iv_attack, iv_defense, iv_speed, iv_sp_attack, iv_sp_defense, \
+                ev_hp, ev_attack, ev_defense, ev_speed, ev_sp_attack, ev_sp_defense \
          FROM dead_pokemon WHERE run_id = $1 ORDER BY died_at",
         &[&rid],
     ).unwrap_or_default();
@@ -2131,6 +2135,18 @@ pub fn export_run(conn_str: &str, run_id: u32) -> serde_json::Value {
             "caught_at":     format_timestamp(r.get::<_, i64>(8) as u64),
             "player_name":   r.get::<_, String>(9),
             "personality":   r.get::<_, i64>(10),
+            "iv_hp":         r.get::<_, i32>(11),
+            "iv_atk":        r.get::<_, i32>(12),
+            "iv_def":        r.get::<_, i32>(13),
+            "iv_spe":        r.get::<_, i32>(14),
+            "iv_spa":        r.get::<_, i32>(15),
+            "iv_spd":        r.get::<_, i32>(16),
+            "ev_hp":         r.get::<_, i32>(17),
+            "ev_atk":        r.get::<_, i32>(18),
+            "ev_def":        r.get::<_, i32>(19),
+            "ev_spe":        r.get::<_, i32>(20),
+            "ev_spa":        r.get::<_, i32>(21),
+            "ev_spd":        r.get::<_, i32>(22),
         })).collect::<Vec<_>>(),
         "dead": dead_rows.iter().map(|r| serde_json::json!({
             "nickname":          r.get::<_, String>(0),
@@ -2144,6 +2160,18 @@ pub fn export_run(conn_str: &str, run_id: u32) -> serde_json::Value {
             "player_name":       r.get::<_, String>(8),
             "is_soul_link_death": r.get::<_, bool>(9),
             "personality":       r.get::<_, i64>(10),
+            "iv_hp":             r.get::<_, i32>(11),
+            "iv_atk":            r.get::<_, i32>(12),
+            "iv_def":            r.get::<_, i32>(13),
+            "iv_spe":            r.get::<_, i32>(14),
+            "iv_spa":            r.get::<_, i32>(15),
+            "iv_spd":            r.get::<_, i32>(16),
+            "ev_hp":             r.get::<_, i32>(17),
+            "ev_atk":            r.get::<_, i32>(18),
+            "ev_def":            r.get::<_, i32>(19),
+            "ev_spe":            r.get::<_, i32>(20),
+            "ev_spa":            r.get::<_, i32>(21),
+            "ev_spd":            r.get::<_, i32>(22),
         })).collect::<Vec<_>>(),
         "encounters": enc_rows.iter().map(|r| serde_json::json!({
             "species_name":   r.get::<_, String>(0),
@@ -2180,7 +2208,7 @@ ev_hp,ev_atk,ev_def,ev_spe,ev_spa,ev_spd,caught_at\n");
                 ev_hp, ev_attack, ev_defense, ev_speed, ev_sp_attack, ev_sp_defense \
          FROM caught_pokemon WHERE run_id = $1 ORDER BY caught_at",
         &[&rid],
-    ).unwrap_or_default();
+    ).unwrap_or_else(|e| { tracing::warn!("export_run_csv caught query failed for run {run_id}: {e}"); vec![] });
     for r in &caught_rows {
         out.push_str(&format!(
             "caught,{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}\n",
@@ -2222,7 +2250,7 @@ ev_hp,ev_atk,ev_def,ev_spe,ev_spa,ev_spd,died_at\n");
                 ev_hp, ev_attack, ev_defense, ev_speed, ev_sp_attack, ev_sp_defense \
          FROM dead_pokemon WHERE run_id = $1 ORDER BY died_at",
         &[&rid],
-    ).unwrap_or_default();
+    ).unwrap_or_else(|e| { tracing::warn!("export_run_csv dead query failed for run {run_id}: {e}"); vec![] });
     for r in &dead_rows {
         out.push_str(&format!(
             "dead,{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}\n",
@@ -2260,7 +2288,7 @@ ev_hp,ev_atk,ev_def,ev_spe,ev_spa,ev_spd,died_at\n");
                 encountered_at, player_name \
          FROM encounters WHERE run_id = $1 ORDER BY encountered_at",
         &[&rid],
-    ).unwrap_or_default();
+    ).unwrap_or_else(|e| { tracing::warn!("export_run_csv encounters query failed for run {run_id}: {e}"); vec![] });
     for r in &enc_rows {
         out.push_str(&format!(
             "encounter,{},{},{},{},{},{},{},{}\n",
@@ -2392,13 +2420,21 @@ pub fn import_run(conn_str: &str, body: &serde_json::Value) -> serde_json::Value
                 .and_then(parse_timestamp)
                 .map(|t| t as i64)
                 .unwrap_or(now);
-            let _ = client.execute(
+            match client.execute(
                 "INSERT INTO encounters (run_id, player_name, species_name, level, \
                                         map_group, map_name, caught, is_shiny, encountered_at) \
-                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) \
+                 ON CONFLICT DO NOTHING",
                 &[&new_id, &enc_player, &species_name, &level,
                   &map_group, &map_name, &caught, &is_shiny, &encountered_at],
-            );
+            ) {
+                Ok(0) => tracing::warn!(
+                    "import_run: encounter ({species_name}, map {map_group}/{map_name}, \
+                     player {enc_player}) already exists in run {new_id}; skipped"),
+                Ok(_) => {}
+                Err(e) => tracing::warn!(
+                    "import_run: failed to insert encounter ({species_name}): {e}"),
+            }
         }
     }
 
@@ -2424,6 +2460,18 @@ pub fn import_run(conn_str: &str, body: &serde_json::Value) -> serde_json::Value
                 .and_then(parse_timestamp)
                 .map(|t| t as i64)
                 .unwrap_or(now);
+            let iv_hp:  i32 = c.get("iv_hp") .and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+            let iv_atk: i32 = c.get("iv_atk").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+            let iv_def: i32 = c.get("iv_def").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+            let iv_spe: i32 = c.get("iv_spe").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+            let iv_spa: i32 = c.get("iv_spa").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+            let iv_spd: i32 = c.get("iv_spd").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+            let ev_hp:  i32 = c.get("ev_hp") .and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+            let ev_atk: i32 = c.get("ev_atk").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+            let ev_def: i32 = c.get("ev_def").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+            let ev_spe: i32 = c.get("ev_spe").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+            let ev_spa: i32 = c.get("ev_spa").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+            let ev_spd: i32 = c.get("ev_spd").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
             match client.execute(
                 "INSERT INTO caught_pokemon (run_id, player_name, personality, ot_id, \
                                             nickname, species, species_name, is_shiny, \
@@ -2434,11 +2482,13 @@ pub fn import_run(conn_str: &str, body: &serde_json::Value) -> serde_json::Value
                                             ev_sp_attack, ev_sp_defense, \
                                             caught_at, gender) \
                  VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12, \
-                         0,0,0,0,0,0, 0,0,0,0,0,0, $13,$14) \
+                         $13,$14,$15,$16,$17,$18, $19,$20,$21,$22,$23,$24, $25,$26) \
                  ON CONFLICT (run_id, personality) DO NOTHING",
                 &[&new_id, &c_player, &personality, &0i64,
                   &nickname, &0i32, &species_name, &is_shiny,
                   &nature, &level, &met_location, &location_name,
+                  &iv_hp, &iv_atk, &iv_def, &iv_spe, &iv_spa, &iv_spd,
+                  &ev_hp, &ev_atk, &ev_def, &ev_spe, &ev_spa, &ev_spd,
                   &caught_at, &gender],
             ) {
                 Ok(0) => tracing::warn!(
@@ -2475,6 +2525,18 @@ pub fn import_run(conn_str: &str, body: &serde_json::Value) -> serde_json::Value
                 .and_then(parse_timestamp)
                 .map(|t| t as i64)
                 .unwrap_or(now);
+            let iv_hp:  i32 = d.get("iv_hp") .and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+            let iv_atk: i32 = d.get("iv_atk").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+            let iv_def: i32 = d.get("iv_def").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+            let iv_spe: i32 = d.get("iv_spe").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+            let iv_spa: i32 = d.get("iv_spa").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+            let iv_spd: i32 = d.get("iv_spd").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+            let ev_hp:  i32 = d.get("ev_hp") .and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+            let ev_atk: i32 = d.get("ev_atk").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+            let ev_def: i32 = d.get("ev_def").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+            let ev_spe: i32 = d.get("ev_spe").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+            let ev_spa: i32 = d.get("ev_spa").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+            let ev_spd: i32 = d.get("ev_spd").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
             match client.execute(
                 "INSERT INTO dead_pokemon (run_id, player_name, personality, ot_id, \
                                           nickname, species, species_name, is_shiny, \
@@ -2487,12 +2549,14 @@ pub fn import_run(conn_str: &str, body: &serde_json::Value) -> serde_json::Value
                                           held_item, ability, ability_name, friendship, ot_name) \
                  VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,0,$14, \
                          0,0,0,0,0,0, 0,0,0,0,0,0,0,0, \
-                         0,0,0,0,0,0, 0,0,0,0,0,0, 0,0,'',0,'') \
+                         $15,$16,$17,$18,$19,$20, $21,$22,$23,$24,$25,$26, 0,0,'',0,'') \
                  ON CONFLICT (run_id, personality) DO NOTHING",
                 &[&new_id, &d_player, &personality, &0i64,
                   &nickname, &0i32, &species_name, &is_shiny,
                   &nature, &level, &met_location, &died_at, &gender,
-                  &is_soul_link_death],
+                  &is_soul_link_death,
+                  &iv_hp, &iv_atk, &iv_def, &iv_spe, &iv_spa, &iv_spd,
+                  &ev_hp, &ev_atk, &ev_def, &ev_spe, &ev_spa, &ev_spd],
             ) {
                 Ok(0) => tracing::warn!(
                     "import_run: dead personality 0x{personality:08X} ({species_name}) already \

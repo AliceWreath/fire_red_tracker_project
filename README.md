@@ -790,6 +790,15 @@ Add `http://localhost:9090/cmd` in a browser tab to manage runs — **End Run** 
 
 ## Project status
 
+**v0.8.96** — export/import IV/EV round-trip fix, webhook spawn safety, CSV error visibility, encounter import warnings:
+
+- **`export_run` IV/EV data loss fix** — the JSON exporter (`/api/run/:id/export`) previously omitted all twelve IV and EV columns from its caught and dead Pokémon queries, and `import_run` hard-coded literal `0` for all twelve IV/EV DB slots. Any export→import round-trip silently zeroed every stat. Both sides are now fixed: `export_run` selects and emits `iv_hp … iv_spd` / `ev_hp … ev_spd`; `import_run` reads them from the JSON body (falling back to `0` for old exports that pre-date this fix).
+- **`webhook::init` spawn-before-set ordering fix** — the global `STATE` (which holds the channel sender) was populated before the worker thread was confirmed alive. A spawn failure left an orphaned sender in global state; every subsequent `fire_event()` call silently discarded events via `let _ = tx.send(…)` on a disconnected channel. Fixed by attempting the spawn first and only calling `STATE.set()` on success. On failure both ends of the channel are dropped and `fire_event()` no-ops cleanly.
+- **`export_run_csv` DB error visibility** — all three queries in `export_run_csv()` (caught, dead, encounters) used `.unwrap_or_default()`, returning a partial CSV with no log entry on any DB failure. Changed to `.unwrap_or_else(|e| { tracing::warn!(…); vec![] })` matching the pattern applied to `DbReader` methods in v0.8.95.
+- **`import_run` encounter INSERT warnings** — the encounters insert loop used `let _ = client.execute(…)`, silently dropping both `Ok(0)` collisions and `Err` DB errors. Added `ON CONFLICT DO NOTHING` and a `match` block with `tracing::warn!` on collision and failure, consistent with the caught and dead sections updated in v0.8.95.
+
+---
+
 **v0.8.95** — CSV IV/EV columns, DB error visibility, import collision warnings, schema v8 index, test coverage:
 
 - **CSV export IV/EV completeness** — `export_run_csv()` now includes all twelve IV and EV columns for both caught and dead Pokémon sections. Header and query updated; column order is `iv_hp,iv_atk,iv_def,iv_spe,iv_spa,iv_spd,ev_hp,ev_atk,ev_def,ev_spe,ev_spa,ev_spd` inserted before the timestamp. Prior CSV exports omitted this data entirely despite the DB having it.
