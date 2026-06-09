@@ -109,10 +109,12 @@ impl EncounterTracker {
             let is_shiny    = crate::game::is_shiny(personality, ot_id);
 
             if is_shiny {
-                fire_red_database::record_event(fire_red_database::EventKind::Shiny {
+                if let Err(e) = fire_red_database::record_event(fire_red_database::EventKind::Shiny {
                     species_name: &enemy.box_mon.secure.growth.species_string,
                     level:        enemy.level,
-                });
+                }) {
+                    tracing::warn!("Failed to record Shiny event: {e}");
+                }
                 crate::webhook::fire_event(crate::webhook::WebhookEvent::Shiny {
                     player:    fire_red_loop::get_trainer_name(),
                     timestamp: now,
@@ -126,7 +128,7 @@ impl EncounterTracker {
                 });
             }
 
-            let is_first = fire_red_database::record_encounter(
+            let is_first = match fire_red_database::record_encounter(
                 fire_red_database::Encounter {
                     player_name:    fire_red_loop::get_trainer_name(),
                     map_group,
@@ -138,7 +140,13 @@ impl EncounterTracker {
                     encountered_at: now,
                     is_shiny,
                 },
-            );
+            ) {
+                Ok(v) => v,
+                Err(e) => {
+                    tracing::error!("Failed to record encounter: {e}");
+                    false
+                }
+            };
 
             if is_first {
                 self.enc_map             = (map_group, map_name);

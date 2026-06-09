@@ -394,11 +394,11 @@ pub fn validate_config(cfg: &TrackerConfig) -> Vec<ConfigError> {
 pub fn load_or_prompt(path: &PathBuf) -> TrackerConfig {
     if path.exists() {
         let content = std::fs::read_to_string(path).unwrap_or_else(|e| {
-            eprintln!("Failed to read config file {}: {}", path.display(), e);
+            tracing::error!("Failed to read config file {}: {}", path.display(), e);
             std::process::exit(1);
         });
         let mut config: TrackerConfig = toml::from_str(&content).unwrap_or_else(|e| {
-            eprintln!("Failed to parse config file {}: {}", path.display(), e);
+            tracing::error!("Failed to parse config file {}: {}", path.display(), e);
             std::process::exit(1);
         });
         if let Some(preset) = config.preset {
@@ -417,17 +417,17 @@ pub fn load_or_prompt(path: &PathBuf) -> TrackerConfig {
 pub fn save_config(config: &TrackerConfig, path: &PathBuf) {
     if let Some(parent) = path.parent()
         && let Err(e) = std::fs::create_dir_all(parent) {
-        eprintln!("Warning: could not create config directory: {}", e);
+        tracing::warn!("could not create config directory: {}", e);
     }
     match toml::to_string_pretty(config) {
         Ok(content) => {
             if let Err(e) = std::fs::write(path, &content) {
-                eprintln!("Warning: could not write config file: {}", e);
+                tracing::warn!("could not write config file: {}", e);
             } else {
-                println!("Config saved to {}", path.display());
+                tracing::info!("Config saved to {}", path.display());
             }
         }
-        Err(e) => eprintln!("Warning: could not serialize config: {}", e),
+        Err(e) => tracing::warn!("could not serialize config: {}", e),
     }
 }
 
@@ -987,11 +987,11 @@ fn run_setup_window(existing: Option<&TrackerConfig>) -> TrackerConfig {
 pub fn run_config_editor(path: &PathBuf) {
     let existing: Option<TrackerConfig> = if path.exists() {
         let content = std::fs::read_to_string(path).unwrap_or_else(|e| {
-            eprintln!("Failed to read config file {}: {}", path.display(), e);
+            tracing::error!("Failed to read config file {}: {}", path.display(), e);
             std::process::exit(1);
         });
         Some(toml::from_str(&content).unwrap_or_else(|e| {
-            eprintln!("Failed to parse config file {}: {}", path.display(), e);
+            tracing::error!("Failed to parse config file {}: {}", path.display(), e);
             std::process::exit(1);
         }))
     } else {

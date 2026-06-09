@@ -204,7 +204,7 @@ pub fn handle_tracker_connection(
 ) {
     let mut write_stream = match stream.try_clone() {
         Ok(s)  => s,
-        Err(e) => { eprintln!("Failed to clone stream: {}", e); return; }
+        Err(e) => { tracing::error!("Failed to clone stream: {}", e); return; }
     };
     let mut read_stream = stream;
 

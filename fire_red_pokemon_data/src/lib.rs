@@ -481,7 +481,7 @@ unsafe fn dealloc_wild_pokemon_info_ffi(ptr: *mut WildPokemonInfoFFI) {
 /// `ptr` must be a valid pointer allocated by [`alloc_wild_pokemon_info_ffi`].
 pub unsafe fn get_wild_pokemon_vector_from_ptr_ffi(ptr: *mut WildPokemonInfoFFI) -> Vec<WildPokemon> {
     if ptr.is_null() {
-        eprintln!("get_wild_pokemon_vector_from_ptr_ffi: null pointer");
+        tracing::warn!("get_wild_pokemon_vector_from_ptr_ffi: null pointer");
         return Vec::new();
     }
 
@@ -507,7 +507,7 @@ pub fn get_all_pokemon_headers_from_rom(buffer: &[u8], offset: usize) -> Vec<Wil
         && read_u16(buffer, offset + index) != 0xFFFF
     {
         if offset + index >= buffer.len() {
-            eprintln!("Overran ROM buffer while reading pokemon headers.");
+            tracing::error!("Overran ROM buffer while reading pokemon headers.");
             break;
         }
         headers.push(WildPokemonHeaderROM::fill_header(buffer, offset + index));

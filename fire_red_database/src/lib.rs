@@ -318,7 +318,7 @@ fn db() -> &'static Mutex<DbState> {
 /// `initialize` has already been called.
 /// Increment this whenever a new migration or data-repair statement is added.
 /// `initialize` skips all SQL when the DB already records this version.
-const SCHEMA_VERSION: &str = "6";
+const SCHEMA_VERSION: &str = "7";
 
 pub fn initialize(connection_string: &str) -> Result<(), String> {
     // Accept bare `host/dbname` strings — prepend the scheme so callers don't have to.
@@ -538,6 +538,20 @@ pub fn initialize(connection_string: &str) -> Result<(), String> {
         -- Idempotent guard for databases created before old_nickname was added
         -- to the CREATE TABLE above (schema versions prior to 6).
         ALTER TABLE events ADD COLUMN IF NOT EXISTS old_nickname TEXT NOT NULL DEFAULT '';
+
+        -- Migration v7: webhook delivery receipt log.
+        -- Records every attempted webhook delivery so the API can surface
+        -- a history of what fired, when, and whether it succeeded.
+        CREATE TABLE IF NOT EXISTS webhook_log (
+            id         SERIAL  PRIMARY KEY,
+            run_id     INTEGER REFERENCES runs(id),
+            event_type TEXT    NOT NULL,
+            url        TEXT    NOT NULL,
+            success    BOOLEAN NOT NULL,
+            attempts   INTEGER NOT NULL,
+            payload    TEXT    NOT NULL DEFAULT '',
+            fired_at   BIGINT  NOT NULL
+        );
     ").map_err(|e| format!("Failed to create database schema: {e}"))?;
 
     // Record the schema version so future startups can skip all migrations.
@@ -570,13 +584,13 @@ fn set_meta(client: &mut Client, key: &str, value: &str) {
          ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value",
         &[&key, &value],
     ) {
-        eprintln!("Warning: failed to write meta key '{key}': {e}");
+        tracing::warn!("Failed to write meta key '{key}': {e}");
     }
 }
 
 fn delete_meta(client: &mut Client, key: &str) {
     if let Err(e) = client.execute("DELETE FROM meta WHERE key = $1", &[&key]) {
-        eprintln!("Warning: failed to delete meta key '{key}': {e}");
+        tracing::warn!("Failed to delete meta key '{key}': {e}");
     }
 }
 
@@ -787,7 +801,7 @@ pub fn set_player_name(name: &str) {
             &[&name, &(id as i32)],
         )
     {
-        eprintln!("Warning: failed to update player name: {e}");
+        tracing::warn!("Failed to update player name: {e}");
     }
 }
 
@@ -814,7 +828,7 @@ pub fn end_run() -> Option<u32> {
         "UPDATE runs SET ended_at = $1 WHERE id = $2",
         &[&(unix_now() as i64), &(id as i32)],
     ) {
-        eprintln!("Warning: failed to record run end time: {e}");
+        tracing::warn!("Failed to record run end time: {e}");
     }
     delete_meta(&mut state.client, "active_run_id");
     Some(id)
@@ -852,18 +866,21 @@ pub fn list_runs() -> Result<Vec<(u32, String, u64, usize)>, String> {
 /// Returns `true` if the row was newly inserted; `false` if there is no active
 /// run, the DB write failed, or the record already existed (ON CONFLICT).
 /// Callers should only fire downstream events (webhooks, etc.) on `true`.
-pub fn mark_dead(pokemon: DeadPokemon) -> bool {
+/// Returns `Ok(true)` when the row was newly inserted, `Ok(false)` when there
+/// is no active run (caller should skip the death event silently), and
+/// `Err(e)` on a database error — the caller should log the error and skip.
+pub fn mark_dead(pokemon: DeadPokemon) -> Result<bool, postgres::Error> {
     let mut state = db().lock_or_recover();
     let active = match state.run_id {
         Some(id) => id,
-        None => return false,
+        None => return Ok(false),
     };
     let player       = pg_safe(&state.current_player);
     let ot_name      = pg_safe(&pokemon.ot_name);
     let nickname     = pg_safe(&pokemon.nickname);
     let spec_name    = pg_safe(&pokemon.species_name);
     let ability_name = pg_safe(&pokemon.ability_name);
-    if let Err(e) = state.client.execute(
+    state.client.execute(
         "INSERT INTO dead_pokemon (
             run_id, player_name, personality, ot_id, ot_name, nickname,
             species, species_name, is_shiny, nature,
@@ -929,11 +946,8 @@ pub fn mark_dead(pokemon: DeadPokemon) -> bool {
             &(pokemon.gender as i32),
             &pokemon.is_soul_link_death,
         ],
-    ) {
-        eprintln!("Warning: failed to record dead pokemon (personality={}): {e}", pokemon.personality);
-        return false;
-    }
-    true
+    )?;
+    Ok(true)
 }
 
 /// Returns `true` if the Pokemon with this personality is dead in the active run.
@@ -1029,11 +1043,13 @@ impl<'a> EventKind<'a> {
 ///
 /// No-op if no run is currently active. Returns `true` when the event was
 /// successfully persisted, `false` on any failure or missing run.
-pub fn record_event(event: EventKind<'_>) -> bool {
+/// Appends a row to the `events` table. Returns `Ok(())` on success,
+/// `Ok(())` with a no-op when there is no active run, and `Err` on a DB error.
+pub fn record_event(event: EventKind<'_>) -> Result<(), postgres::Error> {
     let mut state = db().lock_or_recover();
     let run_id = match state.run_id {
         Some(id) => id,
-        None     => return false,
+        None     => return Ok(()),
     };
     let player      = state.current_player.clone();
     let occurred_at = unix_now() as i64;
@@ -1051,7 +1067,8 @@ pub fn record_event(event: EventKind<'_>) -> bool {
             &level,
             &occurred_at,
         ],
-    ).is_ok()
+    )?;
+    Ok(())
 }
 
 /// Records a Pokemon as caught in the active run.
@@ -1104,7 +1121,7 @@ pub fn mark_caught(pokemon: CaughtPokemon) {
             &pokemon.location_name,
         ],
     ) {
-        eprintln!("Warning: failed to record caught pokemon (personality={}): {e}", pokemon.personality);
+        tracing::warn!("Failed to record caught pokemon (personality={}): {e}", pokemon.personality);
     }
 }
 
@@ -1217,11 +1234,14 @@ pub fn list_caught() -> Vec<CaughtPokemon> {
 ///
 /// Subsequent encounters in the same area by the same player are silently
 /// ignored (Nuzlocke rule). Returns `true` if this was a new encounter.
-pub fn record_encounter(encounter: Encounter) -> bool {
+/// Records a wild encounter. Returns `Ok(true)` when the row was newly inserted
+/// (first encounter for this area), `Ok(false)` when the encounter already
+/// exists or there is no active run, and `Err` on a DB error.
+pub fn record_encounter(encounter: Encounter) -> Result<bool, postgres::Error> {
     let mut state = db().lock_or_recover();
     let active = match state.run_id {
         Some(id) => id,
-        None => return false,
+        None => return Ok(false),
     };
     let player    = pg_safe(&state.current_player);
     let spec_name = pg_safe(&encounter.species_name);
@@ -1241,8 +1261,8 @@ pub fn record_encounter(encounter: Encounter) -> bool {
             &(encounter.encountered_at as i64),
             &encounter.is_shiny,
         ],
-    ).unwrap_or(0);
-    rows == 1
+    )?;
+    Ok(rows == 1)
 }
 
 /// Marks the current player's encounter for this area as successfully caught.
@@ -1258,7 +1278,7 @@ pub fn set_encounter_caught(map_group: u8, map_name: u8) {
          WHERE run_id = $1 AND player_name = $2 AND map_group = $3 AND map_name = $4",
         &[&(active as i32), &player, &(map_group as i32), &(map_name as i32)],
     ) {
-        eprintln!("set_encounter_caught: DB error: {}", e);
+        tracing::warn!("set_encounter_caught: DB error: {}", e);
     }
 }
 
@@ -1451,11 +1471,11 @@ impl DbReader {
         let client = match Client::connect(connection_string, NoTls) {
             Ok(c) => c,
             Err(e) => {
-                eprintln!("DB connection failed ({}): {}", connection_string, e);
+                tracing::error!("DB connection failed ({}): {}", connection_string, e);
                 return None;
             }
         };
-        eprintln!("DB connected: {}", connection_string);
+        tracing::info!("DB connected: {}", connection_string);
         Some(Self {
             client:      Mutex::new(client),
             run_id:      Mutex::new(None),
@@ -1674,10 +1694,10 @@ impl DbReader {
     ///
     /// Used by the aggregator process, which does not share the tracker's global
     /// `DB` singleton. Mirrors the standalone `record_event` function.
-    pub fn record_event(&self, player_name: &str, event: EventKind<'_>) -> bool {
+    pub fn record_event(&self, player_name: &str, event: EventKind<'_>) -> Result<(), postgres::Error> {
         let run_id = match *self.run_id.lock_or_recover() {
             Some(id) => id,
-            None     => return false,
+            None     => return Ok(()),
         };
         let occurred_at = unix_now() as i64;
         let (event_type, species_name, nickname, old_nickname, level) = event.row_parts();
@@ -1694,7 +1714,8 @@ impl DbReader {
                 &level,
                 &occurred_at,
             ],
-        ).is_ok()
+        )?;
+        Ok(())
     }
 
     /// Inserts a soul-link death record for `caught` in this player's active run.
@@ -1760,7 +1781,7 @@ impl DbReader {
             Ok(1) => Some(true),
             Ok(_) => Some(false), // ON CONFLICT DO NOTHING — row already existed
             Err(e) => {
-                eprintln!("mark_soul_link_dead: DB error: {e}");
+                tracing::warn!("mark_soul_link_dead: DB error: {e}");
                 None
             }
         }
@@ -2517,6 +2538,160 @@ pub fn active_run_timeline_json(conn_str: &str) -> Result<serde_json::Value, Eve
     }).collect();
     Ok(serde_json::json!({ "run_id": run_id, "events": events }))
 }
+
+// ---------------------------------------------------------------------------
+// Webhook delivery log
+// ---------------------------------------------------------------------------
+
+/// Returns the `run_id` of the currently active run, or `None` if there is no
+/// active run or the database has not been initialized (tracker process only).
+pub fn get_active_run_id() -> Option<u32> {
+    DB.get()?.lock_or_recover().run_id
+}
+
+/// Records the final outcome of a webhook delivery attempt.
+///
+/// Silently no-ops when the database is not initialized (e.g. in tests or the
+/// aggregator process — this function should only be called from the tracker).
+pub fn record_webhook_delivery(
+    run_id:     Option<u32>,
+    event_type: &str,
+    url:        &str,
+    success:    bool,
+    attempts:   u32,
+    payload:    &str,
+) {
+    let Some(db) = DB.get() else { return; };
+    let mut state = db.lock_or_recover();
+    let fired_at = unix_now() as i64;
+    if let Err(e) = state.client.execute(
+        "INSERT INTO webhook_log (run_id, event_type, url, success, attempts, payload, fired_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)",
+        &[
+            &run_id.map(|id| id as i32),
+            &event_type,
+            &url,
+            &success,
+            &(attempts as i32),
+            &payload,
+            &fired_at,
+        ],
+    ) {
+        tracing::warn!("Failed to record webhook delivery: {e}");
+    }
+}
+
+/// Returns a JSON array of webhook delivery log entries for the given run.
+///
+/// Opens its own connection; intended for the aggregator's API endpoint.
+pub fn get_webhook_log_json(conn_str: &str, run_id: u32) -> serde_json::Value {
+    let mut client = match Client::connect(conn_str, NoTls) {
+        Ok(c)  => c,
+        Err(e) => return serde_json::json!({ "error": format!("DB connection failed: {e}") }),
+    };
+    let rows = match client.query(
+        "SELECT event_type, url, success, attempts, payload, fired_at
+         FROM webhook_log WHERE run_id = $1 ORDER BY fired_at ASC",
+        &[&(run_id as i32)],
+    ) {
+        Ok(r)  => r,
+        Err(e) => return serde_json::json!({ "error": format!("Query error: {e}") }),
+    };
+    let entries: Vec<serde_json::Value> = rows.iter().map(|row| serde_json::json!({
+        "event_type": row.get::<_, String>(0),
+        "url":        row.get::<_, String>(1),
+        "success":    row.get::<_, bool>(2),
+        "attempts":   row.get::<_, i32>(3),
+        "payload":    row.get::<_, String>(4),
+        "fired_at":   row.get::<_, i64>(5),
+        "fired_at_human": format_timestamp(row.get::<_, i64>(5) as u64),
+    })).collect();
+    serde_json::json!({ "run_id": run_id, "webhook_log": entries })
+}
+
+// ---------------------------------------------------------------------------
+// Route odds — unencountered areas
+// ---------------------------------------------------------------------------
+
+/// Returns encountered and unencountered wild areas for the given run as JSON.
+///
+/// `encountered` — routes already visited (species, level, caught flag).
+/// `unencountered` — all known FireRed wild areas not yet recorded for the run.
+///
+/// Opens its own connection; intended for the aggregator's API endpoint.
+pub fn route_odds_json(conn_str: &str, run_id: u32) -> serde_json::Value {
+    let mut client = match Client::connect(conn_str, NoTls) {
+        Ok(c)  => c,
+        Err(e) => return serde_json::json!({ "error": format!("DB connection failed: {e}") }),
+    };
+
+    // Load all encounter rows for this run.
+    let rows = match client.query(
+        "SELECT player_name, map_group, map_name, species_name, level, caught, is_shiny, encountered_at
+         FROM encounters WHERE run_id = $1 ORDER BY encountered_at ASC",
+        &[&(run_id as i32)],
+    ) {
+        Ok(r)  => r,
+        Err(e) => return serde_json::json!({ "error": format!("Query error: {e}") }),
+    };
+
+    // Build set of (map_group, map_name) pairs that have been encountered,
+    // respecting the dungeon-floor grouping (multi-floor dungeons share a
+    // Nuzlocke slot via the dungeon_floors() canonical floor list).
+    use std::collections::HashSet;
+    let mut seen_canonical: HashSet<(u8, u8)> = HashSet::new();
+    for row in &rows {
+        let mg = row.get::<_, i32>(1) as u8;
+        let mn = row.get::<_, i32>(2) as u8;
+        let floors = fire_red_location_names::dungeon_floors(mg, mn);
+        if floors.is_empty() {
+            seen_canonical.insert((mg, mn));
+        } else {
+            for &(fg, fn_) in floors {
+                seen_canonical.insert((fg, fn_));
+            }
+        }
+    }
+
+    let encountered: Vec<serde_json::Value> = rows.iter().map(|row| {
+        let mg = row.get::<_, i32>(1) as u8;
+        let mn = row.get::<_, i32>(2) as u8;
+        let raw = fire_red_location_names::map_area_name(mg, mn);
+        let area = if raw.is_empty() { format!("{mg}:{mn}") } else { raw.to_string() };
+        serde_json::json!({
+            "player_name":    row.get::<_, String>(0),
+            "map_group":      mg,
+            "map_name":       mn,
+            "area":           area,
+            "species_name":   row.get::<_, String>(3),
+            "level":          row.get::<_, i32>(4),
+            "caught":         row.get::<_, bool>(5),
+            "is_shiny":       row.get::<_, bool>(6),
+            "encountered_at": format_timestamp(row.get::<_, i64>(7) as u64),
+        })
+    }).collect();
+
+    // Unencountered: all known wild areas minus those in seen_canonical.
+    let unencountered: Vec<serde_json::Value> = fire_red_location_names::all_wild_areas()
+        .iter()
+        .filter(|&&(mg, mn, _)| !seen_canonical.contains(&(mg, mn)))
+        .map(|&(mg, mn, area)| serde_json::json!({
+            "map_group": mg,
+            "map_name":  mn,
+            "area":      area,
+        }))
+        .collect();
+
+    serde_json::json!({
+        "run_id":        run_id,
+        "encountered":   encountered,
+        "unencountered": unencountered,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Full DB dump
+// ---------------------------------------------------------------------------
 
 /// Opens a fresh connection and returns a JSON snapshot of every table.
 ///

@@ -837,8 +837,8 @@ impl eframe::App for AggregatorApp {
             let result = self.slots[j].db.as_ref()
                 .and_then(|db| db.mark_soul_link_dead(&partner));
             if result.is_some() {
-                if result == Some(true) {
-                    self.slots[j].db.as_ref()
+                if result == Some(true)
+                    && let Err(e) = self.slots[j].db.as_ref()
                         .expect("db is Some when mark_soul_link_dead returned Some(true)")
                         .record_event(
                             &partner.player_name,
@@ -847,7 +847,9 @@ impl eframe::App for AggregatorApp {
                                 nickname:     &partner.nickname,
                                 level:        partner.level,
                             },
-                        );
+                        )
+                {
+                    tracing::warn!("Failed to record SoulLinkDeath event: {e}");
                 }
                 self.soul_link_propagated.insert((j, partner.personality));
             }

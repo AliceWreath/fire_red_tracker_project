@@ -110,7 +110,7 @@ fn read_table_pointer(rom: &[u8], header_offset: u32) -> Option<u32> {
     let o = header_offset as usize;
     let raw = u32::from_le_bytes(rom.get(o..o + 4)?.try_into().ok()?);
     if !(ROM_BASE..0x09000000).contains(&raw) {
-        eprintln!(
+        tracing::warn!(
             "invalid table pointer at {:#X}: {:#010X}",
             header_offset, raw
         );

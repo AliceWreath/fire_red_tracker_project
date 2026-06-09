@@ -255,7 +255,7 @@ impl<T> LockOrRecover<T> for std::sync::Mutex<T> {
     fn lock_or_recover(&self) -> std::sync::MutexGuard<'_, T> {
         self.lock().unwrap_or_else(|e| {
             let loc = std::panic::Location::caller();
-            eprintln!("Warning: mutex poisoned at {}:{}: {e}", loc.file(), loc.line());
+            tracing::warn!("mutex poisoned at {}:{}: {e}", loc.file(), loc.line());
             e.into_inner()
         })
     }

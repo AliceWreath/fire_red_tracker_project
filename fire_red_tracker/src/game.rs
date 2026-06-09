@@ -93,7 +93,7 @@ pub fn check_for_dead_pokemon(thread_party: &Arc<Mutex<Vec<Pokemon>>>, run_track
         let died_at = fire_red_database::unix_now();
 
         let shiny_flag = is_shiny(personality, ot_id);
-        let recorded = fire_red_database::mark_dead(fire_red_database::DeadPokemon {
+        let recorded = match fire_red_database::mark_dead(fire_red_database::DeadPokemon {
             player_name:   fire_red_loop::get_trainer_name(),
             personality,
             ot_id,
@@ -144,13 +144,21 @@ pub fn check_for_dead_pokemon(thread_party: &Arc<Mutex<Vec<Pokemon>>>, run_track
             // Regular in-battle deaths are never soul-link deaths; the aggregator
             // sets is_soul_link_death = true when it calls mark_soul_link_dead().
             is_soul_link_death: false,
-        });
+        }) {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::error!("Failed to record dead pokemon (personality=0x{:08X}): {e}", personality);
+                continue;
+            }
+        };
         if !recorded { continue; }
-        fire_red_database::record_event(fire_red_database::EventKind::Death {
+        if let Err(e) = fire_red_database::record_event(fire_red_database::EventKind::Death {
             species_name: &growth.species_string,
             nickname:     &pokemon.box_mon.nickname_string,
             level:        pokemon.level,
-        });
+        }) {
+            tracing::warn!("Failed to record Death event: {e}");
+        }
         crate::webhook::fire_event(crate::webhook::WebhookEvent::Death {
             player:    fire_red_loop::get_trainer_name(),
             timestamp: died_at,
@@ -202,11 +210,13 @@ pub fn check_for_new_pokemon(thread_party: &Arc<Mutex<Vec<Pokemon>>>) {
             if !nickname.is_empty()
                 && let Some(old_name) = fire_red_database::update_caught_nickname(personality, nickname) {
                     let species_name = &pokemon.box_mon.secure.growth.species_string;
-                    fire_red_database::record_event(fire_red_database::EventKind::NicknameChange {
+                    if let Err(e) = fire_red_database::record_event(fire_red_database::EventKind::NicknameChange {
                         species_name,
                         old_name:    &old_name,
                         new_name:    nickname,
-                    });
+                    }) {
+                        tracing::warn!("Failed to record NicknameChange event: {e}");
+                    }
                     crate::webhook::fire_event(crate::webhook::WebhookEvent::NicknameChange {
                         player:    fire_red_loop::get_trainer_name(),
                         timestamp: fire_red_database::unix_now(),
@@ -248,11 +258,13 @@ pub fn check_for_new_pokemon(thread_party: &Arc<Mutex<Vec<Pokemon>>>) {
             .unwrap_or_default();
 
         let shiny_flag = is_shiny(personality, ot_id);
-        fire_red_database::record_event(fire_red_database::EventKind::Catch {
+        if let Err(e) = fire_red_database::record_event(fire_red_database::EventKind::Catch {
             species_name: &growth.species_string,
             nickname:     &pokemon.box_mon.nickname_string,
             level:        pokemon.level,
-        });
+        }) {
+            tracing::warn!("Failed to record Catch event: {e}");
+        }
         fire_red_database::mark_caught(fire_red_database::CaughtPokemon {
             player_name:   fire_red_loop::get_trainer_name(),
             personality,
@@ -362,7 +374,9 @@ pub fn check_for_run_over(thread_party: &Arc<Mutex<Vec<Pokemon>>>, run_tracking_
     });
     drop(party);
     if all_dead {
-        fire_red_database::record_event(fire_red_database::EventKind::Wipe);
+        if let Err(e) = fire_red_database::record_event(fire_red_database::EventKind::Wipe) {
+            tracing::warn!("Failed to record Wipe event: {e}");
+        }
         fire_red_database::end_run();
         crate::webhook::fire_event(crate::webhook::WebhookEvent::Wipe {
             player:    fire_red_loop::get_trainer_name(),
@@ -715,7 +729,9 @@ pub fn check_for_new_badges(last_mask: Option<u8>) -> Option<u8> {
     for i in 0..8u8 {
         if (newly_earned >> i) & 1 == 0 { continue; }
         let badge_name = fire_red_badge::badge_name(i as usize);
-        fire_red_database::record_event(fire_red_database::EventKind::Badge { badge_name });
+        if let Err(e) = fire_red_database::record_event(fire_red_database::EventKind::Badge { badge_name }) {
+            tracing::warn!("Failed to record Badge event: {e}");
+        }
         crate::webhook::fire_event(crate::webhook::WebhookEvent::Badge {
             player:     player.clone(),
             timestamp,

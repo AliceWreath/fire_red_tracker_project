@@ -5,6 +5,7 @@ edition = "2024"
 license.workspace = true
 
 [dependencies]
+tracing.workspace             = true
 arc-swap.workspace            = true
 fire_red_get_values.workspace = true
 fire_red_text.workspace       = true

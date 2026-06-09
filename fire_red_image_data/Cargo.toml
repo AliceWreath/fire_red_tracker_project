@@ -8,4 +8,5 @@ edition = "2024"
 license.workspace = true
 
 [dependencies]
+tracing.workspace = true
 image.workspace = true

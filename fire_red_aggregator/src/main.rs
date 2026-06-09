@@ -89,7 +89,7 @@ fn do_update() {
             println!("Updated to v{}. Restart the aggregator to use the new version.", v);
         }
         Err(e) => {
-            eprintln!("Update failed: {}", e);
+            tracing::error!("Update failed: {}", e);
             std::process::exit(1);
         }
     }
@@ -255,7 +255,7 @@ fn main() {
             options,
             Box::new(move |cc| Ok(Box::new(AggregatorApp::new(cc, shared_slots, config_path, &cfg_ref, update_available)))),
         ) {
-            eprintln!("GUI exited with error: {e}");
+            tracing::error!("GUI exited with error: {e}");
         }
     }
 }

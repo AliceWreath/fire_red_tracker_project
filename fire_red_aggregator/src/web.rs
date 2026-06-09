@@ -1374,6 +1374,33 @@ async fn api_run_export(
     }
 }
 
+/// `GET /api/run/:id/route_odds` — encountered and unencountered wild areas for a run.
+///
+/// Returns `encountered` (routes already visited with species and catch info)
+/// and `unencountered` (all known FireRed wild areas not yet recorded).
+async fn api_run_route_odds(
+    State(state): State<WebState>,
+    Path(run_id): Path<u32>,
+) -> axum::Json<serde_json::Value> {
+    let conn = require_db!(state);
+    let result = tokio::task::spawn_blocking(move || {
+        fire_red_database::route_odds_json(&conn, run_id)
+    }).await;
+    axum::Json(result.unwrap_or_else(|_| serde_json::json!({ "error": "Task panicked" })))
+}
+
+/// `GET /api/run/:id/webhook_log` — webhook delivery receipt log for a run.
+async fn api_run_webhook_log(
+    State(state): State<WebState>,
+    Path(run_id): Path<u32>,
+) -> axum::Json<serde_json::Value> {
+    let conn = require_db!(state);
+    let result = tokio::task::spawn_blocking(move || {
+        fire_red_database::get_webhook_log_json(&conn, run_id)
+    }).await;
+    axum::Json(result.unwrap_or_else(|_| serde_json::json!({ "error": "Task panicked" })))
+}
+
 /// `GET /api/run/:id/shiny` — shiny odds statistics JSON for a run.
 async fn api_shiny_stats(
     State(state): State<WebState>,
@@ -1566,8 +1593,10 @@ pub fn run(live_slots: SharedSlots, port: u16, db_conn: Option<String>, testing:
             .route("/api/runs",            get(api_runs))
             .route("/api/run/import",      post(api_run_import))
             .route("/api/run/:id/stats",        get(api_run_stats))
-            .route("/api/run/:id/route_stats",  get(api_run_route_stats))
-            .route("/api/run/:id/shiny",        get(api_shiny_stats))
+            .route("/api/run/:id/route_stats",   get(api_run_route_stats))
+            .route("/api/run/:id/route_odds",    get(api_run_route_odds))
+            .route("/api/run/:id/webhook_log",   get(api_run_webhook_log))
+            .route("/api/run/:id/shiny",         get(api_shiny_stats))
             .route("/api/run/:id/export",  get(api_run_export))
             .route("/api/run/:id/events",  get(api_run_events))
             .route("/api/timeline",        get(api_active_timeline))
@@ -1590,8 +1619,8 @@ pub fn run(live_slots: SharedSlots, port: u16, db_conn: Option<String>, testing:
             .with_state(web_state);
 
         let addr = format!("0.0.0.0:{}", port);
-        println!("WebSocket overlay listening on http://{}", addr);
-        println!("Add in OBS as Browser Source: http://localhost:{}", port);
+        tracing::info!("WebSocket overlay listening on http://{}", addr);
+        tracing::info!("Add in OBS as Browser Source: http://localhost:{}", port);
 
         let listener = tokio::net::TcpListener::bind(&addr)
             .await
@@ -1600,7 +1629,7 @@ pub fn run(live_slots: SharedSlots, port: u16, db_conn: Option<String>, testing:
             listener,
             app.into_make_service_with_connect_info::<SocketAddr>(),
         ).await {
-            eprintln!("WebSocket server error: {e}");
+            tracing::error!("WebSocket server error: {e}");
         }
     });
 }

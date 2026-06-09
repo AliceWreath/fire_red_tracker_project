@@ -8,6 +8,7 @@ edition = "2024"
 license.workspace = true
 
 [dependencies]
+tracing.workspace             = true
 serde.workspace               = true
 fire_red_rom_buffer.workspace = true
 fire_red_get_values.workspace = true

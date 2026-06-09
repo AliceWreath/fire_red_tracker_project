@@ -168,7 +168,7 @@ fn do_update() {
             println!("Updated to v{}. Restart the tracker to use the new version.", v);
         }
         Err(e) => {
-            eprintln!("Update failed: {}", e);
+            tracing::error!("Update failed: {}", e);
             std::process::exit(1);
         }
     }
@@ -208,9 +208,9 @@ fn main() {
     // Validate config early so misconfigurations surface before any threads start.
     let validation_errors = config::validate_config(&cfg);
     if !validation_errors.is_empty() {
-        eprintln!("Config validation failed:");
+        tracing::error!("Config validation failed:");
         for e in &validation_errors {
-            eprintln!("  - {e}");
+            tracing::error!("  - {e}");
         }
         std::process::exit(1);
     }
@@ -221,7 +221,7 @@ fn main() {
     let test     = test_ov.as_ref();
     if use_test {
         if cli.run_id.is_some() {
-            eprintln!("error: --run-id and test mode are mutually exclusive \
+            tracing::error!("--run-id and test mode are mutually exclusive \
                        (test mode always starts a new run; drop --run-id or disable test mode).");
             std::process::exit(1);
         }
@@ -247,14 +247,14 @@ fn main() {
         .or_else(|| test.and_then(|t| t.db.clone()))
         .unwrap_or(cfg.db);
     if let Err(e) = fire_red_database::initialize(&db_conn) {
-        eprintln!("error: {e}");
+        tracing::error!("{e}");
         std::process::exit(1);
     }
 
     // --list-runs: print stored runs and exit without starting the tracker.
     if cli.list_runs {
         let runs = fire_red_database::list_runs().unwrap_or_else(|e| {
-            eprintln!("error: {e}");
+            tracing::error!("{e}");
             std::process::exit(1);
         });
         if runs.is_empty() {
@@ -286,22 +286,22 @@ fn main() {
             match fire_red_database::resume_run(id) {
                 Ok(true)  => println!("Resuming run #{}.", id),
                 Ok(false) => {
-                    eprintln!("Error: run #{} not found. Use --list-runs to see available runs.", id);
+                    tracing::error!("run #{} not found. Use --list-runs to see available runs.", id);
                     std::process::exit(1);
                 }
-                Err(e) => { eprintln!("error: {e}"); std::process::exit(1); }
+                Err(e) => { tracing::error!("{e}"); std::process::exit(1); }
             }
         }
         (None, true) => {
             let id = fire_red_database::new_run("Unknown").unwrap_or_else(|e| {
-                eprintln!("error: {e}");
+                tracing::error!("{e}");
                 std::process::exit(1);
             });
             println!("Started new run #{}.", id);
         }
         (None, false) => {
             let id = fire_red_database::get_or_create_run("Unknown").unwrap_or_else(|e| {
-                eprintln!("error: {e}");
+                tracing::error!("{e}");
                 std::process::exit(1);
             });
             println!("Using run #{}.", id);
@@ -446,8 +446,8 @@ fn main() {
                         // game was loaded — this typically means the user soft-reset
                         // into a different save file during the same tracker session.
                         if !last_player_name.is_empty() && name != last_player_name {
-                            eprintln!(
-                                "Warning: player name changed from '{}' to '{}' after reload — \
+                            tracing::warn!(
+                                "player name changed from '{}' to '{}' after reload — \
                                  possible save-file switch. Death/encounter records may now \
                                  belong to a different run.",
                                 last_player_name, name

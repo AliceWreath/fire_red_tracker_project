@@ -11,6 +11,7 @@ license.workspace = true
 fire_red_pokemon_name_buffer.workspace = true
 
 [dependencies]
+tracing.workspace                        = true
 arc-swap.workspace                       = true
 bincode.workspace                        = true
 serde.workspace                          = true

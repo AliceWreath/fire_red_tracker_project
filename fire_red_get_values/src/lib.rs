@@ -65,7 +65,7 @@ fn get_bytes(buffer: &[&str]) -> Vec<u8> {
 /// * `buffer`          0 Slice of hex byte string tokens.
 pub fn get_n_bytes(n: usize, buffer: &[&str]) -> Option<Vec<u8>> {
     if buffer.len() < n {
-        eprintln!("get_n_bytes: requested {n} bytes but buffer len is only {}", buffer.len());
+        tracing::warn!("get_n_bytes: requested {n} bytes but buffer len is only {}", buffer.len());
         return None;
     }
     

@@ -314,6 +314,61 @@ overlay.html
     → renderRunEnded() — shows summary card + first-encounters grid
 ```
 
+## New HTTP Endpoints (v0.8.94)
+
+```
+GET /api/run/:id/route_odds
+    queries encounters WHERE run_id=$1 → builds seen canonical-floor set
+    compares against fire_red_location_names::all_wild_areas() (static list)
+    returns { run_id, encountered: [...], unencountered: [...] }
+    encountered entries: player_name, map_group, map_name, area, species_name,
+                         level, caught, is_shiny, encountered_at
+    unencountered entries: map_group, map_name, area
+
+GET /api/run/:id/webhook_log
+    queries webhook_log WHERE run_id=$1 ORDER BY fired_at ASC
+    returns { run_id, webhook_log: [{ event_type, url, success, attempts,
+                                      payload, fired_at, fired_at_human }] }
+    populated by fire_red_tracker/webhook.rs worker after each delivery attempt
+```
+
+## Webhook Delivery Log (v0.8.94)
+
+```
+Tracker process — webhook.rs worker thread
+    │
+    for each WorkerTask::Webhook { url, body, event_type, run_id }:
+    │
+    ├── captures run_id from fire_red_database::get_active_run_id()
+    │     at fire_event() call time (before enqueuing)
+    │
+    ├── serializes payload: PostBody::Raw → clone; PostBody::Json → serde_json
+    │
+    ├── retry loop (max 3 attempts, exponential backoff 1s / 2s)
+    │
+    └── fire_red_database::record_webhook_delivery(
+              run_id, event_type, url, success, attempts, payload)
+          DB.lock() → INSERT INTO webhook_log (...)
+```
+
+## DB Write Functions — Error Handling (v0.8.94)
+
+```
+mark_dead(DeadPokemon)       → Result<bool, postgres::Error>
+    Ok(true)  = newly inserted
+    Ok(false) = no active run
+    Err(e)    = DB error (logged at call site via tracing::error!)
+
+record_encounter(Encounter)  → Result<bool, postgres::Error>
+    Ok(true)  = first encounter for this area (new row)
+    Ok(false) = duplicate or no active run
+    Err(e)    = DB error
+
+record_event(EventKind)      → Result<(), postgres::Error>
+    Ok(())    = success or no active run
+    Err(e)    = DB error
+```
+
 ## New HTTP Endpoints (v0.8.91)
 
 ```

@@ -829,7 +829,7 @@ impl SecureSubstruct {
                 'A' => secure.attack       = AttackSubstruct::fill_struct(&decrypted_value, index),
                 'E' => secure.ev_condition = EvConditionSubstruct::fill_struct(&decrypted_value, index),
                 'M' => secure.misc         = MiscSubstruct::fill_struct(&decrypted_value, index),
-                _   => eprintln!("Unexpected substructure order character: {}", ch),
+                _   => tracing::warn!("Unexpected substructure order character: {}", ch),
             }
         }
 

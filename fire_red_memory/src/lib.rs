@@ -173,18 +173,18 @@ pub fn start_loop() {
             match update_memory() {
                 Ok(()) => {
                     if !connected {
-                        println!("RetroArch connected.");
+                        tracing::info!("RetroArch connected.");
                         connected = true;
                     }
                 }
                 Err(_) => {
                     if connected {
-                        println!("Lost connection to RetroArch. Waiting...");
+                        tracing::warn!("Lost connection to RetroArch. Waiting...");
                         connected = false;
                     }
                     let now = std::time::Instant::now();
                     if now.duration_since(last_waiting_print) >= wait_interval {
-                        println!("Waiting for RetroArch...");
+                        tracing::debug!("Waiting for RetroArch...");
                         last_waiting_print = now;
                     }
                 }
@@ -199,7 +199,7 @@ pub fn start_loop() {
 /// The background thread will finish its current read cycle before exiting.
 /// This function returns immediately without joining the thread.
 pub fn end_loop() {
-    println!("ending memory loop");
+    tracing::info!("ending memory loop");
     RUNNING.store(false, Ordering::SeqCst);
 }
 
@@ -280,7 +280,7 @@ fn update_memory() -> Result<(), &'static str> {
 fn read_chunk(start: u32, chunk_start: u32, chunk_size: u32) -> Option<(u32, Vec<u8>)> {
     let socket = match make_socket() {
         Ok(s) => s,
-        Err(e) => { eprintln!("Failed to create UDP socket: {e}"); return None; }
+        Err(e) => { tracing::error!("Failed to create UDP socket: {e}"); return None; }
     };
     let command = generate_command(start + chunk_start, chunk_size as usize);
     let mut retries = 0u32;
@@ -400,7 +400,7 @@ fn update_ram_type<T: MemoryType + Default>() -> Option<Vec<u8>> {
 
     let mut results = Vec::with_capacity(total);
     for result in rx {
-        let Some(r) = result else { return None; };
+        let r = result?;
         results.push(r);
     }
 

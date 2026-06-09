@@ -339,6 +339,8 @@ All endpoints are served on the same port as the WebSocket overlay (`--ws-port`)
 | `/api/db/query` | `POST` | Runs arbitrary SQL against the database. Request body: `{ "sql": "SELECT ..." }`. Response: `{ "columns": ["col1", ...], "rows": [{ "col1": "val", ... }, ...], "rows_affected": N }` or `{ "error": "..." }` on failure. All values are returned as strings. Requires `--db` |
 | `/api/run/:id/stats` | `GET` | Per-run statistics for run `id`. Returns `{ playtime_secs, zones_entered, caught, catch_rate, deaths, avg_death_level, zone_stats: [...], deaths: [...] }`. Requires `--db` |
 | `/api/run/:id/route_stats` | `GET` | Per-route catch statistics for run `id`. Returns `{ run_id, zones: [{ map_group, map_name, area, total, caught, catch_rate_pct }] }`. Requires `--db` |
+| `/api/run/:id/route_odds` | `GET` | Encounter coverage for run `id`. Returns `{ encountered: [...], unencountered: [...] }` — `encountered` has species/catch info per visited route; `unencountered` lists all known FireRed wild areas not yet recorded. Requires `--db` |
+| `/api/run/:id/webhook_log` | `GET` | Webhook delivery receipts for run `id`. Returns `{ run_id, webhook_log: [{ event_type, url, success, attempts, payload, fired_at, fired_at_human }] }`. Requires `--db` |
 | `/api/run/:id/shiny` | `GET` | Shiny encounter statistics for run `id`. Returns `{ total_shinies, encounters_since_last_shiny, last_shiny: {...}, since_last_shiny: [...] }`. Requires `--db` |
 | `/api/run/:id/export` | `GET` | Full run export. Without query params: returns the complete run as JSON (metadata + caught + dead + encounters). With `?format=csv`: returns the same data as three CSV sections (caught, dead, encounters) in a single file with `Content-Disposition: attachment`. Requires `--db` |
 | `/api/run/:id/events` | `GET` | Chronological event log for a run. Returns `{ run_id, events: [{ player_name, event_type, species_name, nickname, old_nickname, level, occurred_at }, ...] }`. `old_nickname` is populated for `nickname_change` events and empty for all others. Event types: `catch`, `death`, `soul_link_death`, `shiny`, `wipe`, `badge`, `nickname_change`. Requires `--db` |
@@ -787,6 +789,16 @@ Add `http://localhost:9090/cmd` in a browser tab to manage runs — **End Run** 
 ---
 
 ## Project status
+
+**v0.8.94** — structured tracing, Result-returning DB writes, webhook delivery log, route coverage endpoint:
+
+- **Structured `tracing` migration** — all `eprintln!` / `println!` diagnostic calls across 13 library crates have been replaced with structured `tracing::info!`, `tracing::warn!`, `tracing::error!`, and `tracing::debug!` macros. User-facing CLI output (update checker, `--list-runs` table, run ID lines) and `#[cfg(feature = "dev-tools")]` scan output are intentionally preserved as `println!`/`eprintln!`.
+- **`mark_dead` / `record_event` / `record_encounter` return `Result`** — these three public DB functions now return `Result<bool, postgres::Error>` or `Result<(), postgres::Error>` instead of `bool`, surfacing database errors to call sites. All callers in `game.rs`, `encounter.rs`, and `app.rs` have been updated to log errors via `tracing` and continue gracefully.
+- **Webhook delivery receipts** — every webhook POST outcome (success or final failure) is now recorded in a new `webhook_log` PostgreSQL table (schema v7). The background worker captures the event type, URL, serialized payload, attempt count, and success flag. A new `GET /api/run/:id/webhook_log` endpoint exposes the log as JSON for diagnostics and stream dashboards.
+- **`GET /api/run/:id/route_odds`** — new endpoint returning `encountered` (routes already visited with species/catch info) and `unencountered` (all known FireRed wild areas not yet recorded for the run). Useful for seeing which Nuzlocke encounter slots are still open.
+- **`fire_red_location_names::all_wild_areas()`** — new public function returning a static slice of `(map_group, map_name, area_name)` tuples for every FireRed area that can have wild encounters, used by `route_odds_json`.
+
+---
 
 **v0.8.93** — `fire_red_memory` sliding-window reads, independent region stores, 16 concurrent chunks:
 

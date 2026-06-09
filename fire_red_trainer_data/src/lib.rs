@@ -126,7 +126,7 @@ fn read_player_data_from_ewram() -> Option<PlayerData> {
 /// Arc allocations on every poll cycle.
 fn update_player_data() {
     let Some(player) = read_player_data_from_ewram() else {
-        eprintln!("Failed to parse player data from EWRAM snapshot.");
+        tracing::warn!("Failed to parse player data from EWRAM snapshot.");
         return;
     };
 
