@@ -443,7 +443,7 @@ A **Soul Link** is a Nuzlocke variant played with a partner: each player's catch
 | Crate | Role |
 |---|---|
 | `fire_red_loop` | Central coordinator. Owns the main map-polling loop, starts party/box/trainer monitors, and exposes the public API used by the GUI and network layers. |
-| `fire_red_memory` | Maintains full EWRAM and IWRAM snapshots by reading from RetroArch in parallel chunks every 500 ms. All other crates read from these snapshots rather than issuing individual UDP requests. |
+| `fire_red_memory` | Maintains full EWRAM and IWRAM snapshots via a sliding-window UDP reader (16 concurrent chunks, ~64 ms for EWRAM, ~16 ms for IWRAM). All other crates read from these snapshots rather than issuing individual UDP requests. |
 | `fire_red_party_monitor` | Reads and decrypts the player's party from the EWRAM snapshot. Owns `Party`, `Pokemon`, `BoxPokemon`, and all encrypted substructure types. Runs its own background poll loop. |
 | `fire_red_box_monitor` | Reads all 14 PC boxes (420 slots) from the EWRAM snapshot on a slow cycle. Maintains a deduplicated species cache and detects newly caught Pokémon. |
 | `fire_red_badge` | Reads badge flags from SaveBlock1 via the EWRAM/IWRAM snapshots. Exposes `BadgeState`, next-gym info, and a C-ABI FFI surface. |
@@ -514,8 +514,8 @@ A **Soul Link** is a Nuzlocke variant played with a partner: each player's catch
 
 All live game data is read from two in-memory snapshots maintained by `fire_red_memory`:
 
-- **EWRAM snapshot** (256 KiB) — refreshed every 100 ms by reading from RetroArch in parallel 4 KiB chunks over UDP, then assembled in address order.
-- **IWRAM snapshot** (32 KiB) — refreshed on the same cycle.
+- **EWRAM snapshot** (256 KiB, 64 × 4 KiB chunks) — read with a sliding-window semaphore keeping 16 chunks in flight simultaneously. Results arrive over an mpsc channel and are assembled in address order. At ~16 ms per round-trip, EWRAM takes approximately 4 × 16 ms = 64 ms per refresh cycle.
+- **IWRAM snapshot** (32 KiB, 8 × 4 KiB chunks) — read on a separate thread in parallel with EWRAM; fits in a single window (8 < 16) so it completes in ~16 ms. Each region stores its result independently the moment it finishes — IWRAM readers are not delayed by EWRAM.
 
 Every other crate reads from these snapshots rather than issuing its own UDP requests. This eliminates hundreds of individual network round-trips per second and makes the read pattern predictable regardless of how many subsystems are running.
 
@@ -787,6 +787,14 @@ Add `http://localhost:9090/cmd` in a browser tab to manage runs — **End Run** 
 ---
 
 ## Project status
+
+**v0.8.93** — `fire_red_memory` sliding-window reads, independent region stores, 16 concurrent chunks:
+
+- **Sliding-window chunk dispatch** (`fire_red_memory`) — replaced strict batch-based concurrency with a semaphore-driven sliding window (`Mutex<usize> + Condvar`). A new chunk thread is dispatched the moment any in-flight chunk finishes, keeping exactly `MAX_CONCURRENT_CHUNKS` active at all times. Previously, a single slow or retrying chunk stalled every other idle thread until the whole batch drained.
+- **Independent region stores** (`fire_red_memory`) — EWRAM and IWRAM now store their results the moment each region thread finishes rather than waiting for both to complete. IWRAM (~1 round-trip, ~16 ms) is no longer delayed by EWRAM (~4 round-trips, ~64 ms).
+- **`MAX_CONCURRENT_CHUNKS` raised to 16** (`fire_red_memory`) — reduces EWRAM from 8 batch rounds to 4 window rounds, cutting read time from ~128 ms to ~64 ms at nominal RetroArch latency.
+
+---
 
 **v0.8.92** — bug fixes, webhook backoff, configurable run-start threshold, Nuzlocke presets, per-route catch stats:
 

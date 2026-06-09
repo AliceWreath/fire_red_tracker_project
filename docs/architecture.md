@@ -21,7 +21,7 @@ fire_red_tracker          fire_red_aggregator
      └── fire_red_trainer_data
 
 Support crates (no external deps):
-  fire_red_memory          ── UDP snapshots of EWRAM/IWRAM
+  fire_red_memory          ── sliding-window UDP snapshots of EWRAM/IWRAM
   fire_red_retroarch_interfacing ── UDP socket helpers
   fire_red_scanner         ── ROM header scan
   fire_red_pokemon_data    ── ROM wild-encounter tables + FFI
@@ -168,6 +168,24 @@ The game-polling thread tracks badge state with a `last_badge_mask: Option<u8>`.
 ### Wild encounter pointer field naming
 
 `WildHeaderRom` in `fire_red_pokemon_data` uses `land_mon_encounters_rom_ptr` (note: corrected from the historical typo `enounters`). The public `EncounterHeader` field remains `land_mon_encounters`.
+
+### Memory read concurrency (`fire_red_memory`)
+
+EWRAM (256 KiB, 64 × 4 KiB chunks) and IWRAM (32 KiB, 8 × 4 KiB chunks) are
+read on separate region threads.  Each thread uses a **sliding window**:
+
+- A `Mutex<usize> + Condvar` counting semaphore is initialised to
+  `MAX_CONCURRENT_CHUNKS = 16`.
+- A chunk thread **acquires** a slot before it starts and **releases** it before
+  sending its result, so the dispatch loop can immediately pick up the next
+  chunk without waiting for the channel `recv`.
+- Results arrive via `mpsc::channel`; after all chunks are dispatched the
+  dispatch-side sender is dropped so `rx` drains to completion.
+- Each region stores its result as soon as it finishes — IWRAM (~1 round-trip,
+  ~16 ms) does not block on EWRAM (~4 round-trips, ~64 ms).
+
+This eliminates the head-of-line stall in the old strict-batch design, where a
+single slow or retrying chunk held up the entire next batch.
 
 ### Error visibility
 

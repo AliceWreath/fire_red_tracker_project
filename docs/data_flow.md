@@ -14,8 +14,11 @@ fire_red_memory::read_chunk()
   • Sends UDP command; retries up to MAX_RETRIES=5 (backoff: 50ms × retry)
   • Validates response header token and address match
   • Rejects chunks with malformed hex
-  • Assembles EWRAM (256 KiB, 64 chunks of 4096 bytes)
-  •          IWRAM ( 32 KiB,  8 chunks of 4096 bytes)
+  • EWRAM (256 KiB, 64 chunks of 4096 bytes) and IWRAM (32 KiB, 8 chunks)
+    read concurrently on separate threads; each region stored independently
+    as soon as it completes (IWRAM ~16 ms, EWRAM ~64 ms at 16 concurrent)
+  • Sliding-window semaphore keeps exactly MAX_CONCURRENT_CHUNKS=16 in
+    flight at all times — new chunk dispatched the moment any slot frees
   │
   │  ArcSwap<Vec<u8>>  (lock-free snapshot swap)
   │
