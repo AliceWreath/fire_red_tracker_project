@@ -60,6 +60,7 @@ struct SettingsDraft {
     obs_clip_death:   bool,
     obs_clip_shiny:   bool,
     obs_clip_wipe:    bool,
+    obs_clip_badge:   bool,
     // Webhook URL and template fields
     death_url:         String,
     death_url_enabled: bool,
@@ -73,6 +74,12 @@ struct SettingsDraft {
     wipe_url:          String,
     wipe_url_enabled:  bool,
     wipe_template:     String,
+    badge_url:         String,
+    badge_url_enabled: bool,
+    badge_template:    String,
+    nickname_url:         String,
+    nickname_url_enabled: bool,
+    nickname_template:    String,
 }
 
 impl SettingsDraft {
@@ -101,6 +108,7 @@ impl SettingsDraft {
             obs_clip_death: cfg.obs.clip_on_death,
             obs_clip_shiny: cfg.obs.clip_on_shiny,
             obs_clip_wipe:  cfg.obs.clip_on_wipe,
+            obs_clip_badge: cfg.obs.clip_on_badge,
             death_url:         wh.death_url.clone().unwrap_or_default(),
             death_url_enabled: wh.death_url.is_some(),
             death_template:    wh.death_template.clone().unwrap_or_default(),
@@ -113,6 +121,12 @@ impl SettingsDraft {
             wipe_url:          wh.wipe_url.clone().unwrap_or_default(),
             wipe_url_enabled:  wh.wipe_url.is_some(),
             wipe_template:     wh.wipe_template.clone().unwrap_or_default(),
+            badge_url:         wh.badge_url.clone().unwrap_or_default(),
+            badge_url_enabled: wh.badge_url.is_some(),
+            badge_template:    wh.badge_template.clone().unwrap_or_default(),
+            nickname_url:         wh.nickname_url.clone().unwrap_or_default(),
+            nickname_url_enabled: wh.nickname_url.is_some(),
+            nickname_template:    wh.nickname_template.clone().unwrap_or_default(),
         }
     }
 }
@@ -516,10 +530,11 @@ impl WindowInfo {
                     ui.checkbox(&mut s.obs_clip_death, "Save replay buffer on death");
                     ui.checkbox(&mut s.obs_clip_shiny, "Save replay buffer on shiny");
                     ui.checkbox(&mut s.obs_clip_wipe,  "Save replay buffer on party wipe");
+                    ui.checkbox(&mut s.obs_clip_badge, "Save replay buffer on badge earned");
                 });
                 ui.end_row();
 
-                let obs_used = s.obs_clip_death || s.obs_clip_shiny || s.obs_clip_wipe;
+                let obs_used = s.obs_clip_death || s.obs_clip_shiny || s.obs_clip_wipe || s.obs_clip_badge;
                 ui.label("  OBS host:");
                 ui.add_enabled_ui(obs_used, |ui| {
                     ui.add(egui::TextEdit::singleline(&mut s.obs_host).desired_width(180.0).hint_text("localhost"));
@@ -592,6 +607,30 @@ impl WindowInfo {
                         .hint_text(r#"{"content": "{player}'s run has ended. RIP."}"#));
                 });
                 ui.end_row();
+
+                ui.checkbox(&mut s.badge_url_enabled, "Badge URL:");
+                ui.add_enabled_ui(s.badge_url_enabled, |ui| {
+                    ui.add(egui::TextEdit::singleline(&mut s.badge_url).desired_width(260.0).hint_text("https://…"));
+                });
+                ui.end_row();
+                ui.label("  Template:");
+                ui.add_enabled_ui(s.badge_url_enabled, |ui| {
+                    ui.add(egui::TextEdit::singleline(&mut s.badge_template).desired_width(260.0)
+                        .hint_text(r#"{"content": "{player} earned the {badge.name}!"}"#));
+                });
+                ui.end_row();
+
+                ui.checkbox(&mut s.nickname_url_enabled, "Rename URL:");
+                ui.add_enabled_ui(s.nickname_url_enabled, |ui| {
+                    ui.add(egui::TextEdit::singleline(&mut s.nickname_url).desired_width(260.0).hint_text("https://…"));
+                });
+                ui.end_row();
+                ui.label("  Template:");
+                ui.add_enabled_ui(s.nickname_url_enabled, |ui| {
+                    ui.add(egui::TextEdit::singleline(&mut s.nickname_template).desired_width(260.0)
+                        .hint_text(r#"{"content": "{player} renamed {pokemon.species} to {pokemon.new_name}!"}"#));
+                });
+                ui.end_row();
             });
         }); // ScrollArea
 
@@ -638,14 +677,18 @@ impl WindowInfo {
                     test,
                     poll_ms: if s.poll_ms.trim().is_empty() { 100 } else { s.poll_ms.trim().parse::<u64>().unwrap_or(100).clamp(20, 2000) },
                     webhooks: WebhookConfig {
-                        death_url:      if s.death_url_enabled && !s.death_url.trim().is_empty() { Some(s.death_url.trim().to_string()) } else { None },
-                        death_template: if s.death_url_enabled && !s.death_template.trim().is_empty() { Some(s.death_template.trim().to_string()) } else { None },
-                        catch_url:      if s.catch_url_enabled && !s.catch_url.trim().is_empty() { Some(s.catch_url.trim().to_string()) } else { None },
-                        catch_template: if s.catch_url_enabled && !s.catch_template.trim().is_empty() { Some(s.catch_template.trim().to_string()) } else { None },
-                        shiny_url:      if s.shiny_url_enabled && !s.shiny_url.trim().is_empty() { Some(s.shiny_url.trim().to_string()) } else { None },
-                        shiny_template: if s.shiny_url_enabled && !s.shiny_template.trim().is_empty() { Some(s.shiny_template.trim().to_string()) } else { None },
-                        wipe_url:       if s.wipe_url_enabled  && !s.wipe_url.trim().is_empty()  { Some(s.wipe_url.trim().to_string())  } else { None },
-                        wipe_template:  if s.wipe_url_enabled  && !s.wipe_template.trim().is_empty()  { Some(s.wipe_template.trim().to_string())  } else { None },
+                        death_url:      if s.death_url_enabled    && !s.death_url.trim().is_empty()    { Some(s.death_url.trim().to_string())    } else { None },
+                        death_template: if s.death_url_enabled    && !s.death_template.trim().is_empty()    { Some(s.death_template.trim().to_string())    } else { None },
+                        catch_url:      if s.catch_url_enabled    && !s.catch_url.trim().is_empty()    { Some(s.catch_url.trim().to_string())    } else { None },
+                        catch_template: if s.catch_url_enabled    && !s.catch_template.trim().is_empty()    { Some(s.catch_template.trim().to_string())    } else { None },
+                        shiny_url:      if s.shiny_url_enabled    && !s.shiny_url.trim().is_empty()    { Some(s.shiny_url.trim().to_string())    } else { None },
+                        shiny_template: if s.shiny_url_enabled    && !s.shiny_template.trim().is_empty()    { Some(s.shiny_template.trim().to_string())    } else { None },
+                        wipe_url:       if s.wipe_url_enabled     && !s.wipe_url.trim().is_empty()     { Some(s.wipe_url.trim().to_string())     } else { None },
+                        wipe_template:  if s.wipe_url_enabled     && !s.wipe_template.trim().is_empty()     { Some(s.wipe_template.trim().to_string())     } else { None },
+                        badge_url:      if s.badge_url_enabled    && !s.badge_url.trim().is_empty()    { Some(s.badge_url.trim().to_string())    } else { None },
+                        badge_template: if s.badge_url_enabled    && !s.badge_template.trim().is_empty()    { Some(s.badge_template.trim().to_string())    } else { None },
+                        nickname_url:      if s.nickname_url_enabled && !s.nickname_url.trim().is_empty() { Some(s.nickname_url.trim().to_string()) } else { None },
+                        nickname_template: if s.nickname_url_enabled && !s.nickname_template.trim().is_empty() { Some(s.nickname_template.trim().to_string()) } else { None },
                     },
                     obs: ObsConfig {
                         host:          s.obs_host.trim().to_string(),
@@ -654,6 +697,7 @@ impl WindowInfo {
                         clip_on_death: s.obs_clip_death,
                         clip_on_shiny: s.obs_clip_shiny,
                         clip_on_wipe:  s.obs_clip_wipe,
+                        clip_on_badge: s.obs_clip_badge,
                     },
                     dupes_clause: s.dupes_clause,
                 };
@@ -759,6 +803,11 @@ impl WindowInfo {
         let anim_time = ui.ctx().input(|i| i.time);
         let show_back = (anim_time * 2.0) as u64 % 2 == 1;
 
+        // Level cap: the ace level of the next unchallenged gym/E4 member.
+        let level_cap: Option<u8> = fire_red_badge::read_badge_state()
+            .and_then(|bs| bs.next_gym)
+            .map(|g| g.max_level);
+
         let list = self.party_list.lock_or_recover();
         for (idx, pokemon) in list.iter().enumerate() {
             let dead = fire_red_database::is_dead(pokemon.box_mon.personality);
@@ -858,6 +907,15 @@ impl WindowInfo {
                                 );
                             }
                             ui.label(format!("Lvl: {}", pokemon.level));
+                            if let Some(cap) = level_cap
+                                && pokemon.level >= cap {
+                                ui.label(
+                                    egui::RichText::new("⚠ OVER CAP")
+                                        .strong()
+                                        .size(13.0)
+                                        .color(egui::Color32::from_rgb(255, 100, 0)),
+                                );
+                            }
                             ui.label(format!("Exp: {}", pokemon.box_mon.secure.growth.experience));
                         });
 
@@ -905,6 +963,65 @@ impl WindowInfo {
                 });
             });
             ui.separator();
+        }
+
+        // ── Type coverage ──────────────────────────────────────────────────────
+        // Collect types for living (non-dead) party members from the ROM.
+        let rom = fire_red_rom_buffer::get_rom();
+        let member_types: Vec<(u8, u8)> = list
+            .iter()
+            .filter(|p| !fire_red_database::is_dead(p.box_mon.personality) && p.hp > 0)
+            .map(|p| fire_red_party_monitor::get_species_types(rom, p.box_mon.secure.growth.species))
+            .collect();
+
+        if !member_types.is_empty() {
+            let cov = crate::type_coverage::compute(&member_types);
+
+            ui.separator();
+            ui.label(egui::RichText::new("Type Coverage").strong().size(13.0));
+
+            // Team types
+            ui.horizontal_wrapped(|ui| {
+                ui.label(egui::RichText::new("Types: ").size(11.0).color(egui::Color32::from_rgb(180, 180, 180)));
+                for &t in &cov.team_types {
+                    ui.label(
+                        egui::RichText::new(fire_red_party_monitor::type_name(t))
+                            .size(11.0)
+                            .color(egui::Color32::from_rgb(100, 200, 255)),
+                    );
+                }
+            });
+
+            // Weaknesses
+            if !cov.team_weaknesses.is_empty() {
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(egui::RichText::new("Weak to: ").size(11.0).color(egui::Color32::from_rgb(180, 180, 180)));
+                    for &t in &cov.team_weaknesses {
+                        ui.label(
+                            egui::RichText::new(fire_red_party_monitor::type_name(t))
+                                .size(11.0)
+                                .color(egui::Color32::from_rgb(255, 120, 80)),
+                        );
+                    }
+                });
+            }
+
+            // Offensive coverage gaps (types we can NOT hit super-effectively)
+            let coverage_gaps: Vec<u8> = (0..crate::type_coverage::NUM_TYPES as u8)
+                .filter(|t| !cov.offensive_coverage.contains(t))
+                .collect();
+            if !coverage_gaps.is_empty() {
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(egui::RichText::new("No SE vs: ").size(11.0).color(egui::Color32::from_rgb(180, 180, 180)));
+                    for &t in &coverage_gaps {
+                        ui.label(
+                            egui::RichText::new(fire_red_party_monitor::type_name(t))
+                                .size(11.0)
+                                .color(egui::Color32::from_rgb(160, 160, 160)),
+                        );
+                    }
+                });
+            }
         }
     }
 }

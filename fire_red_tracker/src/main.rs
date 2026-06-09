@@ -44,6 +44,7 @@ mod game;
 mod gui;
 mod server;
 mod textures;
+mod type_coverage;
 mod webhook;
 
 use clap::Parser;
@@ -385,6 +386,9 @@ fn main() {
             let mut last_party_refresh = std::time::Instant::now();
             let mut state_initialized  = false;
             let mut enc_tracker        = encounter::EncounterTracker::new();
+            // None = "uninitialized"; check_for_new_badges adopts existing
+            // badges silently on the first call with this sentinel value.
+            let mut last_badge_mask: Option<u8> = None;
             // Track the last player name to detect save-file switches mid-session.
             let mut last_player_name   = String::new();
 
@@ -413,7 +417,9 @@ fn main() {
             enc_tracker.seed_from_db();
 
             fill_party_list(&thread_party);
-            handle_party_events(&thread_party, &mut enc_tracker, &thread_wipe_signal);
+            if handle_party_events(&thread_party, &mut enc_tracker, &thread_wipe_signal) {
+                last_badge_mask = None;
+            }
 
             loop {
                 if !game_is_loaded() {
@@ -423,6 +429,7 @@ fn main() {
                     *thread_party.lock_or_recover() = Vec::new();
                     state_initialized = false;
                     player_name_set   = false;
+                    last_badge_mask   = None;
                     current_state = FireRedState { map_group_id: 0xFF, map_name_id: 0xFF };
                     enc_tracker.reset();
                     std::thread::sleep(std::time::Duration::from_millis(500));
@@ -482,21 +489,27 @@ fn main() {
                     old_party_size = party_size;
                     update_box_list();
                     *thread_box.lock_or_recover() = build_box_entries();
-                    handle_party_events(&thread_party, &mut enc_tracker, &thread_wipe_signal);
+                    if handle_party_events(&thread_party, &mut enc_tracker, &thread_wipe_signal) {
+                        last_badge_mask = None;
+                    }
                 }
 
                 if last_party_refresh.elapsed().as_secs() >= FORCE_PARTY_CHECK_INTERVAL {
                     last_party_refresh = std::time::Instant::now();
-                    handle_party_events(&thread_party, &mut enc_tracker, &thread_wipe_signal);
+                    if handle_party_events(&thread_party, &mut enc_tracker, &thread_wipe_signal) {
+                        last_badge_mask = None;
+                    }
                 }
 
                 if thread_run_changed.swap(false, Ordering::AcqRel) {
                     enc_tracker.reset();
+                    last_badge_mask = None;
                     player_name_set = false;
                 }
 
                 if state_initialized {
                     enc_tracker.tick(current_state, &thread_party, dupes_clause);
+                    last_badge_mask = game::check_for_new_badges(last_badge_mask);
                 }
 
                 std::thread::sleep(std::time::Duration::from_millis(poll_ms));

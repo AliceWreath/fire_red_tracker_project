@@ -23,6 +23,7 @@ Shows each Pokémon's sprite (shiny-aware), nickname, level, nature, HP (colour-
 - **Level cap indicator** — the level value turns orange-red when a Pokémon is at or above the next gym leader's highest Pokémon level.
 - **Status conditions** — SLP / PSN / BRN / FRZ / PAR / TOX badges appear inline next to the level, each with a distinct colour, read directly from the Gen III status bitmask.
 - **XP to next level** — shows the exact experience needed to reach the next level, computed using the Pokémon's growth rate (all six Gen III curves: Fast, Medium Fast, Medium Slow, Slow, Erratic, Fluctuating).
+- **Type coverage panel** — displayed below the party list, shows three sets of Gen III type IDs for the living team: team types (blue), shared weaknesses (red), and offensive coverage gaps (grey). Types are read directly from the ROM base-stats table and computed using the full Gen III effectiveness table (17 types, eighths arithmetic, mono-type guard).
 
 ### Encounter tracking
 - **Encounters panel** — shows the wild Pokémon available in the current map area, split by encounter type (grass, water/fishing, Rock Smash). Updates when the player moves to a new map.
@@ -56,9 +57,10 @@ password      = "secret"      # omit if OBS authentication is disabled
 clip_on_death = true          # save replay buffer when a party member faints
 clip_on_shiny = true          # save replay buffer on shiny encounter
 clip_on_wipe  = true          # save replay buffer on party wipe
+clip_on_badge = true          # save replay buffer when a gym badge is earned
 ```
 
-All three trigger flags default to `false`. The `[obs]` section is omitted from the config file entirely when all three are disabled.
+All four trigger flags default to `false`. The `[obs]` section is omitted from the config file entirely when all four are disabled.
 
 Clips are fired on the same background thread as webhooks. The tracker connects to OBS via plain TCP WebSocket (OBS WebSocket v5 protocol), authenticates with SHA-256 if a password is set, and sends a `SaveReplayBuffer` request. OBS must have **Replay Buffer** enabled and running (Tools → Replay Buffer → Start). Connection errors are printed to stderr and do not interrupt the game-polling loop.
 
@@ -76,6 +78,8 @@ POSTs are fire-and-forget: dispatched on a dedicated background thread with a 5-
 | `catch` | A new Pokémon joins the party (caught, gifted, or traded in) | `catch_url` | `catch_template` |
 | `shiny` | A shiny wild Pokémon's personality is detected, before any catch attempt | `shiny_url` | `shiny_template` |
 | `wipe` | Every party member is dead and the run ends | `wipe_url` | `wipe_template` |
+| `badge` | A gym badge flag transitions from 0 → 1 in SaveBlock1 | `badge_url` | `badge_template` |
+| `nickname_change` | A party Pokémon's in-game nickname differs from the value stored in the database | `nickname_url` | `nickname_template` |
 
 #### Default payload format
 
@@ -117,6 +121,9 @@ Each event supports an optional `*_template` config key. When set, the template 
 | `{pokemon.level}` | Level as a plain integer string | Empty string for `wipe` events |
 | `{pokemon.shiny}` | `true` or `false` | Empty string for `wipe` events |
 | `{pokemon.nature}` | Nature name | Empty string for `wipe` events |
+| `{badge.name}` | Badge name (e.g. `Boulder Badge`) | Only meaningful for `badge` events; empty string for all others |
+| `{pokemon.old_name}` | Previous nickname before the rename | Only meaningful for `nickname_change` events |
+| `{pokemon.new_name}` | New nickname after the rename | Only meaningful for `nickname_change` events |
 
 Templates are per-event and independent. You can use a template for `death` and leave `catch` using the default JSON — they do not need to match.
 
@@ -171,6 +178,8 @@ The tracker starts a single long-lived background thread at startup that owns a 
 
 ### Run management
 - **Badge tracker** — displays obtained badges as coloured dots and shows the next gym leader's name, city, and highest level.
+- **Badge events** — each newly earned badge is recorded in the event log and fires an optional webhook / OBS clip. A sentinel-based boot guard (`None` initial mask) prevents replaying already-earned badges on tracker startup and after a wipe/run-reset; the first call after any reset silently adopts the current badge state as the new baseline.
+- **Nickname-change tracking** — when a Pokémon's in-game nickname changes, both the old and new names are written to the event log (`old_nickname` column) and an optional webhook is fired. If a transient DB error occurs during the read phase, the UPDATE is still attempted to keep the stored nickname in sync. The `old_nickname` field is included in all `/api/run/:id/events` and `/api/timeline` responses.
 - **Reset detection** — clears stale party, encounter, and badge data on soft reset or title screen.
 - **Soul Link detection** — Pokémon caught in the same location across two or more connected players are automatically linked and shown in purple.
 
@@ -324,7 +333,8 @@ All endpoints are served on the same port as the WebSocket overlay (`--ws-port`)
 | `/api/run/:id/stats` | `GET` | Per-run statistics for run `id`. Returns `{ playtime_secs, zones_entered, caught, catch_rate, deaths, avg_death_level, zone_stats: [...], deaths: [...] }`. Requires `--db` |
 | `/api/run/:id/shiny` | `GET` | Shiny encounter statistics for run `id`. Returns `{ total_shinies, encounters_since_last_shiny, last_shiny: {...}, since_last_shiny: [...] }`. Requires `--db` |
 | `/api/run/:id/export` | `GET` | Full run export. Without query params: returns the complete run as JSON (metadata + caught + dead + encounters). With `?format=csv`: returns the same data as three CSV sections (caught, dead, encounters) in a single file with `Content-Disposition: attachment`. Requires `--db` |
-| `/api/run/:id/events` | `GET` | Chronological event log for a run. Returns `{ run_id, events: [{ player_name, event_type, species_name, nickname, level, occurred_at }, ...] }`. Event types: `catch`, `death`, `soul_link_death`, `shiny`, `wipe`. Requires `--db` |
+| `/api/run/:id/events` | `GET` | Chronological event log for a run. Returns `{ run_id, events: [{ player_name, event_type, species_name, nickname, old_nickname, level, occurred_at }, ...] }`. `old_nickname` is populated for `nickname_change` events and empty for all others. Event types: `catch`, `death`, `soul_link_death`, `shiny`, `wipe`, `badge`, `nickname_change`. Requires `--db` |
+| `/api/timeline` | `GET` | Chronological event log for the currently active run. Convenience alias for `/api/run/:id/events` on the active run. Each event includes both `occurred_at` (Unix integer) and `occurred_at_human` (formatted string), plus `old_nickname` for `nickname_change` events. Returns `404` when no run is active, `503` when no database is configured, `500` on DB failure. Requires `--db` |
 | `/db.json` | `GET` | Full database snapshot — all four tables (runs, caught, dead, encounters) formatted for the browser viewer. Requires `--db` |
 | `/db/clear` | `POST` | Deletes all records from every table and removes the active-run meta key. No confirmation, no undo. Requires `--db` |
 | `/api/runs` | `GET` | JSON array of all stored run summaries: `id`, `player`, `started_at`, `ended_at`, `deaths`, `catches`, `encounters`. Requires `--db` |
@@ -462,7 +472,8 @@ A **Soul Link** is a Nuzlocke variant played with a partner: each player's catch
 | `textures.rs` | `PendingTexture`, sprite compression, `build_sprite_data` |
 | `gui.rs` | `WindowInfo`, `eframe::App` impl, party panel, encounters viewport |
 | `server.rs` | Aggregator connection handler — manages the bidirectional push stream over an established TCP connection |
-| `webhook.rs` | `WebhookEvent` enum, channel-backed background sender, `init` / `fire_event` — HTTP POST dispatch for death, catch, shiny, and wipe events; `render_template` for `{placeholder}` substitution when a custom body template is configured; OBS WebSocket v5 clip trigger (`SaveReplayBuffer`) via plain TCP `tungstenite` with SHA-256 authentication |
+| `webhook.rs` | `WebhookEvent` enum, channel-backed background sender, `init` / `fire_event` — HTTP POST dispatch for death, catch, shiny, wipe, badge, and nickname-change events; `render_template` for `{placeholder}` substitution when a custom body template is configured; OBS WebSocket v5 clip trigger (`SaveReplayBuffer`) via plain TCP `tungstenite` with SHA-256 authentication |
+| `type_coverage.rs` | `TypeCoverage` struct and `compute` function — given a slice of `(type1, type2)` pairs for the living party, returns team types present, types the team is collectively weak to, and types the team can hit super-effectively. Uses the full Gen III 17-type effectiveness table (eighths arithmetic). |
 
 ### Key external dependencies
 
@@ -768,6 +779,27 @@ Add `http://localhost:9090/cmd` in a browser tab to manage runs — **End Run** 
 ---
 
 ## Project status
+
+**v0.8.89** — bug fixes: timeline endpoint, typed errors, badge sentinel, schema cleanup:
+
+- **`/api/timeline` endpoint fixed** — the aggregator process never initialises the global DB singleton used by the previous implementation, causing a panic (HTTP 500) on every request. The function now opens its own connection and reads `active_run_id` from the `meta` table directly, eliminating the singleton dependency.
+- **Typed `EventsError`** — `list_events_json` and `active_run_timeline_json` now return `Result<_, EventsError>` instead of embedding error strings in JSON. The web handlers (`api_active_timeline`, `api_run_events`) match on enum variants for `404 / 500 / 503` status codes; no more fragile string comparison against `"no active run"`.
+- **`api_run_events` proper status codes** — the `/api/run/:id/events` handler previously always returned HTTP 200 even on DB failure. It now returns `500` on connection or query errors.
+- **Badge sentinel `Option<u8>`** — `check_for_new_badges` parameter and return type changed from `u8` (magic `u8::MAX` sentinel) to `Option<u8>` (`None` = uninitialized). All `last_badge_mask` variables in `main.rs` updated accordingly; startup `handle_party_events` return value is now captured so a wipe at boot correctly resets the mask.
+- **`CREATE TABLE events` includes `old_nickname`** — the column was previously added only via `ALTER TABLE`, so fresh-install schema and the table definition were out of sync. The column is now declared directly in `CREATE TABLE`; the `ALTER TABLE` guard is retained for backwards compatibility with pre-v6 databases.
+- **Schema version bumped to 6** — `SCHEMA_VERSION` updated from `"5"` to `"6"`.
+- **Test precision** — `dark_covers_psychic_in_compute` now asserts `EFFECTIVENESS[16][13] == 16` (the exact corrected cell) rather than the unrelated `EFFECTIVENESS[13][16]` (Psychic→Dark immunity).
+- **`update_caught_nickname` comment corrected** — the fallback UPDATE path on a broken client is now documented honestly: the execute will also fail silently if the client is in an error state.
+
+**v0.8.88** — level cap warnings, badge events, type coverage panel, nickname tracking, timeline API:
+
+- **Level cap warnings** — each party member displays an orange "⚠ OVER CAP" label when its level is at or above the next gym leader's maximum Pokémon level. Works in both the standalone tracker GUI and the aggregator window / overlay.
+- **Badge-earned events** — each newly earned badge fires an event log entry, an optional webhook (`badge_url` / `badge_template`), and an optional OBS replay-buffer save (`clip_on_badge`). A startup boot guard prevents replaying badges that were already earned before the tracker was launched.
+- **Nickname-change tracking** — when the in-game nickname of a caught Pokémon changes, the old and new names are recorded in the event log and an optional webhook is fired (`nickname_url` / `nickname_template`). Detection is atomic: the DB query reads the old name and updates in a single round-trip, returning `Some(old_name)` only on an actual change.
+- **Type coverage panel** — rendered below the live party in both GUI modes. Shows three colour-coded lists: types the team has (blue), types the team is collectively weak to (red), and types the team cannot hit super-effectively (grey). Computed from the ROM base-stats table using the full Gen III 17-type effectiveness chart.
+- **`/api/timeline` endpoint** — convenience REST endpoint that returns the chronological event log for the currently active run without needing to know the run ID. Each entry includes both a Unix timestamp and a human-readable date string. Returns proper HTTP status codes: `404` for no active run, `503` for no database, `500` for query failure.
+- **Clippy clean** — all new code passes `cargo clippy --all-targets` with no warnings. Uses stabilised let-chain syntax (`if let … && cond`), iterator enumeration over index loops, and `?` instead of match-on-Option-return patterns.
+- **Bug fixes** — three incorrect Gen III type-effectiveness table entries corrected (Dark→Psychic was ×0, should be ×2; Flying→Ground was ×0, should be ×1; Flying→Electric was ×2, should be ×½); badge boot-guard sentinel changed from `0` to `u8::MAX` so the first badge earned on a fresh run is no longer swallowed; badge mask now resets on wipe and game-unload in addition to run-change; `update_caught_nickname` DB read errors now fall back to a best-effort UPDATE instead of silently aborting the write; `old_nickname` column added to the `events` table so rename history is fully preserved.
 
 **v0.8.85** — full config coverage in setup wizard and settings panel:
 

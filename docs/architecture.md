@@ -141,8 +141,20 @@ Both modes can be running simultaneously — the aggregator detects whether `ws_
 |---------|--------|---------|--------|
 | tracker | memory | UDP snapshot of EWRAM + IWRAM | 100 ms |
 | tracker | box monitor | Reads all 420 box slots from EWRAM | 250 ms |
-| tracker | game-polling | Map, party, encounters, encounter detection | 100 ms |
+| tracker | game-polling | Map, party, encounters, encounter detection, badge events | 100 ms |
 | tracker | network (connected) | Reconnect loop; `handle_client` reader + writer | on connect |
 | aggregator | TCP listener | Accepts incoming tracker connections | blocking |
 | aggregator | per-tracker | `handle_tracker_connection` writer + reader | on connect |
 | aggregator | broadcast | Drains sprites, builds JSON, WS broadcast | 100 ms |
+
+## Database Schema Notes
+
+### `events` table
+
+Columns: `id`, `run_id`, `player_name`, `event_type`, `species_name`, `nickname`, `old_nickname`, `level`, `occurred_at`.
+
+`old_nickname` is populated only for `nickname_change` events (holds the name that was overwritten); it is an empty string for all other event types.
+
+### Badge boot guard
+
+The game-polling thread tracks badge state with a `last_badge_mask: Option<u8>`. `None` means "uninitialized". `check_for_new_badges` silently adopts the current badge state on the first call with `None`, preventing false-positive events on tracker startup and after a wipe or run change. The mask is reset to `None` on: game unload, wipe detected, and `thread_run_changed` signal.

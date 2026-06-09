@@ -349,7 +349,10 @@ impl AggregatorApp {
                     } else {
                         None
                     };
-                    Self::draw_party_member(ui, gift_index, pokemon, dead_record, is_soul_link_dead, textures, &others);
+                    let level_cap = gs.badge_state.as_ref()
+                        .and_then(|bs| bs.next_gym.as_ref())
+                        .map(|g| g.max_level);
+                    Self::draw_party_member(ui, gift_index, pokemon, dead_record, is_soul_link_dead, textures, &others, level_cap);
                     ui.separator();
                 }
 
@@ -396,6 +399,7 @@ impl AggregatorApp {
     }
 
     /// Draws a single party member row with soul link annotation and full dead record.
+    #[allow(clippy::too_many_arguments)]
     fn draw_party_member(
         ui: &mut Ui,
         gift_index: Option<usize>,
@@ -404,6 +408,7 @@ impl AggregatorApp {
         soul_link_dead: bool,
         textures: &HashMap<String, egui::TextureHandle>,
         other_states: &[(String, Option<GameState>)],
+        level_cap: Option<u8>,
     ) {
         let species = pokemon.box_mon.secure.growth.species;
         let personality = pokemon.box_mon.personality;
@@ -483,6 +488,15 @@ impl AggregatorApp {
                         );
                     } else {
                         ui.label(format!("Lv{}", pokemon.level));
+                        if let Some(cap) = level_cap
+                            && pokemon.level >= cap {
+                            ui.label(
+                                egui::RichText::new("⚠ OVER CAP")
+                                    .strong()
+                                    .size(12.0)
+                                    .color(egui::Color32::from_rgb(255, 100, 0)),
+                            );
+                        }
                     }
                 });
 

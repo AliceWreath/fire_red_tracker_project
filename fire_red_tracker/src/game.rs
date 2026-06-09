@@ -202,8 +202,22 @@ pub fn check_for_new_pokemon(thread_party: &Arc<Mutex<Vec<Pokemon>>>) {
         let personality = pokemon.box_mon.personality;
         if fire_red_database::is_caught(personality) {
             let nickname = &pokemon.box_mon.nickname_string;
-            if !nickname.is_empty() {
-                fire_red_database::update_caught_nickname(personality, nickname);
+            if !nickname.is_empty()
+                && let Some(old_name) = fire_red_database::update_caught_nickname(personality, nickname) {
+                    let species_name = &pokemon.box_mon.secure.growth.species_string;
+                    fire_red_database::record_event(fire_red_database::EventKind::NicknameChange {
+                        species_name,
+                        old_name:    &old_name,
+                        new_name:    nickname,
+                    });
+                    crate::webhook::fire_event(crate::webhook::WebhookEvent::NicknameChange {
+                        player:    fire_red_loop::get_trainer_name(),
+                        timestamp: fire_red_database::unix_now(),
+                        species:   species_name.clone(),
+                        old_name,
+                        new_name:  nickname.clone(),
+                    });
+                    tracing::info!("Nickname changed: {} → {}", species_name, nickname);
             }
             let ev = &pokemon.box_mon.secure.ev_condition;
             fire_red_database::update_caught_evs(personality, &fire_red_database::EVs {
@@ -659,6 +673,62 @@ pub fn get_wild_enemy_pokemon() -> Option<Pokemon> {
     } else {
         None
     }
+}
+
+/// Compares the current badge state against `last_mask` (one bit per badge,
+/// LSB = Brock) and fires events/webhooks for any newly obtained badges.
+///
+/// Returns `Some(updated_mask)` reflecting all currently held badges, or the
+/// unchanged `last_mask` if badge state could not be read from EWRAM.
+///
+/// Pass `None` (the uninitialized sentinel) on the first call or after any
+/// run/wipe reset. The function will silently adopt all currently-held badges
+/// as the baseline without firing events — preventing both mid-game startup
+/// replays and false positives after a wipe. Subsequent calls with the
+/// returned `Some(mask)` fire events only for genuinely new badges.
+pub fn check_for_new_badges(last_mask: Option<u8>) -> Option<u8> {
+    let Some(bs) = fire_red_badge::read_badge_state() else {
+        return last_mask;
+    };
+
+    // Build a current mask from the 8 badge flags.
+    let mut current_mask: u8 = 0;
+    for (i, &obtained) in bs.badges.iter().enumerate() {
+        if obtained {
+            current_mask |= 1 << i;
+        }
+    }
+
+    // None is the "uninitialized" sentinel. Silently adopt whatever badges
+    // are already held without firing events. This handles two cases:
+    //   • Tracker started mid-game (existing badges must not replay).
+    //   • Badge mask reset after a wipe or run change (new run's badges
+    //     should not be re-fired once the mask is re-established).
+    let Some(last) = last_mask else {
+        return Some(current_mask);
+    };
+
+    let newly_earned = current_mask & !last;
+    if newly_earned == 0 {
+        return Some(current_mask);
+    }
+
+    let player = fire_red_loop::get_trainer_name();
+    let timestamp = fire_red_database::unix_now();
+
+    for i in 0..8u8 {
+        if (newly_earned >> i) & 1 == 0 { continue; }
+        let badge_name = fire_red_badge::badge_name(i as usize);
+        fire_red_database::record_event(fire_red_database::EventKind::Badge { badge_name });
+        crate::webhook::fire_event(crate::webhook::WebhookEvent::Badge {
+            player:     player.clone(),
+            timestamp,
+            badge_name: badge_name.to_string(),
+        });
+        tracing::info!("Badge earned: {}", badge_name);
+    }
+
+    Some(current_mask)
 }
 
 #[cfg(test)]
