@@ -39,12 +39,27 @@ pub const ENCOUNTER_WINDOW: (f32, f32) = (600.0, 400.0);
 struct SettingsDraft {
     rom:              String,
     db:               String,
+    clean:            bool,
     mode:             crate::config::ConfigMode,
     aggregator_host:  String,
     aggregator_port:  String,
     preferred_player: String,
+    // Run / polling
+    poll_ms:          String,
+    dupes_clause:     crate::config::DupesClauseMode,
+    // Test mode
     default_test:     bool,
-    test:             Option<crate::config::TrackerTestOverrides>,
+    test_db:          String,
+    test_agg_host:    String,
+    test_agg_port:    String,
+    test_player:      String,
+    // OBS clip trigger
+    obs_host:         String,
+    obs_port:         String,
+    obs_password:     String,
+    obs_clip_death:   bool,
+    obs_clip_shiny:   bool,
+    obs_clip_wipe:    bool,
     // Webhook URL and template fields
     death_url:         String,
     death_url_enabled: bool,
@@ -66,12 +81,26 @@ impl SettingsDraft {
         Self {
             rom:              cfg.rom.clone(),
             db:               cfg.db.trim_start_matches("postgresql://").trim_start_matches("postgres://").to_string(),
+            clean:            cfg.clean,
             mode:             cfg.mode.clone(),
             aggregator_host:  cfg.aggregator_host.clone(),
             aggregator_port:  cfg.aggregator_port.to_string(),
             preferred_player: cfg.preferred_player.map(|n| n.to_string()).unwrap_or_default(),
+            poll_ms:          if cfg.poll_ms == 100 { String::new() } else { cfg.poll_ms.to_string() },
+            dupes_clause:     cfg.dupes_clause,
             default_test:     cfg.default_test,
-            test:             cfg.test.clone(),
+            test_db:       cfg.test.as_ref().and_then(|t| t.db.as_ref())
+                               .map(|s| s.trim_start_matches("postgresql://").trim_start_matches("postgres://").to_string())
+                               .unwrap_or_default(),
+            test_agg_host: cfg.test.as_ref().and_then(|t| t.aggregator_host.clone()).unwrap_or_default(),
+            test_agg_port: cfg.test.as_ref().and_then(|t| t.aggregator_port).map(|p| p.to_string()).unwrap_or_default(),
+            test_player:   cfg.test.as_ref().and_then(|t| t.preferred_player).map(|n| n.to_string()).unwrap_or_default(),
+            obs_host:      cfg.obs.host.clone(),
+            obs_port:      cfg.obs.port.to_string(),
+            obs_password:  cfg.obs.password.clone().unwrap_or_default(),
+            obs_clip_death: cfg.obs.clip_on_death,
+            obs_clip_shiny: cfg.obs.clip_on_shiny,
+            obs_clip_wipe:  cfg.obs.clip_on_wipe,
             death_url:         wh.death_url.clone().unwrap_or_default(),
             death_url_enabled: wh.death_url.is_some(),
             death_template:    wh.death_template.clone().unwrap_or_default(),
@@ -376,15 +405,19 @@ fn gender_label(gender: u8) -> (&'static str, egui::Color32) {
 
 impl WindowInfo {
     fn draw_settings(&mut self, ui: &mut egui::Ui) {
+        use crate::config::{ConfigMode, DupesClauseMode, ObsConfig, TrackerTestOverrides, WebhookConfig};
         let s = &mut self.settings;
+
+        egui::ScrollArea::vertical().id_salt("settings_scroll").max_height(500.0).show(ui, |ui| {
         egui::Grid::new("tracker_settings_grid")
             .num_columns(2)
             .spacing([12.0, 8.0])
             .min_col_width(110.0)
             .show(ui, |ui| {
+                // ── ROM / database ────────────────────────────────────────────
                 ui.label("ROM path:");
                 ui.horizontal(|ui| {
-                    ui.add(egui::TextEdit::singleline(&mut s.rom).desired_width(260.0).hint_text("path/to/firered.gba"));
+                    ui.add(egui::TextEdit::singleline(&mut s.rom).desired_width(240.0).hint_text("path/to/firered.gba"));
                     if ui.button("Browse…").clicked()
                         && let Some(path) = rfd::FileDialog::new().add_filter("GBA ROM", &["gba"]).pick_file()
                     {
@@ -394,17 +427,27 @@ impl WindowInfo {
                 ui.end_row();
 
                 ui.label("Database:");
-                ui.add(egui::TextEdit::singleline(&mut s.db).desired_width(300.0).hint_text("localhost/nuzlocke"));
+                ui.add(egui::TextEdit::singleline(&mut s.db).desired_width(280.0).hint_text("localhost/nuzlocke"));
                 ui.end_row();
 
-                ui.label("Default mode:");
-                ui.horizontal(|ui| {
-                    ui.selectable_value(&mut s.mode, crate::config::ConfigMode::Standalone, "Standalone");
-                    ui.selectable_value(&mut s.mode, crate::config::ConfigMode::Connected,  "Connected");
+                ui.label("Clean start:");
+                ui.vertical(|ui| {
+                    ui.checkbox(&mut s.clean, "Wipe database on next launch");
+                    ui.small("Deletes all run data at startup. Uncheck after use.");
                 });
                 ui.end_row();
 
-                if s.mode == crate::config::ConfigMode::Connected {
+                // ── Connection mode ───────────────────────────────────────────
+                ui.separator();
+                ui.end_row();
+                ui.label("Default mode:");
+                ui.horizontal(|ui| {
+                    ui.selectable_value(&mut s.mode, ConfigMode::Standalone, "Standalone");
+                    ui.selectable_value(&mut s.mode, ConfigMode::Connected,  "Connected");
+                });
+                ui.end_row();
+
+                if s.mode == ConfigMode::Connected {
                     ui.label("Aggregator host:");
                     ui.add(egui::TextEdit::singleline(&mut s.aggregator_host).desired_width(200.0));
                     ui.end_row();
@@ -418,11 +461,82 @@ impl WindowInfo {
                     ui.end_row();
                 }
 
-                ui.checkbox(&mut s.default_test, "Default to test mode:");
-                ui.small("Uses [test] config overrides on every launch (same as always passing --test).");
+                // ── Run settings ──────────────────────────────────────────────
+                ui.separator();
                 ui.end_row();
 
-                // Webhooks
+                ui.label("Poll interval:");
+                ui.vertical(|ui| {
+                    ui.add(egui::TextEdit::singleline(&mut s.poll_ms).desired_width(80.0).hint_text("100"));
+                    ui.small("Game-polling interval in ms (20–2000). Blank = 100 ms default.");
+                });
+                ui.end_row();
+
+                ui.label("Dupes clause:");
+                ui.vertical(|ui| {
+                    ui.selectable_value(&mut s.dupes_clause, DupesClauseMode::Off,       "Off — standard Nuzlocke");
+                    ui.selectable_value(&mut s.dupes_clause, DupesClauseMode::PerPlayer, "Per Player — skip if you caught it");
+                    ui.selectable_value(&mut s.dupes_clause, DupesClauseMode::Shared,    "Shared — skip if any player caught it (Soul Link)");
+                });
+                ui.end_row();
+
+                // ── Test mode ─────────────────────────────────────────────────
+                ui.separator();
+                ui.end_row();
+                ui.label(egui::RichText::new("Test mode").strong());
+                ui.vertical(|ui| {
+                    ui.checkbox(&mut s.default_test, "Always run in test mode (same as --test)");
+                    ui.small("Applies [test] overrides below on every launch.");
+                });
+                ui.end_row();
+
+                ui.label("  Test DB:");
+                ui.add(egui::TextEdit::singleline(&mut s.test_db).desired_width(260.0).hint_text("leave blank to use main DB"));
+                ui.end_row();
+
+                ui.label("  Test agg. host:");
+                ui.add(egui::TextEdit::singleline(&mut s.test_agg_host).desired_width(200.0).hint_text("leave blank"));
+                ui.end_row();
+
+                ui.label("  Test agg. port:");
+                ui.add(egui::TextEdit::singleline(&mut s.test_agg_port).desired_width(80.0).hint_text("leave blank"));
+                ui.end_row();
+
+                ui.label("  Test player #:");
+                ui.add(egui::TextEdit::singleline(&mut s.test_player).desired_width(60.0).hint_text("leave blank"));
+                ui.end_row();
+
+                // ── OBS clip trigger ──────────────────────────────────────────
+                ui.separator();
+                ui.end_row();
+                ui.label(egui::RichText::new("OBS clips").strong());
+                ui.vertical(|ui| {
+                    ui.checkbox(&mut s.obs_clip_death, "Save replay buffer on death");
+                    ui.checkbox(&mut s.obs_clip_shiny, "Save replay buffer on shiny");
+                    ui.checkbox(&mut s.obs_clip_wipe,  "Save replay buffer on party wipe");
+                });
+                ui.end_row();
+
+                let obs_used = s.obs_clip_death || s.obs_clip_shiny || s.obs_clip_wipe;
+                ui.label("  OBS host:");
+                ui.add_enabled_ui(obs_used, |ui| {
+                    ui.add(egui::TextEdit::singleline(&mut s.obs_host).desired_width(180.0).hint_text("localhost"));
+                });
+                ui.end_row();
+
+                ui.label("  OBS port:");
+                ui.add_enabled_ui(obs_used, |ui| {
+                    ui.add(egui::TextEdit::singleline(&mut s.obs_port).desired_width(80.0).hint_text("4455"));
+                });
+                ui.end_row();
+
+                ui.label("  OBS password:");
+                ui.add_enabled_ui(obs_used, |ui| {
+                    ui.add(egui::TextEdit::singleline(&mut s.obs_password).desired_width(180.0).hint_text("leave blank if disabled").password(true));
+                });
+                ui.end_row();
+
+                // ── Webhooks ──────────────────────────────────────────────────
                 ui.separator();
                 ui.end_row();
                 ui.label(egui::RichText::new("Webhooks").strong());
@@ -431,56 +545,57 @@ impl WindowInfo {
 
                 ui.checkbox(&mut s.death_url_enabled, "Death URL:");
                 ui.add_enabled_ui(s.death_url_enabled, |ui| {
-                    ui.add(egui::TextEdit::singleline(&mut s.death_url).desired_width(280.0).hint_text("https://…"));
+                    ui.add(egui::TextEdit::singleline(&mut s.death_url).desired_width(260.0).hint_text("https://…"));
                 });
                 ui.end_row();
                 ui.label("  Template:");
                 ui.add_enabled_ui(s.death_url_enabled, |ui| {
-                    ui.add(egui::TextEdit::singleline(&mut s.death_template).desired_width(280.0)
+                    ui.add(egui::TextEdit::singleline(&mut s.death_template).desired_width(260.0)
                         .hint_text(r#"{"content": "{player} lost {pokemon.nickname}!"} — blank = default JSON"#));
                 });
                 ui.end_row();
 
                 ui.checkbox(&mut s.catch_url_enabled, "Catch URL:");
                 ui.add_enabled_ui(s.catch_url_enabled, |ui| {
-                    ui.add(egui::TextEdit::singleline(&mut s.catch_url).desired_width(280.0).hint_text("https://…"));
+                    ui.add(egui::TextEdit::singleline(&mut s.catch_url).desired_width(260.0).hint_text("https://…"));
                 });
                 ui.end_row();
                 ui.label("  Template:");
                 ui.add_enabled_ui(s.catch_url_enabled, |ui| {
-                    ui.add(egui::TextEdit::singleline(&mut s.catch_template).desired_width(280.0)
+                    ui.add(egui::TextEdit::singleline(&mut s.catch_template).desired_width(260.0)
                         .hint_text(r#"{"content": "{player} caught {pokemon.species} (Lv.{pokemon.level})!"}"#));
                 });
                 ui.end_row();
 
                 ui.checkbox(&mut s.shiny_url_enabled, "Shiny URL:");
                 ui.add_enabled_ui(s.shiny_url_enabled, |ui| {
-                    ui.add(egui::TextEdit::singleline(&mut s.shiny_url).desired_width(280.0).hint_text("https://…"));
+                    ui.add(egui::TextEdit::singleline(&mut s.shiny_url).desired_width(260.0).hint_text("https://…"));
                 });
                 ui.end_row();
                 ui.label("  Template:");
                 ui.add_enabled_ui(s.shiny_url_enabled, |ui| {
-                    ui.add(egui::TextEdit::singleline(&mut s.shiny_template).desired_width(280.0)
+                    ui.add(egui::TextEdit::singleline(&mut s.shiny_template).desired_width(260.0)
                         .hint_text(r#"{"content": "✨ {player} encountered a shiny {pokemon.species}!"}"#));
                 });
                 ui.end_row();
 
                 ui.checkbox(&mut s.wipe_url_enabled, "Wipe URL:");
                 ui.add_enabled_ui(s.wipe_url_enabled, |ui| {
-                    ui.add(egui::TextEdit::singleline(&mut s.wipe_url).desired_width(280.0).hint_text("https://…"));
+                    ui.add(egui::TextEdit::singleline(&mut s.wipe_url).desired_width(260.0).hint_text("https://…"));
                 });
                 ui.end_row();
                 ui.label("  Template:");
                 ui.add_enabled_ui(s.wipe_url_enabled, |ui| {
-                    ui.add(egui::TextEdit::singleline(&mut s.wipe_template).desired_width(280.0)
+                    ui.add(egui::TextEdit::singleline(&mut s.wipe_template).desired_width(260.0)
                         .hint_text(r#"{"content": "{player}'s run has ended. RIP."}"#));
                 });
                 ui.end_row();
             });
+        }); // ScrollArea
 
         ui.add_space(8.0);
         let rom_ok    = !s.rom.trim().is_empty();
-        let port_ok   = s.mode != crate::config::ConfigMode::Connected || s.aggregator_port.parse::<u16>().is_ok();
+        let port_ok   = s.mode != ConfigMode::Connected || s.aggregator_port.parse::<u16>().map(|p| p > 0).unwrap_or(false);
         let player_parse: Option<u8> = s.preferred_player.trim().parse().ok().filter(|&n: &u8| n >= 1);
         let player_ok = s.preferred_player.trim().is_empty() || player_parse.is_some();
         ui.horizontal(|ui| {
@@ -495,17 +610,32 @@ impl WindowInfo {
             if saved {
                 let db_raw = s.db.trim().to_string();
                 let db = if db_raw.starts_with("postgresql://") || db_raw.starts_with("postgres://") { db_raw } else { format!("postgresql://{}", db_raw) };
+                let test_db_raw = s.test_db.trim().to_string();
+                let test = {
+                    let t = TrackerTestOverrides {
+                        db: if test_db_raw.is_empty() { None } else if test_db_raw.starts_with("postgresql://") || test_db_raw.starts_with("postgres://") {
+                            Some(test_db_raw)
+                        } else {
+                            Some(format!("postgresql://{}", test_db_raw))
+                        },
+                        aggregator_host:  if s.test_agg_host.trim().is_empty() { None } else { Some(s.test_agg_host.trim().to_string()) },
+                        aggregator_port:  s.test_agg_port.trim().parse().ok().filter(|&p: &u16| p > 0),
+                        preferred_player: s.test_player.trim().parse().ok().filter(|&n: &u8| n >= 1),
+                    };
+                    if t.db.is_none() && t.aggregator_host.is_none() && t.aggregator_port.is_none() && t.preferred_player.is_none() { None } else { Some(t) }
+                };
                 let cfg = TrackerConfig {
                     rom:              s.rom.trim().to_string(),
                     db,
-                    clean:            false,
+                    clean:            s.clean,
                     mode:             s.mode.clone(),
                     aggregator_host:  s.aggregator_host.trim().to_string(),
                     aggregator_port:  s.aggregator_port.parse().unwrap_or(7878),
                     preferred_player: player_parse,
                     default_test:     s.default_test,
-                    test:             s.test.clone(),
-                    webhooks: crate::config::WebhookConfig {
+                    test,
+                    poll_ms: if s.poll_ms.trim().is_empty() { 100 } else { s.poll_ms.trim().parse::<u64>().unwrap_or(100).clamp(20, 2000) },
+                    webhooks: WebhookConfig {
                         death_url:      if s.death_url_enabled && !s.death_url.trim().is_empty() { Some(s.death_url.trim().to_string()) } else { None },
                         death_template: if s.death_url_enabled && !s.death_template.trim().is_empty() { Some(s.death_template.trim().to_string()) } else { None },
                         catch_url:      if s.catch_url_enabled && !s.catch_url.trim().is_empty() { Some(s.catch_url.trim().to_string()) } else { None },
@@ -515,9 +645,15 @@ impl WindowInfo {
                         wipe_url:       if s.wipe_url_enabled  && !s.wipe_url.trim().is_empty()  { Some(s.wipe_url.trim().to_string())  } else { None },
                         wipe_template:  if s.wipe_url_enabled  && !s.wipe_template.trim().is_empty()  { Some(s.wipe_template.trim().to_string())  } else { None },
                     },
-                    poll_ms:      100,
-                    obs:          crate::config::ObsConfig::default(),
-                    dupes_clause: crate::config::DupesClauseMode::Off,
+                    obs: ObsConfig {
+                        host:          s.obs_host.trim().to_string(),
+                        port:          s.obs_port.trim().parse().unwrap_or(4455),
+                        password:      if s.obs_password.trim().is_empty() { None } else { Some(s.obs_password.trim().to_string()) },
+                        clip_on_death: s.obs_clip_death,
+                        clip_on_shiny: s.obs_clip_shiny,
+                        clip_on_wipe:  s.obs_clip_wipe,
+                    },
+                    dupes_clause: s.dupes_clause,
                 };
                 save_config(&cfg, &self.config_path);
                 self.settings_open = false;

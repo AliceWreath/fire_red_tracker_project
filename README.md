@@ -769,6 +769,12 @@ Add `http://localhost:9090/cmd` in a browser tab to manage runs — **End Run** 
 
 ## Project status
 
+**v0.8.85** — full config coverage in setup wizard and settings panel:
+
+- **Setup wizard (`--config-editor`) now covers all config fields** — previously `poll_ms`, `obs`, `clean`, `default_test`, and the `[test]` overrides were silently dropped when saving through the wizard. All fields are now editable: poll interval (20–2000 ms), dupes clause mode, clean-start toggle, OBS clip trigger (host / port / password / per-event checkboxes), test-mode toggle, and all four `[test]` override fields (DB, aggregator host/port, player number). The window is now scrollable to accommodate the extra sections.
+- **In-app ⚙ Settings panel similarly expanded** — previously saving through the settings panel clobbered `clean`, `poll_ms`, `obs`, `dupes_clause`, and `[test]` overrides with their defaults. The panel now reads and writes all of these alongside the existing ROM / DB / mode / webhook fields. Also scrollable.
+- **`[test]` section is now editable via GUI** — test-mode DB, aggregator host/port, and preferred-player overrides can be set from both the wizard and the settings panel. Empty fields are interpreted as "use main config value" and serialised as `None` (omitted from TOML).
+
 **v0.8.84** — shared dupes clause and clippy fix:
 
 - **Shared dupes clause** — `dupes_clause` in `config.toml` is now a three-way mode instead of a boolean. `"off"` (default) disables the check; `"per_player"` skips an encounter if *this* player has already caught the species; `"shared"` skips the encounter if *any* player in the shared run has caught the species, designed for Soul Link and co-op runs where one catch covers the whole group. Old boolean values are still accepted: `true` maps to `"shared"`, `false` to `"off"`.

@@ -374,9 +374,22 @@ struct SetupApp {
     result:           Arc<Mutex<Option<TrackerConfig>>>,
     should_close:     bool,
     heading:          &'static str,
+    // Run / polling
+    poll_ms:          String,
+    dupes_clause:     DupesClauseMode,
+    // Test mode
     default_test:     bool,
-    test:             Option<TrackerTestOverrides>,
-    dupes_clause: DupesClauseMode,
+    test_db:          String,
+    test_agg_host:    String,
+    test_agg_port:    String,
+    test_player:      String,
+    // OBS clip trigger
+    obs_host:         String,
+    obs_port:         String,
+    obs_password:     String,
+    obs_clip_death:   bool,
+    obs_clip_shiny:   bool,
+    obs_clip_wipe:    bool,
     // Webhook URL and template fields
     death_url:         String,
     death_url_enabled: bool,
@@ -405,9 +418,19 @@ impl SetupApp {
             result,
             should_close:     false,
             heading:          "First-Run Setup",
-            default_test:     false,
-            test:             None,
+            poll_ms:          String::new(),
             dupes_clause:     DupesClauseMode::Off,
+            default_test:     false,
+            test_db:          String::new(),
+            test_agg_host:    String::new(),
+            test_agg_port:    String::new(),
+            test_player:      String::new(),
+            obs_host:         "localhost".to_string(),
+            obs_port:         "4455".to_string(),
+            obs_password:     String::new(),
+            obs_clip_death:   false,
+            obs_clip_shiny:   false,
+            obs_clip_wipe:    false,
             death_url:         String::new(),
             death_url_enabled: false,
             death_template:    String::new(),
@@ -440,9 +463,21 @@ impl SetupApp {
             result,
             should_close:     false,
             heading:          "Edit Config",
-            default_test:     cfg.default_test,
-            test:             cfg.test.clone(),
+            poll_ms: if cfg.poll_ms == 100 { String::new() } else { cfg.poll_ms.to_string() },
             dupes_clause:     cfg.dupes_clause,
+            default_test:     cfg.default_test,
+            test_db:       cfg.test.as_ref().and_then(|t| t.db.as_ref())
+                               .map(|s| s.trim_start_matches("postgresql://").trim_start_matches("postgres://").to_string())
+                               .unwrap_or_default(),
+            test_agg_host: cfg.test.as_ref().and_then(|t| t.aggregator_host.clone()).unwrap_or_default(),
+            test_agg_port: cfg.test.as_ref().and_then(|t| t.aggregator_port).map(|p| p.to_string()).unwrap_or_default(),
+            test_player:   cfg.test.as_ref().and_then(|t| t.preferred_player).map(|n| n.to_string()).unwrap_or_default(),
+            obs_host:      cfg.obs.host.clone(),
+            obs_port:      cfg.obs.port.to_string(),
+            obs_password:  cfg.obs.password.clone().unwrap_or_default(),
+            obs_clip_death: cfg.obs.clip_on_death,
+            obs_clip_shiny: cfg.obs.clip_on_shiny,
+            obs_clip_wipe:  cfg.obs.clip_on_wipe,
             death_url:         wh.death_url.clone().unwrap_or_default(),
             death_url_enabled: wh.death_url.is_some(),
             death_template:    wh.death_template.clone().unwrap_or_default(),
@@ -473,12 +508,13 @@ impl eframe::App for SetupApp {
         ui.separator();
         ui.add_space(4.0);
 
+        egui::ScrollArea::vertical().show(ui, |ui| {
         egui::Grid::new("setup_grid")
             .num_columns(2)
             .spacing([12.0, 10.0])
             .min_col_width(110.0)
             .show(ui, |ui| {
-                // ROM path
+                // ── ROM / database ────────────────────────────────────────────
                 ui.label("ROM path:");
                 ui.horizontal(|ui| {
                     ui.add(
@@ -496,7 +532,6 @@ impl eframe::App for SetupApp {
                 });
                 ui.end_row();
 
-                // Database
                 ui.label("Database:");
                 ui.vertical(|ui| {
                     ui.add(
@@ -508,7 +543,16 @@ impl eframe::App for SetupApp {
                 });
                 ui.end_row();
 
-                // Mode
+                ui.label("Clean start:");
+                ui.vertical(|ui| {
+                    ui.checkbox(&mut self.clean, "Wipe database on next launch");
+                    ui.small("Deletes all run data at startup. Uncheck after use.");
+                });
+                ui.end_row();
+
+                // ── Connection mode ───────────────────────────────────────────
+                ui.separator();
+                ui.end_row();
                 ui.label("Default mode:");
                 ui.horizontal(|ui| {
                     ui.selectable_value(&mut self.mode, ConfigMode::Standalone, "Standalone");
@@ -516,7 +560,6 @@ impl eframe::App for SetupApp {
                 });
                 ui.end_row();
 
-                // Aggregator address (only when Connected)
                 if self.mode == ConfigMode::Connected {
                     ui.label("Aggregator host:");
                     ui.add(
@@ -544,10 +587,22 @@ impl eframe::App for SetupApp {
                     ui.end_row();
                 }
 
-                // Dupes clause
+                // ── Run settings ──────────────────────────────────────────────
                 ui.separator();
                 ui.end_row();
-                ui.label(egui::RichText::new("Dupes clause").strong());
+
+                ui.label("Poll interval:");
+                ui.vertical(|ui| {
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.poll_ms)
+                            .desired_width(80.0)
+                            .hint_text("100"),
+                    );
+                    ui.small("Game-polling interval in ms (20–2000). Blank = 100 ms default.");
+                });
+                ui.end_row();
+
+                ui.label("Dupes clause:");
                 ui.vertical(|ui| {
                     ui.selectable_value(&mut self.dupes_clause, DupesClauseMode::Off,       "Off — standard Nuzlocke (first encounter per area)");
                     ui.selectable_value(&mut self.dupes_clause, DupesClauseMode::PerPlayer, "Per Player — skip if you already caught this species");
@@ -555,7 +610,82 @@ impl eframe::App for SetupApp {
                 });
                 ui.end_row();
 
-                // Webhooks
+                // ── Test mode ─────────────────────────────────────────────────
+                ui.separator();
+                ui.end_row();
+                ui.label(egui::RichText::new("Test mode").strong());
+                ui.vertical(|ui| {
+                    ui.checkbox(&mut self.default_test, "Always run in test mode (same as always passing --test)");
+                    ui.small("When enabled, the [test] overrides below are applied on every launch.");
+                });
+                ui.end_row();
+
+                ui.label("  Test DB:");
+                ui.vertical(|ui| {
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.test_db)
+                            .desired_width(300.0)
+                            .hint_text("leave blank to use main DB"),
+                    );
+                    ui.small("Overrides the database connection when running in test mode.");
+                });
+                ui.end_row();
+
+                ui.label("  Test agg. host:");
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.test_agg_host)
+                        .desired_width(200.0)
+                        .hint_text("leave blank to use main host"),
+                );
+                ui.end_row();
+
+                ui.label("  Test agg. port:");
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.test_agg_port)
+                        .desired_width(80.0)
+                        .hint_text("leave blank to use main port"),
+                );
+                ui.end_row();
+
+                ui.label("  Test player #:");
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.test_player)
+                        .desired_width(60.0)
+                        .hint_text("leave blank"),
+                );
+                ui.end_row();
+
+                // ── OBS clip trigger ──────────────────────────────────────────
+                ui.separator();
+                ui.end_row();
+                ui.label(egui::RichText::new("OBS clips").strong());
+                ui.vertical(|ui| {
+                    ui.checkbox(&mut self.obs_clip_death, "Save replay buffer on death");
+                    ui.checkbox(&mut self.obs_clip_shiny, "Save replay buffer on shiny encounter");
+                    ui.checkbox(&mut self.obs_clip_wipe,  "Save replay buffer on party wipe");
+                });
+                ui.end_row();
+
+                let obs_used = self.obs_clip_death || self.obs_clip_shiny || self.obs_clip_wipe;
+                ui.label("  OBS host:");
+                ui.add_enabled_ui(obs_used, |ui| {
+                    ui.add(egui::TextEdit::singleline(&mut self.obs_host).desired_width(200.0).hint_text("localhost"));
+                });
+                ui.end_row();
+
+                ui.label("  OBS port:");
+                ui.add_enabled_ui(obs_used, |ui| {
+                    ui.add(egui::TextEdit::singleline(&mut self.obs_port).desired_width(80.0).hint_text("4455"));
+                });
+                ui.end_row();
+
+                ui.label("  OBS password:");
+                ui.add_enabled_ui(obs_used, |ui| {
+                    ui.add(egui::TextEdit::singleline(&mut self.obs_password).desired_width(200.0).hint_text("leave blank if auth disabled").password(true));
+                });
+                ui.end_row();
+
+                // ── Webhooks ──────────────────────────────────────────────────
                 ui.separator();
                 ui.end_row();
                 ui.label(egui::RichText::new("Webhooks").strong());
@@ -610,19 +740,20 @@ impl eframe::App for SetupApp {
                 });
                 ui.end_row();
             });
+        }); // ScrollArea
 
         ui.add_space(12.0);
         ui.separator();
         ui.add_space(4.0);
 
-        let rom_ok = !self.rom.trim().is_empty();
+        let rom_ok    = !self.rom.trim().is_empty();
         let port_val: Option<u16> = self.aggregator_port.trim().parse().ok().filter(|&p| p > 0);
-        let port_ok = self.mode != ConfigMode::Connected || port_val.is_some();
+        let port_ok   = self.mode != ConfigMode::Connected || port_val.is_some();
         let player_parse: Option<u8> = self.preferred_player.trim()
             .parse().ok()
             .filter(|&n: &u8| n >= 1);
         let player_ok = self.preferred_player.trim().is_empty() || player_parse.is_some();
-        let can_save = rom_ok && port_ok && player_ok;
+        let can_save  = rom_ok && port_ok && player_ok;
 
         ui.horizontal(|ui| {
             let btn = ui.add_enabled(can_save, egui::Button::new("Save & Continue"));
@@ -634,6 +765,25 @@ impl eframe::App for SetupApp {
                     format!("postgresql://{}", db_raw)
                 };
 
+                let test_db_raw = self.test_db.trim().to_string();
+                let test = {
+                    let t = TrackerTestOverrides {
+                        db: if test_db_raw.is_empty() { None } else if test_db_raw.starts_with("postgresql://") || test_db_raw.starts_with("postgres://") {
+                            Some(test_db_raw)
+                        } else {
+                            Some(format!("postgresql://{}", test_db_raw))
+                        },
+                        aggregator_host:  if self.test_agg_host.trim().is_empty() { None } else { Some(self.test_agg_host.trim().to_string()) },
+                        aggregator_port:  self.test_agg_port.trim().parse().ok().filter(|&p: &u16| p > 0),
+                        preferred_player: self.test_player.trim().parse().ok().filter(|&n: &u8| n >= 1),
+                    };
+                    if t.db.is_none() && t.aggregator_host.is_none() && t.aggregator_port.is_none() && t.preferred_player.is_none() {
+                        None
+                    } else {
+                        Some(t)
+                    }
+                };
+
                 let config = TrackerConfig {
                     rom:              self.rom.trim().to_string(),
                     db,
@@ -643,8 +793,12 @@ impl eframe::App for SetupApp {
                     aggregator_port:  port_val.unwrap_or(7878),
                     preferred_player: player_parse,
                     default_test:     self.default_test,
-                    test:             self.test.clone(),
-                    poll_ms:  default_poll_ms(),
+                    test,
+                    poll_ms: if self.poll_ms.trim().is_empty() {
+                        default_poll_ms()
+                    } else {
+                        self.poll_ms.trim().parse::<u64>().unwrap_or(100).clamp(20, 2000)
+                    },
                     webhooks: WebhookConfig {
                         death_url:      if self.death_url_enabled && !self.death_url.trim().is_empty() { Some(self.death_url.trim().to_string()) } else { None },
                         death_template: if self.death_url_enabled && !self.death_template.trim().is_empty() { Some(self.death_template.trim().to_string()) } else { None },
@@ -655,7 +809,14 @@ impl eframe::App for SetupApp {
                         wipe_url:       if self.wipe_url_enabled  && !self.wipe_url.trim().is_empty()  { Some(self.wipe_url.trim().to_string())  } else { None },
                         wipe_template:  if self.wipe_url_enabled  && !self.wipe_template.trim().is_empty()  { Some(self.wipe_template.trim().to_string())  } else { None },
                     },
-                    obs:          ObsConfig::default(),
+                    obs: ObsConfig {
+                        host:          self.obs_host.trim().to_string(),
+                        port:          self.obs_port.trim().parse().unwrap_or(4455),
+                        password:      if self.obs_password.trim().is_empty() { None } else { Some(self.obs_password.trim().to_string()) },
+                        clip_on_death: self.obs_clip_death,
+                        clip_on_shiny: self.obs_clip_shiny,
+                        clip_on_wipe:  self.obs_clip_wipe,
+                    },
                     dupes_clause: self.dupes_clause,
                 };
 
@@ -664,23 +825,11 @@ impl eframe::App for SetupApp {
             }
 
             if !rom_ok {
-                ui.label(
-                    egui::RichText::new("  ROM path is required")
-                        .color(egui::Color32::from_rgb(220, 80, 80))
-                        .small(),
-                );
+                ui.label(egui::RichText::new("  ROM path is required").color(egui::Color32::from_rgb(220, 80, 80)).small());
             } else if !port_ok {
-                ui.label(
-                    egui::RichText::new("  Invalid port (1–65535)")
-                        .color(egui::Color32::from_rgb(220, 80, 80))
-                        .small(),
-                );
+                ui.label(egui::RichText::new("  Invalid aggregator port (1–65535)").color(egui::Color32::from_rgb(220, 80, 80)).small());
             } else if !player_ok {
-                ui.label(
-                    egui::RichText::new("  Player number must be 1 or higher")
-                        .color(egui::Color32::from_rgb(220, 80, 80))
-                        .small(),
-                );
+                ui.label(egui::RichText::new("  Player number must be 1 or higher").color(egui::Color32::from_rgb(220, 80, 80)).small());
             }
         });
     }
@@ -714,7 +863,7 @@ fn run_setup_window(existing: Option<&TrackerConfig>) -> TrackerConfig {
         eframe::NativeOptions {
             viewport: egui::ViewportBuilder::default()
                 .with_title(title)
-                .with_inner_size([560.0, 480.0])
+                .with_inner_size([580.0, 600.0])
                 .with_resizable(true),
             ..Default::default()
         },
