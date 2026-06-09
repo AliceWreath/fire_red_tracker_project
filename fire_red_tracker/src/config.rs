@@ -508,7 +508,9 @@ impl eframe::App for SetupApp {
         ui.separator();
         ui.add_space(4.0);
 
-        egui::ScrollArea::vertical().show(ui, |ui| {
+        // Reserve ~70 px for the separator + button row below the scroll area.
+        let scroll_height = (ui.available_height() - 70.0).max(100.0);
+        egui::ScrollArea::vertical().max_height(scroll_height).show(ui, |ui| {
         egui::Grid::new("setup_grid")
             .num_columns(2)
             .spacing([12.0, 10.0])
