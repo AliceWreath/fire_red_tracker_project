@@ -12,8 +12,8 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
-  build:
-    name: Build and publish release
+  build-linux:
+    name: Build (Linux x86_64)
     runs-on: ubuntu-latest
 
     steps:
@@ -56,13 +56,96 @@ jobs:
           tar czf fire_red_aggregator-x86_64-unknown-linux-gnu.tar.gz fire_red_aggregator THIRD_PARTY_LICENSES.html
           tar czf fire_red_tracker-x86_64-unknown-linux-gnu.tar.gz    fire_red_tracker    THIRD_PARTY_LICENSES.html
 
+      - name: Upload Linux artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-binaries
+          path: |
+            target/x86_64-unknown-linux-gnu/release/fire_red_aggregator-x86_64-unknown-linux-gnu.tar.gz
+            target/x86_64-unknown-linux-gnu/release/fire_red_tracker-x86_64-unknown-linux-gnu.tar.gz
+
+  build-windows:
+    name: Build (Windows x86_64)
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Install cargo-about
+        run: cargo install cargo-about --locked --features cli
+
+      - name: Cache cargo registry and build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      - name: Build release binaries
+        run: cargo build --release --target x86_64-pc-windows-msvc -p fire_red_aggregator -p fire_red_tracker
+
+      - name: Generate third-party license attribution
+        run: cargo about generate about.hbs -o THIRD_PARTY_LICENSES.html
+
+      - name: Package binaries
+        shell: pwsh
+        run: |
+          $rel = "target\x86_64-pc-windows-msvc\release"
+          Copy-Item THIRD_PARTY_LICENSES.html $rel
+          Compress-Archive -Force `
+            -Path "$rel\fire_red_aggregator.exe", "$rel\THIRD_PARTY_LICENSES.html" `
+            -DestinationPath "$rel\fire_red_aggregator-x86_64-pc-windows-msvc.zip"
+          Compress-Archive -Force `
+            -Path "$rel\fire_red_tracker.exe", "$rel\THIRD_PARTY_LICENSES.html" `
+            -DestinationPath "$rel\fire_red_tracker-x86_64-pc-windows-msvc.zip"
+
+      - name: Upload Windows artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-binaries
+          path: |
+            target/x86_64-pc-windows-msvc/release/fire_red_aggregator-x86_64-pc-windows-msvc.zip
+            target/x86_64-pc-windows-msvc/release/fire_red_tracker-x86_64-pc-windows-msvc.zip
+
+  publish:
+    name: Publish release
+    needs: [build-linux, build-windows]
+    # Always run as long as Linux succeeded — Windows failure is non-blocking.
+    if: always() && needs.build-linux.result == 'success'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download Linux artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: linux-binaries
+
+      - name: Download Windows artifacts
+        if: needs.build-windows.result == 'success'
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-binaries
+
       - name: Publish GitHub release
         uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
+          # fail_on_unmatched_files: false so a Windows build failure doesn't
+          # prevent the Linux tarballs from being published.
+          fail_on_unmatched_files: false
           files: |
-            target/x86_64-unknown-linux-gnu/release/fire_red_aggregator-x86_64-unknown-linux-gnu.tar.gz
-            target/x86_64-unknown-linux-gnu/release/fire_red_tracker-x86_64-unknown-linux-gnu.tar.gz
+            fire_red_aggregator-x86_64-unknown-linux-gnu.tar.gz
+            fire_red_tracker-x86_64-unknown-linux-gnu.tar.gz
+            fire_red_aggregator-x86_64-pc-windows-msvc.zip
+            fire_red_tracker-x86_64-pc-windows-msvc.zip
 
       - name: Prune old releases (keep 3 most recent)
         env:
