@@ -517,7 +517,7 @@ impl WindowInfo {
                     },
                     poll_ms:      100,
                     obs:          crate::config::ObsConfig::default(),
-                    dupes_clause: false,
+                    dupes_clause: crate::config::DupesClauseMode::Off,
                 };
                 save_config(&cfg, &self.config_path);
                 self.settings_open = false;

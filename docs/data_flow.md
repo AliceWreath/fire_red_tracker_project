@@ -45,6 +45,10 @@ Game-polling thread (100 ms)
   │    if changed → new battle detected
   │      is_wild? (compare enemy ot_id to party lead ot_id)
   │      has_encounter(map)? → no-op (already recorded this area)
+  │      dupes_clause check (DupesClauseMode):
+  │        Off       → no extra check
+  │        PerPlayer → species_caught_by_self()? → no-op (this player already caught it)
+  │        Shared    → species_caught_any()?      → no-op (any player already caught it)
   │      record_encounter(enc) → INSERT INTO encounters
   │      set tracked_personality = enemy.personality
   │    scan party for tracked_personality

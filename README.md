@@ -27,7 +27,12 @@ Shows each Pokémon's sprite (shiny-aware), nickname, level, nature, HP (colour-
 ### Encounter tracking
 - **Encounters panel** — shows the wild Pokémon available in the current map area, split by encounter type (grass, water/fishing, Rock Smash). Updates when the player moves to a new map.
 - **First-encounter recording** — records the first wild Pokémon encountered per area per run (Nuzlocke rule). Encounters and deaths are not recorded until the player has obtained 5 or more Pokéballs; once that threshold is crossed the latch stays set for the remainder of the run. Duplicate species are skipped. Catches are detected automatically when the Pokémon joins the party.
-- **Dupes clause** — optional Nuzlocke variant rule. When enabled (`dupes_clause = true` in config), a new encounter is skipped if the species has already been caught at any point in the current run, regardless of which area it was first encountered in. Disabled by default (standard Nuzlocke).
+- **Dupes clause** — optional Nuzlocke variant rule, configured via `dupes_clause` in `config.toml`. Three modes are available:
+  - `"off"` *(default)* — standard Nuzlocke, first encounter per area, no species check.
+  - `"per_player"` — per-player: a new encounter is skipped if *this player* has already caught the species anywhere in the current run.
+  - `"shared"` — shared / cross-player: a new encounter is skipped if *any player* in the shared run has caught the species. Designed for Soul Link and co-op runs — one catch covers the whole group.
+  
+  Old boolean values (`true`/`false`) are still accepted and map to `"shared"` / `"off"` respectively for backward compatibility.
 - **Shiny detection** — the Gen III shiny formula (`p_high ^ p_low ^ id_high ^ id_low < 8`) is evaluated when an encounter is recorded. Shiny encounters are flagged in the database and trigger a shiny alert toast.
 - **Route completion board** — a grid showing every Nuzlocke-relevant zone colour-coded as caught (green), failed/fled (red), or not yet visited (grey), grouped by region. Available at `/:index/routes`.
 
@@ -763,6 +768,11 @@ Add `http://localhost:9090/cmd` in a browser tab to manage runs — **End Run** 
 ---
 
 ## Project status
+
+**v0.8.84** — shared dupes clause and clippy fix:
+
+- **Shared dupes clause** — `dupes_clause` in `config.toml` is now a three-way mode instead of a boolean. `"off"` (default) disables the check; `"per_player"` skips an encounter if *this* player has already caught the species; `"shared"` skips the encounter if *any* player in the shared run has caught the species, designed for Soul Link and co-op runs where one catch covers the whole group. Old boolean values are still accepted: `true` maps to `"shared"`, `false` to `"off"`.
+- **`clippy::items_after_test_module` resolved** — `is_shiny` in `fire_red_states` was defined after the `base64_tests` test module; moved to before it.
 
 **v0.8.83** — third correctness pass (aggregator + database):
 

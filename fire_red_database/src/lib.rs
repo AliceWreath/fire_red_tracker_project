@@ -1240,6 +1240,28 @@ pub fn species_caught_any(species: u16) -> bool {
         .unwrap_or(false)
 }
 
+/// Returns `true` if a Pokémon with this species ID exists in the `caught_pokemon`
+/// table for the active run under the **current player only**.
+///
+/// Used to enforce the per-player dupes clause: a new encounter is skipped if
+/// this player has already caught the species at any point in the current run.
+pub fn species_caught_by_self(species: u16) -> bool {
+    let mut state = db().lock_or_recover();
+    let active = match state.run_id {
+        Some(id) => id,
+        None => return false,
+    };
+    let player = state.current_player.clone();
+    state.client
+        .query_one(
+            "SELECT COUNT(*) FROM caught_pokemon \
+             WHERE run_id = $1 AND player_name = $2 AND species = $3",
+            &[&(active as i32), &player, &(species as i32)],
+        )
+        .map(|row| row.get::<_, i64>(0) > 0)
+        .unwrap_or(false)
+}
+
 /// Returns `true` if this species has already been recorded as a first encounter
 /// anywhere in the active run for the current player.
 pub fn species_encountered(species: u16) -> bool {

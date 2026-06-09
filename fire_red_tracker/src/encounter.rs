@@ -1,3 +1,4 @@
+use crate::config::DupesClauseMode;
 use fire_red_loop::FireRedState;
 use fire_red_party_monitor::Pokemon;
 use fire_red_states::LockOrRecover;
@@ -60,10 +61,12 @@ impl EncounterTracker {
     /// Called once per poll cycle while the game is loaded and state is
     /// initialized. Records first encounters and detects catches.
     ///
-    /// `dupes_clause` — when `true`, skips recording an encounter if the species
-    /// has already been caught anywhere in the current run. This mirrors the common
-    /// Nuzlocke variant rule that prevents catching a species you already own.
-    pub fn tick(&mut self, current_state: FireRedState, thread_party: &Arc<Mutex<Vec<Pokemon>>>, dupes_clause: bool) {
+    /// `dupes_clause` controls whether previously-caught species are skipped:
+    /// - `Off` — no extra check; standard Nuzlocke first-encounter-per-area applies.
+    /// - `PerPlayer` — skip if *this* player has previously caught this species.
+    /// - `Shared` — skip if *any* player in the shared run has caught this species
+    ///   (Soul Link / co-op: one catch covers the whole group).
+    pub fn tick(&mut self, current_state: FireRedState, thread_party: &Arc<Mutex<Vec<Pokemon>>>, dupes_clause: DupesClauseMode) {
         if self.wipe_detected { return; }
         if let Some(enemy) = crate::game::get_wild_enemy_pokemon()
             && enemy.box_mon.personality != self.last_enemy_personality
@@ -82,11 +85,12 @@ impl EncounterTracker {
             if fire_red_database::species_encountered(species) {
                 return;
             }
-            // Dupes clause: skip if this species has already been caught this run,
-            // regardless of which area it was first encountered in.
-            if dupes_clause && fire_red_database::species_caught_any(species) {
-                return;
-            }
+            let skip = match dupes_clause {
+                DupesClauseMode::Off       => false,
+                DupesClauseMode::PerPlayer => fire_red_database::species_caught_by_self(species),
+                DupesClauseMode::Shared    => fire_red_database::species_caught_any(species),
+            };
+            if skip { return; }
 
             let map_group = current_state.map_group_id;
             let map_name  = current_state.map_name_id;

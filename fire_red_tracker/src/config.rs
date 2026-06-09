@@ -1,10 +1,79 @@
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use std::fmt;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
+
+/// How the dupes clause is applied when recording wild encounters.
+///
+/// Backward-compatible: existing `dupes_clause = true` in config deserialises as `Shared`;
+/// `dupes_clause = false` (or absent) deserialises as `Off`.
+///
+/// New configs should use the explicit string form:
+/// ```toml
+/// dupes_clause = "off"        # no dupes check (default)
+/// dupes_clause = "per_player" # skip if THIS player already caught this species
+/// dupes_clause = "shared"     # skip if ANY player in the run has caught this species
+/// ```
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub enum DupesClauseMode {
+    /// No dupes check — each player records all first encounters independently (default).
+    #[default]
+    Off,
+    /// Per-player: skip if this player has previously caught this species anywhere in the run.
+    PerPlayer,
+    /// Shared / cross-player: skip if **any** player in the shared run has caught this species.
+    /// In Soul Link or co-op runs this means one catch exempts all other players from needing
+    /// to catch the same species.
+    Shared,
+}
+
+impl Serialize for DupesClauseMode {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(match self {
+            DupesClauseMode::Off       => "off",
+            DupesClauseMode::PerPlayer => "per_player",
+            DupesClauseMode::Shared    => "shared",
+        })
+    }
+}
+
+impl<'de> Deserialize<'de> for DupesClauseMode {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        struct V;
+        impl<'de> serde::de::Visitor<'de> for V {
+            type Value = DupesClauseMode;
+            fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+                write!(f, r#"bool or one of "off", "per_player", "shared""#)
+            }
+            fn visit_bool<E: serde::de::Error>(self, v: bool) -> Result<DupesClauseMode, E> {
+                Ok(if v { DupesClauseMode::Shared } else { DupesClauseMode::Off })
+            }
+            fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<DupesClauseMode, E> {
+                match v {
+                    "off"        => Ok(DupesClauseMode::Off),
+                    "per_player" => Ok(DupesClauseMode::PerPlayer),
+                    "shared"     => Ok(DupesClauseMode::Shared),
+                    _            => Err(E::unknown_variant(v, &["off", "per_player", "shared"])),
+                }
+            }
+        }
+        d.deserialize_any(V)
+    }
+}
+
+impl fmt::Display for DupesClauseMode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            DupesClauseMode::Off       => "Off",
+            DupesClauseMode::PerPlayer => "Per Player",
+            DupesClauseMode::Shared    => "Shared",
+        })
+    }
+}
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
@@ -47,11 +116,16 @@ pub struct TrackerConfig {
     /// OBS WebSocket integration — save replay buffer clips on key events.
     #[serde(default, skip_serializing_if = "ObsConfig::is_default")]
     pub obs: ObsConfig,
-    /// Enforce the Nuzlocke dupes clause: skip recording an encounter if the
-    /// species has already been caught at any point in the current run.
-    /// Defaults to `false` (standard Nuzlocke — first encounter per area only).
+    /// Controls how the dupes clause is applied when a new wild encounter is detected.
+    /// Defaults to `Off` (standard Nuzlocke — first encounter per area, no species check).
+    ///
+    /// - `"off"` — no dupes check.
+    /// - `"per_player"` — skip if *this* player has previously caught the species this run.
+    /// - `"shared"` — skip if *any* player in the run has caught the species (Soul Link / co-op).
+    ///
+    /// Old boolean values are still accepted: `true` maps to `"shared"`, `false` to `"off"`.
     #[serde(default)]
-    pub dupes_clause: bool,
+    pub dupes_clause: DupesClauseMode,
 }
 
 fn default_aggregator_host() -> String { "127.0.0.1".to_string() }
@@ -302,6 +376,7 @@ struct SetupApp {
     heading:          &'static str,
     default_test:     bool,
     test:             Option<TrackerTestOverrides>,
+    dupes_clause: DupesClauseMode,
     // Webhook URL and template fields
     death_url:         String,
     death_url_enabled: bool,
@@ -332,6 +407,7 @@ impl SetupApp {
             heading:          "First-Run Setup",
             default_test:     false,
             test:             None,
+            dupes_clause:     DupesClauseMode::Off,
             death_url:         String::new(),
             death_url_enabled: false,
             death_template:    String::new(),
@@ -366,6 +442,7 @@ impl SetupApp {
             heading:          "Edit Config",
             default_test:     cfg.default_test,
             test:             cfg.test.clone(),
+            dupes_clause:     cfg.dupes_clause,
             death_url:         wh.death_url.clone().unwrap_or_default(),
             death_url_enabled: wh.death_url.is_some(),
             death_template:    wh.death_template.clone().unwrap_or_default(),
@@ -466,6 +543,17 @@ impl eframe::App for SetupApp {
                     });
                     ui.end_row();
                 }
+
+                // Dupes clause
+                ui.separator();
+                ui.end_row();
+                ui.label(egui::RichText::new("Dupes clause").strong());
+                ui.vertical(|ui| {
+                    ui.selectable_value(&mut self.dupes_clause, DupesClauseMode::Off,       "Off — standard Nuzlocke (first encounter per area)");
+                    ui.selectable_value(&mut self.dupes_clause, DupesClauseMode::PerPlayer, "Per Player — skip if you already caught this species");
+                    ui.selectable_value(&mut self.dupes_clause, DupesClauseMode::Shared,    "Shared — skip if any player caught this species (Soul Link / co-op)");
+                });
+                ui.end_row();
 
                 // Webhooks
                 ui.separator();
@@ -568,7 +656,7 @@ impl eframe::App for SetupApp {
                         wipe_template:  if self.wipe_url_enabled  && !self.wipe_template.trim().is_empty()  { Some(self.wipe_template.trim().to_string())  } else { None },
                     },
                     obs:          ObsConfig::default(),
-                    dupes_clause: false,
+                    dupes_clause: self.dupes_clause,
                 };
 
                 *self.result.lock().unwrap() = Some(config);
@@ -709,21 +797,46 @@ mod tests {
     // ── dupes_clause ─────────────────────────────────────────────────────────
 
     #[test]
-    fn dupes_clause_defaults_to_false_when_absent() {
+    fn dupes_clause_defaults_to_off_when_absent() {
         let cfg: TrackerConfig = toml::from_str(&minimal_toml("")).unwrap();
-        assert!(!cfg.dupes_clause);
+        assert_eq!(cfg.dupes_clause, DupesClauseMode::Off);
     }
 
     #[test]
-    fn dupes_clause_parsed_as_true() {
+    fn dupes_clause_bool_true_maps_to_shared() {
         let cfg: TrackerConfig = toml::from_str(&minimal_toml("dupes_clause = true\n")).unwrap();
-        assert!(cfg.dupes_clause);
+        assert_eq!(cfg.dupes_clause, DupesClauseMode::Shared);
     }
 
     #[test]
-    fn dupes_clause_parsed_as_false_explicitly() {
+    fn dupes_clause_bool_false_maps_to_off() {
         let cfg: TrackerConfig = toml::from_str(&minimal_toml("dupes_clause = false\n")).unwrap();
-        assert!(!cfg.dupes_clause);
+        assert_eq!(cfg.dupes_clause, DupesClauseMode::Off);
+    }
+
+    #[test]
+    fn dupes_clause_string_off() {
+        let cfg: TrackerConfig = toml::from_str(&minimal_toml("dupes_clause = \"off\"\n")).unwrap();
+        assert_eq!(cfg.dupes_clause, DupesClauseMode::Off);
+    }
+
+    #[test]
+    fn dupes_clause_string_per_player() {
+        let cfg: TrackerConfig = toml::from_str(&minimal_toml("dupes_clause = \"per_player\"\n")).unwrap();
+        assert_eq!(cfg.dupes_clause, DupesClauseMode::PerPlayer);
+    }
+
+    #[test]
+    fn dupes_clause_string_shared() {
+        let cfg: TrackerConfig = toml::from_str(&minimal_toml("dupes_clause = \"shared\"\n")).unwrap();
+        assert_eq!(cfg.dupes_clause, DupesClauseMode::Shared);
+    }
+
+    #[test]
+    fn dupes_clause_serialises_as_string() {
+        let cfg: TrackerConfig = toml::from_str(&minimal_toml("dupes_clause = \"per_player\"\n")).unwrap();
+        let s = toml::to_string(&cfg).unwrap();
+        assert!(s.contains("per_player"), "expected 'per_player' in serialised output: {s}");
     }
 
     // ── validate_config ──────────────────────────────────────────────────────
@@ -742,7 +855,7 @@ mod tests {
             poll_ms:         100,
             webhooks:        WebhookConfig::default(),
             obs:             ObsConfig::default(),
-            dupes_clause:    false,
+            dupes_clause:    DupesClauseMode::Off,
         }
     }
 
