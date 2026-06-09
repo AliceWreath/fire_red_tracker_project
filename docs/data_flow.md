@@ -66,21 +66,21 @@ Game-polling thread (100 ms)
   │        on SELECT error → best-effort UPDATE, return None
   │        Some(old) → record_event(NicknameChange) + fire_event(webhook)
   │
-  ├─ check_for_new_badges(last_badge_mask)  [sentinel u8::MAX = uninitialized]
+  ├─ check_for_new_badges(last_badge_mask)  [sentinel None = uninitialized]
   │    read_badge_state() → BadgeState
   │    build current_mask (8 bits, LSB = Boulder Badge)
-  │    last_mask == u8::MAX → silently adopt current_mask (boot guard)
+  │    last_mask == None → silently adopt current_mask (boot guard)
   │    newly_earned = current_mask & !last_mask
   │    for each newly-earned badge:
   │      record_event(Badge) → INSERT INTO events
   │      fire_event(WebhookEvent::Badge) → optional POST + OBS clip
-  │    last_badge_mask reset to u8::MAX on: wipe detected, game unload,
+  │    last_badge_mask reset to None on: wipe detected, game unload,
   │      run change (thread_run_changed)
   │
   └─ check_for_run_over() → wipe detected
        enc_tracker.mark_wipe()
        thread_wipe_signal.store(true)
-       last_badge_mask = u8::MAX
+       last_badge_mask = None
 
   │
   │  Arc<Mutex<Vec<Pokemon>>> + Arc<Mutex<WildPokemonHeader>>

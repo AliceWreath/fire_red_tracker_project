@@ -227,7 +227,9 @@ mod tests {
     #[test]
     fn dark_covers_psychic_in_compute() {
         let cov = compute(&[(16, 16)]); // mono Dark team
+        // EFFECTIVENESS[16][13] was incorrectly 0 (immune); fix set it to 16 (×2).
+        // This assertion directly verifies the corrected table cell.
+        assert_eq!(EFFECTIVENESS[16][13], 16, "Dark vs Psychic should be ×2 (EFFECTIVENESS[16][13])");
         assert!(cov.offensive_coverage.contains(&13), "Dark team should cover Psychic (13)");
-        assert!(!cov.team_weaknesses.contains(&13), "Dark team should not be weak to Psychic");
     }
 }

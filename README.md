@@ -178,7 +178,7 @@ The tracker starts a single long-lived background thread at startup that owns a 
 
 ### Run management
 - **Badge tracker** — displays obtained badges as coloured dots and shows the next gym leader's name, city, and highest level.
-- **Badge events** — each newly earned badge is recorded in the event log and fires an optional webhook / OBS clip. A sentinel-based boot guard (`u8::MAX` initial mask) prevents replaying already-earned badges on tracker startup and after a wipe/run-reset; the first call after any reset silently adopts the current badge state as the new baseline.
+- **Badge events** — each newly earned badge is recorded in the event log and fires an optional webhook / OBS clip. A sentinel-based boot guard (`None` initial mask) prevents replaying already-earned badges on tracker startup and after a wipe/run-reset; the first call after any reset silently adopts the current badge state as the new baseline.
 - **Nickname-change tracking** — when a Pokémon's in-game nickname changes, both the old and new names are written to the event log (`old_nickname` column) and an optional webhook is fired. If a transient DB error occurs during the read phase, the UPDATE is still attempted to keep the stored nickname in sync. The `old_nickname` field is included in all `/api/run/:id/events` and `/api/timeline` responses.
 - **Reset detection** — clears stale party, encounter, and badge data on soft reset or title screen.
 - **Soul Link detection** — Pokémon caught in the same location across two or more connected players are automatically linked and shown in purple.
@@ -779,6 +779,17 @@ Add `http://localhost:9090/cmd` in a browser tab to manage runs — **End Run** 
 ---
 
 ## Project status
+
+**v0.8.89** — bug fixes: timeline endpoint, typed errors, badge sentinel, schema cleanup:
+
+- **`/api/timeline` endpoint fixed** — the aggregator process never initialises the global DB singleton used by the previous implementation, causing a panic (HTTP 500) on every request. The function now opens its own connection and reads `active_run_id` from the `meta` table directly, eliminating the singleton dependency.
+- **Typed `EventsError`** — `list_events_json` and `active_run_timeline_json` now return `Result<_, EventsError>` instead of embedding error strings in JSON. The web handlers (`api_active_timeline`, `api_run_events`) match on enum variants for `404 / 500 / 503` status codes; no more fragile string comparison against `"no active run"`.
+- **`api_run_events` proper status codes** — the `/api/run/:id/events` handler previously always returned HTTP 200 even on DB failure. It now returns `500` on connection or query errors.
+- **Badge sentinel `Option<u8>`** — `check_for_new_badges` parameter and return type changed from `u8` (magic `u8::MAX` sentinel) to `Option<u8>` (`None` = uninitialized). All `last_badge_mask` variables in `main.rs` updated accordingly; startup `handle_party_events` return value is now captured so a wipe at boot correctly resets the mask.
+- **`CREATE TABLE events` includes `old_nickname`** — the column was previously added only via `ALTER TABLE`, so fresh-install schema and the table definition were out of sync. The column is now declared directly in `CREATE TABLE`; the `ALTER TABLE` guard is retained for backwards compatibility with pre-v6 databases.
+- **Schema version bumped to 6** — `SCHEMA_VERSION` updated from `"5"` to `"6"`.
+- **Test precision** — `dark_covers_psychic_in_compute` now asserts `EFFECTIVENESS[16][13] == 16` (the exact corrected cell) rather than the unrelated `EFFECTIVENESS[13][16]` (Psychic→Dark immunity).
+- **`update_caught_nickname` comment corrected** — the fallback UPDATE path on a broken client is now documented honestly: the execute will also fail silently if the client is in an error state.
 
 **v0.8.88** — level cap warnings, badge events, type coverage panel, nickname tracking, timeline API:
 

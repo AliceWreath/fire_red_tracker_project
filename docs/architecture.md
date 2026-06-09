@@ -157,4 +157,4 @@ Columns: `id`, `run_id`, `player_name`, `event_type`, `species_name`, `nickname`
 
 ### Badge boot guard
 
-The game-polling thread tracks badge state with a `last_badge_mask: u8`. The sentinel value `u8::MAX` means "uninitialized". `check_for_new_badges` silently adopts the current badge state on the first call with this sentinel, preventing false-positive events on tracker startup and after a wipe or run change. The mask is reset to `u8::MAX` on: game unload, wipe detected, and `thread_run_changed` signal.
+The game-polling thread tracks badge state with a `last_badge_mask: Option<u8>`. `None` means "uninitialized". `check_for_new_badges` silently adopts the current badge state on the first call with `None`, preventing false-positive events on tracker startup and after a wipe or run change. The mask is reset to `None` on: game unload, wipe detected, and `thread_run_changed` signal.

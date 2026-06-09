@@ -318,7 +318,7 @@ fn db() -> &'static Mutex<DbState> {
 /// `initialize` has already been called.
 /// Increment this whenever a new migration or data-repair statement is added.
 /// `initialize` skips all SQL when the DB already records this version.
-const SCHEMA_VERSION: &str = "5";
+const SCHEMA_VERSION: &str = "6";
 
 pub fn initialize(connection_string: &str) -> Result<(), String> {
     // Accept bare `host/dbname` strings — prepend the scheme so callers don't have to.
@@ -521,6 +521,7 @@ pub fn initialize(connection_string: &str) -> Result<(), String> {
 
         -- Migration: persistent event log — one row per notable gameplay event.
         -- event_type values: 'catch', 'death', 'soul_link_death', 'shiny', 'wipe', 'badge', 'nickname_change'
+        -- old_nickname is populated only for nickname_change events (the name that was overwritten).
         CREATE TABLE IF NOT EXISTS events (
             id           SERIAL  PRIMARY KEY,
             run_id       INTEGER NOT NULL REFERENCES runs(id),
@@ -528,12 +529,13 @@ pub fn initialize(connection_string: &str) -> Result<(), String> {
             event_type   TEXT    NOT NULL,
             species_name TEXT    NOT NULL DEFAULT '',
             nickname     TEXT    NOT NULL DEFAULT '',
+            old_nickname TEXT    NOT NULL DEFAULT '',
             level        INTEGER NOT NULL DEFAULT 0,
             occurred_at  BIGINT  NOT NULL
         );
 
-        -- Migration: add old_nickname for nickname_change events so the
-        -- previous name is preserved alongside the new one in the event log.
+        -- Idempotent guard for databases created before old_nickname was added
+        -- to the CREATE TABLE above (schema versions prior to 6).
         ALTER TABLE events ADD COLUMN IF NOT EXISTS old_nickname TEXT NOT NULL DEFAULT '';
     ").map_err(|e| format!("Failed to create database schema: {e}"))?;
 
@@ -1118,8 +1120,9 @@ pub fn update_caught_nickname(personality: u32, nickname: &str) -> Option<String
     let mut state = db().lock_or_recover();
     let active = state.run_id?;
     // Read the current name first so we can return it as the "old" value.
-    // Handle a DB read error explicitly: still attempt the UPDATE so the stored
-    // nickname stays in sync, but return None since we can't report the old name.
+    // On SELECT error, attempt the UPDATE anyway as a best-effort sync — but
+    // note that if the client is in a broken state the UPDATE will also fail
+    // silently (result is discarded). We still return None rather than panic.
     let old: Option<String> = match state.client.query_opt(
         "SELECT nickname FROM caught_pokemon
          WHERE run_id = $1 AND personality = $2 AND nickname != $3",
@@ -2385,22 +2388,41 @@ pub fn import_run(conn_str: &str, body: &serde_json::Value) -> serde_json::Value
     serde_json::json!({ "run_id": new_id })
 }
 
+/// Typed error returned by [`list_events_json`] and [`active_run_timeline_json`].
+///
+/// HTTP handlers match on variants to assign status codes without string-matching
+/// on error text embedded in a JSON body.
+#[derive(Debug)]
+pub enum EventsError {
+    /// No run is currently marked active in the `meta` table.
+    NoActiveRun,
+    /// The PostgreSQL connection could not be opened.
+    ConnectionFailed(String),
+    /// A database query failed.
+    QueryFailed(String),
+}
+
+impl std::fmt::Display for EventsError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            EventsError::NoActiveRun         => f.write_str("no active run"),
+            EventsError::ConnectionFailed(e) => write!(f, "DB connection failed: {e}"),
+            EventsError::QueryFailed(e)      => write!(f, "Query failed: {e}"),
+        }
+    }
+}
+
 /// Returns a JSON array of events for the given run ID, ordered by time.
 ///
 /// Opens its own connection so the live tracker is not blocked.
-pub fn list_events_json(conn_str: &str, run_id: u32) -> serde_json::Value {
-    let mut client = match Client::connect(conn_str, NoTls) {
-        Ok(c)  => c,
-        Err(e) => return serde_json::json!({ "error": format!("DB connection failed: {e}") }),
-    };
-    let rows = match client.query(
+pub fn list_events_json(conn_str: &str, run_id: u32) -> Result<serde_json::Value, EventsError> {
+    let mut client = Client::connect(conn_str, NoTls)
+        .map_err(|e| EventsError::ConnectionFailed(e.to_string()))?;
+    let rows = client.query(
         "SELECT player_name, event_type, species_name, nickname, old_nickname, level, occurred_at
          FROM events WHERE run_id = $1 ORDER BY occurred_at ASC",
         &[&(run_id as i32)],
-    ) {
-        Ok(r)  => r,
-        Err(e) => return serde_json::json!({ "error": format!("Query failed: {e}") }),
-    };
+    ).map_err(|e| EventsError::QueryFailed(e.to_string()))?;
     let events: Vec<serde_json::Value> = rows.iter().map(|row| serde_json::json!({
         "player_name":   row.get::<_, String>(0),
         "event_type":    row.get::<_, String>(1),
@@ -2410,31 +2432,29 @@ pub fn list_events_json(conn_str: &str, run_id: u32) -> serde_json::Value {
         "level":         row.get::<_, i32>(5),
         "occurred_at":   format_timestamp(row.get::<_, i64>(6) as u64),
     })).collect();
-    serde_json::json!({ "run_id": run_id, "events": events })
+    Ok(serde_json::json!({ "run_id": run_id, "events": events }))
 }
 
 /// Returns the chronological event timeline for the **currently active** run.
 ///
+/// Opens its own connection and reads `active_run_id` from the `meta` table
+/// directly — this avoids the global [`DB`] singleton, which is only
+/// initialised in the tracker process. Calling the previous `active_run_id()`
+/// helper from the aggregator process would panic immediately.
+///
 /// Includes both `occurred_at` as a Unix integer and a human-readable
-/// `occurred_at_human` string. Returns `{ "error": "..." }` when there is no
-/// active run or the connection fails.
-pub fn active_run_timeline_json(conn_str: &str) -> serde_json::Value {
-    let run_id = match active_run_id() {
-        Some(id) => id,
-        None     => return serde_json::json!({ "error": "no active run" }),
-    };
-    let mut client = match Client::connect(conn_str, NoTls) {
-        Ok(c)  => c,
-        Err(e) => return serde_json::json!({ "error": format!("DB connection failed: {e}") }),
-    };
-    let rows = match client.query(
+/// `occurred_at_human` string. Returns [`EventsError`] for the typed result.
+pub fn active_run_timeline_json(conn_str: &str) -> Result<serde_json::Value, EventsError> {
+    let mut client = Client::connect(conn_str, NoTls)
+        .map_err(|e| EventsError::ConnectionFailed(e.to_string()))?;
+    let run_id: u32 = get_meta(&mut client, "active_run_id")
+        .and_then(|v| v.parse().ok())
+        .ok_or(EventsError::NoActiveRun)?;
+    let rows = client.query(
         "SELECT player_name, event_type, species_name, nickname, old_nickname, level, occurred_at
          FROM events WHERE run_id = $1 ORDER BY occurred_at ASC",
         &[&(run_id as i32)],
-    ) {
-        Ok(r)  => r,
-        Err(e) => return serde_json::json!({ "error": format!("Query failed: {e}") }),
-    };
+    ).map_err(|e| EventsError::QueryFailed(e.to_string()))?;
     let events: Vec<serde_json::Value> = rows.iter().map(|row| {
         let ts = row.get::<_, i64>(6) as u64;
         serde_json::json!({
@@ -2448,7 +2468,7 @@ pub fn active_run_timeline_json(conn_str: &str) -> serde_json::Value {
             "occurred_at_human": format_timestamp(ts),
         })
     }).collect();
-    serde_json::json!({ "run_id": run_id, "events": events })
+    Ok(serde_json::json!({ "run_id": run_id, "events": events }))
 }
 
 /// Opens a fresh connection and returns a JSON snapshot of every table.

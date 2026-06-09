@@ -1352,29 +1352,49 @@ async fn api_active_timeline(
         return (StatusCode::SERVICE_UNAVAILABLE,
                 axum::Json(serde_json::json!({ "error": "No database configured" }))).into_response();
     };
-    let body = tokio::task::spawn_blocking(move || {
+    let result = tokio::task::spawn_blocking(move || {
         fire_red_database::active_run_timeline_json(&conn)
     }).await
-    .unwrap_or_else(|_| serde_json::json!({ "error": "Task panicked" }));
+    .unwrap_or_else(|_| Err(fire_red_database::EventsError::QueryFailed("Task panicked".into())));
 
-    let status = match body.get("error").and_then(|e| e.as_str()) {
-        None                  => StatusCode::OK,
-        Some("no active run") => StatusCode::NOT_FOUND,
-        Some(_)               => StatusCode::INTERNAL_SERVER_ERROR,
-    };
-    (status, axum::Json(body)).into_response()
+    match result {
+        Ok(body) =>
+            (StatusCode::OK, axum::Json(body)).into_response(),
+        Err(fire_red_database::EventsError::NoActiveRun) =>
+            (StatusCode::NOT_FOUND,
+             axum::Json(serde_json::json!({ "error": "no active run" }))).into_response(),
+        Err(e) =>
+            (StatusCode::INTERNAL_SERVER_ERROR,
+             axum::Json(serde_json::json!({ "error": e.to_string() }))).into_response(),
+    }
 }
 
 /// `GET /api/run/:id/events` — chronological event log for a run.
+///
+/// Status codes:
+/// - `200 OK`                  — events returned.
+/// - `503 Service Unavailable` — no database configured.
+/// - `500 Internal Server Error` — DB connection or query failure.
 async fn api_run_events(
     State(state): State<WebState>,
     Path(run_id): Path<u32>,
-) -> axum::Json<serde_json::Value> {
-    let conn = require_db!(state);
+) -> impl IntoResponse {
+    let Some(conn) = state.db_conn else {
+        return (StatusCode::SERVICE_UNAVAILABLE,
+                axum::Json(serde_json::json!({ "error": "No database configured" }))).into_response();
+    };
     let result = tokio::task::spawn_blocking(move || {
         fire_red_database::list_events_json(&conn, run_id)
-    }).await;
-    axum::Json(result.unwrap_or_else(|_| serde_json::json!({ "error": "Task panicked" })))
+    }).await
+    .unwrap_or_else(|_| Err(fire_red_database::EventsError::QueryFailed("Task panicked".into())));
+
+    match result {
+        Ok(body) =>
+            (StatusCode::OK, axum::Json(body)).into_response(),
+        Err(e) =>
+            (StatusCode::INTERNAL_SERVER_ERROR,
+             axum::Json(serde_json::json!({ "error": e.to_string() }))).into_response(),
+    }
 }
 
 /// `GET /api/runs` — summary list of all runs (id, player, dates, deaths, catches, encounters).

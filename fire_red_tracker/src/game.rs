@@ -678,14 +678,15 @@ pub fn get_wild_enemy_pokemon() -> Option<Pokemon> {
 /// Compares the current badge state against `last_mask` (one bit per badge,
 /// LSB = Brock) and fires events/webhooks for any newly obtained badges.
 ///
-/// Returns the updated mask reflecting all currently held badges.
+/// Returns `Some(updated_mask)` reflecting all currently held badges, or the
+/// unchanged `last_mask` if badge state could not be read from EWRAM.
 ///
-/// Pass `u8::MAX` (the uninitialized sentinel) on the first call or after any
+/// Pass `None` (the uninitialized sentinel) on the first call or after any
 /// run/wipe reset. The function will silently adopt all currently-held badges
 /// as the baseline without firing events — preventing both mid-game startup
 /// replays and false positives after a wipe. Subsequent calls with the
-/// returned mask fire events only for genuinely new badges.
-pub fn check_for_new_badges(last_mask: u8) -> u8 {
+/// returned `Some(mask)` fire events only for genuinely new badges.
+pub fn check_for_new_badges(last_mask: Option<u8>) -> Option<u8> {
     let Some(bs) = fire_red_badge::read_badge_state() else {
         return last_mask;
     };
@@ -698,18 +699,18 @@ pub fn check_for_new_badges(last_mask: u8) -> u8 {
         }
     }
 
-    // u8::MAX is the "uninitialized" sentinel. Silently adopt whatever badges
+    // None is the "uninitialized" sentinel. Silently adopt whatever badges
     // are already held without firing events. This handles two cases:
     //   • Tracker started mid-game (existing badges must not replay).
     //   • Badge mask reset after a wipe or run change (new run's badges
     //     should not be re-fired once the mask is re-established).
-    if last_mask == u8::MAX {
-        return current_mask;
-    }
+    let Some(last) = last_mask else {
+        return Some(current_mask);
+    };
 
-    let newly_earned = current_mask & !last_mask;
+    let newly_earned = current_mask & !last;
     if newly_earned == 0 {
-        return current_mask;
+        return Some(current_mask);
     }
 
     let player = fire_red_loop::get_trainer_name();
@@ -727,7 +728,7 @@ pub fn check_for_new_badges(last_mask: u8) -> u8 {
         tracing::info!("Badge earned: {}", badge_name);
     }
 
-    current_mask
+    Some(current_mask)
 }
 
 #[cfg(test)]
