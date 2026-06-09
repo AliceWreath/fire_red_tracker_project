@@ -318,7 +318,7 @@ fn db() -> &'static Mutex<DbState> {
 /// `initialize` has already been called.
 /// Increment this whenever a new migration or data-repair statement is added.
 /// `initialize` skips all SQL when the DB already records this version.
-const SCHEMA_VERSION: &str = "4";
+const SCHEMA_VERSION: &str = "5";
 
 pub fn initialize(connection_string: &str) -> Result<(), String> {
     // Accept bare `host/dbname` strings — prepend the scheme so callers don't have to.
@@ -531,6 +531,10 @@ pub fn initialize(connection_string: &str) -> Result<(), String> {
             level        INTEGER NOT NULL DEFAULT 0,
             occurred_at  BIGINT  NOT NULL
         );
+
+        -- Migration: add old_nickname for nickname_change events so the
+        -- previous name is preserved alongside the new one in the event log.
+        ALTER TABLE events ADD COLUMN IF NOT EXISTS old_nickname TEXT NOT NULL DEFAULT '';
     ").map_err(|e| format!("Failed to create database schema: {e}"))?;
 
     // Record the schema version so future startups can skip all migrations.
@@ -997,23 +1001,23 @@ pub enum EventKind<'a> {
 }
 
 impl<'a> EventKind<'a> {
-    /// Extracts `(event_type, species_name, nickname, level)` for a DB INSERT.
-    fn row_parts(&self) -> (&'static str, &'a str, &'a str, i32) {
+    /// Extracts `(event_type, species_name, nickname, old_nickname, level)` for a DB INSERT.
+    fn row_parts(&self) -> (&'static str, &'a str, &'a str, &'a str, i32) {
         match self {
             EventKind::Catch { species_name, nickname, level } =>
-                ("catch",            species_name,  nickname,  *level as i32),
+                ("catch",            species_name,  nickname,  "",        *level as i32),
             EventKind::Death { species_name, nickname, level } =>
-                ("death",            species_name,  nickname,  *level as i32),
+                ("death",            species_name,  nickname,  "",        *level as i32),
             EventKind::SoulLinkDeath { species_name, nickname, level } =>
-                ("soul_link_death",  species_name,  nickname,  *level as i32),
+                ("soul_link_death",  species_name,  nickname,  "",        *level as i32),
             EventKind::Shiny { species_name, level } =>
-                ("shiny",            species_name,  "",         *level as i32),
+                ("shiny",            species_name,  "",         "",        *level as i32),
             EventKind::Wipe =>
-                ("wipe",             "",             "",         0),
+                ("wipe",             "",             "",         "",        0),
             EventKind::Badge { badge_name } =>
-                ("badge",            badge_name,    "",         0),
-            EventKind::NicknameChange { species_name, old_name: _, new_name } =>
-                ("nickname_change",  species_name,  new_name,  0),
+                ("badge",            badge_name,     "",         "",        0),
+            EventKind::NicknameChange { species_name, old_name, new_name } =>
+                ("nickname_change",  species_name,  new_name,  old_name,  0),
         }
     }
 }
@@ -1030,16 +1034,17 @@ pub fn record_event(event: EventKind<'_>) -> bool {
     };
     let player      = state.current_player.clone();
     let occurred_at = unix_now() as i64;
-    let (event_type, species_name, nickname, level) = event.row_parts();
+    let (event_type, species_name, nickname, old_nickname, level) = event.row_parts();
     state.client.execute(
-        "INSERT INTO events (run_id, player_name, event_type, species_name, nickname, level, occurred_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7)",
+        "INSERT INTO events (run_id, player_name, event_type, species_name, nickname, old_nickname, level, occurred_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
         &[
             &(run_id as i32),
             &player,
             &event_type,
             &species_name,
             &nickname,
+            &old_nickname,
             &level,
             &occurred_at,
         ],
@@ -1113,23 +1118,31 @@ pub fn update_caught_nickname(personality: u32, nickname: &str) -> Option<String
     let mut state = db().lock_or_recover();
     let active = state.run_id?;
     // Read the current name first so we can return it as the "old" value.
-    let old: Option<String> = state.client
-        .query_opt(
-            "SELECT nickname FROM caught_pokemon
-             WHERE run_id = $1 AND personality = $2 AND nickname != $3",
-            &[&(active as i32), &(personality as i64), &nickname],
-        )
-        .ok()
-        .flatten()
-        .map(|row| row.get(0));
+    // Handle a DB read error explicitly: still attempt the UPDATE so the stored
+    // nickname stays in sync, but return None since we can't report the old name.
+    let old: Option<String> = match state.client.query_opt(
+        "SELECT nickname FROM caught_pokemon
+         WHERE run_id = $1 AND personality = $2 AND nickname != $3",
+        &[&(active as i32), &(personality as i64), &nickname],
+    ) {
+        Ok(maybe_row) => maybe_row.map(|row| row.get(0)),
+        Err(_) => {
+            let _ = state.client.execute(
+                "UPDATE caught_pokemon SET nickname = $1
+                 WHERE run_id = $2 AND personality = $3 AND nickname != $1",
+                &[&nickname, &(active as i32), &(personality as i64)],
+            );
+            return None;
+        }
+    };
 
-    if let Some(ref old_name) = old {
+    if let Some(old_name) = old {
         let _ = state.client.execute(
             "UPDATE caught_pokemon SET nickname = $1
              WHERE run_id = $2 AND personality = $3",
             &[&nickname, &(active as i32), &(personality as i64)],
         );
-        Some(old_name.clone())
+        Some(old_name)
     } else {
         None
     }
@@ -1663,16 +1676,17 @@ impl DbReader {
             None     => return false,
         };
         let occurred_at = unix_now() as i64;
-        let (event_type, species_name, nickname, level) = event.row_parts();
+        let (event_type, species_name, nickname, old_nickname, level) = event.row_parts();
         self.client.lock_or_recover().execute(
-            "INSERT INTO events (run_id, player_name, event_type, species_name, nickname, level, occurred_at)
-             VALUES ($1, $2, $3, $4, $5, $6, $7)",
+            "INSERT INTO events (run_id, player_name, event_type, species_name, nickname, old_nickname, level, occurred_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
             &[
                 &(run_id as i32),
                 &player_name,
                 &event_type,
                 &species_name,
                 &nickname,
+                &old_nickname,
                 &level,
                 &occurred_at,
             ],
@@ -2380,7 +2394,7 @@ pub fn list_events_json(conn_str: &str, run_id: u32) -> serde_json::Value {
         Err(e) => return serde_json::json!({ "error": format!("DB connection failed: {e}") }),
     };
     let rows = match client.query(
-        "SELECT player_name, event_type, species_name, nickname, level, occurred_at
+        "SELECT player_name, event_type, species_name, nickname, old_nickname, level, occurred_at
          FROM events WHERE run_id = $1 ORDER BY occurred_at ASC",
         &[&(run_id as i32)],
     ) {
@@ -2392,8 +2406,9 @@ pub fn list_events_json(conn_str: &str, run_id: u32) -> serde_json::Value {
         "event_type":    row.get::<_, String>(1),
         "species_name":  row.get::<_, String>(2),
         "nickname":      row.get::<_, String>(3),
-        "level":         row.get::<_, i32>(4),
-        "occurred_at":   format_timestamp(row.get::<_, i64>(5) as u64),
+        "old_nickname":  row.get::<_, String>(4),
+        "level":         row.get::<_, i32>(5),
+        "occurred_at":   format_timestamp(row.get::<_, i64>(6) as u64),
     })).collect();
     serde_json::json!({ "run_id": run_id, "events": events })
 }
@@ -2413,7 +2428,7 @@ pub fn active_run_timeline_json(conn_str: &str) -> serde_json::Value {
         Err(e) => return serde_json::json!({ "error": format!("DB connection failed: {e}") }),
     };
     let rows = match client.query(
-        "SELECT player_name, event_type, species_name, nickname, level, occurred_at
+        "SELECT player_name, event_type, species_name, nickname, old_nickname, level, occurred_at
          FROM events WHERE run_id = $1 ORDER BY occurred_at ASC",
         &[&(run_id as i32)],
     ) {
@@ -2421,13 +2436,14 @@ pub fn active_run_timeline_json(conn_str: &str) -> serde_json::Value {
         Err(e) => return serde_json::json!({ "error": format!("Query failed: {e}") }),
     };
     let events: Vec<serde_json::Value> = rows.iter().map(|row| {
-        let ts = row.get::<_, i64>(5) as u64;
+        let ts = row.get::<_, i64>(6) as u64;
         serde_json::json!({
             "player_name":       row.get::<_, String>(0),
             "event_type":        row.get::<_, String>(1),
             "species_name":      row.get::<_, String>(2),
             "nickname":          row.get::<_, String>(3),
-            "level":             row.get::<_, i32>(4),
+            "old_nickname":      row.get::<_, String>(4),
+            "level":             row.get::<_, i32>(5),
             "occurred_at":       ts,
             "occurred_at_human": format_timestamp(ts),
         })

@@ -1338,16 +1338,31 @@ async fn api_shiny_stats(
 /// `GET /api/timeline` — chronological event log for the **active** run.
 ///
 /// Includes both a Unix integer timestamp (`occurred_at`) and a human-readable
-/// `occurred_at_human` string. Returns `{ "error": "no active run" }` when no
-/// run is currently active.
+/// `occurred_at_human` string.
+///
+/// Status codes:
+/// - `200 OK`                  — timeline returned successfully.
+/// - `404 Not Found`           — no run is currently active.
+/// - `503 Service Unavailable` — no database configured.
+/// - `500 Internal Server Error` — DB connection or query failure.
 async fn api_active_timeline(
     State(state): State<WebState>,
-) -> axum::Json<serde_json::Value> {
-    let conn = require_db!(state);
-    let result = tokio::task::spawn_blocking(move || {
+) -> impl IntoResponse {
+    let Some(conn) = state.db_conn else {
+        return (StatusCode::SERVICE_UNAVAILABLE,
+                axum::Json(serde_json::json!({ "error": "No database configured" }))).into_response();
+    };
+    let body = tokio::task::spawn_blocking(move || {
         fire_red_database::active_run_timeline_json(&conn)
-    }).await;
-    axum::Json(result.unwrap_or_else(|_| serde_json::json!({ "error": "Task panicked" })))
+    }).await
+    .unwrap_or_else(|_| serde_json::json!({ "error": "Task panicked" }));
+
+    let status = match body.get("error").and_then(|e| e.as_str()) {
+        None                  => StatusCode::OK,
+        Some("no active run") => StatusCode::NOT_FOUND,
+        Some(_)               => StatusCode::INTERNAL_SERVER_ERROR,
+    };
+    (status, axum::Json(body)).into_response()
 }
 
 /// `GET /api/run/:id/events` — chronological event log for a run.

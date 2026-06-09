@@ -386,8 +386,9 @@ fn main() {
             let mut last_party_refresh = std::time::Instant::now();
             let mut state_initialized  = false;
             let mut enc_tracker        = encounter::EncounterTracker::new();
-            // Bitmask of badges seen so far; used by check_for_new_badges.
-            let mut last_badge_mask: u8 = 0;
+            // Sentinel u8::MAX = "uninitialized"; check_for_new_badges adopts
+            // existing badges silently on the first call with this value.
+            let mut last_badge_mask: u8 = u8::MAX;
             // Track the last player name to detect save-file switches mid-session.
             let mut last_player_name   = String::new();
 
@@ -426,6 +427,7 @@ fn main() {
                     *thread_party.lock_or_recover() = Vec::new();
                     state_initialized = false;
                     player_name_set   = false;
+                    last_badge_mask   = u8::MAX;
                     current_state = FireRedState { map_group_id: 0xFF, map_name_id: 0xFF };
                     enc_tracker.reset();
                     std::thread::sleep(std::time::Duration::from_millis(500));
@@ -485,17 +487,21 @@ fn main() {
                     old_party_size = party_size;
                     update_box_list();
                     *thread_box.lock_or_recover() = build_box_entries();
-                    handle_party_events(&thread_party, &mut enc_tracker, &thread_wipe_signal);
+                    if handle_party_events(&thread_party, &mut enc_tracker, &thread_wipe_signal) {
+                        last_badge_mask = u8::MAX;
+                    }
                 }
 
                 if last_party_refresh.elapsed().as_secs() >= FORCE_PARTY_CHECK_INTERVAL {
                     last_party_refresh = std::time::Instant::now();
-                    handle_party_events(&thread_party, &mut enc_tracker, &thread_wipe_signal);
+                    if handle_party_events(&thread_party, &mut enc_tracker, &thread_wipe_signal) {
+                        last_badge_mask = u8::MAX;
+                    }
                 }
 
                 if thread_run_changed.swap(false, Ordering::AcqRel) {
                     enc_tracker.reset();
-                    last_badge_mask = 0;
+                    last_badge_mask = u8::MAX;
                     player_name_set = false;
                 }
 

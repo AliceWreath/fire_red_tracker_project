@@ -679,10 +679,12 @@ pub fn get_wild_enemy_pokemon() -> Option<Pokemon> {
 /// LSB = Brock) and fires events/webhooks for any newly obtained badges.
 ///
 /// Returns the updated mask reflecting all currently held badges.
-/// Passing `0` on first call causes all already-held badges to be silently
-/// adopted without firing events (boot guard: the caller must seed with `0`
-/// and let the first `tick` establish the baseline rather than replaying
-/// badges from a previous session).
+///
+/// Pass `u8::MAX` (the uninitialized sentinel) on the first call or after any
+/// run/wipe reset. The function will silently adopt all currently-held badges
+/// as the baseline without firing events — preventing both mid-game startup
+/// replays and false positives after a wipe. Subsequent calls with the
+/// returned mask fire events only for genuinely new badges.
 pub fn check_for_new_badges(last_mask: u8) -> u8 {
     let Some(bs) = fire_red_badge::read_badge_state() else {
         return last_mask;
@@ -696,9 +698,12 @@ pub fn check_for_new_badges(last_mask: u8) -> u8 {
         }
     }
 
-    // On the very first call (last_mask == 0 but some badges already held),
-    // silently adopt the existing state without firing any events.
-    if last_mask == 0 && current_mask != 0 {
+    // u8::MAX is the "uninitialized" sentinel. Silently adopt whatever badges
+    // are already held without firing events. This handles two cases:
+    //   • Tracker started mid-game (existing badges must not replay).
+    //   • Badge mask reset after a wipe or run change (new run's badges
+    //     should not be re-fired once the mask is re-established).
+    if last_mask == u8::MAX {
         return current_mask;
     }
 

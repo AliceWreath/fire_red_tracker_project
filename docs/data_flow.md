@@ -58,9 +58,29 @@ Game-polling thread (100 ms)
   │    for each party slot where current HP = 0 and was alive:
   │      mark_dead(pokemon) → INSERT INTO dead_pokemon
   │
-  └─ check_for_new_pokemon()
-       for each box slot not seen before:
-         mark_caught(pokemon) → INSERT INTO caught_pokemon
+  ├─ check_for_new_pokemon()
+  │    for each box slot not seen before:
+  │      mark_caught(pokemon) → INSERT INTO caught_pokemon
+  │      if nickname non-empty: update_caught_nickname(personality, nickname)
+  │        SELECT old nickname; if differs → UPDATE + return Some(old)
+  │        on SELECT error → best-effort UPDATE, return None
+  │        Some(old) → record_event(NicknameChange) + fire_event(webhook)
+  │
+  ├─ check_for_new_badges(last_badge_mask)  [sentinel u8::MAX = uninitialized]
+  │    read_badge_state() → BadgeState
+  │    build current_mask (8 bits, LSB = Boulder Badge)
+  │    last_mask == u8::MAX → silently adopt current_mask (boot guard)
+  │    newly_earned = current_mask & !last_mask
+  │    for each newly-earned badge:
+  │      record_event(Badge) → INSERT INTO events
+  │      fire_event(WebhookEvent::Badge) → optional POST + OBS clip
+  │    last_badge_mask reset to u8::MAX on: wipe detected, game unload,
+  │      run change (thread_run_changed)
+  │
+  └─ check_for_run_over() → wipe detected
+       enc_tracker.mark_wipe()
+       thread_wipe_signal.store(true)
+       last_badge_mask = u8::MAX
 
   │
   │  Arc<Mutex<Vec<Pokemon>>> + Arc<Mutex<WildPokemonHeader>>

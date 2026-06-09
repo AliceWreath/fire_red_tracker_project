@@ -20,7 +20,7 @@ const EFFECTIVENESS: [[u8; NUM_TYPES]; NUM_TYPES] = [
 //              Nml Fgt Fly Poi Gnd Rok Bug Gst Stl Fir Wat Grs Elc Psy Ice Drg Drk
 /* Normal   */ [  8,  8,  8,  8,  8,  4,  8,  0,  4,  8,  8,  8,  8,  8,  8,  8,  8 ],
 /* Fighting */ [ 16,  8,  4,  4,  8, 16,  4,  0, 16,  8,  8,  8,  8,  4,  8,  8, 16 ],
-/* Flying   */ [  8, 16,  8,  8,  0,  4, 16,  8,  4,  8,  8, 16, 16,  8,  4,  8,  8 ],
+/* Flying   */ [  8, 16,  8,  8,  8,  4, 16,  8,  4,  8,  8, 16,  4,  8,  4,  8,  8 ],
 /* Poison   */ [  8,  8,  8,  4,  4,  4,  8,  4,  0,  8,  8, 16,  8,  8,  8,  8,  8 ],
 /* Ground   */ [  8,  8,  0,  16, 8,  16, 4,  8, 16, 16,  8,  4,  0,  8,  8,  8,  8 ],
 /* Rock     */ [  8,  4,  16, 8,  4,  8, 16,  8,  4, 16,  8,  8,  8,  8, 16,  8,  8 ],
@@ -34,7 +34,7 @@ const EFFECTIVENESS: [[u8; NUM_TYPES]; NUM_TYPES] = [
 /* Psychic  */ [  8, 16,  8, 16,  8,  8,  8,  8,  4,  8,  8,  8,  8,  4,  8,  8,  0 ],
 /* Ice      */ [  8,  8, 16,  8, 16,  8,  8,  8,  4,  4,  4, 16,  8,  8,  4, 16,  8 ],
 /* Dragon   */ [  8,  8,  8,  8,  8,  8,  8,  8,  4,  8,  8,  8,  8,  8,  8, 16,  8 ],
-/* Dark     */ [  8,  4,  8,  8,  8,  8,  8, 16,  8,  8,  8,  8,  8,  0,  8,  8,  4 ],
+/* Dark     */ [  8,  4,  8,  8,  8,  8,  8, 16,  8,  8,  8,  8,  8, 16,  8,  8,  4 ],
 ];
 
 /// Summary of the live party's type coverage.
@@ -195,10 +195,39 @@ mod tests {
 
     #[test]
     fn effective_mult_dual_type_compounds() {
-        // Flying vs Grass/Poison: Flying is ×1 vs Grass but ×1 vs Poison — expect 8.
-        // Bug vs Grass: ×1, Bug vs Poison: ×1 — dual is still ×1.
-        // Water vs Rock/Fire: ×2 vs Rock(5) and ×2 vs Fire(9) = ×4 total (32/8 = 4, but mult is 32 capped at u8)
+        // Water vs Rock/Fire: ×2 vs Rock(5) × ×2 vs Fire(9) = ×4.
+        // Represented as 32 eighths (32/8 = ×4).
         let mult = effective_mult(10, 5, 9);
-        assert_eq!(mult, 32, "Water vs Rock/Fire should be ×4 (32/8)");
+        assert_eq!(mult, 32, "Water vs Rock/Fire should be ×4 (32 eighths)");
+    }
+
+    // ── Regression tests for corrected table cells ─────────────────────────
+
+    #[test]
+    fn dark_vs_psychic_is_super_effective() {
+        // Was incorrectly coded as 0 (immune). Dark is ×2 vs Psychic in Gen III.
+        assert_eq!(EFFECTIVENESS[16][13], 16, "Dark vs Psychic should be ×2");
+    }
+
+    #[test]
+    fn flying_vs_ground_is_neutral() {
+        // Was incorrectly coded as 0 (immune). The immunity only runs the other
+        // direction: Ground moves cannot hit Flying-type Pokémon, but a Flying-type
+        // move has no special interaction against a Ground-type target.
+        assert_eq!(EFFECTIVENESS[2][4], 8, "Flying vs Ground should be ×1");
+    }
+
+    #[test]
+    fn flying_vs_electric_is_not_very_effective() {
+        // Was incorrectly coded as 16 (×2 SE) — a transposition of the
+        // Electric→Flying advantage. Flying attacks Electric for ×½.
+        assert_eq!(EFFECTIVENESS[2][12], 4, "Flying vs Electric should be ×½");
+    }
+
+    #[test]
+    fn dark_covers_psychic_in_compute() {
+        let cov = compute(&[(16, 16)]); // mono Dark team
+        assert!(cov.offensive_coverage.contains(&13), "Dark team should cover Psychic (13)");
+        assert!(!cov.team_weaknesses.contains(&13), "Dark team should not be weak to Psychic");
     }
 }
