@@ -265,7 +265,9 @@ pub fn init(config: WebhookConfig, obs_config: ObsConfig) {
     if STATE.set(WebhookState { tx, config, obs_config }).is_err() {
         return; // already initialized
     }
-    std::thread::spawn(move || {
+    if let Err(e) = std::thread::Builder::new()
+        .name("webhook-worker".into())
+        .spawn(move || {
         let client = reqwest::blocking::Client::builder()
             .timeout(std::time::Duration::from_secs(5))
             .build()
@@ -309,7 +311,9 @@ pub fn init(config: WebhookConfig, obs_config: ObsConfig) {
                 WorkerTask::ObsClip => obs_clip_inner(),
             }
         }
-    });
+    }) {
+        tracing::error!("Failed to spawn webhook worker thread: {e}");
+    }
 }
 
 /// Enqueue a webhook event for delivery. Returns immediately; the HTTP POST

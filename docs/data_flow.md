@@ -314,6 +314,28 @@ overlay.html
     → renderRunEnded() — shows summary card + first-encounters grid
 ```
 
+## DB Reader Error Handling (v0.8.95)
+
+```
+DbReader query methods — changed from silent empty fallback to logged warning:
+
+  list_dead_with_records()  .query(...)
+  list_encounters()         .query(...)     → .unwrap_or_else(|e| {
+  list_prev_run_encounters().query(...)          tracing::warn!("... DB query failed: {e}");
+                                                 vec![]
+                                            })
+
+Previously: .unwrap_or_default()   — silent empty Vec on ANY error
+Now:        .unwrap_or_else(warn)  — empty Vec + logged error
+
+import_run() personality collision — changed from silent drop to logged warning:
+  match client.execute("INSERT ... ON CONFLICT DO NOTHING", ...) {
+      Ok(0) => tracing::warn!("personality 0x... already exists; skipped"),
+      Ok(_) => {}                   // inserted normally
+      Err(e) => tracing::warn!("failed to insert: {e}"),
+  }
+```
+
 ## New HTTP Endpoints (v0.8.94)
 
 ```

@@ -318,7 +318,7 @@ fn db() -> &'static Mutex<DbState> {
 /// `initialize` has already been called.
 /// Increment this whenever a new migration or data-repair statement is added.
 /// `initialize` skips all SQL when the DB already records this version.
-const SCHEMA_VERSION: &str = "7";
+const SCHEMA_VERSION: &str = "8";
 
 pub fn initialize(connection_string: &str) -> Result<(), String> {
     // Accept bare `host/dbname` strings — prepend the scheme so callers don't have to.
@@ -552,6 +552,9 @@ pub fn initialize(connection_string: &str) -> Result<(), String> {
             payload    TEXT    NOT NULL DEFAULT '',
             fired_at   BIGINT  NOT NULL
         );
+
+        -- Migration v8: index on webhook_log(run_id) for fast per-run queries.
+        CREATE INDEX IF NOT EXISTS webhook_log_run_id_idx ON webhook_log(run_id);
     ").map_err(|e| format!("Failed to create database schema: {e}"))?;
 
     // Record the schema version so future startups can skip all migrations.
@@ -1534,8 +1537,10 @@ impl DbReader {
         };
 
         self.is_active.store(active, std::sync::atomic::Ordering::SeqCst);
-        let old_id = *self.run_id.lock_or_recover();
-        *self.run_id.lock_or_recover() = new_id;
+        let mut rid = self.run_id.lock_or_recover();
+        let old_id = *rid;
+        *rid = new_id;
+        drop(rid);
         if new_id.is_some() || forced {
             *self.last_player.lock_or_recover() = player_name.to_string();
         }
@@ -1580,7 +1585,7 @@ impl DbReader {
                  FROM dead_pokemon WHERE run_id = $1 AND player_name = $2",
                 &[&(run_id as i32), &player_name],
             )
-            .unwrap_or_default()
+            .unwrap_or_else(|e| { tracing::warn!("list_dead_with_records DB query failed: {e}"); vec![] })
             .iter()
             .map(|row| {
                 let dp = row_to_dead_pokemon(row);
@@ -1602,7 +1607,7 @@ impl DbReader {
                  FROM encounters WHERE run_id = $1 AND player_name = $2 ORDER BY encountered_at ASC",
                 &[&(run_id as i32), &player_name],
             )
-            .unwrap_or_default()
+            .unwrap_or_else(|e| { tracing::warn!("list_encounters DB query failed: {e}"); vec![] })
             .iter()
             .map(|row| Encounter {
                 player_name:    row.get(0),
@@ -1646,7 +1651,7 @@ impl DbReader {
                  FROM encounters WHERE run_id = $1 AND player_name = $2 ORDER BY encountered_at ASC",
                 &[&(prev_id as i32), &player_name],
             )
-            .unwrap_or_default()
+            .unwrap_or_else(|e| { tracing::warn!("list_prev_run_encounters DB query failed: {e}"); vec![] })
             .iter()
             .map(|row| Encounter {
                 player_name:    row.get(0),
@@ -2165,52 +2170,84 @@ pub fn export_run_csv(conn_str: &str, run_id: u32) -> Result<String, String> {
     let mut out = String::new();
 
     // Caught Pokémon
-    out.push_str("section,player_name,nickname,species_name,level,nature,is_shiny,gender,met_location,location_name,caught_at\n");
+    out.push_str("section,player_name,nickname,species_name,level,nature,is_shiny,gender,\
+met_location,location_name,iv_hp,iv_atk,iv_def,iv_spe,iv_spa,iv_spd,\
+ev_hp,ev_atk,ev_def,ev_spe,ev_spa,ev_spd,caught_at\n");
     let caught_rows = client.query(
         "SELECT nickname, species_name, level, nature, is_shiny, gender, \
-                met_location, location_name, caught_at, player_name \
+                met_location, location_name, caught_at, player_name, \
+                iv_hp, iv_attack, iv_defense, iv_speed, iv_sp_attack, iv_sp_defense, \
+                ev_hp, ev_attack, ev_defense, ev_speed, ev_sp_attack, ev_sp_defense \
          FROM caught_pokemon WHERE run_id = $1 ORDER BY caught_at",
         &[&rid],
     ).unwrap_or_default();
     for r in &caught_rows {
         out.push_str(&format!(
-            "caught,{},{},{},{},{},{},{},{},{},{}\n",
-            csv_field(r.get::<_, String>(9)),
-            csv_field(r.get::<_, String>(0)),
-            csv_field(r.get::<_, String>(1)),
-            r.get::<_, i32>(2),
-            csv_field(r.get::<_, String>(3)),
-            r.get::<_, bool>(4),
-            r.get::<_, i32>(5),
-            r.get::<_, i32>(6),
-            csv_field(r.get::<_, String>(7)),
-            csv_field(format_timestamp(r.get::<_, i64>(8) as u64)),
+            "caught,{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}\n",
+            csv_field(r.get::<_, String>(9)),   // player_name
+            csv_field(r.get::<_, String>(0)),   // nickname
+            csv_field(r.get::<_, String>(1)),   // species_name
+            r.get::<_, i32>(2),                  // level
+            csv_field(r.get::<_, String>(3)),   // nature
+            r.get::<_, bool>(4),                 // is_shiny
+            r.get::<_, i32>(5),                  // gender
+            r.get::<_, i32>(6),                  // met_location
+            csv_field(r.get::<_, String>(7)),   // location_name
+            r.get::<_, i32>(10),                 // iv_hp
+            r.get::<_, i32>(11),                 // iv_atk
+            r.get::<_, i32>(12),                 // iv_def
+            r.get::<_, i32>(13),                 // iv_spe
+            r.get::<_, i32>(14),                 // iv_spa
+            r.get::<_, i32>(15),                 // iv_spd
+            r.get::<_, i32>(16),                 // ev_hp
+            r.get::<_, i32>(17),                 // ev_atk
+            r.get::<_, i32>(18),                 // ev_def
+            r.get::<_, i32>(19),                 // ev_spe
+            r.get::<_, i32>(20),                 // ev_spa
+            r.get::<_, i32>(21),                 // ev_spd
+            csv_field(format_timestamp(r.get::<_, i64>(8) as u64)), // caught_at
         ));
     }
 
     out.push('\n');
 
     // Dead Pokémon
-    out.push_str("section,player_name,nickname,species_name,level,nature,is_shiny,gender,met_location,soul_link_death,died_at\n");
+    out.push_str("section,player_name,nickname,species_name,level,nature,is_shiny,gender,\
+met_location,soul_link_death,iv_hp,iv_atk,iv_def,iv_spe,iv_spa,iv_spd,\
+ev_hp,ev_atk,ev_def,ev_spe,ev_spa,ev_spd,died_at\n");
     let dead_rows = client.query(
         "SELECT nickname, species_name, level, nature, is_shiny, gender, \
-                met_location, died_at, player_name, is_soul_link_death \
+                met_location, died_at, player_name, is_soul_link_death, \
+                iv_hp, iv_attack, iv_defense, iv_speed, iv_sp_attack, iv_sp_defense, \
+                ev_hp, ev_attack, ev_defense, ev_speed, ev_sp_attack, ev_sp_defense \
          FROM dead_pokemon WHERE run_id = $1 ORDER BY died_at",
         &[&rid],
     ).unwrap_or_default();
     for r in &dead_rows {
         out.push_str(&format!(
-            "dead,{},{},{},{},{},{},{},{},{},{}\n",
-            csv_field(r.get::<_, String>(8)),
-            csv_field(r.get::<_, String>(0)),
-            csv_field(r.get::<_, String>(1)),
-            r.get::<_, i32>(2),
-            csv_field(r.get::<_, String>(3)),
-            r.get::<_, bool>(4),
-            r.get::<_, i32>(5),
-            r.get::<_, i32>(6),
-            r.get::<_, bool>(9),
-            csv_field(format_timestamp(r.get::<_, i64>(7) as u64)),
+            "dead,{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}\n",
+            csv_field(r.get::<_, String>(8)),   // player_name
+            csv_field(r.get::<_, String>(0)),   // nickname
+            csv_field(r.get::<_, String>(1)),   // species_name
+            r.get::<_, i32>(2),                  // level
+            csv_field(r.get::<_, String>(3)),   // nature
+            r.get::<_, bool>(4),                 // is_shiny
+            r.get::<_, i32>(5),                  // gender
+            r.get::<_, i32>(6),                  // met_location
+            r.get::<_, bool>(9),                 // soul_link_death
+            r.get::<_, i32>(10),                 // iv_hp
+            r.get::<_, i32>(11),                 // iv_atk
+            r.get::<_, i32>(12),                 // iv_def
+            r.get::<_, i32>(13),                 // iv_spe
+            r.get::<_, i32>(14),                 // iv_spa
+            r.get::<_, i32>(15),                 // iv_spd
+            r.get::<_, i32>(16),                 // ev_hp
+            r.get::<_, i32>(17),                 // ev_atk
+            r.get::<_, i32>(18),                 // ev_def
+            r.get::<_, i32>(19),                 // ev_spe
+            r.get::<_, i32>(20),                 // ev_spa
+            r.get::<_, i32>(21),                 // ev_spd
+            csv_field(format_timestamp(r.get::<_, i64>(7) as u64)), // died_at
         ));
     }
 
@@ -2387,7 +2424,7 @@ pub fn import_run(conn_str: &str, body: &serde_json::Value) -> serde_json::Value
                 .and_then(parse_timestamp)
                 .map(|t| t as i64)
                 .unwrap_or(now);
-            let _ = client.execute(
+            match client.execute(
                 "INSERT INTO caught_pokemon (run_id, player_name, personality, ot_id, \
                                             nickname, species, species_name, is_shiny, \
                                             nature, level, met_location, location_name, \
@@ -2403,7 +2440,14 @@ pub fn import_run(conn_str: &str, body: &serde_json::Value) -> serde_json::Value
                   &nickname, &0i32, &species_name, &is_shiny,
                   &nature, &level, &met_location, &location_name,
                   &caught_at, &gender],
-            );
+            ) {
+                Ok(0) => tracing::warn!(
+                    "import_run: caught personality 0x{personality:08X} ({species_name}) already \
+                     exists in run {new_id}; skipped — possible duplicate import"),
+                Ok(_) => {}
+                Err(e) => tracing::warn!(
+                    "import_run: failed to insert caught personality 0x{personality:08X}: {e}"),
+            }
         }
     }
 
@@ -2431,7 +2475,7 @@ pub fn import_run(conn_str: &str, body: &serde_json::Value) -> serde_json::Value
                 .and_then(parse_timestamp)
                 .map(|t| t as i64)
                 .unwrap_or(now);
-            let _ = client.execute(
+            match client.execute(
                 "INSERT INTO dead_pokemon (run_id, player_name, personality, ot_id, \
                                           nickname, species, species_name, is_shiny, \
                                           nature, level, met_location, died_at, \
@@ -2449,7 +2493,14 @@ pub fn import_run(conn_str: &str, body: &serde_json::Value) -> serde_json::Value
                   &nickname, &0i32, &species_name, &is_shiny,
                   &nature, &level, &met_location, &died_at, &gender,
                   &is_soul_link_death],
-            );
+            ) {
+                Ok(0) => tracing::warn!(
+                    "import_run: dead personality 0x{personality:08X} ({species_name}) already \
+                     exists in run {new_id}; skipped — possible duplicate import"),
+                Ok(_) => {}
+                Err(e) => tracing::warn!(
+                    "import_run: failed to insert dead personality 0x{personality:08X}: {e}"),
+            }
         }
     }
 
@@ -2627,7 +2678,7 @@ pub fn route_odds_json(conn_str: &str, run_id: u32) -> serde_json::Value {
 
     // Load all encounter rows for this run.
     let rows = match client.query(
-        "SELECT player_name, map_group, map_name, species_name, level, caught, is_shiny, encountered_at
+        "SELECT player_name, map_group, map_name, species, species_name, level, caught, is_shiny, encountered_at
          FROM encounters WHERE run_id = $1 ORDER BY encountered_at ASC",
         &[&(run_id as i32)],
     ) {
@@ -2641,8 +2692,8 @@ pub fn route_odds_json(conn_str: &str, run_id: u32) -> serde_json::Value {
     use std::collections::HashSet;
     let mut seen_canonical: HashSet<(u8, u8)> = HashSet::new();
     for row in &rows {
-        let mg = row.get::<_, i32>(1) as u8;
-        let mn = row.get::<_, i32>(2) as u8;
+        let mg = row.get::<_, i32>(1) as u8;  // col 1 = map_group
+        let mn = row.get::<_, i32>(2) as u8;  // col 2 = map_name
         let floors = fire_red_location_names::dungeon_floors(mg, mn);
         if floors.is_empty() {
             seen_canonical.insert((mg, mn));
@@ -2663,11 +2714,12 @@ pub fn route_odds_json(conn_str: &str, run_id: u32) -> serde_json::Value {
             "map_group":      mg,
             "map_name":       mn,
             "area":           area,
-            "species_name":   row.get::<_, String>(3),
-            "level":          row.get::<_, i32>(4),
-            "caught":         row.get::<_, bool>(5),
-            "is_shiny":       row.get::<_, bool>(6),
-            "encountered_at": format_timestamp(row.get::<_, i64>(7) as u64),
+            "species":        row.get::<_, i32>(3),
+            "species_name":   row.get::<_, String>(4),
+            "level":          row.get::<_, i32>(5),
+            "caught":         row.get::<_, bool>(6),
+            "is_shiny":       row.get::<_, bool>(7),
+            "encountered_at": format_timestamp(row.get::<_, i64>(8) as u64),
         })
     }).collect();
 
@@ -2957,6 +3009,40 @@ mod tests {
     #[test]
     fn event_kind_wipe_maps_to_correct_type() {
         assert_eq!(event_type_str(&EventKind::Wipe), "wipe");
+    }
+
+    #[test]
+    fn event_kind_badge_maps_to_correct_type() {
+        let e = EventKind::Badge { badge_name: "Boulder Badge" };
+        assert_eq!(event_type_str(&e), "badge");
+    }
+
+    #[test]
+    fn event_kind_badge_carries_name_in_species_field() {
+        let e = EventKind::Badge { badge_name: "Boulder Badge" };
+        let (event_type, species_name, nickname, old_nickname, level) = e.row_parts();
+        assert_eq!(event_type,    "badge");
+        assert_eq!(species_name,  "Boulder Badge");
+        assert_eq!(nickname,      "");
+        assert_eq!(old_nickname,  "");
+        assert_eq!(level,         0);
+    }
+
+    #[test]
+    fn event_kind_nickname_change_maps_to_correct_type() {
+        let e = EventKind::NicknameChange { species_name: "EEVEE", old_name: "Eevee", new_name: "Sylvi" };
+        assert_eq!(event_type_str(&e), "nickname_change");
+    }
+
+    #[test]
+    fn event_kind_nickname_change_carries_names() {
+        let e = EventKind::NicknameChange { species_name: "EEVEE", old_name: "Eevee", new_name: "Sylvi" };
+        let (event_type, species_name, nickname, old_nickname, level) = e.row_parts();
+        assert_eq!(event_type,   "nickname_change");
+        assert_eq!(species_name, "EEVEE");
+        assert_eq!(nickname,     "Sylvi");   // new_name → nickname column
+        assert_eq!(old_nickname, "Eevee");   // old_name → old_nickname column
+        assert_eq!(level,        0);
     }
 
     // ── format_timestamp / parse_timestamp round-trip ────────────────────────

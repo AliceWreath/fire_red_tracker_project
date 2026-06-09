@@ -790,6 +790,19 @@ Add `http://localhost:9090/cmd` in a browser tab to manage runs — **End Run** 
 
 ## Project status
 
+**v0.8.95** — CSV IV/EV columns, DB error visibility, import collision warnings, schema v8 index, test coverage:
+
+- **CSV export IV/EV completeness** — `export_run_csv()` now includes all twelve IV and EV columns for both caught and dead Pokémon sections. Header and query updated; column order is `iv_hp,iv_atk,iv_def,iv_spe,iv_spa,iv_spd,ev_hp,ev_atk,ev_def,ev_spe,ev_spa,ev_spd` inserted before the timestamp. Prior CSV exports omitted this data entirely despite the DB having it.
+- **`webhook_log(run_id)` index** — schema v8 adds `CREATE INDEX IF NOT EXISTS webhook_log_run_id_idx ON webhook_log(run_id)`. Without this, `/api/run/:id/webhook_log` did a full table scan on large instances.
+- **Route odds `species` field** — `/api/run/:id/route_odds` encountered entries now include a numeric `species` field alongside `species_name`, so clients don't have to parse the name string to look up sprite data.
+- **`DbReader::sync_player` double-lock fix** — the `run_id` mutex was acquired twice in sequence (read then write) with a gap between. Changed to a single lock scope: read old value, write new value, drop.
+- **Webhook worker spawn error logged** — `webhook::init()` now uses `std::thread::Builder` and logs `tracing::error!` if the spawn fails (e.g. resource exhaustion). Previously the webhook system would silently not start.
+- **`DbReader` query error visibility** — three `list_dead_with_records`, `list_encounters`, and `list_prev_run_encounters` methods changed from `.unwrap_or_default()` (silent empty on any DB error) to `.unwrap_or_else(|e| { tracing::warn!(...); vec![] })`. DB failures are now visible in the log.
+- **`import_run` collision warning** — caught and dead Pokémon inserts now check the affected-row count; `Ok(0)` (personality conflict, row skipped) emits `tracing::warn!` identifying the personality and species. Previously silent data loss on duplicate import.
+- **`EventKind::Badge` and `NicknameChange` tests** — four new unit tests covering `row_parts()` dispatch for the two previously-untested event variants; test count raised from 21 to 30.
+
+---
+
 **v0.8.94** — structured tracing, Result-returning DB writes, webhook delivery log, route coverage endpoint:
 
 - **Structured `tracing` migration** — all `eprintln!` / `println!` diagnostic calls across 13 library crates have been replaced with structured `tracing::info!`, `tracing::warn!`, `tracing::error!`, and `tracing::debug!` macros. User-facing CLI output (update checker, `--list-runs` table, run ID lines) and `#[cfg(feature = "dev-tools")]` scan output are intentionally preserved as `println!`/`eprintln!`.
