@@ -314,7 +314,7 @@ fn main() {
     let poll_ms             = cfg.poll_ms.clamp(20, 2000);
     let rom_path            = cli.rom.unwrap_or(cfg.rom);
     let dupes_clause        = cfg.dupes_clause;
-    let randomizer_mode     = cfg.randomizer_mode;
+    let allow_species_repeats     = cfg.allow_species_repeats;
     #[cfg(feature = "dev-tools")]
     let do_scan_balls   = cli.scan_balls_pocket;
     #[cfg(feature = "dev-tools")]
@@ -509,7 +509,7 @@ fn main() {
                 }
 
                 if state_initialized {
-                    enc_tracker.tick(current_state, &thread_party, dupes_clause, randomizer_mode);
+                    enc_tracker.tick(current_state, &thread_party, dupes_clause, allow_species_repeats);
                     last_badge_mask = game::check_for_new_badges(last_badge_mask);
                 }
 

@@ -179,9 +179,9 @@ The game-polling thread tracks badge state with a `last_badge_mask: Option<u8>`.
 
 `looks_like_header` in `fire_red_scanner` requires **all four** encounter table pointers to be either zero or a valid GBA ROM address. A zero pointer is valid and means "no encounters of that type on this map". Partial validity (some zero, some non-ROM) would indicate corrupted or misidentified data.
 
-### Randomizer mode
+### `allow_species_repeats`
 
-When `TrackerConfig::randomizer_mode` is `true`, `EncounterTracker::tick()` skips both the `species_encountered` check and the dupes-clause species check. The per-area deduplication (one entry per dungeon floor set per run) still applies. This allows multiple routes to record the same species without marking them as duplicates — necessary for randomized ROMs.
+When `TrackerConfig::allow_species_repeats` is `true`, `EncounterTracker::tick()` skips the `species_encountered` check ("have we recorded this species anywhere in the run?"). The per-area deduplication and the dupes clause both still apply normally. The effect is that the same species can be recorded as a first encounter on multiple different routes — useful for randomized ROMs or Nuzlocke variants that don't restrict by species history.
 
 ### Bot summary endpoint
 

@@ -126,12 +126,13 @@ pub struct TrackerConfig {
     /// Old boolean values are still accepted: `true` maps to `"shared"`, `false` to `"off"`.
     #[serde(default)]
     pub dupes_clause: DupesClauseMode,
-    /// When true, bypass species-based encounter deduplication. Each area still
-    /// allows only one encounter entry, but the same species may be recorded on
-    /// multiple different routes. Intended for randomized ROM runs where the same
-    /// species can legitimately appear on several routes.
+    /// When true, skip the "already encountered this species anywhere in the run"
+    /// check. Each area still allows only one encounter entry, and the dupes
+    /// clause still applies independently. Useful when the same species can
+    /// legitimately appear on multiple routes (e.g. randomized ROMs or certain
+    /// Nuzlocke variants that don't restrict by species).
     #[serde(default)]
-    pub randomizer_mode: bool,
+    pub allow_species_repeats: bool,
 }
 
 fn default_aggregator_host() -> String { "127.0.0.1".to_string() }
@@ -404,7 +405,7 @@ struct SetupApp {
     // Run / polling
     poll_ms:          String,
     dupes_clause:     DupesClauseMode,
-    randomizer_mode:  bool,
+    allow_species_repeats:  bool,
     // Test mode
     default_test:     bool,
     test_db:          String,
@@ -448,7 +449,7 @@ impl SetupApp {
             heading:          "First-Run Setup",
             poll_ms:          String::new(),
             dupes_clause:     DupesClauseMode::Off,
-            randomizer_mode:  false,
+            allow_species_repeats:  false,
             default_test:     false,
             test_db:          String::new(),
             test_agg_host:    String::new(),
@@ -494,7 +495,7 @@ impl SetupApp {
             heading:          "Edit Config",
             poll_ms: if cfg.poll_ms == 100 { String::new() } else { cfg.poll_ms.to_string() },
             dupes_clause:     cfg.dupes_clause,
-            randomizer_mode:  cfg.randomizer_mode,
+            allow_species_repeats:  cfg.allow_species_repeats,
             default_test:     cfg.default_test,
             test_db:       cfg.test.as_ref().and_then(|t| t.db.as_ref())
                                .map(|s| s.trim_start_matches("postgresql://").trim_start_matches("postgres://").to_string())
@@ -644,8 +645,8 @@ impl eframe::App for SetupApp {
 
                 ui.label("Randomizer mode:");
                 ui.vertical(|ui| {
-                    ui.checkbox(&mut self.randomizer_mode, "Bypass species dedup (for randomized runs)");
-                    ui.small("The same species may be recorded on multiple routes. Each route still allows only one encounter.");
+                    ui.checkbox(&mut self.allow_species_repeats, "Allow same species on multiple routes");
+                    ui.small("Skips the global species-seen check. Each route still allows one encounter, and the dupes clause still applies.");
                 });
                 ui.end_row();
 
@@ -862,7 +863,7 @@ impl eframe::App for SetupApp {
                         clip_on_badge: false,
                     },
                     dupes_clause: self.dupes_clause,
-                    randomizer_mode: self.randomizer_mode,
+                    allow_species_repeats: self.allow_species_repeats,
                 };
 
                 *self.result.lock().unwrap() = Some(config);
@@ -1050,7 +1051,7 @@ mod tests {
             webhooks:        WebhookConfig::default(),
             obs:             ObsConfig::default(),
             dupes_clause:    DupesClauseMode::Off,
-            randomizer_mode: false,
+            allow_species_repeats: false,
         }
     }
 

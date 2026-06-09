@@ -34,7 +34,7 @@ Shows each Pokémon's sprite (shiny-aware), nickname, level, nature, HP (colour-
   - `"shared"` — shared / cross-player: a new encounter is skipped if *any player* in the shared run has caught the species. Designed for Soul Link and co-op runs — one catch covers the whole group.
   
   Old boolean values (`true`/`false`) are still accepted and map to `"shared"` / `"off"` respectively for backward compatibility.
-- **Randomizer mode** — set `randomizer_mode = true` in `config.toml` (or toggle in the setup wizard / Settings panel) to disable species-based deduplication entirely. Each area still allows only one encounter entry per run, but the same species may be recorded on multiple different routes. Intended for randomized ROMs where repeating species across routes is expected and valid.
+- **`allow_species_repeats`** — set `allow_species_repeats = true` in `config.toml` (or toggle in the setup wizard / Settings panel) to skip the global "already seen this species in the run" check. Each area still allows only one encounter entry, and the dupes clause still applies independently. Useful for randomized ROMs or variants where the same species legitimately appears on multiple routes.
 - **Shiny detection** — the Gen III shiny formula (`p_high ^ p_low ^ id_high ^ id_low < 8`) is evaluated when an encounter is recorded. Shiny encounters are flagged in the database and trigger a shiny alert toast.
 - **Route completion board** — a grid showing every Nuzlocke-relevant zone colour-coded as caught (green), failed/fled (red), or not yet visited (grey), grouped by region. Available at `/:index/routes`.
 
@@ -783,7 +783,7 @@ Add `http://localhost:9090/cmd` in a browser tab to manage runs — **End Run** 
 
 **v0.8.91** — new features: randomizer mode, bot summary endpoint, run-compare page, HP bar, CSV export link:
 
-- **Randomizer mode** — a new `randomizer_mode = true` config flag (also exposed in the setup wizard and Settings panel) disables species-based encounter deduplication. Each area still allows only one first-encounter entry, but the same species may now be recorded on multiple routes. Designed for randomized ROM runs where the standard dupes-clause species check is meaningless.
+- **`allow_species_repeats`** — new config flag (also exposed in the setup wizard and Settings panel) that skips the global "already encountered this species in the run" check. The per-area one-encounter rule and the dupes clause both still apply. The same species can now appear as a first encounter on multiple different routes.
 - **`/api/bot/:index` endpoint** — plain-text one-liner returning `"<player> — <hp>/<max_hp> HP — <zone>"` for the given tracker slot. Suitable for Twitch/stream chat bots answering `!status` commands without parsing JSON.
 - **`/compare` run-comparison page** — side-by-side stats for any two completed (or active) runs. Selects from a dropdown populated by `/api/runs`; pulls per-run stats from `/api/run/:id/stats`. Highlighted green/red cells indicate which run has the better value for each metric. Encounter and death logs are listed inline for each run.
 - **HP bar in party overlay** — the `/:index/party` overlay now shows a colour-coded HP bar (green → yellow → red) below each party slot's HP text in both dark and light themes. Width transitions smoothly on update.

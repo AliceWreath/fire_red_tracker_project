@@ -33,7 +33,7 @@ struct SettingsDraft {
     // Run / polling
     poll_ms:          String,
     dupes_clause:     crate::config::DupesClauseMode,
-    randomizer_mode:  bool,
+    allow_species_repeats:  bool,
     // Test mode
     default_test:     bool,
     test_db:          String,
@@ -82,7 +82,7 @@ impl SettingsDraft {
             preferred_player: cfg.preferred_player.map(|n| n.to_string()).unwrap_or_default(),
             poll_ms:          if cfg.poll_ms == 100 { String::new() } else { cfg.poll_ms.to_string() },
             dupes_clause:     cfg.dupes_clause,
-            randomizer_mode:  cfg.randomizer_mode,
+            allow_species_repeats:  cfg.allow_species_repeats,
             default_test:     cfg.default_test,
             test_db:       cfg.test.as_ref().and_then(|t| t.db.as_ref())
                                .map(|s| s.trim_start_matches("postgresql://").trim_start_matches("postgres://").to_string())
@@ -486,8 +486,8 @@ impl WindowInfo {
 
                 ui.label("Randomizer mode:");
                 ui.vertical(|ui| {
-                    ui.checkbox(&mut s.randomizer_mode, "Bypass species dedup (for randomized runs)");
-                    ui.small("The same species may be recorded on multiple routes. Each route still allows only one encounter.");
+                    ui.checkbox(&mut s.allow_species_repeats, "Allow same species on multiple routes");
+                    ui.small("Skips the global species-seen check. Each route still allows one encounter, and the dupes clause still applies.");
                 });
                 ui.end_row();
 
@@ -695,7 +695,7 @@ impl WindowInfo {
                         clip_on_badge: s.obs_clip_badge,
                     },
                     dupes_clause: s.dupes_clause,
-                    randomizer_mode: s.randomizer_mode,
+                    allow_species_repeats: s.allow_species_repeats,
                 };
                 save_config(&cfg, &self.config_path);
                 self.settings_open = false;

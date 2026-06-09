@@ -45,7 +45,9 @@ Game-polling thread (100 ms)
   │    if changed → new battle detected
   │      is_wild? (compare enemy ot_id to party lead ot_id)
   │      has_encounter(map)? → no-op (already recorded this area)
-  │      dupes_clause check (DupesClauseMode):
+  │      allow_species_repeats = false?
+  │        species_encountered()? → no-op (already recorded this species this run)
+  │      dupes_clause check (DupesClauseMode, always applied):
   │        Off       → no extra check
   │        PerPlayer → species_caught_by_self()? → no-op (this player already caught it)
   │        Shared    → species_caught_any()?      → no-op (any player already caught it)
@@ -304,4 +306,24 @@ aggregator reader loop
 overlay.html
     active_run_id == null && run_summary present
     → renderRunEnded() — shows summary card + first-encounters grid
+```
+
+## New HTTP Endpoints (v0.8.91)
+
+```
+GET /api/bot/:index
+    reads SharedSlots[index].state (same source as /api/slot/:index)
+    returns plain text: "<player> — <hp>/<max_hp> HP — <zone>"
+    suitable for Twitch chat bots; no JSON parsing needed
+
+GET /compare
+    serves compare.html (self-contained JS page)
+    page fetches GET /api/runs → run list for dropdowns
+    on selection fetches GET /api/run/:id/stats → per-run stats
+    renders side-by-side panels; better/worse values highlighted green/red
+    stats are cached in-page per run ID
+
+GET /api/run/:id/export?format=csv   (pre-existing endpoint, now linked from /db)
+    linked as a direct browser download from the CSV column in the Runs table
+    on the /db page — no new server handler, just surfaced in the UI
 ```
