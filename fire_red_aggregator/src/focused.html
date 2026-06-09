@@ -57,6 +57,11 @@ html, body {
 .hp-high { color: #fff; }
 .hp-mid  { color: #ffe040; }
 .hp-low  { color: #ff5050; }
+.hp-bar-wrap { width: 100%; height: 5px; background: rgba(255,255,255,0.12); border-radius: 3px; margin-top: 2px; overflow: hidden; }
+.hp-bar-fill { height: 100%; border-radius: 3px; transition: width 0.3s ease; }
+.hp-bar-fill.hp-high { background: #5de05d; }
+.hp-bar-fill.hp-mid  { background: #ffe040; }
+.hp-bar-fill.hp-low  { background: #ff5050; }
 .exp { font-size: 10px; color: #aaa; font-weight: 500; margin-top: 1px; }
 .enc-section { margin-top: 4px; }
 .enc-heading { font-size: 11px; color: #ccc; font-style: italic; font-weight: 600; margin-bottom: 3px; }
@@ -165,6 +170,10 @@ html[data-theme=light] .soul-link-ann{color:#880088}
 html[data-theme=light] .hp-high{color:#111}
 html[data-theme=light] .hp-mid{color:#996600}
 html[data-theme=light] .hp-low{color:#cc2200}
+html[data-theme=light] .hp-bar-wrap{background:rgba(0,0,0,0.12)}
+html[data-theme=light] .hp-bar-fill.hp-high{background:#2a9e2a}
+html[data-theme=light] .hp-bar-fill.hp-mid{background:#c4970a}
+html[data-theme=light] .hp-bar-fill.hp-low{background:#cc2200}
 html[data-theme=light] .run-ended-summary{background:rgba(180,120,0,.12);color:#333}
 html[data-theme=light] .run-ended-summary .summary-title{color:#994400}
 html[data-theme=light] #version-badge{color:rgba(0,0,0,.6);background:rgba(255,255,255,.8)}
@@ -367,6 +376,10 @@ function renderParty(root, slot) {
             const ratio = mon.max_hp > 0 ? mon.hp / mon.max_hp : 0;
             const cls   = ratio < 0.3 ? 'hp-low' : ratio < 0.8 ? 'hp-mid' : 'hp-high';
             content.appendChild(el('div', 'hp ' + cls, mon.hp + '/' + mon.max_hp));
+            const barWrap = document.createElement('div'); barWrap.className = 'hp-bar-wrap';
+            const barFill = document.createElement('div'); barFill.className = 'hp-bar-fill ' + cls;
+            barFill.style.width = Math.round(ratio * 100) + '%';
+            barWrap.appendChild(barFill); content.appendChild(barWrap);
             content.appendChild(statRowEl('mon-sub-sm', mon.nature, mon.max_hp, mon.attack, mon.defense, mon.speed, mon.sp_attack, mon.sp_defense));
             content.appendChild(el('div', 'exp', 'Exp: ' + mon.exp));
             const toNext = expToNext(mon.growth_rate, mon.level, mon.exp);

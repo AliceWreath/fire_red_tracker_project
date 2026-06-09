@@ -246,7 +246,9 @@ impl SlotCache {
             caught:          Vec::new(),
             encounters:      Vec::new(),
             prev_encounters: Vec::new(),
-            last_refresh:    Instant::now() - Duration::from_secs(60),
+            last_refresh:    Instant::now()
+                .checked_sub(Duration::from_secs(60))
+                .unwrap_or_else(Instant::now),
         }
     }
 }
@@ -962,6 +964,8 @@ const RUNSTATS_HTML:     &str = include_str!("run_stats.html");
 const SHINY_HTML:        &str = include_str!("shiny.html");
 const MEMORIAL_HTML:     &str = include_str!("memorial.html");
 const SOULLINK_HTML:     &str = include_str!("soullink.html");
+const ABOUT_HTML:        &str = include_str!("about.html");
+const COMPARE_HTML:      &str = include_str!("compare.html");
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -1063,7 +1067,10 @@ async fn serve_db_json(State(state): State<WebState>) -> axum::Json<serde_json::
         None    => return axum::Json(serde_json::json!({ "error": "No database configured" })),
     };
     let result = tokio::task::spawn_blocking(move || fire_red_database::dump_all(&conn)).await;
-    axum::Json(result.unwrap_or_else(|_| serde_json::json!({ "error": "Query failed" })))
+    axum::Json(result.unwrap_or_else(|e| {
+        tracing::error!("db dump task failed: {e}");
+        serde_json::json!({ "error": "Query failed" })
+    }))
 }
 
 async fn clear_db(
@@ -1154,6 +1161,34 @@ async fn api_slot_odds(
         "rock_smash":  make_list(&h.rock_smash_encounters),
         "fishing":     make_list(&h.fishing_encounters),
     }))
+}
+
+/// Returns a plain-text one-line summary of a tracker slot, suitable for chat
+/// bots or stream commands. Format: `"<Player> — <HP>/<MaxHP> — <MapName>"`.
+/// Returns `"Slot <n> not found"` or `"Slot <n> not connected"` on error.
+async fn api_bot_summary(
+    State(state): State<WebState>,
+    Path(index): Path<usize>,
+) -> String {
+    let slots = state.live_slots.lock_or_recover().clone();
+    let slot = match slots.get(index) {
+        Some(s) => s.clone(),
+        None    => return format!("Slot {index} not found"),
+    };
+    let gs = match slot.state.lock_or_recover().clone() {
+        Some(gs) => gs,
+        None     => return format!("Slot {index} not connected"),
+    };
+    let player = &gs.player_name;
+    let map    = if gs.zone_name.is_empty() { "Unknown location" } else { &gs.zone_name };
+    let (hp, max_hp) = gs.party.first()
+        .map(|p| (p.hp, p.max_hp))
+        .unwrap_or((0, 0));
+    format!("{player} — {hp}/{max_hp} HP — {map}")
+}
+
+async fn serve_compare(State(state): State<WebState>) -> Html<String> {
+    Html(apply_page(COMPARE_HTML, state.testing))
 }
 
 async fn ws_handler(
@@ -1274,6 +1309,10 @@ async fn serve_soullink(State(state): State<WebState>) -> Html<String> {
     Html(apply_page(SOULLINK_HTML, state.testing))
 }
 
+async fn serve_about(State(state): State<WebState>) -> Html<String> {
+    Html(apply_page(ABOUT_HTML, state.testing))
+}
+
 /// `GET /api/run/:id/stats` — per-run statistics JSON.
 async fn api_run_stats(
     State(state): State<WebState>,
@@ -1282,6 +1321,18 @@ async fn api_run_stats(
     let conn = require_db!(state);
     let result = tokio::task::spawn_blocking(move || {
         fire_red_database::run_stats(&conn, run_id)
+    }).await;
+    axum::Json(result.unwrap_or_else(|_| serde_json::json!({ "error": "Task panicked" })))
+}
+
+/// `GET /api/run/:id/route_stats` — per-route catch-rate statistics JSON.
+async fn api_run_route_stats(
+    State(state): State<WebState>,
+    Path(run_id): Path<u32>,
+) -> axum::Json<serde_json::Value> {
+    let conn = require_db!(state);
+    let result = tokio::task::spawn_blocking(move || {
+        fire_red_database::route_stats(&conn, run_id)
     }).await;
     axum::Json(result.unwrap_or_else(|_| serde_json::json!({ "error": "Task panicked" })))
 }
@@ -1321,6 +1372,33 @@ async fn api_run_export(
         }).await;
         axum::Json(result.unwrap_or_else(|_| serde_json::json!({ "error": "Task panicked" }))).into_response()
     }
+}
+
+/// `GET /api/run/:id/route_odds` — encountered and unencountered wild areas for a run.
+///
+/// Returns `encountered` (routes already visited with species and catch info)
+/// and `unencountered` (all known FireRed wild areas not yet recorded).
+async fn api_run_route_odds(
+    State(state): State<WebState>,
+    Path(run_id): Path<u32>,
+) -> axum::Json<serde_json::Value> {
+    let conn = require_db!(state);
+    let result = tokio::task::spawn_blocking(move || {
+        fire_red_database::route_odds_json(&conn, run_id)
+    }).await;
+    axum::Json(result.unwrap_or_else(|_| serde_json::json!({ "error": "Task panicked" })))
+}
+
+/// `GET /api/run/:id/webhook_log` — webhook delivery receipt log for a run.
+async fn api_run_webhook_log(
+    State(state): State<WebState>,
+    Path(run_id): Path<u32>,
+) -> axum::Json<serde_json::Value> {
+    let conn = require_db!(state);
+    let result = tokio::task::spawn_blocking(move || {
+        fire_red_database::get_webhook_log_json(&conn, run_id)
+    }).await;
+    axum::Json(result.unwrap_or_else(|_| serde_json::json!({ "error": "Task panicked" })))
 }
 
 /// `GET /api/run/:id/shiny` — shiny odds statistics JSON for a run.
@@ -1509,12 +1587,16 @@ pub fn run(live_slots: SharedSlots, port: u16, db_conn: Option<String>, testing:
             .route("/api/state", get(api_state))
             .route("/api/slot/:index", get(api_slot))
             .route("/api/slot/:index/odds", get(api_slot_odds))
+            .route("/api/bot/:index", get(api_bot_summary))
             .route("/api/command/:cmd", post(api_command))
             .route("/api/db/query", post(api_db_query))
             .route("/api/runs",            get(api_runs))
             .route("/api/run/import",      post(api_run_import))
-            .route("/api/run/:id/stats",   get(api_run_stats))
-            .route("/api/run/:id/shiny",   get(api_shiny_stats))
+            .route("/api/run/:id/stats",        get(api_run_stats))
+            .route("/api/run/:id/route_stats",   get(api_run_route_stats))
+            .route("/api/run/:id/route_odds",    get(api_run_route_odds))
+            .route("/api/run/:id/webhook_log",   get(api_run_webhook_log))
+            .route("/api/run/:id/shiny",         get(api_shiny_stats))
             .route("/api/run/:id/export",  get(api_run_export))
             .route("/api/run/:id/events",  get(api_run_events))
             .route("/api/timeline",        get(api_active_timeline))
@@ -1532,11 +1614,13 @@ pub fn run(live_slots: SharedSlots, port: u16, db_conn: Option<String>, testing:
             .route("/:index/box", get(serve_focused))
             .route("/run/:id/stats", get(serve_run_stats))
             .route("/run/:id/memorial", get(serve_memorial))
+            .route("/about", get(serve_about))
+            .route("/compare", get(serve_compare))
             .with_state(web_state);
 
         let addr = format!("0.0.0.0:{}", port);
-        println!("WebSocket overlay listening on http://{}", addr);
-        println!("Add in OBS as Browser Source: http://localhost:{}", port);
+        tracing::info!("WebSocket overlay listening on http://{}", addr);
+        tracing::info!("Add in OBS as Browser Source: http://localhost:{}", port);
 
         let listener = tokio::net::TcpListener::bind(&addr)
             .await
@@ -1545,7 +1629,7 @@ pub fn run(live_slots: SharedSlots, port: u16, db_conn: Option<String>, testing:
             listener,
             app.into_make_service_with_connect_info::<SocketAddr>(),
         ).await {
-            eprintln!("WebSocket server error: {e}");
+            tracing::error!("WebSocket server error: {e}");
         }
     });
 }

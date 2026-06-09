@@ -53,7 +53,7 @@ pub fn char_gba_to_ascii(character: u8) -> char {
     }
 }
 
-/// Retrieves the nmame of a pokemon from the cached name repository by its species ID.
+/// Retrieves the name of a pokemon from the cached name repository by its species ID.
 /// 
 /// Returns an error if the species index is out of bounds.
 /// 

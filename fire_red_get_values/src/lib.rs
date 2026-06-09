@@ -6,14 +6,14 @@
 //! 
 //! ### `get_*` - parse from hex-string token buffers
 //! 
-//! These functions accept `&[&str]` slices of hexadecimal byte tokes as
+//! These functions accept `&[&str]` slices of hexadecimal byte tokens as
 //! returned by RetroArch's `READ_CORE_MEMORY` response. Each token is a
 //! two-character ASCII hex string (e.g. `"A4"`). Values are read as 
 //! **little-endian**, matching the GBA's native byte order.
 //! 
 //! ### `read_*` - read from raw byte slices (little-endian)
 //! 
-//! These functions accept a `&[u8]` plus a byte `offset` and read teh value
+//! These functions accept a `&[u8]` plus a byte `offset` and read the value
 //! in **little-endian** order. The are used when working directly with ROM or
 //! memory buffers rather than RetroArch protocol responses.
 //! 
@@ -65,7 +65,7 @@ fn get_bytes(buffer: &[&str]) -> Vec<u8> {
 /// * `buffer`          0 Slice of hex byte string tokens.
 pub fn get_n_bytes(n: usize, buffer: &[&str]) -> Option<Vec<u8>> {
     if buffer.len() < n {
-        eprintln!("get_n_bytes: requested {n} bytes but buffer len is only {}", buffer.len());
+        tracing::warn!("get_n_bytes: requested {n} bytes but buffer len is only {}", buffer.len());
         return None;
     }
     
@@ -244,7 +244,7 @@ pub fn read_i32(bytes: &[u8], offset: usize) -> i32 {
 
 /// Reads a single `u8` from `bytes` at `offset`
 /// 
-/// Byte order is irrelevant for signel bytes; this is the big-endian
+/// Byte order is irrelevant for single bytes; this is the big-endian
 /// counterpart of [`read_u8`] for API symmetry.
 /// 
 /// Returns `0` if `offset` is out of bounds.

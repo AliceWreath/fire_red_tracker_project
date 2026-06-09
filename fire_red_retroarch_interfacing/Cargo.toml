@@ -5,4 +5,5 @@ edition = "2024"
 license.workspace = true
 
 [dependencies]
+tracing.workspace   = true
 once_cell.workspace = true

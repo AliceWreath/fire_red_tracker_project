@@ -111,14 +111,14 @@ static THREAD_HANDLE: Mutex<Option<std::thread::JoinHandle<()>>> = Mutex::new(No
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn c_start_loop(file_path: *const c_char, is_clean: bool) -> c_int {
     if file_path.is_null() {
-        eprintln!("Must pass a path to the file!");
+        tracing::error!("Must pass a path to the file!");
         return -1;
     }
     let c_str = unsafe { CStr::from_ptr(file_path) };
     let file_path_str = match c_str.to_str() {
         Ok(s) => s,
         Err(_) => {
-            eprintln!("Invalid UTF-8 string for file path!");
+            tracing::error!("Invalid UTF-8 string for file path!");
             return -1;
         }
     };
@@ -156,28 +156,28 @@ pub fn start_loop(file_path: &str, _is_clean: bool) -> c_int {
     }
 
     if file_path.is_empty() {
-        eprintln!("Must pass a path to the file!");
+        tracing::error!("Must pass a path to the file!");
         RUNNING.store(false, Ordering::SeqCst);
         return -1;
     }
 
     // Load the ROM into the global buffer — everything else depends on this.
     if let Err(e) = fill_rom(file_path) {
-        eprintln!("Failed to load ROM: {:?}", e);
+        tracing::error!("Failed to load ROM: {:?}", e);
         RUNNING.store(false, Ordering::SeqCst);
         return -2;
     }
 
     // Scan the ROM for the WildMonHeader table offset required by
     // `fill_static_pokemon_header_list`.
-    println!("Scanning for WildMonHeaders...");
+    tracing::info!("Scanning for WildMonHeaders...");
     let start_wild_header_offset = match find_wild_headers(get_rom()) {
         Some(offset) => {
-            println!("Found WildMonHeaders at 0x{:08X}!", offset);
+            tracing::info!("Found WildMonHeaders at 0x{:08X}!", offset);
             offset
         }
         None => {
-            eprintln!("Could not locate WildMonHeaders — aborting.");
+            tracing::error!("Could not locate WildMonHeaders — aborting.");
             RUNNING.store(false, Ordering::SeqCst);
             return -3;
         }
@@ -185,7 +185,7 @@ pub fn start_loop(file_path: &str, _is_clean: bool) -> c_int {
 
     // Log the detected ROM revision so the user can confirm they loaded the
     // right ROM.  Detection happens inside fill_rom via fill_static_buffer.
-    println!("ROM revision: {:?}", fire_red_rom_buffer::get_rom_revision());
+    tracing::info!("ROM revision: {:?}", fire_red_rom_buffer::get_rom_revision());
 
     // Build all ROM-derived caches that subsystems read at runtime.
     fill_static_pokemon_header_list(get_rom(), start_wild_header_offset);
@@ -194,7 +194,7 @@ pub fn start_loop(file_path: &str, _is_clean: bool) -> c_int {
     // Locate gMapGroupsAndMaps using one pair per distinct group from the wild
     // encounter headers. This is non-fatal: zone names fall back to the
     // hardcoded lookup table if the scan fails.
-    println!("Scanning for gMapGroupsAndMaps...");
+    tracing::info!("Scanning for gMapGroupsAndMaps...");
     {
         // Take up to 20 pairs from across the encounter list. More pairs means
         // stronger validation; group diversity is not required — the 3-level
@@ -207,11 +207,11 @@ pub fn start_loop(file_path: &str, _is_clean: bool) -> c_int {
 
         match find_map_groups_table(get_rom(), &known_pairs) {
             Some(offset) => {
-                println!("Found gMapGroupsAndMaps at ROM offset 0x{:08X}", offset);
+                tracing::info!("Found gMapGroupsAndMaps at ROM offset 0x{:08X}", offset);
                 MAP_GROUPS_TABLE.get_or_init(|| offset);
             }
             None => {
-                eprintln!("Warning: gMapGroupsAndMaps not found — zone names will use fallback");
+                tracing::warn!("gMapGroupsAndMaps not found — zone names will use fallback");
             }
         }
     }
@@ -234,7 +234,7 @@ pub fn start_loop(file_path: &str, _is_clean: bool) -> c_int {
     fire_red_trainer_data::start_loop();
 
     STATE.get_or_init(|| Mutex::new(FireRedState::default()));
-    println!("Spawning map-polling loop...");
+    tracing::info!("Spawning map-polling loop...");
 
     // Background thread: reads map state from the EWRAM snapshot every
     // SLEEP_DURATION ms and writes the result into STATE. No UDP calls.
@@ -279,7 +279,7 @@ pub extern "C" fn stop_loop() {
     let mut handle_slot = THREAD_HANDLE.lock_or_recover();
     if let Some(handle) = handle_slot.take()
         && let Err(e) = handle.join() {
-        eprintln!("Error joining map-polling thread: {:?}", e);
+        tracing::error!("Error joining map-polling thread: {:?}", e);
     }
 }
 

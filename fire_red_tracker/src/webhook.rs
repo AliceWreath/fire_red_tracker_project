@@ -91,7 +91,7 @@ enum PostBody {
 
 
 enum WorkerTask {
-    Webhook { url: String, body: PostBody },
+    Webhook { url: String, body: PostBody, event_type: String, run_id: Option<u32> },
     ObsClip,
 }
 
@@ -215,7 +215,7 @@ fn find_unknown_placeholders(template: &str) -> Vec<String> {
         if rest.starts_with("{{") { rest = &rest[2..]; continue; }
         if let Some(close) = rest.find('}') {
             let candidate = &rest[..=close];
-            if candidate != "}}" && !KNOWN_PLACEHOLDERS.contains(&candidate) {
+            if !KNOWN_PLACEHOLDERS.contains(&candidate) {
                 unknown.push(candidate.to_string());
             }
             rest = &rest[close + 1..];
@@ -239,8 +239,8 @@ fn validate_templates(config: &WebhookConfig) {
         if let Some(t) = template {
             let bad = find_unknown_placeholders(t);
             if !bad.is_empty() {
-                eprintln!(
-                    "Warning: {event}_template contains unknown placeholder(s): {}  \
+                tracing::warn!(
+                    "{event}_template contains unknown placeholder(s): {}  \
                      (known: {})",
                     bad.join(", "),
                     KNOWN_PLACEHOLDERS.join(", "),
@@ -265,41 +265,55 @@ pub fn init(config: WebhookConfig, obs_config: ObsConfig) {
     if STATE.set(WebhookState { tx, config, obs_config }).is_err() {
         return; // already initialized
     }
-    std::thread::spawn(move || {
+    if let Err(e) = std::thread::Builder::new()
+        .name("webhook-worker".into())
+        .spawn(move || {
         let client = reqwest::blocking::Client::builder()
             .timeout(std::time::Duration::from_secs(5))
             .build()
             .unwrap_or_else(|_| reqwest::blocking::Client::new());
         for task in rx {
             match task {
-                WorkerTask::Webhook { url, body } => {
-                    // Retry up to 2 additional times (3 total) with a 2 s pause.
+                WorkerTask::Webhook { url, body, event_type, run_id } => {
+                    // Serialize the payload once; Raw already has a string.
+                    let payload = match &body {
+                        PostBody::Raw(t)    => t.clone(),
+                        PostBody::Json(ev)  => serde_json::to_string(ev).unwrap_or_default(),
+                    };
+                    let raw_text = if let PostBody::Raw(t) = &body { Some(t.clone()) } else { None };
                     let mut attempts = 0u32;
+                    let mut success  = false;
                     loop {
                         let result = match &body {
                             PostBody::Json(event) => client.post(&url).json(event).send(),
-                            PostBody::Raw(text)   => client.post(&url)
+                            PostBody::Raw(_)      => client.post(&url)
                                 .header("content-type", "application/json")
-                                .body(text.clone())
+                                .body(raw_text.clone().unwrap_or_default())
                                 .send(),
                         };
                         match result {
-                            Ok(_) => break,
+                            Ok(_) => { success = true; break; }
                             Err(e) => {
                                 attempts += 1;
                                 if attempts >= 3 {
-                                    eprintln!("Webhook POST to {url} failed after {attempts} attempt(s): {e}");
+                                    tracing::warn!("Webhook POST to {url} failed after {attempts} attempt(s): {e}");
                                     break;
                                 }
-                                std::thread::sleep(std::time::Duration::from_secs(2));
+                                // Exponential backoff: 1 s, 2 s between retries.
+                                std::thread::sleep(std::time::Duration::from_secs(1 << (attempts - 1)));
                             }
                         }
                     }
+                    fire_red_database::record_webhook_delivery(
+                        run_id, &event_type, &url, success, attempts.max(1), &payload,
+                    );
                 }
                 WorkerTask::ObsClip => obs_clip_inner(),
             }
         }
-    });
+    }) {
+        tracing::error!("Failed to spawn webhook worker thread: {e}");
+    }
 }
 
 /// Enqueue a webhook event for delivery. Returns immediately; the HTTP POST
@@ -311,45 +325,57 @@ pub fn init(config: WebhookConfig, obs_config: ObsConfig) {
 pub fn fire_event(event: WebhookEvent) {
     let Some(state) = STATE.get() else { return; };
 
-    let (url, template, obs_clip) = match &event {
+    let (url, template, obs_clip, event_type_str) = match &event {
         WebhookEvent::Death { .. } => (
             state.config.death_url.as_deref(),
             state.config.death_template.as_deref(),
             state.obs_config.clip_on_death,
+            "death",
         ),
         WebhookEvent::Catch { .. } => (
             state.config.catch_url.as_deref(),
             state.config.catch_template.as_deref(),
             false,
+            "catch",
         ),
         WebhookEvent::Shiny { .. } => (
             state.config.shiny_url.as_deref(),
             state.config.shiny_template.as_deref(),
             state.obs_config.clip_on_shiny,
+            "shiny",
         ),
         WebhookEvent::Wipe { .. } => (
             state.config.wipe_url.as_deref(),
             state.config.wipe_template.as_deref(),
             state.obs_config.clip_on_wipe,
+            "wipe",
         ),
         WebhookEvent::Badge { .. } => (
             state.config.badge_url.as_deref(),
             state.config.badge_template.as_deref(),
             state.obs_config.clip_on_badge,
+            "badge",
         ),
         WebhookEvent::NicknameChange { .. } => (
             state.config.nickname_url.as_deref(),
             state.config.nickname_template.as_deref(),
             false,
+            "nickname_change",
         ),
     };
 
     if let Some(url) = url {
+        let run_id = fire_red_database::get_active_run_id();
         let body = match template {
             Some(t) => PostBody::Raw(render_template(t, &event)),
             None    => PostBody::Json(event),
         };
-        let _ = state.tx.send(WorkerTask::Webhook { url: url.to_string(), body });
+        let _ = state.tx.send(WorkerTask::Webhook {
+            url:        url.to_string(),
+            body,
+            event_type: event_type_str.to_string(),
+            run_id,
+        });
     }
 
     if obs_clip {
@@ -363,7 +389,7 @@ pub fn fire_event(event: WebhookEvent) {
 
 fn obs_clip_inner() {
     if let Err(e) = try_obs_clip() {
-        eprintln!("OBS clip failed: {e}");
+        tracing::warn!("OBS clip failed: {e}");
     }
 }
 

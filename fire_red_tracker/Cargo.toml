@@ -1,6 +1,6 @@
 [package]
 name = "fire_red_tracker"
-version = "0.8.89"
+version = "0.8.95"
 edition = "2024"
 license.workspace = true
 
@@ -26,15 +26,15 @@ fire_red_badge.workspace       = true
 fire_red_memory.workspace      = true
 fire_red_box_monitor.workspace     = true
 fire_red_location_names.workspace  = true
-self_update.workspace          = true
 fire_red_database.workspace    = true
 fire_red_text.workspace        = true
-reqwest.workspace              = true
 serde_json.workspace           = true
 tungstenite.workspace          = true
 sha2.workspace                 = true
 tracing.workspace              = true
 tracing-subscriber.workspace   = true
+self_update.workspace          = true
+reqwest.workspace              = true
 
 [features]
 dev-tools = []

@@ -5,6 +5,7 @@ edition = "2024"
 license.workspace = true
 
 [dependencies]
+tracing.workspace               = true
 postgres.workspace              = true
 serde_json.workspace            = true
 fire_red_location_names.workspace = true

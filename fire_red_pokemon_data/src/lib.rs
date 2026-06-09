@@ -57,7 +57,7 @@ pub struct WildPokemonHeaderROM {
     /// Padding bytes (unused by the game).
     pub filler: [c_uchar; 2],
     /// ROM pointer to the land encounter table, or 0 if none.
-    pub land_mon_enounters_rom_ptr: c_uint,
+    pub land_mon_encounters_rom_ptr: c_uint,
     /// ROM pointer to the water encounter table, or 0 if none.
     pub water_mon_encounters_rom_ptr: c_uint,
     /// ROM pointer to the rock smash encounter table, or 0 if none.
@@ -218,7 +218,7 @@ impl WildPokemonHeaderROM {
             map_group:                    read_u8(buffer, offset),
             map_num:                      read_u8(buffer, offset + 1),
             filler:                       Default::default(),
-            land_mon_enounters_rom_ptr:   read_u32(buffer, offset + 4)  & 0x07FFFFFF,
+            land_mon_encounters_rom_ptr:   read_u32(buffer, offset + 4)  & 0x07FFFFFF,
             water_mon_encounters_rom_ptr:  read_u32(buffer, offset + 8)  & 0x07FFFFFF,
             rock_smash_encounters_rom_ptr: read_u32(buffer, offset + 12) & 0x07FFFFFF,
             fishing_encounters_rom_ptr:    read_u32(buffer, offset + 16) & 0x07FFFFFF,
@@ -337,7 +337,7 @@ impl WildPokemonHeader {
             }
         };
 
-        fill(header_rom.land_mon_enounters_rom_ptr,    &mut header.land_mon_encounters);
+        fill(header_rom.land_mon_encounters_rom_ptr,    &mut header.land_mon_encounters);
         fill(header_rom.water_mon_encounters_rom_ptr,  &mut header.water_mon_encounters);
         fill(header_rom.rock_smash_encounters_rom_ptr, &mut header.rock_smash_encounters);
         fill(header_rom.fishing_encounters_rom_ptr,    &mut header.fishing_encounters);
@@ -372,7 +372,7 @@ impl WildPokemonHeaderFFI {
             }
         };
 
-        fill(header_rom.land_mon_enounters_rom_ptr,    &mut header.land_mon_encounters);
+        fill(header_rom.land_mon_encounters_rom_ptr,    &mut header.land_mon_encounters);
         fill(header_rom.water_mon_encounters_rom_ptr,  &mut header.water_mon_encounters);
         fill(header_rom.rock_smash_encounters_rom_ptr, &mut header.rock_smash_encounters);
         fill(header_rom.fishing_encounters_rom_ptr,    &mut header.fishing_encounters);
@@ -481,7 +481,7 @@ unsafe fn dealloc_wild_pokemon_info_ffi(ptr: *mut WildPokemonInfoFFI) {
 /// `ptr` must be a valid pointer allocated by [`alloc_wild_pokemon_info_ffi`].
 pub unsafe fn get_wild_pokemon_vector_from_ptr_ffi(ptr: *mut WildPokemonInfoFFI) -> Vec<WildPokemon> {
     if ptr.is_null() {
-        eprintln!("get_wild_pokemon_vector_from_ptr_ffi: null pointer");
+        tracing::warn!("get_wild_pokemon_vector_from_ptr_ffi: null pointer");
         return Vec::new();
     }
 
@@ -507,7 +507,7 @@ pub fn get_all_pokemon_headers_from_rom(buffer: &[u8], offset: usize) -> Vec<Wil
         && read_u16(buffer, offset + index) != 0xFFFF
     {
         if offset + index >= buffer.len() {
-            eprintln!("Overran ROM buffer while reading pokemon headers.");
+            tracing::error!("Overran ROM buffer while reading pokemon headers.");
             break;
         }
         headers.push(WildPokemonHeaderROM::fill_header(buffer, offset + index));
@@ -567,7 +567,7 @@ mod tests {
         // ROM pointers have the 0x08000000 bank byte stripped (mask 0x07FFFFFF).
         let buf = header_buf(1, 0, 0x0812_3456, 0x0800_0001, 0, 0);
         let h = WildPokemonHeaderROM::fill_header(&buf, 0);
-        assert_eq!(h.land_mon_enounters_rom_ptr,  0x0012_3456);
+        assert_eq!(h.land_mon_encounters_rom_ptr,  0x0012_3456);
         assert_eq!(h.water_mon_encounters_rom_ptr, 0x0000_0001);
         assert_eq!(h.rock_smash_encounters_rom_ptr, 0);
         assert_eq!(h.fishing_encounters_rom_ptr,    0);

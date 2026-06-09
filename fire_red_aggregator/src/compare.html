@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Run Compare — FireRed Tracker</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body {
+    background: #0f0f0f;
+    font-family: 'Segoe UI', Tahoma, sans-serif;
+    color: #e0e0e0;
+    min-height: 100vh;
+}
+#root { max-width: 960px; margin: 0 auto; padding: 24px 16px; }
+
+.page-header {
+    display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+    padding-bottom: 12px; border-bottom: 1px solid rgba(255,255,255,0.1);
+    margin-bottom: 20px;
+}
+.page-title { font-size: 22px; font-weight: bold; color: #fff; flex: 1 1 auto; }
+.status { font-size: 12px; color: #888; }
+
+.selectors {
+    display: flex; gap: 16px; flex-wrap: wrap;
+    margin-bottom: 20px;
+}
+.sel-group { display: flex; flex-direction: column; gap: 4px; flex: 1 1 200px; }
+.sel-label { font-size: 11px; font-weight: 700; color: #aaa; text-transform: uppercase; letter-spacing: 0.5px; }
+select {
+    background: #1a1a1a; border: 1px solid rgba(255,255,255,0.15);
+    border-radius: 6px; color: #e0e0e0; font-size: 13px;
+    padding: 5px 8px; cursor: pointer;
+}
+select:focus { outline: none; border-color: rgba(255,255,255,0.35); }
+
+.compare-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+}
+@media (max-width: 600px) { .compare-grid { grid-template-columns: 1fr; } }
+
+.run-panel {
+    background: rgba(255,255,255,0.04);
+    border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 10px;
+    padding: 16px;
+}
+.run-panel.active-run { border-color: rgba(96,224,96,0.3); }
+
+.run-name { font-size: 17px; font-weight: bold; color: #fff; margin-bottom: 4px; }
+.run-dates { font-size: 11px; color: #888; margin-bottom: 14px; }
+
+.stat-row { display: flex; justify-content: space-between; align-items: center; padding: 5px 0; border-bottom: 1px solid rgba(255,255,255,0.05); }
+.stat-row:last-child { border-bottom: none; }
+.stat-label { font-size: 12px; color: #aaa; }
+.stat-val { font-size: 13px; font-weight: 700; color: #e0e0e0; }
+.stat-val.better { color: #60e060; }
+.stat-val.worse  { color: #e06060; }
+
+.section-title {
+    font-size: 11px; font-weight: 700; color: #aaa;
+    text-transform: uppercase; letter-spacing: 0.5px;
+    margin: 14px 0 6px;
+    padding-bottom: 4px;
+    border-bottom: 1px solid rgba(255,255,255,0.06);
+}
+
+.enc-list, .death-list { list-style: none; }
+.enc-item, .death-item { font-size: 12px; color: #ccc; padding: 3px 0; border-bottom: 1px solid rgba(255,255,255,0.04); }
+.enc-item:last-child, .death-item:last-child { border-bottom: none; }
+.enc-item .caught { color: #60e060; }
+.enc-item .fled   { color: #888; }
+.enc-item .shiny  { color: #ffd040; }
+.death-item .soul-link { color: #d060d0; }
+
+.empty-msg { font-size: 13px; color: #666; padding: 8px 0; }
+.error-msg { font-size: 13px; color: #e06060; padding: 8px 0; }
+
+.placeholder {
+    display: flex; align-items: center; justify-content: center;
+    height: 120px; color: #555; font-size: 14px;
+    border: 1px dashed rgba(255,255,255,0.1); border-radius: 8px;
+}
+</style>
+</head>
+<body>
+<div id="root">
+    <div class="page-header">
+        <div class="page-title">Run Compare</div>
+        <div class="status" id="status">Loading runs...</div>
+    </div>
+
+    <div class="selectors">
+        <div class="sel-group">
+            <div class="sel-label">Run A</div>
+            <select id="sel-a" onchange="onSelect()"><option value="">— select —</option></select>
+        </div>
+        <div class="sel-group">
+            <div class="sel-label">Run B</div>
+            <select id="sel-b" onchange="onSelect()"><option value="">— select —</option></select>
+        </div>
+    </div>
+
+    <div class="compare-grid" id="compare">
+        <div class="placeholder">Select a run above</div>
+        <div class="placeholder">Select a run above</div>
+    </div>
+</div>
+<script>
+let runs = [];
+let statsCache = {};
+
+async function loadRuns() {
+    try {
+        const res = await fetch('/api/runs');
+        const data = await res.json();
+        if (data.error) throw new Error(data.error);
+        runs = data.runs || [];
+        populateSelects();
+        document.getElementById('status').textContent = runs.length + ' run(s) available';
+    } catch (e) {
+        document.getElementById('status').textContent = 'Error: ' + e.message;
+    }
+}
+
+function populateSelects() {
+    const opts = runs.map(r => {
+        const label = 'Run #' + r.id + ' — ' + r.player_name + (r.ended_at ? '' : ' (active)');
+        return '<option value="' + r.id + '">' + label + '</option>';
+    }).join('');
+    for (const id of ['sel-a', 'sel-b']) {
+        const sel = document.getElementById(id);
+        const cur = sel.value;
+        sel.innerHTML = '<option value="">— select —</option>' + opts;
+        if (cur) sel.value = cur;
+    }
+}
+
+async function fetchStats(id) {
+    if (statsCache[id]) return statsCache[id];
+    const res = await fetch('/api/run/' + id + '/stats');
+    const data = await res.json();
+    statsCache[id] = data;
+    return data;
+}
+
+async function onSelect() {
+    const idA = document.getElementById('sel-a').value;
+    const idB = document.getElementById('sel-b').value;
+    const grid = document.getElementById('compare');
+    grid.innerHTML = '';
+
+    const [panelA, panelB] = [buildPlaceholder(idA), buildPlaceholder(idB)];
+    grid.appendChild(panelA);
+    grid.appendChild(panelB);
+
+    const statsA = idA ? await fetchStats(idA) : null;
+    const statsB = idB ? await fetchStats(idB) : null;
+
+    grid.innerHTML = '';
+    grid.appendChild(buildPanel(statsA, statsB, 'A', idA));
+    grid.appendChild(buildPanel(statsB, statsA, 'B', idB));
+}
+
+function buildPlaceholder(id) {
+    const div = document.createElement('div');
+    div.className = 'placeholder';
+    div.textContent = id ? 'Loading...' : 'Select a run above';
+    return div;
+}
+
+function buildPanel(stats, other, label, id) {
+    if (!id) {
+        const div = document.createElement('div');
+        div.className = 'placeholder';
+        div.textContent = 'Select a run above';
+        return div;
+    }
+    const panel = document.createElement('div');
+    if (!stats || stats.error) {
+        panel.className = 'run-panel';
+        panel.innerHTML = '<div class="error-msg">' + (stats ? stats.error : 'No data') + '</div>';
+        return panel;
+    }
+
+    const run = runs.find(r => String(r.id) === String(id));
+    const active = !stats.ended_at;
+    panel.className = 'run-panel' + (active ? ' active-run' : '');
+
+    const name = document.createElement('div');
+    name.className = 'run-name';
+    name.textContent = 'Run #' + stats.run_id + ' — ' + stats.player_name + (active ? ' ⬤' : '');
+    panel.appendChild(name);
+
+    const dates = document.createElement('div');
+    dates.className = 'run-dates';
+    dates.textContent = stats.started_at + (stats.ended_at ? ' → ' + stats.ended_at : ' → ongoing') + ' (' + stats.playtime + ')';
+    panel.appendChild(dates);
+
+    function statRow(labelText, val, otherVal, higherIsBetter) {
+        const row = document.createElement('div');
+        row.className = 'stat-row';
+        const l = document.createElement('span'); l.className = 'stat-label'; l.textContent = labelText;
+        const v = document.createElement('span'); v.className = 'stat-val';
+        v.textContent = val;
+        if (other && otherVal != null) {
+            const better = higherIsBetter ? val > otherVal : val < otherVal;
+            const worse  = higherIsBetter ? val < otherVal : val > otherVal;
+            if (better) v.classList.add('better');
+            else if (worse) v.classList.add('worse');
+        }
+        row.appendChild(l); row.appendChild(v);
+        return row;
+    }
+
+    const otherStats = other;
+    panel.appendChild(statRow('Encounters',       stats.total_encounters, otherStats && otherStats.total_encounters, true));
+    panel.appendChild(statRow('Caught',           stats.total_caught,     otherStats && otherStats.total_caught,     true));
+    panel.appendChild(statRow('Catch rate',       stats.catch_rate_pct + '%', otherStats && otherStats.catch_rate_pct, true));
+    panel.appendChild(statRow('Deaths',           stats.total_deaths,     otherStats && otherStats.total_deaths,     false));
+    panel.appendChild(statRow('Avg death level',  stats.avg_death_level,  otherStats && otherStats.avg_death_level,  true));
+
+    if (stats.zone_stats && stats.zone_stats.length > 0) {
+        const st = document.createElement('div'); st.className = 'section-title'; st.textContent = 'Encounters';
+        panel.appendChild(st);
+        const ul = document.createElement('ul'); ul.className = 'enc-list';
+        for (const z of stats.zone_stats) {
+            const li = document.createElement('li'); li.className = 'enc-item';
+            const outcome = z.caught ? '<span class="caught">caught</span>' : '<span class="fled">fled/KO</span>';
+            const shiny   = z.is_shiny ? ' <span class="shiny">★</span>' : '';
+            li.innerHTML = z.area + ' — Lv.' + z.level + ' ' + z.species_name + shiny + ' — ' + outcome;
+            ul.appendChild(li);
+        }
+        panel.appendChild(ul);
+    }
+
+    if (stats.deaths && stats.deaths.length > 0) {
+        const st = document.createElement('div'); st.className = 'section-title'; st.textContent = 'Deaths';
+        panel.appendChild(st);
+        const ul = document.createElement('ul'); ul.className = 'death-list';
+        for (const d of stats.deaths) {
+            const li = document.createElement('li'); li.className = 'death-item';
+            const sl = d.soul_link ? ' <span class="soul-link">(Soul Link)</span>' : '';
+            li.innerHTML = 'Lv.' + d.level + ' ' + d.species_name + ' at ' + d.location + sl;
+            ul.appendChild(li);
+        }
+        panel.appendChild(ul);
+    }
+
+    return panel;
+}
+
+loadRuns();
+</script>
+</body>
+</html>

@@ -27,13 +27,20 @@ Shows each Pokémon's sprite (shiny-aware), nickname, level, nature, HP (colour-
 
 ### Encounter tracking
 - **Encounters panel** — shows the wild Pokémon available in the current map area, split by encounter type (grass, water/fishing, Rock Smash). Updates when the player moves to a new map.
-- **First-encounter recording** — records the first wild Pokémon encountered per area per run (Nuzlocke rule). Encounters and deaths are not recorded until the player has obtained 5 or more Pokéballs; once that threshold is crossed the latch stays set for the remainder of the run. Duplicate species are skipped. Catches are detected automatically when the Pokémon joins the party.
+- **First-encounter recording** — records the first wild Pokémon encountered per area per run (Nuzlocke rule). Encounters and deaths are not recorded until the player has obtained enough Pokéballs (default: 5, configurable via `run_start_balls` in `config.toml`); once that threshold is crossed the latch stays set for the remainder of the run. Duplicate species are skipped. Catches are detected automatically when the Pokémon joins the party.
 - **Dupes clause** — optional Nuzlocke variant rule, configured via `dupes_clause` in `config.toml`. Three modes are available:
   - `"off"` *(default)* — standard Nuzlocke, first encounter per area, no species check.
   - `"per_player"` — per-player: a new encounter is skipped if *this player* has already caught the species anywhere in the current run.
   - `"shared"` — shared / cross-player: a new encounter is skipped if *any player* in the shared run has caught the species. Designed for Soul Link and co-op runs — one catch covers the whole group.
   
   Old boolean values (`true`/`false`) are still accepted and map to `"shared"` / `"off"` respectively for backward compatibility.
+- **`allow_species_repeats`** — set `allow_species_repeats = true` in `config.toml` (or toggle in the setup wizard / Settings panel) to skip the global "already seen this species in the run" check. Each area still allows only one encounter entry, and the dupes clause still applies independently. Useful for randomized ROMs or variants where the same species legitimately appears on multiple routes.
+- **`run_start_balls`** — optional integer (default `5`). Sets how many Pokéballs are required before the run-start latch triggers. Increase if your starter gift delays picking up the first balls.
+- **`preset`** — optional shorthand that sets `dupes_clause` and `allow_species_repeats` together. Applied at load time; individual fields still win if set afterward in code.
+  - `"standard"` — `dupes_clause = "off"`, `allow_species_repeats = false` (default behaviour)
+  - `"hardcore"` — `dupes_clause = "per_player"`, `allow_species_repeats = false`
+  - `"randomizer"` — `dupes_clause = "off"`, `allow_species_repeats = true`
+  - `"soul_link"` — `dupes_clause = "shared"`, `allow_species_repeats = false`
 - **Shiny detection** — the Gen III shiny formula (`p_high ^ p_low ^ id_high ^ id_low < 8`) is evaluated when an encounter is recorded. Shiny encounters are flagged in the database and trigger a shiny alert toast.
 - **Route completion board** — a grid showing every Nuzlocke-relevant zone colour-coded as caught (green), failed/fled (red), or not yet visited (grey), grouped by region. Available at `/:index/routes`.
 
@@ -331,6 +338,9 @@ All endpoints are served on the same port as the WebSocket overlay (`--ws-port`)
 | `/api/command/new_run` | `POST` | Broadcasts `NewRun` to all connected tracker slots. Returns plain text: `"Command 'new_run' sent to N slot(s)"` |
 | `/api/db/query` | `POST` | Runs arbitrary SQL against the database. Request body: `{ "sql": "SELECT ..." }`. Response: `{ "columns": ["col1", ...], "rows": [{ "col1": "val", ... }, ...], "rows_affected": N }` or `{ "error": "..." }` on failure. All values are returned as strings. Requires `--db` |
 | `/api/run/:id/stats` | `GET` | Per-run statistics for run `id`. Returns `{ playtime_secs, zones_entered, caught, catch_rate, deaths, avg_death_level, zone_stats: [...], deaths: [...] }`. Requires `--db` |
+| `/api/run/:id/route_stats` | `GET` | Per-route catch statistics for run `id`. Returns `{ run_id, zones: [{ map_group, map_name, area, total, caught, catch_rate_pct }] }`. Requires `--db` |
+| `/api/run/:id/route_odds` | `GET` | Encounter coverage for run `id`. Returns `{ encountered: [...], unencountered: [...] }` — `encountered` has species/catch info per visited route; `unencountered` lists all known FireRed wild areas not yet recorded. Requires `--db` |
+| `/api/run/:id/webhook_log` | `GET` | Webhook delivery receipts for run `id`. Returns `{ run_id, webhook_log: [{ event_type, url, success, attempts, payload, fired_at, fired_at_human }] }`. Requires `--db` |
 | `/api/run/:id/shiny` | `GET` | Shiny encounter statistics for run `id`. Returns `{ total_shinies, encounters_since_last_shiny, last_shiny: {...}, since_last_shiny: [...] }`. Requires `--db` |
 | `/api/run/:id/export` | `GET` | Full run export. Without query params: returns the complete run as JSON (metadata + caught + dead + encounters). With `?format=csv`: returns the same data as three CSV sections (caught, dead, encounters) in a single file with `Content-Disposition: attachment`. Requires `--db` |
 | `/api/run/:id/events` | `GET` | Chronological event log for a run. Returns `{ run_id, events: [{ player_name, event_type, species_name, nickname, old_nickname, level, occurred_at }, ...] }`. `old_nickname` is populated for `nickname_change` events and empty for all others. Event types: `catch`, `death`, `soul_link_death`, `shiny`, `wipe`, `badge`, `nickname_change`. Requires `--db` |
@@ -435,7 +445,7 @@ A **Soul Link** is a Nuzlocke variant played with a partner: each player's catch
 | Crate | Role |
 |---|---|
 | `fire_red_loop` | Central coordinator. Owns the main map-polling loop, starts party/box/trainer monitors, and exposes the public API used by the GUI and network layers. |
-| `fire_red_memory` | Maintains full EWRAM and IWRAM snapshots by reading from RetroArch in parallel chunks every 500 ms. All other crates read from these snapshots rather than issuing individual UDP requests. |
+| `fire_red_memory` | Maintains full EWRAM and IWRAM snapshots via a sliding-window UDP reader (16 concurrent chunks, ~64 ms for EWRAM, ~16 ms for IWRAM). All other crates read from these snapshots rather than issuing individual UDP requests. |
 | `fire_red_party_monitor` | Reads and decrypts the player's party from the EWRAM snapshot. Owns `Party`, `Pokemon`, `BoxPokemon`, and all encrypted substructure types. Runs its own background poll loop. |
 | `fire_red_box_monitor` | Reads all 14 PC boxes (420 slots) from the EWRAM snapshot on a slow cycle. Maintains a deduplicated species cache and detects newly caught Pokémon. |
 | `fire_red_badge` | Reads badge flags from SaveBlock1 via the EWRAM/IWRAM snapshots. Exposes `BadgeState`, next-gym info, and a C-ABI FFI surface. |
@@ -506,8 +516,8 @@ A **Soul Link** is a Nuzlocke variant played with a partner: each player's catch
 
 All live game data is read from two in-memory snapshots maintained by `fire_red_memory`:
 
-- **EWRAM snapshot** (256 KiB) — refreshed every 100 ms by reading from RetroArch in parallel 4 KiB chunks over UDP, then assembled in address order.
-- **IWRAM snapshot** (32 KiB) — refreshed on the same cycle.
+- **EWRAM snapshot** (256 KiB, 64 × 4 KiB chunks) — read with a sliding-window semaphore keeping 16 chunks in flight simultaneously. Results arrive over an mpsc channel and are assembled in address order. At ~16 ms per round-trip, EWRAM takes approximately 4 × 16 ms = 64 ms per refresh cycle.
+- **IWRAM snapshot** (32 KiB, 8 × 4 KiB chunks) — read on a separate thread in parallel with EWRAM; fits in a single window (8 < 16) so it completes in ~16 ms. Each region stores its result independently the moment it finishes — IWRAM readers are not delayed by EWRAM.
 
 Every other crate reads from these snapshots rather than issuing its own UDP requests. This eliminates hundreds of individual network round-trips per second and makes the read pattern predictable regardless of how many subsystems are running.
 
@@ -779,6 +789,85 @@ Add `http://localhost:9090/cmd` in a browser tab to manage runs — **End Run** 
 ---
 
 ## Project status
+
+**v0.8.95** — CSV IV/EV columns, DB error visibility, import collision warnings, schema v8 index, test coverage:
+
+- **CSV export IV/EV completeness** — `export_run_csv()` now includes all twelve IV and EV columns for both caught and dead Pokémon sections. Header and query updated; column order is `iv_hp,iv_atk,iv_def,iv_spe,iv_spa,iv_spd,ev_hp,ev_atk,ev_def,ev_spe,ev_spa,ev_spd` inserted before the timestamp. Prior CSV exports omitted this data entirely despite the DB having it.
+- **`webhook_log(run_id)` index** — schema v8 adds `CREATE INDEX IF NOT EXISTS webhook_log_run_id_idx ON webhook_log(run_id)`. Without this, `/api/run/:id/webhook_log` did a full table scan on large instances.
+- **Route odds `species` field** — `/api/run/:id/route_odds` encountered entries now include a numeric `species` field alongside `species_name`, so clients don't have to parse the name string to look up sprite data.
+- **`DbReader::sync_player` double-lock fix** — the `run_id` mutex was acquired twice in sequence (read then write) with a gap between. Changed to a single lock scope: read old value, write new value, drop.
+- **Webhook worker spawn error logged** — `webhook::init()` now uses `std::thread::Builder` and logs `tracing::error!` if the spawn fails (e.g. resource exhaustion). Previously the webhook system would silently not start.
+- **`DbReader` query error visibility** — three `list_dead_with_records`, `list_encounters`, and `list_prev_run_encounters` methods changed from `.unwrap_or_default()` (silent empty on any DB error) to `.unwrap_or_else(|e| { tracing::warn!(...); vec![] })`. DB failures are now visible in the log.
+- **`import_run` collision warning** — caught and dead Pokémon inserts now check the affected-row count; `Ok(0)` (personality conflict, row skipped) emits `tracing::warn!` identifying the personality and species. Previously silent data loss on duplicate import.
+- **`EventKind::Badge` and `NicknameChange` tests** — four new unit tests covering `row_parts()` dispatch for the two previously-untested event variants; test count raised from 21 to 30.
+
+---
+
+**v0.8.94** — structured tracing, Result-returning DB writes, webhook delivery log, route coverage endpoint:
+
+- **Structured `tracing` migration** — all `eprintln!` / `println!` diagnostic calls across 13 library crates have been replaced with structured `tracing::info!`, `tracing::warn!`, `tracing::error!`, and `tracing::debug!` macros. User-facing CLI output (update checker, `--list-runs` table, run ID lines) and `#[cfg(feature = "dev-tools")]` scan output are intentionally preserved as `println!`/`eprintln!`.
+- **`mark_dead` / `record_event` / `record_encounter` return `Result`** — these three public DB functions now return `Result<bool, postgres::Error>` or `Result<(), postgres::Error>` instead of `bool`, surfacing database errors to call sites. All callers in `game.rs`, `encounter.rs`, and `app.rs` have been updated to log errors via `tracing` and continue gracefully.
+- **Webhook delivery receipts** — every webhook POST outcome (success or final failure) is now recorded in a new `webhook_log` PostgreSQL table (schema v7). The background worker captures the event type, URL, serialized payload, attempt count, and success flag. A new `GET /api/run/:id/webhook_log` endpoint exposes the log as JSON for diagnostics and stream dashboards.
+- **`GET /api/run/:id/route_odds`** — new endpoint returning `encountered` (routes already visited with species/catch info) and `unencountered` (all known FireRed wild areas not yet recorded for the run). Useful for seeing which Nuzlocke encounter slots are still open.
+- **`fire_red_location_names::all_wild_areas()`** — new public function returning a static slice of `(map_group, map_name, area_name)` tuples for every FireRed area that can have wild encounters, used by `route_odds_json`.
+
+---
+
+**v0.8.93** — `fire_red_memory` sliding-window reads, independent region stores, 16 concurrent chunks:
+
+- **Sliding-window chunk dispatch** (`fire_red_memory`) — replaced strict batch-based concurrency with a semaphore-driven sliding window (`Mutex<usize> + Condvar`). A new chunk thread is dispatched the moment any in-flight chunk finishes, keeping exactly `MAX_CONCURRENT_CHUNKS` active at all times. Previously, a single slow or retrying chunk stalled every other idle thread until the whole batch drained.
+- **Independent region stores** (`fire_red_memory`) — EWRAM and IWRAM now store their results the moment each region thread finishes rather than waiting for both to complete. IWRAM (~1 round-trip, ~16 ms) is no longer delayed by EWRAM (~4 round-trips, ~64 ms).
+- **`MAX_CONCURRENT_CHUNKS` raised to 16** (`fire_red_memory`) — reduces EWRAM from 8 batch rounds to 4 window rounds, cutting read time from ~128 ms to ~64 ms at nominal RetroArch latency.
+
+---
+
+**v0.8.92** — bug fixes, webhook backoff, configurable run-start threshold, Nuzlocke presets, per-route catch stats:
+
+- **`MAX_CONCURRENT_CHUNKS` corrected** (`fire_red_memory`) — the constant was set to 32 despite the comment above it (and empirical testing) documenting 8 as the reliable ceiling. Fixed to 8, matching the comment. The mismatch caused RetroArch to drop responses under load, leading to stale reads and occasional retry storms.
+- **Scan format fix** (`fire_red_tracker`, dev-tools only) — `scan_for_security_key`'s first loop printed `SaveBlock2+0x{:04X}` with `sb2_rel as usize`, which wraps badly for negative offsets (scan start is 0x200 bytes before SaveBlock2). Changed to `SaveBlock2{:+#06X}` with the signed `isize` value, matching the full-EWRAM fallback loop.
+- **Instant arithmetic panics fixed** (`fire_red_aggregator`) — `SlotDbCache::new()` and `SlotCache::new()` initialised `last_refresh` using bare `-` subtraction on `Instant`, which panics if the process starts within 60 seconds of system boot. Both now use `.checked_sub(...).unwrap_or_else(Instant::now)`.
+- **Placeholder validator dead check removed** (`fire_red_tracker`) — `find_unknown_placeholders` compared `candidate` against `"}}"` before the known-set check. Because the loop already skips `{{` continuations and only enters the branch when an opening `{` is found, `candidate` structurally can never equal `"}}"` at that point. The dead check is removed.
+- **libpq key-value connection strings now pass through** (`fire_red_database`) — `initialize()` prepended `postgresql://` to any string not starting with a URI scheme, which mangled `host=localhost user=alice dbname=nuzlocke`-style strings. Strings containing `=` are now passed through unchanged, allowing both URI and key-value formats.
+- **Webhook exponential backoff** (`fire_red_tracker`) — retries now wait 1 s then 2 s (was a flat 2 s for both pauses). The raw-body string is also pre-cloned before the retry loop instead of being cloned on every iteration.
+- **Configurable run-start ball threshold** — `run_start_balls` (optional, default 5) can now be set in `config.toml` to change how many Pokéballs trigger the run-start latch. `encounter.rs` passes the value through to `game::has_pokeballs_threshold(n)`.
+- **Nuzlocke rule presets** — a new `preset` key in `config.toml` sets `dupes_clause` and `allow_species_repeats` together: `"standard"` (off, false), `"hardcore"` (per_player, false), `"randomizer"` (off, true), `"soul_link"` (shared, false). Individual fields can still be set separately; the preset is applied at load time and does not overwrite explicit field values after that.
+- **`GET /api/run/:id/route_stats`** — new endpoint returning per-area catch statistics for a completed or active run. Each zone entry includes `map_group`, `map_name`, `area` (human-readable name), `total` encounters, `caught` count, and `catch_rate_pct`.
+
+---
+
+**v0.8.91** — new features: randomizer mode, bot summary endpoint, run-compare page, HP bar, CSV export link:
+
+- **`allow_species_repeats`** — new config flag (also exposed in the setup wizard and Settings panel) that skips the global "already encountered this species in the run" check. The per-area one-encounter rule and the dupes clause both still apply. The same species can now appear as a first encounter on multiple different routes.
+- **`/api/bot/:index` endpoint** — plain-text one-liner returning `"<player> — <hp>/<max_hp> HP — <zone>"` for the given tracker slot. Suitable for Twitch/stream chat bots answering `!status` commands without parsing JSON.
+- **`/compare` run-comparison page** — side-by-side stats for any two completed (or active) runs. Selects from a dropdown populated by `/api/runs`; pulls per-run stats from `/api/run/:id/stats`. Highlighted green/red cells indicate which run has the better value for each metric. Encounter and death logs are listed inline for each run.
+- **HP bar in party overlay** — the `/:index/party` overlay now shows a colour-coded HP bar (green → yellow → red) below each party slot's HP text in both dark and light themes. Width transitions smoothly on update.
+- **CSV download link in `/db`** — each row in the Runs table now has a `CSV` link that triggers a direct browser download of `/api/run/:id/export?format=csv` for that run.
+
+---
+
+### Possible future features
+
+- **Type-matchup warning overlay** — compare party types against the next gym leader's team (ROM trainer data already loaded) and highlight dangerous weaknesses.
+- **Trainer battle log** — track which named trainers have been defeated per run (data already in ROM via `fire_red_trainer_data`); useful for completionist or bingo Nuzlocke variants.
+- **Death cause analysis** — record the move/type that caused each death by capturing battle state at the moment a party slot goes to 0 HP.
+- **Discord Rich Presence** — push current location + party size to Discord via the local RPC socket (small background thread, no new dependency needed).
+- **LiveSplit integration** — optional TCP connection to LiveSplit to auto-split on gym badges or game clear.
+- **Overlay visual editor** — drag-and-drop config page in the web UI to position/resize overlay widgets without editing TOML.
+- **Multi-revision auto-detect** — automatically pick the ROM revision on startup by hashing the loaded ROM rather than requiring manual selection.
+
+---
+
+**v0.8.90** — code quality: dedup `LockOrRecover`, log silenced errors, fix field typo, doc/comment cleanup:
+
+- **Removed duplicate `LockOrRecover` trait in `gui.rs`** — the trait was defined locally in `fire_red_tracker/src/gui.rs` and identically in `fire_red_states`. The local copy has been removed; `gui.rs` now imports the canonical version from `fire_red_states`.
+- **Scanner comment corrected** — the comment above the four-pointer validation in `fire_red_scanner` said "At least one valid pointer" when the code (correctly) requires all four. Comment now matches the code.
+- **Sprite decompression failures now logged** — `decompress_pixels` in the aggregator previously discarded zlib errors silently via `unwrap_or(0)`. It now calls `tracing::warn!` on failure so bad sprite data shows up in logs.
+- **DB dump task failure now logged** — `serve_db_json` in `web.rs` previously swallowed the `JoinError` from the blocking task with `|_|`. The handler now calls `tracing::error!` before returning the fallback JSON.
+- **`eframe::run_native` error surfaced** — the aggregator's `let _ = eframe::run_native(...)` now matches on `Err` and prints to stderr.
+- **`land_mon_enounters_rom_ptr` → `land_mon_encounters_rom_ptr`** — the private `WildHeaderRom` field in `fire_red_pokemon_data` had a persistent typo ("enounters"). Renamed across all five use sites in the file.
+- **Doc/comment typo sweep** — fixed "tokes", "teh", "signel", "decrompressed", "shinty", "nmame", "intialized", "mpa/sotred", "strucct", "falg", "vallues", "destinatino" across `fire_red_get_values`, `fire_red_image_data`, `fire_red_text`, `fire_red_rom_buffer`, `fire_red_map_data`, and `fire_red_scanner`.
+
+---
 
 **v0.8.89** — bug fixes: timeline endpoint, typed errors, badge sentinel, schema cleanup:
 

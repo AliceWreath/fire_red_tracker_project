@@ -75,6 +75,35 @@ impl fmt::Display for DupesClauseMode {
     }
 }
 
+/// Built-in Nuzlocke rule presets. When `preset` is set in the config file it
+/// overrides `dupes_clause` and `allow_species_repeats` at load time.
+///
+/// ```toml
+/// preset = "standard"   # first-encounter-per-area, no species check (default)
+/// preset = "hardcore"   # per-player dupes clause
+/// preset = "randomizer" # allow same species on multiple routes
+/// preset = "soul_link"  # shared dupes clause for co-op partner runs
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NuzlockePreset {
+    Standard,
+    Hardcore,
+    Randomizer,
+    SoulLink,
+}
+
+impl NuzlockePreset {
+    pub fn settings(self) -> (DupesClauseMode, bool) {
+        match self {
+            NuzlockePreset::Standard   => (DupesClauseMode::Off,       false),
+            NuzlockePreset::Hardcore   => (DupesClauseMode::PerPlayer, false),
+            NuzlockePreset::Randomizer => (DupesClauseMode::Off,       true),
+            NuzlockePreset::SoulLink   => (DupesClauseMode::Shared,    false),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub enum ConfigMode {
@@ -126,6 +155,22 @@ pub struct TrackerConfig {
     /// Old boolean values are still accepted: `true` maps to `"shared"`, `false` to `"off"`.
     #[serde(default)]
     pub dupes_clause: DupesClauseMode,
+    /// When true, skip the "already encountered this species anywhere in the run"
+    /// check. Each area still allows only one encounter entry, and the dupes
+    /// clause still applies independently. Useful when the same species can
+    /// legitimately appear on multiple routes (e.g. randomized ROMs or certain
+    /// Nuzlocke variants that don't restrict by species).
+    #[serde(default)]
+    pub allow_species_repeats: bool,
+    /// Convenience preset that sets `dupes_clause` and `allow_species_repeats`
+    /// together. Applied at load time; the individual fields can still be
+    /// overridden afterward in code.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preset: Option<NuzlockePreset>,
+    /// Minimum Pokéball count required for the run-start latch to trigger.
+    /// Defaults to 5. Increase if your starter gift delays the first catch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_start_balls: Option<u8>,
 }
 
 fn default_aggregator_host() -> String { "127.0.0.1".to_string() }
@@ -349,13 +394,19 @@ pub fn validate_config(cfg: &TrackerConfig) -> Vec<ConfigError> {
 pub fn load_or_prompt(path: &PathBuf) -> TrackerConfig {
     if path.exists() {
         let content = std::fs::read_to_string(path).unwrap_or_else(|e| {
-            eprintln!("Failed to read config file {}: {}", path.display(), e);
+            tracing::error!("Failed to read config file {}: {}", path.display(), e);
             std::process::exit(1);
         });
-        toml::from_str(&content).unwrap_or_else(|e| {
-            eprintln!("Failed to parse config file {}: {}", path.display(), e);
+        let mut config: TrackerConfig = toml::from_str(&content).unwrap_or_else(|e| {
+            tracing::error!("Failed to parse config file {}: {}", path.display(), e);
             std::process::exit(1);
-        })
+        });
+        if let Some(preset) = config.preset {
+            let (dc, asr) = preset.settings();
+            config.dupes_clause = dc;
+            config.allow_species_repeats = asr;
+        }
+        config
     } else {
         let config = show_setup_dialog();
         save_config(&config, path);
@@ -366,17 +417,17 @@ pub fn load_or_prompt(path: &PathBuf) -> TrackerConfig {
 pub fn save_config(config: &TrackerConfig, path: &PathBuf) {
     if let Some(parent) = path.parent()
         && let Err(e) = std::fs::create_dir_all(parent) {
-        eprintln!("Warning: could not create config directory: {}", e);
+        tracing::warn!("could not create config directory: {}", e);
     }
     match toml::to_string_pretty(config) {
         Ok(content) => {
             if let Err(e) = std::fs::write(path, &content) {
-                eprintln!("Warning: could not write config file: {}", e);
+                tracing::warn!("could not write config file: {}", e);
             } else {
-                println!("Config saved to {}", path.display());
+                tracing::info!("Config saved to {}", path.display());
             }
         }
-        Err(e) => eprintln!("Warning: could not serialize config: {}", e),
+        Err(e) => tracing::warn!("could not serialize config: {}", e),
     }
 }
 
@@ -398,6 +449,8 @@ struct SetupApp {
     // Run / polling
     poll_ms:          String,
     dupes_clause:     DupesClauseMode,
+    allow_species_repeats:  bool,
+    run_start_balls:  String,
     // Test mode
     default_test:     bool,
     test_db:          String,
@@ -441,6 +494,8 @@ impl SetupApp {
             heading:          "First-Run Setup",
             poll_ms:          String::new(),
             dupes_clause:     DupesClauseMode::Off,
+            allow_species_repeats:  false,
+            run_start_balls:  String::new(),
             default_test:     false,
             test_db:          String::new(),
             test_agg_host:    String::new(),
@@ -486,6 +541,8 @@ impl SetupApp {
             heading:          "Edit Config",
             poll_ms: if cfg.poll_ms == 100 { String::new() } else { cfg.poll_ms.to_string() },
             dupes_clause:     cfg.dupes_clause,
+            allow_species_repeats:  cfg.allow_species_repeats,
+            run_start_balls:  cfg.run_start_balls.map(|n| n.to_string()).unwrap_or_default(),
             default_test:     cfg.default_test,
             test_db:       cfg.test.as_ref().and_then(|t| t.db.as_ref())
                                .map(|s| s.trim_start_matches("postgresql://").trim_start_matches("postgres://").to_string())
@@ -630,6 +687,24 @@ impl eframe::App for SetupApp {
                     ui.selectable_value(&mut self.dupes_clause, DupesClauseMode::Off,       "Off — standard Nuzlocke (first encounter per area)");
                     ui.selectable_value(&mut self.dupes_clause, DupesClauseMode::PerPlayer, "Per Player — skip if you already caught this species");
                     ui.selectable_value(&mut self.dupes_clause, DupesClauseMode::Shared,    "Shared — skip if any player caught this species (Soul Link / co-op)");
+                });
+                ui.end_row();
+
+                ui.label("Randomizer mode:");
+                ui.vertical(|ui| {
+                    ui.checkbox(&mut self.allow_species_repeats, "Allow same species on multiple routes");
+                    ui.small("Skips the global species-seen check. Each route still allows one encounter, and the dupes clause still applies.");
+                });
+                ui.end_row();
+
+                ui.label("Run-start balls:");
+                ui.horizontal(|ui| {
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.run_start_balls)
+                            .desired_width(50.0)
+                            .hint_text("5"),
+                    );
+                    ui.small("Pokéballs required before tracking begins (blank = 5).");
                 });
                 ui.end_row();
 
@@ -846,6 +921,9 @@ impl eframe::App for SetupApp {
                         clip_on_badge: false,
                     },
                     dupes_clause: self.dupes_clause,
+                    allow_species_repeats: self.allow_species_repeats,
+                    preset: None,
+                    run_start_balls: self.run_start_balls.trim().parse::<u8>().ok(),
                 };
 
                 *self.result.lock().unwrap() = Some(config);
@@ -909,11 +987,11 @@ fn run_setup_window(existing: Option<&TrackerConfig>) -> TrackerConfig {
 pub fn run_config_editor(path: &PathBuf) {
     let existing: Option<TrackerConfig> = if path.exists() {
         let content = std::fs::read_to_string(path).unwrap_or_else(|e| {
-            eprintln!("Failed to read config file {}: {}", path.display(), e);
+            tracing::error!("Failed to read config file {}: {}", path.display(), e);
             std::process::exit(1);
         });
         Some(toml::from_str(&content).unwrap_or_else(|e| {
-            eprintln!("Failed to parse config file {}: {}", path.display(), e);
+            tracing::error!("Failed to parse config file {}: {}", path.display(), e);
             std::process::exit(1);
         }))
     } else {
@@ -1033,6 +1111,9 @@ mod tests {
             webhooks:        WebhookConfig::default(),
             obs:             ObsConfig::default(),
             dupes_clause:    DupesClauseMode::Off,
+            allow_species_repeats: false,
+            preset: None,
+            run_start_balls: None,
         }
     }
 

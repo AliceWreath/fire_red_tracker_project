@@ -81,7 +81,7 @@ fn looks_like_header(rom: &[u8], offset: usize) -> bool {
     let rock  = read_u32_le(rom, offset + 12);
     let fish  = read_u32_le(rom, offset + 16);
 
-    // At least one valid pointer
+    // All four encounter table pointers must be valid (zero = no encounters for that type)
     is_valid_gba_ptr(grass)
         && is_valid_gba_ptr(water)
         && is_valid_gba_ptr(rock)
@@ -218,7 +218,7 @@ fn validate_map_groups_table(rom: &[u8], offset: usize, known_pairs: &[(u8, u8)]
 /// * `None`         — Table could not be located.
 pub fn find_map_groups_table(rom: &[u8], known_pairs: &[(u8, u8)]) -> Option<usize> {
     if known_pairs.is_empty() {
-        eprintln!("find_map_groups_table: no known (group, map) pairs supplied");
+        tracing::warn!("find_map_groups_table: no known (group, map) pairs supplied");
         return None;
     }
 

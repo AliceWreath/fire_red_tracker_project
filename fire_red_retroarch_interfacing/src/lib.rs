@@ -153,7 +153,7 @@ pub fn get_map_info() -> Option<Vec<String>> {
 ///
 /// # Errors
 ///
-/// All errors are logged to stderr. The caller is expected to handle `None`
+/// All errors are logged via `tracing`. The caller is expected to handle `None`
 /// as a retryable failure — no panics occur here.
 pub fn get_from_retroarch(
     socket: &UdpSocket,
@@ -161,7 +161,7 @@ pub fn get_from_retroarch(
     expected_token_count: usize,
 ) -> Option<Vec<String>> {
     if let Err(e) = socket.send_to(command.as_bytes(), RETROARCH_ADDR) {
-        eprintln!("Failed to send command to RetroArch: {}", e);
+        tracing::warn!("Failed to send command to RetroArch: {}", e);
         return None;
     }
 
@@ -185,7 +185,7 @@ pub fn get_from_retroarch(
             None
         }
         Err(e) => {
-            eprintln!("Unexpected socket error: {}", e);
+            tracing::warn!("Unexpected socket error: {}", e);
             None
         }
     }

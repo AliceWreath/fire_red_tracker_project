@@ -14,8 +14,11 @@ fire_red_memory::read_chunk()
   • Sends UDP command; retries up to MAX_RETRIES=5 (backoff: 50ms × retry)
   • Validates response header token and address match
   • Rejects chunks with malformed hex
-  • Assembles EWRAM (256 KiB, 64 chunks of 4096 bytes)
-  •          IWRAM ( 32 KiB,  8 chunks of 4096 bytes)
+  • EWRAM (256 KiB, 64 chunks of 4096 bytes) and IWRAM (32 KiB, 8 chunks)
+    read concurrently on separate threads; each region stored independently
+    as soon as it completes (IWRAM ~16 ms, EWRAM ~64 ms at 16 concurrent)
+  • Sliding-window semaphore keeps exactly MAX_CONCURRENT_CHUNKS=16 in
+    flight at all times — new chunk dispatched the moment any slot frees
   │
   │  ArcSwap<Vec<u8>>  (lock-free snapshot swap)
   │
@@ -40,12 +43,17 @@ Game-polling thread (100 ms)
   │    → WildPokemonHeader  (land/water/rock/fish encounter lists)
   │    → Arc<Mutex<WildPokemonHeader>>
   │
-  ├─ EncounterTracker::tick()
+  ├─ EncounterTracker::tick(…, run_start_balls: u32)
+  │    if !run_tracking_active:
+  │      has_pokeballs_threshold(run_start_balls)? → set run_tracking_active = true
+  │      else → return (pre-ball phase, nothing recorded)
   │    compares enemy personality to last_enemy_personality
   │    if changed → new battle detected
   │      is_wild? (compare enemy ot_id to party lead ot_id)
   │      has_encounter(map)? → no-op (already recorded this area)
-  │      dupes_clause check (DupesClauseMode):
+  │      allow_species_repeats = false?
+  │        species_encountered()? → no-op (already recorded this species this run)
+  │      dupes_clause check (DupesClauseMode, always applied):
   │        Off       → no extra check
   │        PerPlayer → species_caught_by_self()? → no-op (this player already caught it)
   │        Shared    → species_caught_any()?      → no-op (any player already caught it)
@@ -304,4 +312,101 @@ aggregator reader loop
 overlay.html
     active_run_id == null && run_summary present
     → renderRunEnded() — shows summary card + first-encounters grid
+```
+
+## DB Reader Error Handling (v0.8.95)
+
+```
+DbReader query methods — changed from silent empty fallback to logged warning:
+
+  list_dead_with_records()  .query(...)
+  list_encounters()         .query(...)     → .unwrap_or_else(|e| {
+  list_prev_run_encounters().query(...)          tracing::warn!("... DB query failed: {e}");
+                                                 vec![]
+                                            })
+
+Previously: .unwrap_or_default()   — silent empty Vec on ANY error
+Now:        .unwrap_or_else(warn)  — empty Vec + logged error
+
+import_run() personality collision — changed from silent drop to logged warning:
+  match client.execute("INSERT ... ON CONFLICT DO NOTHING", ...) {
+      Ok(0) => tracing::warn!("personality 0x... already exists; skipped"),
+      Ok(_) => {}                   // inserted normally
+      Err(e) => tracing::warn!("failed to insert: {e}"),
+  }
+```
+
+## New HTTP Endpoints (v0.8.94)
+
+```
+GET /api/run/:id/route_odds
+    queries encounters WHERE run_id=$1 → builds seen canonical-floor set
+    compares against fire_red_location_names::all_wild_areas() (static list)
+    returns { run_id, encountered: [...], unencountered: [...] }
+    encountered entries: player_name, map_group, map_name, area, species_name,
+                         level, caught, is_shiny, encountered_at
+    unencountered entries: map_group, map_name, area
+
+GET /api/run/:id/webhook_log
+    queries webhook_log WHERE run_id=$1 ORDER BY fired_at ASC
+    returns { run_id, webhook_log: [{ event_type, url, success, attempts,
+                                      payload, fired_at, fired_at_human }] }
+    populated by fire_red_tracker/webhook.rs worker after each delivery attempt
+```
+
+## Webhook Delivery Log (v0.8.94)
+
+```
+Tracker process — webhook.rs worker thread
+    │
+    for each WorkerTask::Webhook { url, body, event_type, run_id }:
+    │
+    ├── captures run_id from fire_red_database::get_active_run_id()
+    │     at fire_event() call time (before enqueuing)
+    │
+    ├── serializes payload: PostBody::Raw → clone; PostBody::Json → serde_json
+    │
+    ├── retry loop (max 3 attempts, exponential backoff 1s / 2s)
+    │
+    └── fire_red_database::record_webhook_delivery(
+              run_id, event_type, url, success, attempts, payload)
+          DB.lock() → INSERT INTO webhook_log (...)
+```
+
+## DB Write Functions — Error Handling (v0.8.94)
+
+```
+mark_dead(DeadPokemon)       → Result<bool, postgres::Error>
+    Ok(true)  = newly inserted
+    Ok(false) = no active run
+    Err(e)    = DB error (logged at call site via tracing::error!)
+
+record_encounter(Encounter)  → Result<bool, postgres::Error>
+    Ok(true)  = first encounter for this area (new row)
+    Ok(false) = duplicate or no active run
+    Err(e)    = DB error
+
+record_event(EventKind)      → Result<(), postgres::Error>
+    Ok(())    = success or no active run
+    Err(e)    = DB error
+```
+
+## New HTTP Endpoints (v0.8.91)
+
+```
+GET /api/bot/:index
+    reads SharedSlots[index].state (same source as /api/slot/:index)
+    returns plain text: "<player> — <hp>/<max_hp> HP — <zone>"
+    suitable for Twitch chat bots; no JSON parsing needed
+
+GET /compare
+    serves compare.html (self-contained JS page)
+    page fetches GET /api/runs → run list for dropdowns
+    on selection fetches GET /api/run/:id/stats → per-run stats
+    renders side-by-side panels; better/worse values highlighted green/red
+    stats are cached in-page per run ID
+
+GET /api/run/:id/export?format=csv   (pre-existing endpoint, now linked from /db)
+    linked as a direct browser download from the CSV column in the Runs table
+    on the /db page — no new server handler, just surfaced in the UI
 ```

@@ -37,6 +37,12 @@ html, body {
 }
 .clear-btn:hover { background: #4a1414; }
 .status { font-size: 12px; color: #888; }
+.export-link {
+    font-size: 11px; font-weight: 600; padding: 2px 7px;
+    background: #1a2a4a; border: 1px solid #2a5a8a; border-radius: 4px;
+    color: #80c0e0; text-decoration: none; white-space: nowrap;
+}
+.export-link:hover { background: #223358; }
 
 /* Tabs */
 .tabs {
@@ -165,6 +171,14 @@ const TABLES = {
             { key: 'catches',    label: 'Catches' },
             { key: 'deaths',     label: 'Deaths',     fmt: (v, row) => v },
             { key: 'encounters', label: 'Encounters' },
+            { key: 'id', label: '⬇', cls: 'center', fmt: v => {
+                const a = document.createElement('a');
+                a.href = '/api/run/' + v + '/export?format=csv';
+                a.textContent = 'CSV';
+                a.download = 'run_' + v + '.csv';
+                a.className = 'export-link';
+                return a;
+            }},
         ],
         rowClass: row => row.ended == null ? 'run-active' : '',
     },

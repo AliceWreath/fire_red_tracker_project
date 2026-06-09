@@ -163,7 +163,9 @@ fn decompress_pixels(data: &[u8]) -> Vec<u8> {
     use std::io::Read;
     let mut decoder = ZlibDecoder::new(data);
     let mut out = Vec::new();
-    decoder.read_to_end(&mut out).unwrap_or(0);
+    if let Err(e) = decoder.read_to_end(&mut out) {
+        tracing::warn!("sprite decompression failed: {e}");
+    }
     out
 }
 
@@ -202,7 +204,7 @@ pub fn handle_tracker_connection(
 ) {
     let mut write_stream = match stream.try_clone() {
         Ok(s)  => s,
-        Err(e) => { eprintln!("Failed to clone stream: {}", e); return; }
+        Err(e) => { tracing::error!("Failed to clone stream: {}", e); return; }
     };
     let mut read_stream = stream;
 

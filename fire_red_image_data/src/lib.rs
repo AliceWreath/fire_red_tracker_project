@@ -110,7 +110,7 @@ fn read_table_pointer(rom: &[u8], header_offset: u32) -> Option<u32> {
     let o = header_offset as usize;
     let raw = u32::from_le_bytes(rom.get(o..o + 4)?.try_into().ok()?);
     if !(ROM_BASE..0x09000000).contains(&raw) {
-        eprintln!(
+        tracing::warn!(
             "invalid table pointer at {:#X}: {:#010X}",
             header_offset, raw
         );
@@ -205,7 +205,7 @@ pub fn decompress_lz77(rom: &[u8], offset: usize) -> Result<Vec<u8>, Box<dyn std
     }
     i += 1;
 
-    // next 3 bytes are decrompressed size (little endian 24-bit)
+    // next 3 bytes are decompressed size (little endian 24-bit)
     let size_bytes = rom.get(i..i + 3).ok_or("truncated LZ77 header")?;
     let decompressed_size =
         size_bytes[0] as usize | ((size_bytes[1] as usize) << 8) | ((size_bytes[2] as usize) << 16);
@@ -383,7 +383,7 @@ pub fn decode_palette(
 /// # Arguments
 /// * `rom`                     - Full ROM byte slice.
 /// * `species`                 - National pokedex number (1-386 for FireRed)
-/// * `shinty`                  - `true` to use the shiny palette.
+/// * `shiny`                   - `true` to use the shiny palette.
 /// 
 /// # Errors
 /// Propagates any error from pointer resolution, decompression, or tile decoding.

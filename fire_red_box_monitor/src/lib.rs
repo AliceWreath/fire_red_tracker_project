@@ -115,7 +115,7 @@ pub fn start_loop() {
     let handle = std::thread::spawn(move || {
         while RUNNING.load(Ordering::SeqCst) {
             if std::panic::catch_unwind(update_box_list).is_err() {
-                eprintln!("Panic occurred while updating box list.");
+                tracing::error!("Panic occurred while updating box list.");
             }
             std::thread::sleep(SLEEP_TIMER);
         }
@@ -132,7 +132,7 @@ pub fn end_loop() {
     let mut handle_slot = THREAD_HANDLE.lock_or_recover();
     if let Some(handle) = handle_slot.take()
         && let Err(e) = handle.join() {
-        eprintln!("Error joining box monitor thread: {:?}", e);
+        tracing::error!("Error joining box monitor thread: {:?}", e);
     }
 }
 
@@ -424,13 +424,13 @@ pub fn scan_for_pokemon(known_personality: u32) {
     let ewram = fire_red_memory::get_ewram();
     let target = known_personality.to_le_bytes();
 
-    println!("Scanning EWRAM snapshot for personality 0x{:08X}...", known_personality);
+    tracing::info!("Scanning EWRAM snapshot for personality 0x{:08X}...", known_personality);
 
     for (offset, window) in ewram.windows(4).enumerate() {
         if window == target {
-            println!("HIT at 0x{:08X}", EWRAM_BASE + offset);
+            tracing::info!("HIT at 0x{:08X}", EWRAM_BASE + offset);
         }
     }
 
-    println!("Scan complete.");
+    tracing::info!("Scan complete.");
 }

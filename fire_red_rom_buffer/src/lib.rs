@@ -212,7 +212,7 @@ const LEAFGREEN_USA_REV0: RomAddresses = LEAFGREEN_USA_REV1;
 /// [`Unknown`]: RomRevision::Unknown
 pub fn detect_rom_revision(rom: &[u8]) -> RomRevision {
     let Some(game_code) = rom.get(GAME_CODE_OFFSET..GAME_CODE_OFFSET + 4) else {
-        eprintln!("ROM auto-detect: file too small to read header — defaulting to FireRed USA Rev 1 addresses.");
+        tracing::warn!("ROM auto-detect: file too small to read header — defaulting to FireRed USA Rev 1 addresses.");
         return RomRevision::Unknown;
     };
     let revision = rom.get(REVISION_OFFSET).copied().unwrap_or(0xFF);
@@ -222,7 +222,7 @@ pub fn detect_rom_revision(rom: &[u8]) -> RomRevision {
             1 => RomRevision::FireRedUsaRev1,
             0 => RomRevision::FireRedUsaRev0,
             r => {
-                eprintln!(
+                tracing::warn!(
                     "ROM auto-detect: game code BPRE rev {:#04X} is not a known FireRed revision \
                      — defaulting to Rev 1 addresses.",
                     r
@@ -232,7 +232,7 @@ pub fn detect_rom_revision(rom: &[u8]) -> RomRevision {
         },
         b"BPGE" => match revision {
             1 => {
-                eprintln!(
+                tracing::info!(
                     "ROM auto-detect: LeafGreen USA Rev 1 detected. \
                      EWRAM/save features are fully supported; ROM table lookups \
                      (base stats, ability names) use FireRed addresses as a placeholder."
@@ -240,7 +240,7 @@ pub fn detect_rom_revision(rom: &[u8]) -> RomRevision {
                 RomRevision::LeafGreenUsaRev1
             }
             0 => {
-                eprintln!(
+                tracing::info!(
                     "ROM auto-detect: LeafGreen USA Rev 0 detected. \
                      EWRAM/save features are fully supported; ROM table lookups \
                      (base stats, ability names) use FireRed addresses as a placeholder."
@@ -248,7 +248,7 @@ pub fn detect_rom_revision(rom: &[u8]) -> RomRevision {
                 RomRevision::LeafGreenUsaRev0
             }
             r => {
-                eprintln!(
+                tracing::warn!(
                     "ROM auto-detect: game code BPGE rev {:#04X} is not a known LeafGreen revision \
                      — defaulting to LeafGreen Rev 1 addresses.",
                     r
@@ -258,7 +258,7 @@ pub fn detect_rom_revision(rom: &[u8]) -> RomRevision {
         },
         _ => {
             let code_str = std::str::from_utf8(game_code).unwrap_or("????");
-            eprintln!(
+            tracing::warn!(
                 "ROM auto-detect: unrecognized game code {:?} rev {:#04X} \
                  — defaulting to FireRed USA Rev 1 addresses; some lookups may be wrong.",
                 code_str, revision
@@ -393,7 +393,7 @@ fn fill_static_buffer(buffer: Vec<u8>) -> &'static [u8] {
 /// println!("ROM size: {} bytes", rom.len());
 /// ```
 pub fn get_rom() -> &'static [u8] {
-    ROM_BUFFER.get().expect("Vector not intialized")
+    ROM_BUFFER.get().expect("Vector not initialized")
 }
 
 /// Returns the ROM buffer if it has been initialized, or `None` otherwise.

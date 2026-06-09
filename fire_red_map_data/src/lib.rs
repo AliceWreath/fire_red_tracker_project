@@ -45,7 +45,7 @@ pub struct CurrentMapGroupAndName {
 // ---------------------------------------------
 
 
-/// Top-level descriptor for a single mpa, sotred at the map table entry.
+/// Top-level descriptor for a single map, stored at the map table entry.
 /// 
 /// Each map in FireRed begins with this 28-byte header. All `*_offset_ptr`
 /// fields are GBA ROM/RAM pointers; dereference them with a follow-up
@@ -59,7 +59,7 @@ pub struct MapHeader {
     pub event_offset_ptr: c_uint,  // Byte 5-8
     /// Pointer to the map's script table
     pub script_offset_ptr: c_uint, // Byte 9-12
-    /// Pointer to the [`MapConnections`] strucct, or 0 if there are none
+    /// Pointer to the [`MapConnections`] struct, or 0 if there are none
     pub connections_offset_ptr: c_uint, // Byte 13-16
     /// BGM track ID played on this map
     pub music_id: c_ushort,      // Byte 17-18
@@ -67,9 +67,9 @@ pub struct MapHeader {
     pub footer_id: c_uchar,      // Byte 19
     /// Upper byte of the map layout (footer) ID
     pub footer_id_cont: c_uchar, // Byte 20
-    /// Index into the map-name string table shown on teh location banner.
+    /// Index into the map-name string table shown on the location banner.
     pub name_index: c_uchar,     // Byte 21
-    /// Cave/dungeon type falg; controls lighting and wild encounter music.
+    /// Cave/dungeon type flag; controls lighting and wild encounter music.
     pub cave_type: c_uchar,      // Byte 22
     /// Weather effect index (rain, snow, sandstorm, etc.)
     pub weather_type: c_uchar,   // Byte 23
@@ -85,7 +85,7 @@ pub struct MapHeader {
     pub show_map_name: bool,     // Byte 26 + 5 unused bits
     /// Floor number displayed in multi-floor dungeons (e.g. "B1F")
     pub floor_number: c_uchar,   // Byte 27
-    /// Overrides teh wild battle background; vallues 0x00-0x09 are standard
+    /// Overrides the wild battle background; values 0x00-0x09 are standard
     /// 0x0A and above produce undefined behaviour.
     pub battle_background_override: c_uchar, // Byte 28
 }
@@ -149,7 +149,7 @@ pub struct WarpEvent {
     pub elevation: c_uchar,
     /// Index of the destination warp on the target map.
     pub warp_id: c_uchar,
-    /// Map number within the destinatino group
+    /// Map number within the destination group
     pub map_num: c_uchar,
     /// destination map group
     pub map_group: c_uchar,

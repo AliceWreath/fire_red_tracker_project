@@ -21,7 +21,7 @@ fire_red_tracker          fire_red_aggregator
      └── fire_red_trainer_data
 
 Support crates (no external deps):
-  fire_red_memory          ── UDP snapshots of EWRAM/IWRAM
+  fire_red_memory          ── sliding-window UDP snapshots of EWRAM/IWRAM
   fire_red_retroarch_interfacing ── UDP socket helpers
   fire_red_scanner         ── ROM header scan
   fire_red_pokemon_data    ── ROM wild-encounter tables + FFI
@@ -158,3 +158,53 @@ Columns: `id`, `run_id`, `player_name`, `event_type`, `species_name`, `nickname`
 ### Badge boot guard
 
 The game-polling thread tracks badge state with a `last_badge_mask: Option<u8>`. `None` means "uninitialized". `check_for_new_badges` silently adopts the current badge state on the first call with `None`, preventing false-positive events on tracker startup and after a wipe or run change. The mask is reset to `None` on: game unload, wipe detected, and `thread_run_changed` signal.
+
+## Design Notes
+
+### `LockOrRecover`
+
+`pub trait LockOrRecover<T>` lives in `fire_red_states` and is the single shared implementation of poison-recovering mutex locking. All crates that need it import `fire_red_states::LockOrRecover` — do **not** define a local copy.
+
+### Wild encounter pointer field naming
+
+`WildHeaderRom` in `fire_red_pokemon_data` uses `land_mon_encounters_rom_ptr` (note: corrected from the historical typo `enounters`). The public `EncounterHeader` field remains `land_mon_encounters`.
+
+### Memory read concurrency (`fire_red_memory`)
+
+EWRAM (256 KiB, 64 × 4 KiB chunks) and IWRAM (32 KiB, 8 × 4 KiB chunks) are
+read on separate region threads.  Each thread uses a **sliding window**:
+
+- A `Mutex<usize> + Condvar` counting semaphore is initialised to
+  `MAX_CONCURRENT_CHUNKS = 16`.
+- A chunk thread **acquires** a slot before it starts and **releases** it before
+  sending its result, so the dispatch loop can immediately pick up the next
+  chunk without waiting for the channel `recv`.
+- Results arrive via `mpsc::channel`; after all chunks are dispatched the
+  dispatch-side sender is dropped so `rx` drains to completion.
+- Each region stores its result as soon as it finishes — IWRAM (~1 round-trip,
+  ~16 ms) does not block on EWRAM (~4 round-trips, ~64 ms).
+
+This eliminates the head-of-line stall in the old strict-batch design, where a
+single slow or retrying chunk held up the entire next batch.
+
+### Error visibility
+
+- Sprite decompression failures in the aggregator's `decompress_pixels` are logged at `WARN` level via `tracing::warn!`.
+- Database dump task panics in `serve_db_json` are logged at `ERROR` level via `tracing::error!`.
+- `eframe::run_native` errors in the aggregator are printed to stderr.
+
+### Wild encounter header scanner
+
+`looks_like_header` in `fire_red_scanner` requires **all four** encounter table pointers to be either zero or a valid GBA ROM address. A zero pointer is valid and means "no encounters of that type on this map". Partial validity (some zero, some non-ROM) would indicate corrupted or misidentified data.
+
+### `allow_species_repeats`
+
+When `TrackerConfig::allow_species_repeats` is `true`, `EncounterTracker::tick()` skips the `species_encountered` check ("have we recorded this species anywhere in the run?"). The per-area deduplication and the dupes clause both still apply normally. The effect is that the same species can be recorded as a first encounter on multiple different routes — useful for randomized ROMs or Nuzlocke variants that don't restrict by species history.
+
+### Bot summary endpoint
+
+`GET /api/bot/:index` returns a plain-text string: `"<player> — <hp>/<max_hp> HP — <zone>"`. It reads from `SharedSlots` directly (same source as `/api/slot/:index`) but formats the result as a single human-readable line instead of JSON, making it easy to consume from a Twitch chat bot or stream overlay widget.
+
+### Run comparison page (`/compare`)
+
+`GET /compare` serves `compare.html`, a self-contained JavaScript page. It fetches the run list from `/api/runs` and loads per-run stats from `/api/run/:id/stats` on demand. Stats are cached in-page to avoid repeat round-trips. Numeric comparisons highlight the better value green and worse value red using a `higherIsBetter` flag per metric.

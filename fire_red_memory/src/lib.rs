@@ -27,20 +27,23 @@
 //!
 //! # Parallelism
 //!
-//! Both regions and all chunks within each region are read concurrently.
-//! Each chunk runs on its own thread with its own UDP socket. Because RetroArch
-//! includes the requested address in every response header, chunks can be
-//! dispatched simultaneously and reassembled in order after all threads finish.
+//! Both regions are read on separate threads and each stores its result
+//! independently as soon as it finishes — IWRAM readers (1 round-trip, ~16 ms)
+//! no longer wait for EWRAM (4 round-trips, ~64 ms).
 //!
-//! Concurrency is bounded by [`MAX_CONCURRENT_CHUNKS`] to avoid overwhelming
-//! RetroArch with too many simultaneous requests. Chunks are issued in batches
-//! of that size, with each batch fully completing before the next is started.
+//! Within each region, chunks are dispatched with a **sliding window** bounded
+//! by [`MAX_CONCURRENT_CHUNKS`]. Each chunk runs on its own thread with its own
+//! UDP socket. A counting semaphore (Mutex + Condvar) releases a slot as soon
+//! as any chunk finishes, so the next chunk starts immediately rather than
+//! waiting for an entire batch to drain. This eliminates the head-of-line stall
+//! that strict batching causes when one chunk is slow or retrying.
 //!
-//! At ~16 ms per chunk with sufficient concurrency, total read time should
-//! approach a single round-trip latency regardless of region size.
+//! At ~16 ms per round-trip with 16 concurrent chunks, EWRAM (64 chunks) takes
+//! approximately 4 × 16 ms = 64 ms; IWRAM (8 chunks) takes ~16 ms.
 
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc;
 use arc_swap::ArcSwap;
 use fire_red_retroarch_interfacing::{generate_command, get_from_retroarch, make_socket};
 
@@ -81,10 +84,10 @@ const MAX_CHUNK_SIZE: usize = 4_096;
 ///
 /// RetroArch processes network commands on a single thread, so flooding it
 /// with more concurrent requests than it can queue will cause drops. In
-/// testing, 8 concurrent chunks is a reliable ceiling before responses start
+/// testing, 16 concurrent chunks is a reliable ceiling before responses start
 /// being lost. Tune downward if retries increase, upward if RetroArch handles
 /// more load without issue.
-const MAX_CONCURRENT_CHUNKS: usize = 32;
+const MAX_CONCURRENT_CHUNKS: usize = 16;
 
 /// GBA IWRAM address range (inclusive on both ends).
 const IWRAM_START: u32 = 0x03000000;
@@ -170,18 +173,18 @@ pub fn start_loop() {
             match update_memory() {
                 Ok(()) => {
                     if !connected {
-                        println!("RetroArch connected.");
+                        tracing::info!("RetroArch connected.");
                         connected = true;
                     }
                 }
                 Err(_) => {
                     if connected {
-                        println!("Lost connection to RetroArch. Waiting...");
+                        tracing::warn!("Lost connection to RetroArch. Waiting...");
                         connected = false;
                     }
                     let now = std::time::Instant::now();
                     if now.duration_since(last_waiting_print) >= wait_interval {
-                        println!("Waiting for RetroArch...");
+                        tracing::debug!("Waiting for RetroArch...");
                         last_waiting_print = now;
                     }
                 }
@@ -196,7 +199,7 @@ pub fn start_loop() {
 /// The background thread will finish its current read cycle before exiting.
 /// This function returns immediately without joining the thread.
 pub fn end_loop() {
-    println!("ending memory loop");
+    tracing::info!("ending memory loop");
     RUNNING.store(false, Ordering::SeqCst);
 }
 
@@ -225,35 +228,38 @@ pub fn get_ewram() -> Arc<Vec<u8>> {
 // Internal helpers
 // ---------------------------------------------------------------------------
 
-/// Reads IWRAM and EWRAM concurrently and atomically stores both results.
+/// Reads IWRAM and EWRAM concurrently, storing each region as soon as it
+/// completes rather than waiting for both before storing either.
 ///
-/// Spawns one thread per region; within each region, chunks are also read
-/// concurrently in batches of [`MAX_CONCURRENT_CHUNKS`]. Both region threads
-/// are joined before storing results, so readers always see a consistent pair
-/// of snapshots from the same polling cycle.
+/// Spawns one thread per region. Each thread reads its region with a sliding
+/// window of up to [`MAX_CONCURRENT_CHUNKS`] concurrent chunk requests and
+/// stores the result immediately on success, so IWRAM readers (1 round-trip)
+/// see fresh data without waiting for EWRAM (4 round-trips at 16 chunks).
 ///
 /// # Errors
 ///
 /// Returns `Err` if either region fails after too many consecutive UDP
 /// failures, or if either region thread panics.
 fn update_memory() -> Result<(), &'static str> {
-    let iwram_thread = std::thread::spawn(update_ram_type::<Iwram>);
-    let ewram_thread = std::thread::spawn(update_ram_type::<Ewram>);
+    let iwram_thread = std::thread::spawn(|| -> Option<()> {
+        let data = update_ram_type::<Iwram>()?;
+        LOADED_IWRAM.get()?.store(Arc::new(data));
+        Some(())
+    });
+    let ewram_thread = std::thread::spawn(|| -> Option<()> {
+        let data = update_ram_type::<Ewram>()?;
+        LOADED_EWRAM.get()?.store(Arc::new(data));
+        Some(())
+    });
 
-    let iwram = iwram_thread
-        .join()
-        .map_err(|_| "IWRAM thread panicked.")?
-        .ok_or("Unable to update IWRAM.")?;
+    let iwram_ok = iwram_thread.join().map_err(|_| "IWRAM thread panicked.")?;
+    let ewram_ok = ewram_thread.join().map_err(|_| "EWRAM thread panicked.")?;
 
-    let ewram = ewram_thread
-        .join()
-        .map_err(|_| "EWRAM thread panicked.")?
-        .ok_or("Unable to update EWRAM.")?;
-
-    LOADED_IWRAM.get().unwrap().store(Arc::new(iwram));
-    LOADED_EWRAM.get().unwrap().store(Arc::new(ewram));
-
-    Ok(())
+    match (iwram_ok, ewram_ok) {
+        (Some(()), Some(())) => Ok(()),
+        (None, _) => Err("Unable to update IWRAM."),
+        (_, None) => Err("Unable to update EWRAM."),
+    }
 }
 
 /// Reads a single chunk of GBA memory from RetroArch, retrying on failure.
@@ -274,7 +280,7 @@ fn update_memory() -> Result<(), &'static str> {
 fn read_chunk(start: u32, chunk_start: u32, chunk_size: u32) -> Option<(u32, Vec<u8>)> {
     let socket = match make_socket() {
         Ok(s) => s,
-        Err(e) => { eprintln!("Failed to create UDP socket: {e}"); return None; }
+        Err(e) => { tracing::error!("Failed to create UDP socket: {e}"); return None; }
     };
     let command = generate_command(start + chunk_start, chunk_size as usize);
     let mut retries = 0u32;
@@ -326,18 +332,16 @@ if bytes.len() < chunk_size as usize {
 
 /// Reads the entire memory region described by `T` from RetroArch.
 ///
-/// Splits the region into [`MAX_CHUNK_SIZE`]-byte chunks and issues them in
-/// concurrent batches of up to [`MAX_CONCURRENT_CHUNKS`] threads. Each thread
-/// calls [`read_chunk`] with its own UDP socket. After each batch completes,
-/// the results are keyed by `chunk_start` offset so they can be assembled in
-/// address order regardless of which thread finished first.
+/// Splits the region into [`MAX_CHUNK_SIZE`]-byte chunks and dispatches them
+/// with a sliding window bounded by [`MAX_CONCURRENT_CHUNKS`]. Unlike strict
+/// batching, a new chunk is dispatched as soon as any in-flight chunk finishes,
+/// keeping the concurrency level full at all times. This eliminates the
+/// head-of-line stall where a single slow/retrying chunk holds up the whole
+/// next batch.
 ///
-/// # Why batches instead of all chunks at once?
-///
-/// RetroArch processes network commands on a single internal thread. Sending
-/// all 64 EWRAM chunks simultaneously risks overflowing its receive queue and
-/// silently dropping requests. Batching limits concurrent load to a level
-/// RetroArch can reliably handle.
+/// Each chunk runs on its own thread with its own UDP socket. A counting
+/// semaphore (Mutex + Condvar) throttles dispatch; results are collected via
+/// an mpsc channel after all chunks have been dispatched.
 ///
 /// # Returns
 ///
@@ -350,7 +354,6 @@ fn update_ram_type<T: MemoryType + Default>() -> Option<Vec<u8>> {
     // +1 because the address range is inclusive on both ends.
     let full_size: u32 = (end - start) + 1;
 
-    // Build the list of (chunk_start, chunk_size) pairs up front.
     let chunks: Vec<(u32, u32)> = (0..full_size)
         .step_by(MAX_CHUNK_SIZE)
         .map(|chunk_start| {
@@ -359,38 +362,54 @@ fn update_ram_type<T: MemoryType + Default>() -> Option<Vec<u8>> {
         })
         .collect();
 
-    let mut results: Vec<(u32, Vec<u8>)> = Vec::with_capacity(chunks.len());
+    let total = chunks.len();
+    let (tx, rx) = mpsc::channel::<Option<(u32, Vec<u8>)>>();
 
-    // Process chunks in batches to bound concurrency.
-    for batch in chunks.chunks(MAX_CONCURRENT_CHUNKS) {
-        let handles: Vec<_> = batch
-            .iter()
-            .map(|&(chunk_start, chunk_size)| {
-                std::thread::spawn(move || read_chunk(start, chunk_start, chunk_size))
-            })
-            .collect();
+    // Counting semaphore: permits = MAX_CONCURRENT_CHUNKS.
+    // The semaphore is released inside each chunk thread (before the send) so
+    // the dispatch loop can acquire the next slot without waiting for rx.recv().
+    let semaphore = Arc::new((Mutex::new(MAX_CONCURRENT_CHUNKS), Condvar::new()));
 
-        for handle in handles {
-            match handle.join() {
-                Ok(Some(result)) => results.push(result),
-                Ok(None) => return None, // chunk exhausted its retries
-                Err(_) => {
-                    eprintln!("Chunk reader thread panicked.");
-                    return None;
-                }
+    for (chunk_start, chunk_size) in chunks {
+        // Acquire a slot — blocks until a running chunk releases one.
+        {
+            let (lock, cvar) = &*semaphore;
+            let mut slots = lock.lock().unwrap();
+            while *slots == 0 {
+                slots = cvar.wait(slots).unwrap();
             }
+            *slots -= 1;
         }
+
+        let tx = tx.clone();
+        let sem = semaphore.clone();
+        std::thread::spawn(move || {
+            let result = read_chunk(start, chunk_start, chunk_size);
+            // Release slot before sending so the dispatcher can proceed
+            // without waiting for the channel recv.
+            let (lock, cvar) = &*sem;
+            *lock.lock().unwrap() += 1;
+            cvar.notify_one();
+            let _ = tx.send(result); // ignored if caller already returned None
+        });
     }
 
-    // Sort by chunk offset and assemble. Chunks may have arrived out of order
-    // relative to how they were dispatched, but each carries its offset as key.
-    results.sort_unstable_by_key(|(chunk_start, _)| *chunk_start);
+    // Drop the dispatch-side sender so rx drains to completion once all
+    // chunk threads have sent their results.
+    drop(tx);
 
+    let mut results = Vec::with_capacity(total);
+    for result in rx {
+        let r = result?;
+        results.push(r);
+    }
+
+    // Sort by chunk offset and assemble.
+    results.sort_unstable_by_key(|(chunk_start, _)| *chunk_start);
     let mut ram_holder: Vec<u8> = Vec::with_capacity(full_size as usize);
     for (_, bytes) in results {
         ram_holder.extend_from_slice(&bytes);
     }
-
     Some(ram_holder)
 }
 
@@ -401,6 +420,62 @@ fn update_ram_type<T: MemoryType + Default>() -> Option<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ewram_region_size_and_chunk_count() {
+        let full_size = (EWRAM_END - EWRAM_START + 1) as usize;
+        assert_eq!(full_size, 256 * 1024, "EWRAM must be 256 KiB");
+        // Every chunk is MAX_CHUNK_SIZE except possibly the last.
+        let chunk_count = full_size.div_ceil(MAX_CHUNK_SIZE);
+        assert_eq!(chunk_count, 64, "EWRAM must split into 64 chunks at 4 KiB each");
+        // All chunks fit inside one sliding window: ceiling(64/16) = 4 rounds.
+        let window_rounds = chunk_count.div_ceil(MAX_CONCURRENT_CHUNKS);
+        assert_eq!(window_rounds, 4);
+    }
+
+    #[test]
+    fn iwram_region_size_and_chunk_count() {
+        let full_size = (IWRAM_END - IWRAM_START + 1) as usize;
+        assert_eq!(full_size, 32 * 1024, "IWRAM must be 32 KiB");
+        let chunk_count = full_size.div_ceil(MAX_CHUNK_SIZE);
+        assert_eq!(chunk_count, 8, "IWRAM must split into 8 chunks at 4 KiB each");
+        // 8 chunks < 16 concurrent → fits in a single window round.
+        assert!(chunk_count <= MAX_CONCURRENT_CHUNKS);
+    }
+
+    #[test]
+    fn last_chunk_is_correctly_sized_when_region_not_divisible() {
+        // Verify the min() clamp: a region one byte larger than MAX_CHUNK_SIZE
+        // should produce two chunks — a full one and a 1-byte tail.
+        let full_size: u32 = MAX_CHUNK_SIZE as u32 + 1;
+        let chunks: Vec<(u32, u32)> = (0..full_size)
+            .step_by(MAX_CHUNK_SIZE)
+            .map(|chunk_start| {
+                let chunk_size = (full_size - chunk_start).min(MAX_CHUNK_SIZE as u32);
+                (chunk_start, chunk_size)
+            })
+            .collect();
+        assert_eq!(chunks.len(), 2);
+        assert_eq!(chunks[0], (0, MAX_CHUNK_SIZE as u32));
+        assert_eq!(chunks[1], (MAX_CHUNK_SIZE as u32, 1));
+    }
+
+    #[test]
+    fn out_of_order_results_assemble_correctly() {
+        // Simulate chunks arriving in reverse order (as they would from a
+        // sliding window) and verify sort-then-extend produces correct output.
+        let mut results: Vec<(u32, Vec<u8>)> = vec![
+            (8, vec![0x07, 0x08]),
+            (0, vec![0x01, 0x02, 0x03, 0x04]),
+            (4, vec![0x05, 0x06]),
+        ];
+        results.sort_unstable_by_key(|(chunk_start, _)| *chunk_start);
+        let mut assembled: Vec<u8> = Vec::new();
+        for (_, bytes) in results {
+            assembled.extend_from_slice(&bytes);
+        }
+        assert_eq!(assembled, vec![0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08]);
+    }
 
     /// Integration test: reads both RAM regions from a live RetroArch instance.
     ///
