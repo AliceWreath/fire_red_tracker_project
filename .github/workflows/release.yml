@@ -66,7 +66,7 @@ jobs:
 
   build-windows:
     name: Build (Windows x86_64)
-    runs-on: windows-latest
+    runs-on: ubuntu-latest
 
     steps:
       - uses: actions/checkout@v4
@@ -74,7 +74,13 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: x86_64-pc-windows-msvc
+          targets: x86_64-pc-windows-gnu
+
+      - name: Install Zig
+        run: pip install ziglang
+
+      - name: Install cargo-zigbuild
+        run: cargo install cargo-zigbuild --locked
 
       - name: Install cargo-about
         run: cargo install cargo-about --locked --features cli
@@ -86,34 +92,35 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-cargo-
+          key: windows-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: windows-cargo-
 
       - name: Build release binaries
-        run: cargo build --release --target x86_64-pc-windows-msvc -p fire_red_aggregator -p fire_red_tracker
+        env:
+          # aws-lc-sys (pulled in by rustls) supports NASM-optimised paths on
+          # Windows; Zig's assembler wrapper doesn't expose nasm, so fall back
+          # to the pure-C implementation.  No correctness impact — only speed
+          # for rarely-called TLS setup.
+          AWS_LC_SYS_NO_ASM: "1"
+        run: cargo zigbuild --release --target x86_64-pc-windows-gnu -p fire_red_aggregator -p fire_red_tracker
 
       - name: Generate third-party license attribution
         run: cargo about generate about.hbs -o THIRD_PARTY_LICENSES.html
 
       - name: Package binaries
-        shell: pwsh
         run: |
-          $rel = "target\x86_64-pc-windows-msvc\release"
-          Copy-Item THIRD_PARTY_LICENSES.html $rel
-          Compress-Archive -Force `
-            -Path "$rel\fire_red_aggregator.exe", "$rel\THIRD_PARTY_LICENSES.html" `
-            -DestinationPath "$rel\fire_red_aggregator-x86_64-pc-windows-msvc.zip"
-          Compress-Archive -Force `
-            -Path "$rel\fire_red_tracker.exe", "$rel\THIRD_PARTY_LICENSES.html" `
-            -DestinationPath "$rel\fire_red_tracker-x86_64-pc-windows-msvc.zip"
+          cd target/x86_64-pc-windows-gnu/release
+          cp ../../../THIRD_PARTY_LICENSES.html .
+          zip fire_red_aggregator-x86_64-pc-windows-gnu.zip fire_red_aggregator.exe THIRD_PARTY_LICENSES.html
+          zip fire_red_tracker-x86_64-pc-windows-gnu.zip    fire_red_tracker.exe    THIRD_PARTY_LICENSES.html
 
       - name: Upload Windows artifacts
         uses: actions/upload-artifact@v4
         with:
           name: windows-binaries
           path: |
-            target/x86_64-pc-windows-msvc/release/fire_red_aggregator-x86_64-pc-windows-msvc.zip
-            target/x86_64-pc-windows-msvc/release/fire_red_tracker-x86_64-pc-windows-msvc.zip
+            target/x86_64-pc-windows-gnu/release/fire_red_aggregator-x86_64-pc-windows-gnu.zip
+            target/x86_64-pc-windows-gnu/release/fire_red_tracker-x86_64-pc-windows-gnu.zip
 
   publish:
     name: Publish release
@@ -144,8 +151,8 @@ jobs:
           files: |
             fire_red_aggregator-x86_64-unknown-linux-gnu.tar.gz
             fire_red_tracker-x86_64-unknown-linux-gnu.tar.gz
-            fire_red_aggregator-x86_64-pc-windows-msvc.zip
-            fire_red_tracker-x86_64-pc-windows-msvc.zip
+            fire_red_aggregator-x86_64-pc-windows-gnu.zip
+            fire_red_tracker-x86_64-pc-windows-gnu.zip
 
       - name: Prune old releases (keep 3 most recent)
         env:

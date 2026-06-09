@@ -28,6 +28,6 @@ tokio.workspace                  = true
 axum.workspace                   = true
 image.workspace                  = true
 futures-util.workspace           = true
-self_update.workspace            = true
 tracing.workspace                = true
 tracing-subscriber.workspace     = true
+self_update.workspace            = true
