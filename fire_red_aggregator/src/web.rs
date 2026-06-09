@@ -962,6 +962,7 @@ const RUNSTATS_HTML:     &str = include_str!("run_stats.html");
 const SHINY_HTML:        &str = include_str!("shiny.html");
 const MEMORIAL_HTML:     &str = include_str!("memorial.html");
 const SOULLINK_HTML:     &str = include_str!("soullink.html");
+const ABOUT_HTML:        &str = include_str!("about.html");
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -1274,6 +1275,10 @@ async fn serve_soullink(State(state): State<WebState>) -> Html<String> {
     Html(apply_page(SOULLINK_HTML, state.testing))
 }
 
+async fn serve_about(State(state): State<WebState>) -> Html<String> {
+    Html(apply_page(ABOUT_HTML, state.testing))
+}
+
 /// `GET /api/run/:id/stats` — per-run statistics JSON.
 async fn api_run_stats(
     State(state): State<WebState>,
@@ -1532,6 +1537,7 @@ pub fn run(live_slots: SharedSlots, port: u16, db_conn: Option<String>, testing:
             .route("/:index/box", get(serve_focused))
             .route("/run/:id/stats", get(serve_run_stats))
             .route("/run/:id/memorial", get(serve_memorial))
+            .route("/about", get(serve_about))
             .with_state(web_state);
 
         let addr = format!("0.0.0.0:{}", port);

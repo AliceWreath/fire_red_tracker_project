@@ -1,0 +1,325 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>About — FireRed Tracker</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body {
+    background: #0f0f0f;
+    font-family: 'Segoe UI', Tahoma, sans-serif;
+    color: #e0e0e0;
+    min-height: 100vh;
+}
+#root { max-width: 680px; margin: 0 auto; padding: 24px 16px; }
+
+.page-header {
+    display: flex; align-items: baseline; gap: 10px;
+    padding-bottom: 12px; border-bottom: 1px solid rgba(255,255,255,0.1);
+    margin-bottom: 20px;
+}
+.page-title { font-size: 22px; font-weight: bold; color: #fff; }
+.version-tag {
+    font-size: 13px; font-weight: 600; color: #ffd040;
+    background: rgba(255,208,64,0.1); border-radius: 4px;
+    padding: 1px 7px;
+}
+
+.card {
+    background: rgba(255,255,255,0.04);
+    border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 10px;
+    padding: 16px 18px;
+    margin-bottom: 16px;
+}
+.card-title {
+    font-size: 11px; font-weight: 700; color: #aaa;
+    text-transform: uppercase; letter-spacing: 0.5px;
+    margin-bottom: 10px; padding-bottom: 6px;
+    border-bottom: 1px solid rgba(255,255,255,0.06);
+}
+
+/* Identity block */
+.meta-line { font-size: 13px; color: #ccc; margin-top: 4px; }
+.meta-line:first-of-type { margin-top: 0; }
+.meta-label { color: #888; margin-right: 4px; }
+.lic-badge {
+    display: inline-block; font-size: 11px; font-weight: 700;
+    padding: 1px 7px; border-radius: 4px;
+    background: rgba(96,224,96,0.12); color: #60e060;
+    border: 1px solid rgba(96,224,96,0.25);
+}
+
+/* Description */
+.desc { font-size: 13px; color: #bbb; line-height: 1.65; }
+
+/* Page table */
+.page-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.page-table th {
+    text-align: left; color: #888; font-size: 11px; font-weight: 600;
+    text-transform: uppercase; letter-spacing: 0.4px;
+    padding: 4px 8px; border-bottom: 1px solid rgba(255,255,255,0.08);
+}
+.page-table td { padding: 7px 8px; border-bottom: 1px solid rgba(255,255,255,0.04); vertical-align: top; }
+.page-table tr:last-child td { border-bottom: none; }
+.page-table tr:hover td { background: rgba(255,255,255,0.03); }
+.page-url { font-family: 'Consolas', 'Courier New', monospace; font-size: 12px; white-space: nowrap; }
+.page-url a { color: #8ecfff; text-decoration: none; }
+.page-url a:hover { text-decoration: underline; }
+.page-desc-td { color: #aaa; font-size: 12px; line-height: 1.5; }
+.badge-obs {
+    font-size: 10px; font-weight: 700; color: #ffd040;
+    background: rgba(255,208,64,0.12); border-radius: 3px;
+    padding: 0 5px; margin-left: 5px; vertical-align: middle;
+    white-space: nowrap;
+}
+.badge-db {
+    font-size: 10px; font-weight: 700; color: #8ecfff;
+    background: rgba(142,207,255,0.1); border-radius: 3px;
+    padding: 0 5px; margin-left: 5px; vertical-align: middle;
+    white-space: nowrap;
+}
+.section-row td {
+    padding-top: 12px; padding-bottom: 3px;
+    font-size: 10px; font-weight: 700; color: #777;
+    text-transform: uppercase; letter-spacing: 0.5px;
+    border-bottom: none;
+}
+
+/* Theme note */
+.theme-row { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 6px; }
+.theme-chip {
+    font-family: 'Consolas', 'Courier New', monospace;
+    font-size: 12px; padding: 2px 9px;
+    background: rgba(255,255,255,0.06); border-radius: 4px;
+    color: #ccc; cursor: default;
+}
+.note { font-size: 12px; color: #777; margin-top: 8px; line-height: 1.6; }
+
+/* Footer */
+.footer {
+    text-align: center; font-size: 11px; color: #555;
+    margin-top: 24px; padding-top: 12px;
+    border-top: 1px solid rgba(255,255,255,0.06);
+}
+</style>
+</head>
+<body>
+<div id="root">
+
+  <div class="page-header">
+    <span class="page-title">FireRed Nuzlocke Tracker</span>
+    <span class="version-tag">v__VERSION__</span>
+  </div>
+
+  <!-- Identity -->
+  <div class="card">
+    <div class="card-title">About</div>
+    <p class="meta-line"><span class="meta-label">Author</span> © 2026 AliceWreath</p>
+    <p class="meta-line"><span class="meta-label">License</span> <span class="lic-badge">MIT</span></p>
+    <p class="meta-line" style="margin-top:10px">
+      <span class="meta-label">Third-party</span>
+      This build includes open-source dependencies. Full attribution is in
+      <code style="font-size:12px;color:#8ecfff">THIRD_PARTY_LICENSES.html</code>
+      bundled with the release tarball.
+    </p>
+  </div>
+
+  <!-- What is this -->
+  <div class="card">
+    <div class="card-title">Description</div>
+    <p class="desc">
+      A real-time Pokémon FireRed/LeafGreen Nuzlocke companion. The tracker reads
+      game memory via RetroArch's UDP interface and streams party state, encounters,
+      deaths, badges, and events to this aggregator over TCP. The aggregator serves
+      live WebSocket overlays suitable for OBS Browser Sources, a web-based DB
+      viewer, and a REST API for run data.
+    </p>
+  </div>
+
+  <!-- Available pages -->
+  <div class="card">
+    <div class="card-title">Available Pages</div>
+    <table class="page-table">
+      <thead>
+        <tr><th>Path</th><th>Description</th></tr>
+      </thead>
+      <tbody>
+
+        <!-- Live overlays -->
+        <tr class="section-row"><td colspan="2">Live overlays (WebSocket)</td></tr>
+
+        <tr>
+          <td class="page-url"><a href="/">/</a></td>
+          <td class="page-desc-td">
+            Main party overlay — all connected players side by side.
+            Supports <code>?show=box</code>, <code>?show=dead</code>, <code>?show=caught</code>.
+            <span class="badge-obs">OBS</span>
+          </td>
+        </tr>
+        <tr>
+          <td class="page-url"><a href="/0/party">/:index/party</a></td>
+          <td class="page-desc-td">
+            Single-player focused party view. Append <code>?plain-view</code> for a
+            compact layout with no encounter section. <span class="badge-obs">OBS</span>
+          </td>
+        </tr>
+        <tr>
+          <td class="page-url"><a href="/0/encounters">/:index/encounters</a></td>
+          <td class="page-desc-td">
+            Encounters-only focused view for a single player.
+            <span class="badge-obs">OBS</span>
+          </td>
+        </tr>
+        <tr>
+          <td class="page-url"><a href="/0/dead">/:index/dead</a></td>
+          <td class="page-desc-td">Dead Pokémon list for a single player. <span class="badge-obs">OBS</span></td>
+        </tr>
+        <tr>
+          <td class="page-url"><a href="/0/caught">/:index/caught</a></td>
+          <td class="page-desc-td">Caught Pokémon list for a single player. <span class="badge-obs">OBS</span></td>
+        </tr>
+        <tr>
+          <td class="page-url"><a href="/0/box">/:index/box</a></td>
+          <td class="page-desc-td">PC box grid for a single player. <span class="badge-obs">OBS</span></td>
+        </tr>
+        <tr>
+          <td class="page-url"><a href="/0/alerts">/:index/alerts</a></td>
+          <td class="page-desc-td">
+            Toast alerts — zone entry, death, shiny, and wipe notifications.
+            Transparent background; designed as an always-on-top OBS source.
+            <span class="badge-obs">OBS</span>
+          </td>
+        </tr>
+        <tr>
+          <td class="page-url"><a href="/0/routes">/:index/routes</a></td>
+          <td class="page-desc-td">Route encounter table for a single player. <span class="badge-obs">OBS</span></td>
+        </tr>
+        <tr>
+          <td class="page-url"><a href="/alerts">/alerts</a></td>
+          <td class="page-desc-td">Alert toasts for player 0 (shorthand for <code>/0/alerts</code>). <span class="badge-obs">OBS</span></td>
+        </tr>
+
+        <!-- DB-backed pages -->
+        <tr class="section-row"><td colspan="2">Database pages</td></tr>
+
+        <tr>
+          <td class="page-url"><a href="/history">/history</a></td>
+          <td class="page-desc-td">Run history — timeline of all recorded runs. <span class="badge-db">DB</span></td>
+        </tr>
+        <tr>
+          <td class="page-url"><a href="/shiny">/shiny</a></td>
+          <td class="page-desc-td">Shiny encounter statistics for the active run. <span class="badge-db">DB</span></td>
+        </tr>
+        <tr>
+          <td class="page-url"><a href="/memorial">/memorial</a></td>
+          <td class="page-desc-td">Memorial — all Pokémon that have died across all runs. <span class="badge-db">DB</span></td>
+        </tr>
+        <tr>
+          <td class="page-url"><a href="/soullink">/soullink</a></td>
+          <td class="page-desc-td">Soul-link partner table for the active run. <span class="badge-db">DB</span></td>
+        </tr>
+        <tr>
+          <td class="page-url"><a href="/run/1/stats">/run/:id/stats</a></td>
+          <td class="page-desc-td">Per-run statistics: playtime, catch rate, death breakdown by zone. <span class="badge-db">DB</span></td>
+        </tr>
+        <tr>
+          <td class="page-url"><a href="/run/1/memorial">/run/:id/memorial</a></td>
+          <td class="page-desc-td">Memorial filtered to a single run. <span class="badge-db">DB</span></td>
+        </tr>
+
+        <!-- Tools -->
+        <tr class="section-row"><td colspan="2">Tools</td></tr>
+
+        <tr>
+          <td class="page-url"><a href="/db">/db</a></td>
+          <td class="page-desc-td">Database viewer — browse all tables. <span class="badge-db">DB</span></td>
+        </tr>
+        <tr>
+          <td class="page-url"><a href="/db/query">/db/query</a></td>
+          <td class="page-desc-td">Interactive SQL query interface. <span class="badge-db">DB</span></td>
+        </tr>
+        <tr>
+          <td class="page-url"><a href="/cmd">/cmd</a></td>
+          <td class="page-desc-td">Command console — send End Run / New Run commands.</td>
+        </tr>
+        <tr>
+          <td class="page-url"><a href="/about">/about</a></td>
+          <td class="page-desc-td">This page.</td>
+        </tr>
+
+      </tbody>
+    </table>
+  </div>
+
+  <!-- Themes -->
+  <div class="card">
+    <div class="card-title">Themes</div>
+    <p class="desc" style="margin-bottom:8px">
+      Most overlay pages accept a <code style="font-size:12px;color:#8ecfff">?theme=</code>
+      query parameter. Append it to any overlay URL:
+    </p>
+    <div class="theme-row">
+      <span class="theme-chip">?theme=dark</span>
+      <span class="theme-chip">?theme=light</span>
+      <span class="theme-chip">?theme=minimal</span>
+    </div>
+    <p class="note">
+      <strong style="color:#ccc">dark</strong> is the default — semi-transparent dark panels, suitable for OBS chroma-key or
+      overlay on top of gameplay footage.<br>
+      <strong style="color:#ccc">light</strong> — light-grey panels on a white-ish background, better for screen-share setups.<br>
+      <strong style="color:#ccc">minimal</strong> — same as dark but with reduced shadow and blur for lower-overhead rendering.
+    </p>
+  </div>
+
+  <!-- REST API quick ref -->
+  <div class="card">
+    <div class="card-title">REST API</div>
+    <table class="page-table">
+      <thead>
+        <tr><th>Endpoint</th><th>Description</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td class="page-url"><code>/api/state</code></td>
+          <td class="page-desc-td">Full JSON snapshot of all connected player slots.</td>
+        </tr>
+        <tr>
+          <td class="page-url"><code>/api/slot/:index</code></td>
+          <td class="page-desc-td">JSON for a single slot.</td>
+        </tr>
+        <tr>
+          <td class="page-url"><code>/api/timeline</code></td>
+          <td class="page-desc-td">Chronological event log for the active run. <span class="badge-db">DB</span></td>
+        </tr>
+        <tr>
+          <td class="page-url"><code>/api/run/:id/events</code></td>
+          <td class="page-desc-td">Event log for a specific run. <span class="badge-db">DB</span></td>
+        </tr>
+        <tr>
+          <td class="page-url"><code>/api/run/:id/export</code></td>
+          <td class="page-desc-td">Full run export as JSON or CSV (<code>?format=csv</code>). <span class="badge-db">DB</span></td>
+        </tr>
+        <tr>
+          <td class="page-url"><code>/api/run/:id/stats</code></td>
+          <td class="page-desc-td">Playtime, catch rate, zone stats. <span class="badge-db">DB</span></td>
+        </tr>
+        <tr>
+          <td class="page-url"><code>/api/runs</code></td>
+          <td class="page-desc-td">Summary list of all stored runs. <span class="badge-db">DB</span></td>
+        </tr>
+        <tr>
+          <td class="page-url"><code>/api/run/import</code></td>
+          <td class="page-desc-td">POST — import a previously exported run. <span class="badge-db">DB</span></td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="footer">
+    FireRed Nuzlocke Tracker v__VERSION__ &nbsp;·&nbsp; MIT License &nbsp;·&nbsp; © 2026 AliceWreath
+  </div>
+
+</div>
+</body>
+</html>
