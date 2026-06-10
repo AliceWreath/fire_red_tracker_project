@@ -394,8 +394,8 @@ GET /api/run/:id/route_odds
     queries encounters WHERE run_id=$1 → builds seen canonical-floor set
     compares against fire_red_location_names::all_wild_areas() (static list)
     returns { run_id, encountered: [...], unencountered: [...] }
-    encountered entries: player_name, map_group, map_name, area, species_name,
-                         level, caught, is_shiny, encountered_at
+    encountered entries: player_name, map_group, map_name, area, species (numeric dex),
+                         species_name, level, caught, is_shiny, encountered_at
     unencountered entries: map_group, map_name, area
 
 GET /api/run/:id/webhook_log

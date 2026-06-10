@@ -304,6 +304,8 @@ The following pages are available:
 | `http://localhost:PORT/soullink` | Soul Link health overview — OBS Browser Source showing all active soul-link pairs side-by-side with sprites, HP bars, and live dead/alive state |
 | `http://localhost:PORT/soullink/manage` | Soul Link override manager — set and clear manual pairings that take precedence over automatic met-location pairing (requires `--db`) |
 | `http://localhost:PORT/:index/types` | Type coverage dashboard for one player — party type badges, per-type defensive exposure chart, next gym leader with their primary type highlighted, and Elite 4 progress track |
+| `http://localhost:PORT/alerts` | Slot 0 alerts overlay — shorthand for `/0/alerts`; append `?slot=N` to target a different player |
+| `http://localhost:PORT/about` | Version info and quick reference — tracker version, available pages, themes, and REST API summary |
 
 The per-player pages can all be added as separate Browser Sources in OBS and positioned independently. The alerts overlay is fully transparent when idle — nothing appears until an event fires.
 
@@ -362,16 +364,13 @@ Pages that only need a subset of the state can append `?show=<mode>` to the `/ws
 
 | `?show=` value | Arrays stripped from payload |
 |---|---|
-| `party` | `encounters`, `box_pokemon`, `caught`, `dead`, `prev_run_encounters`, `db_encounters` |
-| `encounters` | `box_pokemon`, `caught`, `dead`, `prev_run_encounters` |
-| `dead` | `encounters`, `box_pokemon`, `caught`, `prev_run_encounters`, `db_encounters` |
-| `caught` | `encounters`, `box_pokemon`, `dead`, `prev_run_encounters`, `db_encounters` |
-| `box` | `encounters`, `caught`, `dead`, `prev_run_encounters`, `db_encounters` |
-| `alerts` | `box_pokemon`, `caught`, `dead`, `prev_run_encounters` |
-| `routes` | `box_pokemon`, `caught`, `dead` |
+| `box` | `party`, `encounters`, `caught`, `dead`, `db_encounters`, `prev_run_encounters` |
+| `dead` | `encounters`, `box_pokemon`, `caught`, `prev_run_encounters` |
+| `caught` | `encounters`, `box_pokemon`, `dead`, `prev_run_encounters` |
 | `memorial` | `encounters`, `box_pokemon`, `caught`, `prev_run_encounters`, `db_encounters` |
 | `soullink` | `encounters`, `box_pokemon`, `db_encounters`, `prev_run_encounters` |
-| *(omitted)* | No stripping — full payload |
+| `types` | `encounters`, `box_pokemon`, `dead`, `caught`, `db_encounters`, `prev_run_encounters` |
+| *(omitted or unrecognised)* | No stripping — full payload |
 
 ##### Slot object fields
 
@@ -385,10 +384,10 @@ Each object in the `/api/state` array (and on `/api/slot/:index`) contains:
 | `active_run_id` | number \| null | ID of the current active run, or `null` if none |
 | `run_summary` | object \| null | `{ run_id, player_name, started_at, ended_at, deaths, caught }` for the most recent run |
 | `badges` | bool[8] | Badge flags in gym order (Boulder → Earth) |
-| `next_gym` | object \| null | `{ leader, city, max_level }` for the next gym |
+| `next_gym` | object \| null | `{ leader, city, max_level, type_id }` for the next gym; `type_id` is the leader's primary Gen III type (0–16) |
 | `party` | array | Up to 6 party member objects (see below) |
 | `dead` | array | Dead Pokémon records for the active run, sorted newest first |
-| `caught` | array | Caught Pokémon records for the active run, sorted oldest first |
+| `caught` | array | Caught Pokémon records for the active run, sorted oldest first. Each record includes `personality` (raw GBA value — used by the soul-link override manager to identify specific Pokémon) and `dead` (true if this Pokémon has a death record or is a soul-link casualty) |
 | `box_pokemon` | array | All Pokémon in PC boxes |
 | `db_encounters` | array | First-encounter records for the active run |
 | `prev_run_encounters` | array | First-encounter records from the most recently completed run (for cross-run hints) |
@@ -396,6 +395,8 @@ Each object in the `/api/state` array (and on `/api/slot/:index`) contains:
 | `current_map_group` | number | EWRAM map group byte for the current position |
 | `current_map_name` | number | EWRAM map name byte for the current position |
 | `current_zone_name` | string | Human-readable name of the current wild-encounter zone, empty when not in a wild area |
+| `e4_progress` | bool[5] | Elite 4 + Champion defeat flags in order: Lorelei, Bruno, Agatha, Lance, Blue. Present only when all 8 badges are held |
+| `game_cleared` | bool | True when all 8 badges and all 5 Elite 4 members (including the Champion) have been defeated |
 
 ##### Party member fields
 
@@ -422,6 +423,11 @@ Each object in the `/api/state` array (and on `/api/slot/:index`) contains:
 | `sprite` | string \| null | `data:image/png;base64,...` PNG sprite URI, or `null` while the sprite is in transit |
 | `personality` | number | Raw personality value — used by overlays to detect identity changes |
 | `status` | number | Gen III status bitmask: bits 0–2 = SLP turns, bit 3 = PSN, bit 4 = BRN, bit 5 = FRZ, bit 6 = PAR, bit 7 = TOX |
+| `iv_hp` … `iv_spd` | number | Individual Values for each stat (0–31), in order HP / Atk / Def / Spe / SpA / SpD |
+| `moves` | string[4] | Move names for each of the four move slots (empty string for unused slots) |
+| `pp` | number[4] | Current PP for each move slot |
+| `type1` | number | Gen III type ID for the species' first type (0 = Normal, …, 8 = Psychic, …, 16 = Dark) |
+| `type2` | number | Gen III type ID for the second type; equals `type1` for mono-type species |
 
 > **ROM paths with spaces** can be quoted: `tracker "My ROMs/fire red.gba"`
 

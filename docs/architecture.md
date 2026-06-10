@@ -15,10 +15,13 @@ fire_red_tracker          fire_red_aggregator
      │   ├── fire_red_badge
      │   ├── fire_red_text
      │   ├── fire_red_map_data
+     │   ├── fire_red_location_names
      │   └── fire_red_retroarch_interfacing
      ├── fire_red_database
+     │   └── fire_red_location_names
      ├── fire_red_image_data
-     └── fire_red_trainer_data
+     ├── fire_red_trainer_data
+     └── fire_red_location_names
 
 Support crates (no external deps):
   fire_red_memory          ── sliding-window UDP snapshots of EWRAM/IWRAM
@@ -29,10 +32,11 @@ Support crates (no external deps):
   fire_red_text            ── GBA character encoding
   fire_red_image_data      ── LZ77 sprite decompression
   fire_red_map_data        ── Gym progression table
+  fire_red_location_names  ── Map-area name lookup; `map_area_name` for encounter zones, `location_name` for met-location bytes, `all_wild_areas` for route-odds coverage
   fire_red_rom_buffer      ── Global ROM byte slice
   fire_red_pokemon_name_buffer ── Cached Pokémon name list
   fire_red_trainer_data    ── Trainer name / ID helpers
-  fire_red_party_monitor   ── Party Pokemon struct
+  fire_red_party_monitor   ── Party Pokemon struct; `species_type_static` ROM-free type lookup
   fire_red_get_values      ── Misc EWRAM value helpers
 ```
 
@@ -149,11 +153,18 @@ Both modes can be running simultaneously — the aggregator detects whether `ws_
 
 ## Database Schema Notes
 
-### `events` table
+### Table inventory (schema v9)
 
-Columns: `id`, `run_id`, `player_name`, `event_type`, `species_name`, `nickname`, `old_nickname`, `level`, `occurred_at`.
-
-`old_nickname` is populated only for `nickname_change` events (holds the name that was overwritten); it is an empty string for all other event types.
+| Table | Key columns | Notes |
+|---|---|---|
+| `runs` | `id`, `player_name`, `started_at`, `ended_at` | One row per Nuzlocke run |
+| `dead_pokemon` | `run_id`, `player_name`, `personality`, `species_name`, `nickname`, `level`, `died_at`, IVs/EVs/stats | `ON CONFLICT (run_id, personality) DO NOTHING` |
+| `caught_pokemon` | `run_id`, `player_name`, `personality`, `species_name`, `nickname`, `level`, `met_location`, `caught_at`, IVs | `ON CONFLICT (run_id, personality) DO NOTHING` |
+| `encounters` | `run_id`, `player_name`, `map_group`, `map_name`, `species_name`, `level`, `caught`, `is_shiny`, `encountered_at` | First encounter per area; `ON CONFLICT DO NOTHING` |
+| `events` | `id`, `run_id`, `player_name`, `event_type`, `species_name`, `nickname`, `old_nickname`, `level`, `occurred_at` | `old_nickname` only populated for `nickname_change` events |
+| `webhook_log` | `run_id`, `event_type`, `url`, `success`, `attempts`, `payload`, `fired_at` | Written by webhook worker after every delivery attempt; indexed on `run_id` |
+| `soul_link_overrides` | `run_id`, `personality`, `partner_personality`, `created_at` | Manual soul-link pairings; takes precedence over auto-detection; cleared when a new run starts |
+| `meta` | `key`, `value` | Key-value store; `active_run_id` is the only key currently used |
 
 ### Badge boot guard
 
