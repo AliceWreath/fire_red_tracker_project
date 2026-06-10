@@ -1,0 +1,5 @@
+# Mark all HTML files as not the primary language
+*.html linguist-detectable=false
+
+# Or explicitly mark Rust files as the primary language
+*.rs linguist-language=Rust
