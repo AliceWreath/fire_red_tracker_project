@@ -302,6 +302,8 @@ The following pages are available:
 | `http://localhost:PORT/run/:id/memorial` | Memorial grid for a specific run by ID |
 | `http://localhost:PORT/run/:id/stats` | Per-run statistics — playtime, catch rate by zone, zone encounter log table, death log |
 | `http://localhost:PORT/soullink` | Soul Link health overview — OBS Browser Source showing all active soul-link pairs side-by-side with sprites, HP bars, and live dead/alive state |
+| `http://localhost:PORT/soullink/manage` | Soul Link override manager — set and clear manual pairings that take precedence over automatic met-location pairing (requires `--db`) |
+| `http://localhost:PORT/:index/types` | Type coverage dashboard for one player — party type badges, per-type defensive exposure chart, next gym leader with their primary type highlighted, and Elite 4 progress track |
 
 The per-player pages can all be added as separate Browser Sources in OBS and positioned independently. The alerts overlay is fully transparent when idle — nothing appears until an event fires.
 
@@ -341,6 +343,9 @@ All endpoints are served on the same port as the WebSocket overlay (`--ws-port`)
 | `/api/run/:id/route_stats` | `GET` | Per-route catch statistics for run `id`. Returns `{ run_id, zones: [{ map_group, map_name, area, total, caught, catch_rate_pct }] }`. Requires `--db` |
 | `/api/run/:id/route_odds` | `GET` | Encounter coverage for run `id`. Returns `{ encountered: [...], unencountered: [...] }` — `encountered` has species/catch info per visited route; `unencountered` lists all known FireRed wild areas not yet recorded. Requires `--db` |
 | `/api/run/:id/webhook_log` | `GET` | Webhook delivery receipts for run `id`. Returns `{ run_id, webhook_log: [{ event_type, url, success, attempts, payload, fired_at, fired_at_human }] }`. Requires `--db` |
+| `/api/run/:id/soul_link/overrides` | `GET` | All manual soul-link overrides for run `id`. Returns `{ run_id, overrides: [{ personality, partner_personality, created_at }] }`. Requires `--db` |
+| `/api/run/:id/soul_link/override` | `POST` | Set a manual soul-link pairing. Body: `{ "personality": <u32>, "partner_personality": <u32> }`. Replaces any existing override for the same personality. Requires `--db` |
+| `/api/run/:id/soul_link/override/:personality` | `DELETE` | Remove the manual soul-link override for the given personality in run `id`. Requires `--db` |
 | `/api/run/:id/shiny` | `GET` | Shiny encounter statistics for run `id`. Returns `{ total_shinies, encounters_since_last_shiny, last_shiny: {...}, since_last_shiny: [...] }`. Requires `--db` |
 | `/api/run/:id/export` | `GET` | Full run export. Without query params: returns the complete run as JSON (metadata + caught + dead + encounters). With `?format=csv`: returns the same data as three CSV sections (caught, dead, encounters) in a single file with `Content-Disposition: attachment`. Requires `--db` |
 | `/api/run/:id/events` | `GET` | Chronological event log for a run. Returns `{ run_id, events: [{ player_name, event_type, species_name, nickname, old_nickname, level, occurred_at }, ...] }`. `old_nickname` is populated for `nickname_change` events and empty for all others. Event types: `catch`, `death`, `soul_link_death`, `shiny`, `wipe`, `badge`, `nickname_change`. Requires `--db` |
@@ -435,6 +440,8 @@ A **Soul Link** is a Nuzlocke variant played with a partner: each player's catch
 > **Limitation:** Soul Link matching uses `met_location` as the pairing key. This is reliable on standard FireRed but may produce false positives on heavily modified ROMs where multiple areas share a location ID.
 
 > **Gift Pokémon:** Starters, Eevee, Lapras, and other gifted Pokémon (`met_location = 0`) cannot be paired by location. Instead they are paired **by order of receipt**: Player 1's first gift (the starter) links to Player 2's first gift, the second gift to the second, and so on. If one player has received more gifts than the other, the unmatched gifts are not linked. Death propagation uses the `caught_at` timestamp to determine order; the live GUI display uses party-slot order.
+
+**Manual overrides** — if the automatic pairing links the wrong Pokémon (e.g. on a randomizer ROM where location IDs don't uniquely identify routes), visit `/soullink/manage` in a browser tab to set custom pairings per run. An override maps one personality value to another and takes priority over both met-location and receipt-order pairing in both the live overlay and DB propagation. Overrides are stored in the `soul_link_overrides` database table (schema v9) and are cleared automatically when a new run starts. To create a symmetric link (A's death kills B *and* B's death kills A), add both directions: A → B and B → A.
 
 ---
 
@@ -790,6 +797,39 @@ Add `http://localhost:9090/cmd` in a browser tab to manage runs — **End Run** 
 
 ## Project status
 
+**v0.8.98** — type coverage overlay, E4/game-clear tracking, static species-type table:
+
+- **`/:index/types` overlay page** — new browser-source page showing each party member's type badges, a per-type defensive exposure chart (worst incoming multiplier per attacking type across the whole party), the next gym leader / Elite 4 member with their primary type highlighted, and an Elite 4 defeat progress track once all 8 badges are held.
+- **`type1` / `type2` in `MemberDto`** — Gen III type IDs (0–16) are now included in every party member object in `/api/state` and the WebSocket feed. The types page and any custom overlays can use these without a separate lookup.
+- **`e4_progress` / `game_cleared` in `SlotDto`** — the slot object now includes `e4_progress: [bool; 5]` (Lorelei → Blue) and `game_cleared: bool` (true when all badges and all E4 + Champion are defeated), sourced from `BadgeState.e4` and `BadgeState.game_complete()`.
+- **`type_id` in `GymDto`** — the next-gym object now includes `type_id: u8` (the leader's primary Gen III type), used by the types overlay to pre-highlight the relevant column in the defensive chart.
+- **`fire_red_party_monitor::species_type_static`** — new ROM-free type lookup: a 252-entry compile-time table covering all 251 Kanto + Johto species. The aggregator uses this to populate type fields without needing to load the ROM.
+- **Clippy clean** — nested `if let` chains in `build_party_dto` collapsed to `if let … && let …` per Rust 2024 style.
+- **"Possible future features" updated** — removed "type-matchup warning overlay" (now implemented) and "multi-revision auto-detect" (already implemented via `detect_rom_revision` in `fire_red_rom_buffer`).
+
+---
+
+**v0.8.97** — correctness fixes, lock-scope improvements, and Soul Link partner override UI:
+
+- **`mark_dead` false-positive return** — `mark_dead()` always returned `Ok(true)` even when `ON CONFLICT DO NOTHING` silently skipped the insert (the Pokémon was already recorded as dead). Now returns `Ok(n > 0)` so callers can distinguish a new record from a no-op.
+- **`mark_caught` meaningful return value** — `mark_caught()` previously returned `()`. It now returns `bool` (`true` = new row inserted, `false` = already existed or error), gating `record_event(Catch)` and the catch webhook so neither fires for a duplicate catch.
+- **`parse_timestamp` pre-epoch guard** — years before 1970 silently returned `Some(0)` (identical to 1970-01-01) because the `1970..year` loop is empty for `year ≤ 1969`. Added an explicit `if year < 1970 { return None; }` guard.
+- **`has_encounter_for_any_floor` single round-trip** — the function previously ran N serial `SELECT EXISTS` queries (one per dungeon floor), each holding the DB mutex. Replaced with a single dynamically-built `SELECT EXISTS … OR …` query covering all floors in one round-trip.
+- **Party mutex lock scope reduced** — `check_for_new_pokemon` and `check_for_dead_pokemon` held `Arc<Mutex<Vec<Pokemon>>>` across DB writes and webhook calls, blocking the game-polling thread. Both functions now snapshot the party (`.cloned().collect()`) before releasing the lock, so I/O runs without holding the mutex.
+- **`wipe_signal` race fixed** — the TCP write loop used `wipe_signal.swap(false, AcqRel)` which consumed the flag before confirming delivery. A client disconnect mid-send silently lost the wipe notification. Changed to `load(Acquire)` + send + `store(false, Release)` so the flag is only cleared after successful delivery.
+- **Sprite cache lock held during ROM decode** — the `RequestTextures` handler locked `sprite_cache` across `build_sprite_data` / `build_sprite_data_back`, blocking all other cache readers during potentially long ROM decompression. Changed to: check cache under a short lock, release, decode outside the lock, re-lock to insert.
+- **`read_save_block1_ptr` helper extracted** — the 8-line SaveBlock1 pointer resolution sequence was duplicated across `game_is_loaded`, `count_pokeballs`, `scan_for_balls_pocket`, and `scan_for_security_key`. Extracted into a single `fn read_save_block1_ptr(iwram, ewram) -> Option<usize>` used by all four callers.
+- **Soul Link partner override feature** — manual pairings that override the automatic `met_location` / receipt-order soul-link matching, for cases where the automatic pairing links the wrong Pokémon (randomizer ROMs, shared location IDs):
+  - New `soul_link_overrides` table (schema v9): `(run_id, personality, partner_personality, created_at)`.
+  - Global write functions `set_soul_link_override` / `clear_soul_link_override` in `fire_red_database`.
+  - `DbReader::load_soul_link_overrides()` / `list_soul_link_overrides_json()` for read access.
+  - Three new REST endpoints: `GET /api/run/:id/soul_link/overrides`, `POST /api/run/:id/soul_link/override`, `DELETE /api/run/:id/soul_link/override/:personality`.
+  - `BroadcastLoop` caches the override map alongside the caught list; `propagate_soul_links` and `build_party_dto` consult it before falling through to the automatic pairing.
+  - `/soullink/manage` web page: run selector, override table with remove buttons, add-override form, and a caught Pokémon reference grid (click a card to fill the personality field).
+  - `CaughtMonDto` now includes `personality` and `dead` fields, surfaced in `/api/state` for the override manager and other API consumers.
+
+---
+
 **v0.8.96** — export/import IV/EV round-trip fix, webhook spawn safety, CSV error visibility, encounter import warnings:
 
 - **`export_run` IV/EV data loss fix** — the JSON exporter (`/api/run/:id/export`) previously omitted all twelve IV and EV columns from its caught and dead Pokémon queries, and `import_run` hard-coded literal `0` for all twelve IV/EV DB slots. Any export→import round-trip silently zeroed every stat. Both sides are now fixed: `export_run` selects and emits `iv_hp … iv_spd` / `ev_hp … ev_spd`; `import_run` reads them from the JSON body (falling back to `0` for old exports that pre-date this fix).
@@ -856,13 +896,11 @@ Add `http://localhost:9090/cmd` in a browser tab to manage runs — **End Run** 
 
 ### Possible future features
 
-- **Type-matchup warning overlay** — compare party types against the next gym leader's team (ROM trainer data already loaded) and highlight dangerous weaknesses.
 - **Trainer battle log** — track which named trainers have been defeated per run (data already in ROM via `fire_red_trainer_data`); useful for completionist or bingo Nuzlocke variants.
 - **Death cause analysis** — record the move/type that caused each death by capturing battle state at the moment a party slot goes to 0 HP.
 - **Discord Rich Presence** — push current location + party size to Discord via the local RPC socket (small background thread, no new dependency needed).
 - **LiveSplit integration** — optional TCP connection to LiveSplit to auto-split on gym badges or game clear.
 - **Overlay visual editor** — drag-and-drop config page in the web UI to position/resize overlay widgets without editing TOML.
-- **Multi-revision auto-detect** — automatically pick the ROM revision on startup by hashing the loaded ROM rather than requiring manual selection.
 
 ---
 

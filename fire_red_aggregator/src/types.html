@@ -1,0 +1,349 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Type Coverage — FireRed Nuzlocke __VERSION__</title>
+<!-- THEME_SLOT -->
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body {
+    background: #0f0f0f;
+    font-family: 'Segoe UI', Tahoma, sans-serif;
+    color: #e0e0e0;
+    min-height: 100vh;
+}
+#root { max-width: 1100px; margin: 0 auto; padding: 16px; }
+
+.page-header {
+    display: flex; align-items: center; gap: 12px;
+    padding-bottom: 12px;
+    border-bottom: 1px solid rgba(255,255,255,0.1);
+    margin-bottom: 16px;
+}
+.page-title { font-size: 20px; font-weight: bold; color: #fff; }
+.version-tag { font-size: 11px; color: #555; margin-top: 2px; }
+.nav-links { margin-left: auto; display: flex; gap: 8px; }
+.nav-link {
+    font-size: 12px; font-weight: 600; padding: 4px 12px;
+    background: #1a1a2e; border: 1px solid #334; border-radius: 5px;
+    color: #8899cc; text-decoration: none; cursor: pointer;
+}
+.nav-link:hover { background: #22223e; color: #aabbdd; }
+
+.slots-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(480px, 1fr));
+    gap: 20px;
+}
+.slot-card {
+    background: #161616; border: 1px solid rgba(255,255,255,0.06);
+    border-radius: 8px; padding: 14px;
+}
+.slot-label {
+    font-size: 13px; font-weight: 700; color: #fff;
+    margin-bottom: 12px; display: flex; align-items: center; gap: 8px;
+}
+.slot-label .dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: #3a3;
+    flex-shrink: 0;
+}
+.slot-label .dot.off { background: #666; }
+
+.section { margin-bottom: 14px; }
+.section-title {
+    font-size: 11px; font-weight: 700; text-transform: uppercase;
+    letter-spacing: 0.6px; color: #c090e0;
+    border-bottom: 1px solid rgba(200,150,255,0.12);
+    padding-bottom: 4px; margin-bottom: 8px;
+}
+
+/* Party member rows */
+.party-list { display: flex; flex-direction: column; gap: 5px; }
+.party-row {
+    display: flex; align-items: center; gap: 8px;
+    background: #1c1c1c; border-radius: 5px; padding: 5px 8px;
+}
+.party-row.dead { opacity: 0.35; }
+.member-name { font-size: 12px; font-weight: 600; color: #dde; min-width: 90px; }
+.member-level { font-size: 11px; color: #888; min-width: 30px; }
+.type-badges { display: flex; gap: 4px; }
+.type-badge {
+    font-size: 10px; font-weight: 700; padding: 2px 7px;
+    border-radius: 3px; text-transform: uppercase; letter-spacing: 0.3px;
+    white-space: nowrap;
+}
+
+/* Gym matchup panel */
+.gym-card {
+    background: #1a1a2e; border: 1px solid #334; border-radius: 6px;
+    padding: 10px 14px; display: flex; align-items: center; gap: 12px;
+}
+.gym-leader-name { font-size: 14px; font-weight: 700; color: #fff; }
+.gym-city        { font-size: 11px; color: #888; }
+.gym-level       { font-size: 11px; color: #aaa; }
+.gym-type-badge  { font-size: 13px; font-weight: 700; padding: 4px 12px; border-radius: 4px; margin-left: auto; }
+
+.e4-track {
+    display: flex; gap: 6px; flex-wrap: wrap; margin-top: 6px;
+}
+.e4-pip {
+    font-size: 11px; font-weight: 600; padding: 3px 10px;
+    border-radius: 4px; background: #2a2a2a; border: 1px solid #444; color: #666;
+}
+.e4-pip.done { background: #1a3a1a; border-color: #3a7a3a; color: #7dc97d; }
+.e4-pip.champion { background: #3a2a0a; border-color: #aa7700; color: #ffcc44; }
+.e4-pip.champion.done { background: #2a1f00; border-color: #cc9900; color: #ffd700; }
+
+/* Defensive weakness / resistance chart */
+.type-grid-wrap { overflow-x: auto; }
+.type-grid {
+    display: grid;
+    grid-template-columns: repeat(17, 1fr);
+    gap: 2px;
+    min-width: 520px;
+}
+.type-grid-cell {
+    display: flex; flex-direction: column; align-items: center;
+    gap: 2px;
+}
+.tg-name {
+    font-size: 8px; font-weight: 700; text-transform: uppercase;
+    color: #666; letter-spacing: 0.2px;
+    text-align: center; line-height: 1.2;
+}
+.tg-mult {
+    font-size: 10px; font-weight: 700; padding: 2px 0;
+    width: 100%; text-align: center; border-radius: 3px;
+    color: #fff;
+}
+/* Multiplier colouring: background colour encodes the threat level */
+.tg-immune   { background: #1a1a1a; color: #555; }
+.tg-resist2  { background: #1a3d1a; color: #5a9a5a; }       /* ½× */
+.tg-resist4  { background: #0d280d; color: #3a7a3a; }       /* ¼× */
+.tg-neutral  { background: #222; color: #666; }
+.tg-weak2    { background: #4a1a0a; color: #ff8855; }       /* ×2 */
+.tg-weak4    { background: #6a0a0a; color: #ff4433; }       /* ×4 */
+.tg-gym      { outline: 2px solid #ffcc00; outline-offset: -2px; }
+
+/* Type colour palette */
+</style>
+<script>
+const TYPE_NAMES = ["Normal","Fighting","Flying","Poison","Ground","Rock","Bug","Ghost","Steel",
+                    "Fire","Water","Grass","Electric","Psychic","Ice","Dragon","Dark"];
+const TYPE_COLORS = {
+    "Normal":"#9a9977","Fighting":"#c03028","Flying":"#7899d4","Poison":"#a040a0",
+    "Ground":"#e0c068","Rock":"#b8a038","Bug":"#a8b820","Ghost":"#705898",
+    "Steel":"#b8b8d0","Fire":"#f08030","Water":"#6890f0","Grass":"#78c850",
+    "Electric":"#f8d030","Psychic":"#f85888","Ice":"#98d8d8","Dragon":"#7038f8",
+    "Dark":"#705848",
+};
+
+// EFFECTIVENESS[atk][def] — eighths: 8=×1, 16=×2, 4=×½, 0=×0
+const EFF = [
+//         Nml Fgt Fly Poi Gnd Rok Bug Gst Stl Fir Wat Grs Elc Psy Ice Drg Drk
+/* Nml */ [  8,  8,  8,  8,  8,  4,  8,  0,  4,  8,  8,  8,  8,  8,  8,  8,  8],
+/* Fgt */ [ 16,  8,  4,  4,  8, 16,  4,  0, 16,  8,  8,  8,  8,  4,  8,  8, 16],
+/* Fly */ [  8, 16,  8,  8,  8,  4, 16,  8,  4,  8,  8, 16,  4,  8,  4,  8,  8],
+/* Poi */ [  8,  8,  8,  4,  4,  4,  8,  4,  0,  8,  8, 16,  8,  8,  8,  8,  8],
+/* Gnd */ [  8,  8,  0, 16,  8, 16,  4,  8, 16, 16,  8,  4,  0,  8,  8,  8,  8],
+/* Rok */ [  8,  4, 16,  8,  4,  8, 16,  8,  4, 16,  8,  8,  8,  8, 16,  8,  8],
+/* Bug */ [  8,  4,  4,  4,  8,  8,  8,  4,  4,  4,  8, 16,  8, 16,  8,  8, 16],
+/* Gst */ [  0,  0,  8,  8,  8,  8,  8, 16,  8,  8,  8,  8,  8, 16,  8,  8,  4],
+/* Stl */ [  8,  8,  8,  8,  8, 16,  8,  8,  4,  4,  4,  8,  4,  8, 16,  8,  8],
+/* Fir */ [  8,  8,  8,  8,  8,  4, 16,  8, 16,  4,  4, 16,  8,  8, 16,  4,  8],
+/* Wat */ [  8,  8,  8,  8, 16, 16,  8,  8,  8, 16,  4,  4,  8,  8,  8,  4,  8],
+/* Grs */ [  8,  8,  4,  4, 16, 16,  4,  8,  4,  4, 16,  4,  8,  8,  8,  4,  8],
+/* Elc */ [  8,  8, 16,  8,  0,  8,  8,  8, 16,  8, 16,  4,  4,  8,  8,  4,  8],
+/* Psy */ [  8, 16,  8, 16,  8,  8,  8,  8,  4,  8,  8,  8,  8,  4,  8,  8,  0],
+/* Ice */ [  8,  8, 16,  8, 16,  8,  8,  8,  4,  4,  4, 16,  8,  8,  4, 16,  8],
+/* Drg */ [  8,  8,  8,  8,  8,  8,  8,  8,  4,  8,  8,  8,  8,  8,  8, 16,  8],
+/* Drk */ [  8,  4,  8,  8,  8,  8,  8, 16,  8,  8,  8,  8,  8, 16,  8,  8,  4],
+];
+
+// Combined effectiveness when attack type `atk` hits a dual-type defender.
+// Matches Gen III: mono-type applies multiplier once.
+function combEff(atk, def1, def2) {
+    const a = EFF[atk][def1];
+    const b = (def1 === def2) ? 8 : EFF[atk][def2];
+    return (a * b) / 8;  // product in eighths → result in eighths
+}
+
+function typeBadgeHtml(typeId) {
+    const name = TYPE_NAMES[typeId] || '???';
+    const color = TYPE_COLORS[name] || '#555';
+    return `<span class="type-badge" style="background:${color};color:#fff">${name}</span>`;
+}
+
+function multClass(m) {
+    if (m === 0)   return 'tg-immune';
+    if (m <= 2)    return 'tg-resist4';
+    if (m <= 4)    return 'tg-resist2';
+    if (m <= 8)    return 'tg-neutral';
+    if (m <= 16)   return 'tg-weak2';
+    return 'tg-weak4';
+}
+
+function multLabel(m) {
+    if (m === 0)  return '0';
+    if (m === 4)  return '½';
+    if (m === 2)  return '¼';
+    if (m === 8)  return '—';
+    if (m === 16) return '2×';
+    if (m === 32) return '4×';
+    return `${m/8}×`;
+}
+
+// Build the defensive type chart for a list of party members (each has type1, type2)
+// Returns an array of 17 max-multiplier values (one per attacking type).
+function buildDefChart(members) {
+    const maxMult = new Array(17).fill(0);
+    for (const m of members) {
+        for (let atk = 0; atk < 17; atk++) {
+            const v = combEff(atk, m.type1, m.type2);
+            if (v > maxMult[atk]) maxMult[atk] = v;
+        }
+    }
+    return maxMult;
+}
+
+function renderSlot(slot) {
+    const alive = slot.connected;
+    const members = slot.party || [];
+    const gymTypeId = slot.next_gym ? slot.next_gym.type_id : null;
+
+    // Defensive chart over non-dead members
+    const liveMems = members.filter(m => !m.dead);
+    const defChart = buildDefChart(liveMems);
+
+    // Party rows
+    const partyHtml = members.length === 0
+        ? '<div style="color:#555;font-size:12px;padding:4px 0">No party data</div>'
+        : members.map(m => {
+            const b1 = typeBadgeHtml(m.type1);
+            const b2 = (m.type2 !== m.type1) ? typeBadgeHtml(m.type2) : '';
+            return `<div class="party-row${m.dead ? ' dead' : ''}">
+                <span class="member-name">${m.nickname || m.species_name}</span>
+                <span class="member-level">Lv${m.level}</span>
+                <div class="type-badges">${b1}${b2}</div>
+            </div>`;
+        }).join('');
+
+    // Defensive chart grid
+    const gymHighlight = gymTypeId !== null ? gymTypeId : -1;
+    const gridHtml = TYPE_NAMES.map((name, atk) => {
+        const m = defChart[atk];
+        const cls = multClass(m) + (atk === gymHighlight ? ' tg-gym' : '');
+        const color = TYPE_COLORS[name] || '#555';
+        return `<div class="type-grid-cell">
+            <span class="tg-name" style="color:${color}">${name.slice(0,3)}</span>
+            <div class="tg-mult ${cls}">${multLabel(m)}</div>
+        </div>`;
+    }).join('');
+
+    // Gym / E4 panel
+    let gymHtml = '';
+    if (slot.game_cleared) {
+        gymHtml = `<div class="gym-card" style="border-color:#cc9900">
+            <div>
+                <div class="gym-leader-name" style="color:#ffd700">🏆 Hall of Fame — Champion defeated!</div>
+            </div>
+        </div>`;
+    } else if (slot.next_gym) {
+        const g = slot.next_gym;
+        const tName = TYPE_NAMES[g.type_id] || 'Normal';
+        const tColor = TYPE_COLORS[tName] || '#555';
+        gymHtml = `<div class="gym-card">
+            <div>
+                <div class="gym-leader-name">${g.leader}</div>
+                <div class="gym-city">${g.city}</div>
+                <div class="gym-level">Up to Lv ${g.max_level}</div>
+            </div>
+            <span class="gym-type-badge type-badge" style="background:${tColor};color:#fff">${tName}</span>
+        </div>`;
+    }
+
+    // E4 progress track
+    const e4Names = ['Lorelei', 'Bruno', 'Agatha', 'Lance', 'Blue'];
+    const e4prog = slot.e4_progress || [false,false,false,false,false];
+    const allBadges = (slot.badges || []).every(b => b);
+    let e4Html = '';
+    if (allBadges || e4prog.some(b => b)) {
+        const pips = e4Names.map((n, i) => {
+            const done = e4prog[i];
+            const champ = (i === 4);
+            return `<span class="e4-pip${done ? ' done' : ''}${champ ? ' champion' : ''}">${n}${done ? ' ✓' : ''}</span>`;
+        }).join('');
+        e4Html = `<div class="section">
+            <div class="section-title">Elite 4 Progress</div>
+            <div class="e4-track">${pips}</div>
+        </div>`;
+    }
+
+    return `<div class="slot-card">
+        <div class="slot-label">
+            <span class="dot${alive ? '' : ' off'}"></span>
+            <span>${slot.label || 'Unknown Player'}</span>
+        </div>
+        ${gymHtml ? `<div class="section"><div class="section-title">Next Challenge</div>${gymHtml}</div>` : ''}
+        ${e4Html}
+        <div class="section">
+            <div class="section-title">Party</div>
+            <div class="party-list">${partyHtml}</div>
+        </div>
+        <div class="section">
+            <div class="section-title">Defensive Exposure — worst incoming multiplier per type</div>
+            <div class="type-grid-wrap">
+                <div class="type-grid">${gridHtml}</div>
+            </div>
+            <div style="font-size:10px;color:#555;margin-top:6px">
+                Yellow outline = gym/E4 leader's type.
+                <span style="color:#ff8855">■ 2×</span>
+                <span style="color:#ff4433"> ■ 4×</span>
+                <span style="color:#5a9a5a"> ■ ½×</span>
+                <span style="color:#3a7a3a"> ■ ¼×</span>
+                <span style="color:#555"> ■ 0</span>
+            </div>
+        </div>
+    </div>`;
+}
+
+function render(slots) {
+    const root = document.getElementById('slots');
+    if (!slots || slots.length === 0) {
+        root.innerHTML = '<div style="color:#555;padding:20px">Waiting for tracker connection…</div>';
+        return;
+    }
+    root.innerHTML = slots.map(renderSlot).join('');
+}
+
+(function() {
+    const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+    const ws = new WebSocket(`${proto}://${location.host}/ws?show=types`);
+    ws.onmessage = e => {
+        try { render(JSON.parse(e.data)); } catch {}
+    };
+    ws.onclose = () => {
+        setTimeout(() => location.reload(), 3000);
+    };
+})();
+</script>
+</head>
+<body>
+<div id="root">
+    <div class="page-header">
+        <div>
+            <div class="page-title">Type Coverage</div>
+            <div class="version-tag">v__VERSION__</div>
+        </div>
+        <div class="nav-links">
+            <a class="nav-link" href="/">Overlay</a>
+            <a class="nav-link" href="/about">About</a>
+        </div>
+    </div>
+    <div id="slots" class="slots-grid">
+        <div style="color:#555;padding:20px">Connecting…</div>
+    </div>
+</div>
+</body>
+</html>

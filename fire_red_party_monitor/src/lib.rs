@@ -434,6 +434,296 @@ pub fn type_name(id: u8) -> &'static str {
     }
 }
 
+/// Returns the Gen III type IDs for `species` as `(type1, type2)` using a
+/// compile-time lookup table.
+///
+/// Unlike [`get_species_types`], this function does not require a ROM buffer
+/// and is safe to call from binaries that do not load a ROM (e.g. the
+/// aggregator). Covers national-dex numbers 1–251 (Kanto + Johto). Returns
+/// `(0, 0)` for species ID 0 or numbers outside that range.
+pub fn species_type_static(species: u16) -> (u8, u8) {
+    SPECIES_TYPES.get(species as usize).copied().unwrap_or((0, 0))
+}
+
+// Short type-ID abbreviations used exclusively in SPECIES_TYPES below.
+const NRM: u8 = 0;  // Normal
+const FGT: u8 = 1;  // Fighting
+const FLY: u8 = 2;  // Flying
+const PSN: u8 = 3;  // Poison
+const GND: u8 = 4;  // Ground
+const ROK: u8 = 5;  // Rock
+const BUG: u8 = 6;  // Bug
+const GHO: u8 = 7;  // Ghost
+const STL: u8 = 8;  // Steel
+const FIR: u8 = 9;  // Fire
+const WAT: u8 = 10; // Water
+const GRS: u8 = 11; // Grass
+const ELC: u8 = 12; // Electric
+const PSY: u8 = 13; // Psychic
+const ICE: u8 = 14; // Ice
+const DRG: u8 = 15; // Dragon
+const DRK: u8 = 16; // Dark
+
+/// Compile-time Gen III species-type table.
+///
+/// Index = national dex number; value = `(type1, type2)`.
+/// Mono-type species store the same ID in both slots, matching the ROM layout.
+#[rustfmt::skip]
+static SPECIES_TYPES: [(u8, u8); 252] = [
+    (NRM, NRM), //   0: placeholder (species 0 = none)
+    (GRS, PSN), //   1: Bulbasaur
+    (GRS, PSN), //   2: Ivysaur
+    (GRS, PSN), //   3: Venusaur
+    (FIR, FIR), //   4: Charmander
+    (FIR, FIR), //   5: Charmeleon
+    (FIR, FLY), //   6: Charizard
+    (WAT, WAT), //   7: Squirtle
+    (WAT, WAT), //   8: Wartortle
+    (WAT, WAT), //   9: Blastoise
+    (BUG, BUG), //  10: Caterpie
+    (BUG, BUG), //  11: Metapod
+    (BUG, FLY), //  12: Butterfree
+    (BUG, PSN), //  13: Weedle
+    (BUG, PSN), //  14: Kakuna
+    (BUG, PSN), //  15: Beedrill
+    (NRM, FLY), //  16: Pidgey
+    (NRM, FLY), //  17: Pidgeotto
+    (NRM, FLY), //  18: Pidgeot
+    (NRM, NRM), //  19: Rattata
+    (NRM, NRM), //  20: Raticate
+    (NRM, FLY), //  21: Spearow
+    (NRM, FLY), //  22: Fearow
+    (PSN, PSN), //  23: Ekans
+    (PSN, PSN), //  24: Arbok
+    (ELC, ELC), //  25: Pikachu
+    (ELC, ELC), //  26: Raichu
+    (GND, GND), //  27: Sandshrew
+    (GND, GND), //  28: Sandslash
+    (PSN, PSN), //  29: Nidoran♀
+    (PSN, PSN), //  30: Nidorina
+    (PSN, GND), //  31: Nidoqueen
+    (PSN, PSN), //  32: Nidoran♂
+    (PSN, PSN), //  33: Nidorino
+    (PSN, GND), //  34: Nidoking
+    (NRM, NRM), //  35: Clefairy
+    (NRM, NRM), //  36: Clefable
+    (FIR, FIR), //  37: Vulpix
+    (FIR, FIR), //  38: Ninetales
+    (NRM, NRM), //  39: Jigglypuff
+    (NRM, NRM), //  40: Wigglytuff
+    (PSN, FLY), //  41: Zubat
+    (PSN, FLY), //  42: Golbat
+    (GRS, PSN), //  43: Oddish
+    (GRS, PSN), //  44: Gloom
+    (GRS, PSN), //  45: Vileplume
+    (BUG, GRS), //  46: Paras
+    (BUG, GRS), //  47: Parasect
+    (BUG, PSN), //  48: Venonat
+    (BUG, PSN), //  49: Venomoth
+    (GND, GND), //  50: Diglett
+    (GND, GND), //  51: Dugtrio
+    (NRM, NRM), //  52: Meowth
+    (NRM, NRM), //  53: Persian
+    (WAT, WAT), //  54: Psyduck
+    (WAT, WAT), //  55: Golduck
+    (FGT, FGT), //  56: Mankey
+    (FGT, FGT), //  57: Primeape
+    (FIR, FIR), //  58: Growlithe
+    (FIR, FIR), //  59: Arcanine
+    (WAT, WAT), //  60: Poliwag
+    (WAT, WAT), //  61: Poliwhirl
+    (WAT, FGT), //  62: Poliwrath
+    (PSY, PSY), //  63: Abra
+    (PSY, PSY), //  64: Kadabra
+    (PSY, PSY), //  65: Alakazam
+    (FGT, FGT), //  66: Machop
+    (FGT, FGT), //  67: Machoke
+    (FGT, FGT), //  68: Machamp
+    (GRS, PSN), //  69: Bellsprout
+    (GRS, PSN), //  70: Weepinbell
+    (GRS, PSN), //  71: Victreebel
+    (WAT, PSN), //  72: Tentacool
+    (WAT, PSN), //  73: Tentacruel
+    (ROK, GND), //  74: Geodude
+    (ROK, GND), //  75: Graveler
+    (ROK, GND), //  76: Golem
+    (FIR, FIR), //  77: Ponyta
+    (FIR, FIR), //  78: Rapidash
+    (WAT, PSY), //  79: Slowpoke
+    (WAT, PSY), //  80: Slowbro
+    (ELC, STL), //  81: Magnemite
+    (ELC, STL), //  82: Magneton
+    (NRM, FLY), //  83: Farfetch'd
+    (NRM, FLY), //  84: Doduo
+    (NRM, FLY), //  85: Dodrio
+    (WAT, WAT), //  86: Seel
+    (WAT, ICE), //  87: Dewgong
+    (PSN, PSN), //  88: Grimer
+    (PSN, PSN), //  89: Muk
+    (WAT, WAT), //  90: Shellder
+    (WAT, ICE), //  91: Cloyster
+    (GHO, PSN), //  92: Gastly
+    (GHO, PSN), //  93: Haunter
+    (GHO, PSN), //  94: Gengar
+    (ROK, GND), //  95: Onix
+    (PSY, PSY), //  96: Drowzee
+    (PSY, PSY), //  97: Hypno
+    (WAT, WAT), //  98: Krabby
+    (WAT, WAT), //  99: Kingler
+    (ELC, ELC), // 100: Voltorb
+    (ELC, ELC), // 101: Electrode
+    (GRS, PSY), // 102: Exeggcute
+    (GRS, PSY), // 103: Exeggutor
+    (GND, GND), // 104: Cubone
+    (GND, GND), // 105: Marowak
+    (FGT, FGT), // 106: Hitmonlee
+    (FGT, FGT), // 107: Hitmonchan
+    (NRM, NRM), // 108: Lickitung
+    (PSN, PSN), // 109: Koffing
+    (PSN, PSN), // 110: Weezing
+    (GND, ROK), // 111: Rhyhorn
+    (GND, ROK), // 112: Rhydon
+    (NRM, NRM), // 113: Chansey
+    (GRS, GRS), // 114: Tangela
+    (NRM, NRM), // 115: Kangaskhan
+    (WAT, WAT), // 116: Horsea
+    (WAT, WAT), // 117: Seadra
+    (WAT, WAT), // 118: Goldeen
+    (WAT, WAT), // 119: Seaking
+    (WAT, WAT), // 120: Staryu
+    (WAT, PSY), // 121: Starmie
+    (PSY, PSY), // 122: Mr. Mime
+    (BUG, FLY), // 123: Scyther
+    (ICE, PSY), // 124: Jynx
+    (ELC, ELC), // 125: Electabuzz
+    (FIR, FIR), // 126: Magmar
+    (BUG, BUG), // 127: Pinsir
+    (NRM, NRM), // 128: Tauros
+    (WAT, WAT), // 129: Magikarp
+    (WAT, FLY), // 130: Gyarados
+    (WAT, ICE), // 131: Lapras
+    (NRM, NRM), // 132: Ditto
+    (NRM, NRM), // 133: Eevee
+    (WAT, WAT), // 134: Vaporeon
+    (ELC, ELC), // 135: Jolteon
+    (FIR, FIR), // 136: Flareon
+    (NRM, NRM), // 137: Porygon
+    (ROK, WAT), // 138: Omanyte
+    (ROK, WAT), // 139: Omastar
+    (ROK, WAT), // 140: Kabuto
+    (ROK, WAT), // 141: Kabutops
+    (ROK, FLY), // 142: Aerodactyl
+    (NRM, NRM), // 143: Snorlax
+    (ICE, FLY), // 144: Articuno
+    (ELC, FLY), // 145: Zapdos
+    (FIR, FLY), // 146: Moltres
+    (DRG, DRG), // 147: Dratini
+    (DRG, DRG), // 148: Dragonair
+    (DRG, FLY), // 149: Dragonite
+    (PSY, PSY), // 150: Mewtwo
+    (PSY, PSY), // 151: Mew
+    (GRS, GRS), // 152: Chikorita
+    (GRS, GRS), // 153: Bayleef
+    (GRS, GRS), // 154: Meganium
+    (FIR, FIR), // 155: Cyndaquil
+    (FIR, FIR), // 156: Quilava
+    (FIR, FIR), // 157: Typhlosion
+    (WAT, WAT), // 158: Totodile
+    (WAT, WAT), // 159: Croconaw
+    (WAT, WAT), // 160: Feraligatr
+    (NRM, NRM), // 161: Sentret
+    (NRM, NRM), // 162: Furret
+    (NRM, FLY), // 163: Hoothoot
+    (NRM, FLY), // 164: Noctowl
+    (BUG, FLY), // 165: Ledyba
+    (BUG, FLY), // 166: Ledian
+    (BUG, PSN), // 167: Spinarak
+    (BUG, PSN), // 168: Ariados
+    (PSN, FLY), // 169: Crobat
+    (WAT, ELC), // 170: Chinchou
+    (WAT, ELC), // 171: Lanturn
+    (ELC, ELC), // 172: Pichu
+    (NRM, NRM), // 173: Cleffa
+    (NRM, NRM), // 174: Igglybuff
+    (NRM, NRM), // 175: Togepi
+    (NRM, FLY), // 176: Togetic
+    (PSY, FLY), // 177: Natu
+    (PSY, FLY), // 178: Xatu
+    (ELC, ELC), // 179: Mareep
+    (ELC, ELC), // 180: Flaaffy
+    (ELC, ELC), // 181: Ampharos
+    (GRS, GRS), // 182: Bellossom
+    (WAT, WAT), // 183: Marill
+    (WAT, WAT), // 184: Azumarill
+    (ROK, ROK), // 185: Sudowoodo
+    (WAT, WAT), // 186: Politoed
+    (GRS, FLY), // 187: Hoppip
+    (GRS, FLY), // 188: Skiploom
+    (GRS, FLY), // 189: Jumpluff
+    (NRM, NRM), // 190: Aipom
+    (GRS, GRS), // 191: Sunkern
+    (GRS, GRS), // 192: Sunflora
+    (BUG, FLY), // 193: Yanma
+    (WAT, GND), // 194: Wooper
+    (WAT, GND), // 195: Quagsire
+    (PSY, PSY), // 196: Espeon
+    (DRK, DRK), // 197: Umbreon
+    (DRK, FLY), // 198: Murkrow
+    (WAT, PSY), // 199: Slowking
+    (GHO, GHO), // 200: Misdreavus
+    (PSY, PSY), // 201: Unown
+    (PSY, PSY), // 202: Wobbuffet
+    (NRM, PSY), // 203: Girafarig
+    (BUG, BUG), // 204: Pineco
+    (BUG, STL), // 205: Forretress
+    (NRM, NRM), // 206: Dunsparce
+    (GND, FLY), // 207: Gligar
+    (STL, GND), // 208: Steelix
+    (NRM, NRM), // 209: Snubbull
+    (NRM, NRM), // 210: Granbull
+    (WAT, PSN), // 211: Qwilfish
+    (BUG, STL), // 212: Scizor
+    (BUG, ROK), // 213: Shuckle
+    (BUG, FGT), // 214: Heracross
+    (DRK, ICE), // 215: Sneasel
+    (NRM, NRM), // 216: Teddiursa
+    (NRM, NRM), // 217: Ursaring
+    (FIR, FIR), // 218: Slugma
+    (FIR, ROK), // 219: Magcargo
+    (ICE, GND), // 220: Swinub
+    (ICE, GND), // 221: Piloswine
+    (WAT, ROK), // 222: Corsola
+    (WAT, WAT), // 223: Remoraid
+    (WAT, WAT), // 224: Octillery
+    (ICE, FLY), // 225: Delibird
+    (WAT, FLY), // 226: Mantine
+    (STL, FLY), // 227: Skarmory
+    (DRK, FIR), // 228: Houndour
+    (DRK, FIR), // 229: Houndoom
+    (WAT, DRG), // 230: Kingdra
+    (GND, GND), // 231: Phanpy
+    (GND, GND), // 232: Donphan
+    (NRM, NRM), // 233: Porygon2
+    (NRM, NRM), // 234: Stantler
+    (NRM, NRM), // 235: Smeargle
+    (FGT, FGT), // 236: Tyrogue
+    (FGT, FGT), // 237: Hitmontop
+    (ICE, PSY), // 238: Smoochum
+    (ELC, ELC), // 239: Elekid
+    (FIR, FIR), // 240: Magby
+    (NRM, NRM), // 241: Miltank
+    (NRM, NRM), // 242: Blissey
+    (ELC, ELC), // 243: Raikou
+    (FIR, FIR), // 244: Entei
+    (WAT, WAT), // 245: Suicune
+    (ROK, GND), // 246: Larvitar
+    (ROK, GND), // 247: Pupitar
+    (ROK, DRK), // 248: Tyranitar
+    (PSY, FLY), // 249: Lugia
+    (FIR, FLY), // 250: Ho-Oh
+    (PSY, GRS), // 251: Celebi
+];
+
 /// Reads the ability ID for a given species from the FireRed ROM base stat
 /// table.
 ///
