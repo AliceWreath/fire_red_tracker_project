@@ -314,6 +314,57 @@ overlay.html
     → renderRunEnded() — shows summary card + first-encounters grid
 ```
 
+## Bug Fixes (v0.8.96)
+
+```
+1. export_run IV/EV round-trip data loss (FIXED)
+   ─────────────────────────────────────────────
+   Problem: export_run() (JSON) SELECT omitted all 12 iv_*/ev_* columns.
+            import_run() hard-coded literal 0 for all 12 IV/EV bind slots.
+            Every export→import round-trip silently zeroed all stat data.
+
+   Fix: export_run() caught and dead SELECTs now include all 12 IV/EV columns
+        (indices 11-22 in both queries); JSON objects expose:
+          iv_hp, iv_atk, iv_def, iv_spe, iv_spa, iv_spd
+          ev_hp, ev_atk, ev_def, ev_spe, ev_spa, ev_spd
+        import_run() reads these keys from the JSON body (falling back to 0 for
+        pre-fix exports) and passes them as $13-$24 bind params for caught and
+        $15-$26 for dead instead of the hard-coded SQL 0 literals.
+
+2. webhook::init() orphaned sender on spawn failure (FIXED)
+   ─────────────────────────────────────────────────────────
+   Problem: STATE.set(WebhookState { tx, … }) ran unconditionally before the
+            thread spawn result was checked. If spawn returned Err, rx was
+            dropped but tx lived in STATE forever. All subsequent fire_event()
+            calls sent to the disconnected channel, discarding events silently
+            via let _ = state.tx.send(…).
+
+   Fix: spawn is attempted before STATE is set. On Err, both tx and rx are
+        dropped and STATE is never populated, so fire_event() no-ops cleanly
+        (STATE.get() returns None). On Ok, STATE.set() is called. A fast-path
+        STATE.get().is_some() guard replaces the old set().is_err() guard.
+
+3. export_run_csv silent error swallow (FIXED)
+   ────────────────────────────────────────────
+   Problem: All three DB queries inside export_run_csv() used .unwrap_or_default(),
+            returning an empty section with no log entry on any DB failure. This
+            was inconsistent with the v0.8.95 fix applied to DbReader methods.
+
+   Fix: All three now use .unwrap_or_else(|e| { tracing::warn!(…); vec![] })
+        matching the pattern used elsewhere in the file.
+
+4. import_run encounters INSERT silent drop (FIXED)
+   ─────────────────────────────────────────────────
+   Problem: The encounters INSERT loop used let _ = client.execute(…), silently
+            swallowing both Ok(0) collisions and Err DB errors. The caught and
+            dead loops were updated to warn in v0.8.95 but encounters was missed.
+            Also: encounters had no ON CONFLICT clause, so duplicates could
+            produce a unique-constraint error that was silently dropped.
+
+   Fix: Encounters INSERT now has ON CONFLICT DO NOTHING and uses a match block
+        with tracing::warn! on Ok(0) and Err, consistent with caught/dead.
+```
+
 ## DB Reader Error Handling (v0.8.95)
 
 ```
@@ -343,8 +394,8 @@ GET /api/run/:id/route_odds
     queries encounters WHERE run_id=$1 → builds seen canonical-floor set
     compares against fire_red_location_names::all_wild_areas() (static list)
     returns { run_id, encountered: [...], unencountered: [...] }
-    encountered entries: player_name, map_group, map_name, area, species_name,
-                         level, caught, is_shiny, encountered_at
+    encountered entries: player_name, map_group, map_name, area, species (numeric dex),
+                         species_name, level, caught, is_shiny, encountered_at
     unencountered entries: map_group, map_name, area
 
 GET /api/run/:id/webhook_log

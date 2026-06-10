@@ -261,11 +261,16 @@ fn validate_templates(config: &WebhookConfig) {
 /// placeholders so typos are caught before the first event fires.
 pub fn init(config: WebhookConfig, obs_config: ObsConfig) {
     validate_templates(&config);
-    let (tx, rx) = channel::<WorkerTask>();
-    if STATE.set(WebhookState { tx, config, obs_config }).is_err() {
-        return; // already initialized
+    // Fast-path: already initialized (e.g. called twice).
+    if STATE.get().is_some() {
+        return;
     }
-    if let Err(e) = std::thread::Builder::new()
+    let (tx, rx) = channel::<WorkerTask>();
+    // Spawn before setting STATE so a spawn failure does not install an
+    // orphaned sender in global state.  A racing second init() that also
+    // passes the get() check above will lose the STATE.set() race below and
+    // its worker thread will exit cleanly once its rx is dropped.
+    let spawn_result = std::thread::Builder::new()
         .name("webhook-worker".into())
         .spawn(move || {
         let client = reqwest::blocking::Client::builder()
@@ -311,8 +316,19 @@ pub fn init(config: WebhookConfig, obs_config: ObsConfig) {
                 WorkerTask::ObsClip => obs_clip_inner(),
             }
         }
-    }) {
-        tracing::error!("Failed to spawn webhook worker thread: {e}");
+    });
+    match spawn_result {
+        Err(e) => {
+            tracing::error!("Failed to spawn webhook worker thread: {e}");
+            // tx and rx drop here; STATE is never set, so subsequent
+            // fire_event() calls see STATE as None and no-op cleanly.
+        }
+        Ok(_) => {
+            // Ignore the Err case: a racing second init() that also passed the
+            // STATE.get() fast-path will simply have its tx dropped here and
+            // its worker thread will exit when rx is orphaned.
+            let _ = STATE.set(WebhookState { tx, config, obs_config });
+        }
     }
 }
 

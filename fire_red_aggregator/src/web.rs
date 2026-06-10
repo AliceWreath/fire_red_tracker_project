@@ -16,7 +16,7 @@ use axum::{
     extract::{ConnectInfo, Path, Query, State},
     http::{header, StatusCode},
     response::{Html, IntoResponse},
-    routing::{get, post},
+    routing::{delete, get, post},
     Router,
 };
 use std::net::SocketAddr;
@@ -80,6 +80,10 @@ struct SlotDto {
     current_zone_name:   String,
     /// Encounters from the most recently completed run, for cross-run hints.
     prev_run_encounters: Vec<DbEncounterDto>,
+    /// Elite 4 + Champion defeat flags: indices 0–4 = Lorelei, Bruno, Agatha, Lance, Blue.
+    e4_progress:         Vec<bool>,
+    /// True when all 8 badges and all 5 Elite 4 members (incl. Champion) are defeated.
+    game_cleared:        bool,
 }
 
 #[derive(serde::Serialize, Clone)]
@@ -130,6 +134,10 @@ struct CaughtMonDto {
     iv_spa:        u8,
     iv_spd:        u8,
     sprite:        Option<String>,
+    /// GBA personality value — exposed so the override manager can identify mons.
+    personality:   u32,
+    /// True when this Pokémon has a death record or is a soul-link casualty.
+    dead:          bool,
 }
 
 #[derive(serde::Serialize, Clone)]
@@ -170,6 +178,9 @@ struct GymDto {
     leader:    String,
     city:      String,
     max_level: u8,
+    /// Primary type ID of the gym leader / Elite 4 member (Gen III ID, 0–16).
+    /// Used by overlay pages to pre-highlight relevant matchups.
+    type_id:   u8,
 }
 
 #[derive(serde::Serialize, Clone)]
@@ -227,6 +238,10 @@ struct MemberDto {
     moves:             [String; 4],
     /// Current PP for each move slot.
     pp:                [u8; 4],
+    /// Gen III type ID for the species' first type (0=Normal … 16=Dark).
+    type1:             u8,
+    /// Gen III type ID for the species' second type; equals `type1` for mono-type species.
+    type2:             u8,
 }
 
 // ---------------------------------------------------------------------------
@@ -253,10 +268,34 @@ impl SlotCache {
     }
 }
 
+/// Maps a gym leader / Elite 4 member name to their primary type ID (Gen III).
+/// Returns 0 (Normal) for unrecognised names such as the post-game Champion rematch.
+fn leader_type_id(leader: &str) -> u8 {
+    match leader {
+        "Brock"     => 5,  // Rock
+        "Misty"     => 10, // Water
+        "Lt. Surge" => 12, // Electric
+        "Erika"     => 11, // Grass
+        "Koga"      => 3,  // Poison
+        "Sabrina"   => 13, // Psychic
+        "Blaine"    => 9,  // Fire
+        "Giovanni"  => 4,  // Ground
+        "Lorelei"   => 14, // Ice
+        "Bruno"     => 1,  // Fighting
+        "Agatha"    => 7,  // Ghost
+        "Lance"     => 15, // Dragon
+        "Blue"      => 0,  // Normal (mixed team)
+        _           => 0,
+    }
+}
+
 struct BroadcastLoop {
     live_slots:           SharedSlots,
     caches:               Vec<SlotCache>,
     soul_link_propagated: HashSet<(usize, u32)>,
+    /// Manual soul-link overrides for the current run (personality → partner_personality).
+    /// Refreshed alongside the caught cache; consulted before automatic met_location pairing.
+    soul_link_overrides:  HashMap<u32, u32>,
     last_json:            String,
     sprites:              PngSpriteCache,
 }
@@ -267,6 +306,7 @@ impl BroadcastLoop {
             live_slots,
             caches:               Vec::new(),
             soul_link_propagated: HashSet::new(),
+            soul_link_overrides:  HashMap::new(),
             last_json:            String::new(),
             sprites,
         }
@@ -393,7 +433,15 @@ impl BroadcastLoop {
 
                 for j in 0..n {
                     if j == i { continue; }
-                    let partner = if met_loc == 0 {
+                    // Check for a manual override first; fall back to automatic
+                    // met_location / receipt-order pairing if none is set.
+                    let partner = if let Some(&override_p) = self.soul_link_overrides.get(&dead_p) {
+                        self.caches[j]
+                            .caught
+                            .iter()
+                            .find(|c| c.personality == override_p)
+                            .cloned()
+                    } else if met_loc == 0 {
                         gift_idx
                             .and_then(|idx| sorted_gifts[j].get(idx))
                             .map(|c| (*c).clone())
@@ -476,7 +524,31 @@ impl BroadcastLoop {
             let dead_record    = dead_records.get(&personality);
             let dead           = dead_record.is_some() || p.hp == 0 || is_soul_link;
 
-            let soul_link_partner = if met == 0 {
+            // A manual override supersedes met_location pairing entirely.
+            // Without one, fall back to the original location-match logic.
+            let soul_link_partner = if let Some(&override_p) = self.soul_link_overrides.get(&personality) {
+                let mut found = None;
+                'outer: for (j, (player_j, state_j)) in states.iter().enumerate().take(n) {
+                    if j == slot_idx { continue; }
+                    if let Some(gs_j) = state_j
+                        && let Some(p_j) = gs_j.party.iter().find(|p| p.box_mon.personality == override_p) {
+                        found = Some(SoulLinkPartnerDto {
+                            nickname: p_j.get_nickname_string(),
+                            player:   player_j.clone(),
+                        });
+                        break 'outer;
+                    }
+                    // Partner may be dead or in-box; fall back to the caught cache.
+                    if let Some(c) = self.caches[j].caught.iter().find(|c| c.personality == override_p) {
+                        found = Some(SoulLinkPartnerDto {
+                            nickname: c.nickname.clone(),
+                            player:   player_j.clone(),
+                        });
+                        break 'outer;
+                    }
+                }
+                found
+            } else if met == 0 {
                 None
             } else {
                 let mut found = None;
@@ -512,6 +584,7 @@ impl BroadcastLoop {
                 };
 
             let sprite = self.sprite_uri(species, shiny);
+            let (type1, type2) = fire_red_party_monitor::species_type_static(species);
 
             MemberDto {
                 nickname:          p.get_nickname_string(),
@@ -560,7 +633,9 @@ impl BroadcastLoop {
                         fire_red_database::move_name(m[3]).to_string(),
                     ]
                 },
-                pp:                p.box_mon.secure.attack.pp,
+                pp:    p.box_mon.secure.attack.pp,
+                type1,
+                type2,
             }
         }).collect()
     }
@@ -630,6 +705,7 @@ impl BroadcastLoop {
                     db.mark_dirty();
                 }
                 self.soul_link_propagated.clear();
+                self.soul_link_overrides.clear();
             }
         }
 
@@ -641,7 +717,7 @@ impl BroadcastLoop {
             }
         }
 
-        // Refresh caught cache
+        // Refresh caught cache and soul-link override map.
         let now = Instant::now();
         for i in 0..n {
             let stale = now.duration_since(self.caches[i].last_refresh) >= Duration::from_secs(1);
@@ -652,6 +728,11 @@ impl BroadcastLoop {
                 self.caches[i].encounters       = db.list_encounters(label);
                 self.caches[i].prev_encounters  = db.list_prev_run_encounters(label);
                 self.caches[i].last_refresh     = now;
+                // Overrides are run-wide; load once from the first slot that has a DB.
+                // The map is cleared on run_id change below, so this stays consistent.
+                if i == 0 || self.soul_link_overrides.is_empty() {
+                    self.soul_link_overrides = db.load_soul_link_overrides();
+                }
             }
         }
 
@@ -770,8 +851,8 @@ impl BroadcastLoop {
                     })
                     .collect();
 
-                let (connected, badges, next_gym, party, encounters) = match state {
-                    None => (false, vec![false; 8], None, vec![], vec![]),
+                let (connected, badges, next_gym, e4_progress, game_cleared, party, encounters) = match state {
+                    None => (false, vec![false; 8], None, vec![false; 5], false, vec![], vec![]),
                     Some(gs) => {
                         let badges: Vec<bool> = gs
                             .badge_state
@@ -787,7 +868,20 @@ impl BroadcastLoop {
                                 leader:    g.leader.clone(),
                                 city:      g.city.clone(),
                                 max_level: g.max_level,
+                                type_id:   leader_type_id(&g.leader),
                             });
+
+                        let e4_progress: Vec<bool> = gs
+                            .badge_state
+                            .as_ref()
+                            .map(|b| b.e4.to_vec())
+                            .unwrap_or_else(|| vec![false; 5]);
+
+                        let game_cleared = gs
+                            .badge_state
+                            .as_ref()
+                            .map(|b| b.game_complete())
+                            .unwrap_or(false);
 
                         let party = self.build_party_dto(i, gs, dead_records, soul_link_dead, &states);
 
@@ -835,7 +929,7 @@ impl BroadcastLoop {
                             encounters.push(EncounterGroupDto { label: "Rock Smash".into(), mons: rock });
                         }
 
-                        (true, badges, next_gym, party, encounters)
+                        (true, badges, next_gym, e4_progress, game_cleared, party, encounters)
                     }
                 };
 
@@ -865,6 +959,8 @@ impl BroadcastLoop {
                     iv_spa:       cp.ivs.sp_attack,
                     iv_spd:       cp.ivs.sp_defense,
                     sprite:       self.sprite_uri(cp.species, cp.is_shiny),
+                    personality:  cp.personality,
+                    dead:         dead_records.contains_key(&cp.personality),
                 }).collect();
 
                 let box_pokemon: Vec<BoxMonDto> = all_box[i].iter()
@@ -922,7 +1018,7 @@ impl BroadcastLoop {
                     })
                     .collect();
 
-                SlotDto { label: label.clone(), connected, db_connected, active_run_id, run_summary, db_encounters, badges, next_gym, party, encounters, dead, caught, box_pokemon, current_map_group, current_map_name, current_zone_name, prev_run_encounters }
+                SlotDto { label: label.clone(), connected, db_connected, active_run_id, run_summary, db_encounters, badges, next_gym, party, encounters, dead, caught, box_pokemon, current_map_group, current_map_name, current_zone_name, prev_run_encounters, e4_progress, game_cleared }
             })
             .collect();
 
@@ -964,6 +1060,8 @@ const RUNSTATS_HTML:     &str = include_str!("run_stats.html");
 const SHINY_HTML:        &str = include_str!("shiny.html");
 const MEMORIAL_HTML:     &str = include_str!("memorial.html");
 const SOULLINK_HTML:     &str = include_str!("soullink.html");
+const SOULLINK_MANAGE_HTML: &str = include_str!("soullink_manage.html");
+const TYPES_HTML:        &str = include_str!("types.html");
 const ABOUT_HTML:        &str = include_str!("about.html");
 const COMPARE_HTML:      &str = include_str!("compare.html");
 
@@ -1209,6 +1307,8 @@ fn filter_slots_json(json: &str, show: &str) -> String {
         "caught"    => &["encounters", "box_pokemon", "dead", "prev_run_encounters"],
         "memorial"  => &["encounters", "box_pokemon", "caught", "prev_run_encounters", "db_encounters"],
         "soullink"  => &["encounters", "box_pokemon", "db_encounters", "prev_run_encounters"],
+        // types page only needs party (with type fields), badge state, and next_gym.
+        "types"     => &["encounters", "box_pokemon", "dead", "caught", "db_encounters", "prev_run_encounters"],
         _           => return json.to_owned(),
     };
     let Ok(mut slots) = serde_json::from_str::<Vec<serde_json::Value>>(json) else {
@@ -1309,6 +1409,11 @@ async fn serve_soullink(State(state): State<WebState>) -> Html<String> {
     Html(apply_page(SOULLINK_HTML, state.testing))
 }
 
+async fn serve_types_page(State(state): State<WebState>, Query(params): Query<HashMap<String, String>>) -> Html<String> {
+    let theme = params.get("theme").map(String::as_str);
+    Html(apply_page_with_theme(TYPES_HTML, state.testing, theme))
+}
+
 async fn serve_about(State(state): State<WebState>) -> Html<String> {
     Html(apply_page(ABOUT_HTML, state.testing))
 }
@@ -1399,6 +1504,63 @@ async fn api_run_webhook_log(
         fire_red_database::get_webhook_log_json(&conn, run_id)
     }).await;
     axum::Json(result.unwrap_or_else(|_| serde_json::json!({ "error": "Task panicked" })))
+}
+
+/// `GET /api/run/:id/soul_link/overrides` — list all manual soul-link overrides for a run.
+async fn api_run_soul_link_overrides(
+    State(state): State<WebState>,
+    Path(run_id): Path<u32>,
+) -> axum::Json<serde_json::Value> {
+    let conn = require_db!(state);
+    let result = tokio::task::spawn_blocking(move || {
+        fire_red_database::soul_link_overrides_json(&conn, run_id)
+    }).await;
+    axum::Json(result.unwrap_or_else(|_| serde_json::json!({ "error": "Task panicked" })))
+}
+
+/// `POST /api/run/:id/soul_link/override` — set a manual soul-link pairing.
+///
+/// Body: `{ "personality": <u32>, "partner_personality": <u32> }`.
+/// Replaces any existing override for the same `personality`.
+async fn api_set_soul_link_override(
+    State(state): State<WebState>,
+    Path(run_id): Path<u32>,
+    axum::Json(body): axum::Json<serde_json::Value>,
+) -> axum::Json<serde_json::Value> {
+    let conn = require_db!(state);
+    let personality = match body["personality"].as_u64().and_then(|v| u32::try_from(v).ok()) {
+        Some(v) => v,
+        None    => return axum::Json(serde_json::json!({ "error": "Missing or invalid 'personality'" })),
+    };
+    let partner_personality = match body["partner_personality"].as_u64().and_then(|v| u32::try_from(v).ok()) {
+        Some(v) => v,
+        None    => return axum::Json(serde_json::json!({ "error": "Missing or invalid 'partner_personality'" })),
+    };
+    let result = tokio::task::spawn_blocking(move || {
+        fire_red_database::set_soul_link_override_by_run(&conn, run_id, personality, partner_personality)
+    }).await;
+    axum::Json(result.unwrap_or_else(|_| serde_json::json!({ "error": "Task panicked" })))
+}
+
+/// `DELETE /api/run/:id/soul_link/override/:personality` — remove a manual override.
+async fn api_clear_soul_link_override(
+    State(state): State<WebState>,
+    Path((run_id, personality)): Path<(u32, u64)>,
+) -> axum::Json<serde_json::Value> {
+    let conn = require_db!(state);
+    let p = match u32::try_from(personality) {
+        Ok(v)  => v,
+        Err(_) => return axum::Json(serde_json::json!({ "error": "personality out of range" })),
+    };
+    let result = tokio::task::spawn_blocking(move || {
+        fire_red_database::clear_soul_link_override_by_run(&conn, run_id, p)
+    }).await;
+    axum::Json(result.unwrap_or_else(|_| serde_json::json!({ "error": "Task panicked" })))
+}
+
+/// `GET /soullink/manage` — Soul Link partner override management page.
+async fn serve_soullink_manage(State(state): State<WebState>) -> Html<String> {
+    Html(apply_page(SOULLINK_MANAGE_HTML, state.testing))
 }
 
 /// `GET /api/run/:id/shiny` — shiny odds statistics JSON for a run.
@@ -1596,6 +1758,9 @@ pub fn run(live_slots: SharedSlots, port: u16, db_conn: Option<String>, testing:
             .route("/api/run/:id/route_stats",   get(api_run_route_stats))
             .route("/api/run/:id/route_odds",    get(api_run_route_odds))
             .route("/api/run/:id/webhook_log",   get(api_run_webhook_log))
+            .route("/api/run/:id/soul_link/overrides",          get(api_run_soul_link_overrides))
+            .route("/api/run/:id/soul_link/override",           post(api_set_soul_link_override))
+            .route("/api/run/:id/soul_link/override/:personality", delete(api_clear_soul_link_override))
             .route("/api/run/:id/shiny",         get(api_shiny_stats))
             .route("/api/run/:id/export",  get(api_run_export))
             .route("/api/run/:id/events",  get(api_run_events))
@@ -1604,6 +1769,7 @@ pub fn run(live_slots: SharedSlots, port: u16, db_conn: Option<String>, testing:
             .route("/shiny", get(serve_shiny))
             .route("/memorial", get(serve_memorial))
             .route("/soullink", get(serve_soullink))
+            .route("/soullink/manage", get(serve_soullink_manage))
             .route("/alerts", get(serve_alerts))
             .route("/:index/alerts", get(serve_alerts))
             .route("/:index/routes", get(serve_routes))
@@ -1612,6 +1778,7 @@ pub fn run(live_slots: SharedSlots, port: u16, db_conn: Option<String>, testing:
             .route("/:index/dead", get(serve_focused))
             .route("/:index/caught", get(serve_focused))
             .route("/:index/box", get(serve_focused))
+            .route("/:index/types", get(serve_types_page))
             .route("/run/:id/stats", get(serve_run_stats))
             .route("/run/:id/memorial", get(serve_memorial))
             .route("/about", get(serve_about))

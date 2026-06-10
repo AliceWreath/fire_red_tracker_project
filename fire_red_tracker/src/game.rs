@@ -68,8 +68,14 @@ pub fn fill_party_list(thread_party: &Arc<Mutex<Vec<Pokemon>>>) {
 /// Nuzlocke deaths, mirroring how encounters are ignored before balls arrive.
 pub fn check_for_dead_pokemon(thread_party: &Arc<Mutex<Vec<Pokemon>>>, run_tracking_active: bool) {
     if !run_tracking_active { return; }
-    let party = thread_party.lock_or_recover();
-    for pokemon in party.iter() {
+    // Snapshot dead candidates before releasing the lock so the subsequent DB
+    // and webhook calls don't hold the party mutex during potentially slow I/O,
+    // which would block fill_party_list for the full duration of each DB write.
+    let candidates: Vec<Pokemon> = {
+        let party = thread_party.lock_or_recover();
+        party.iter().filter(|p| p.hp == 0).cloned().collect()
+    };
+    for pokemon in candidates {
         if pokemon.hp != 0 { continue; }
         if fire_red_database::is_dead(pokemon.box_mon.personality) { continue; }
 
@@ -90,9 +96,9 @@ pub fn check_for_dead_pokemon(thread_party: &Arc<Mutex<Vec<Pokemon>>>, run_track
         .trim()
         .to_string();
 
-        let died_at = fire_red_database::unix_now();
-
+        let died_at    = fire_red_database::unix_now();
         let shiny_flag = is_shiny(personality, ot_id);
+
         let recorded = match fire_red_database::mark_dead(fire_red_database::DeadPokemon {
             player_name:   fire_red_loop::get_trainer_name(),
             personality,
@@ -145,13 +151,14 @@ pub fn check_for_dead_pokemon(thread_party: &Arc<Mutex<Vec<Pokemon>>>, run_track
             // sets is_soul_link_death = true when it calls mark_soul_link_dead().
             is_soul_link_death: false,
         }) {
-            Ok(v) => v,
+            Ok(v)  => v,
             Err(e) => {
                 tracing::error!("Failed to record dead pokemon (personality=0x{:08X}): {e}", personality);
                 continue;
             }
         };
         if !recorded { continue; }
+
         if let Err(e) = fire_red_database::record_event(fire_red_database::EventKind::Death {
             species_name: &growth.species_string,
             nickname:     &pokemon.box_mon.nickname_string,
@@ -200,8 +207,12 @@ pub fn map_state_from_ewram() -> Option<FireRedState> {
 /// Called alongside `check_for_dead_pokemon` on every party refresh so that
 /// newly obtained mons (caught, gifted, or traded) are captured immediately.
 pub fn check_for_new_pokemon(thread_party: &Arc<Mutex<Vec<Pokemon>>>) {
-    let party = thread_party.lock_or_recover();
-    for pokemon in party.iter() {
+    // Snapshot the full party before releasing the lock so the DB and webhook
+    // calls below don't hold the party mutex during potentially slow I/O,
+    // which would block fill_party_list for the full duration of each DB write.
+    let snapshot: Vec<Pokemon> = thread_party.lock_or_recover().clone();
+
+    for pokemon in &snapshot {
         let species = pokemon.box_mon.secure.growth.species;
         if species == 0 || species > MAX_NATIONAL_DEX_FIRERED { continue; }
         let personality = pokemon.box_mon.personality;
@@ -238,34 +249,26 @@ pub fn check_for_new_pokemon(thread_party: &Arc<Mutex<Vec<Pokemon>>>) {
             continue;
         }
 
-        let ot_id    = pokemon.box_mon.ot_id;
-        let growth   = &pokemon.box_mon.secure.growth;
-        let misc     = &pokemon.box_mon.secure.misc;
-        let iv       = &misc.iv_egg_ability;
-        let ev       = &pokemon.box_mon.secure.ev_condition;
+        let ot_id  = pokemon.box_mon.ot_id;
+        let growth = &pokemon.box_mon.secure.growth;
+        let misc   = &pokemon.box_mon.secure.misc;
+        let iv     = &misc.iv_egg_ability;
+        let ev     = &pokemon.box_mon.secure.ev_condition;
 
-        let caught_at = fire_red_database::unix_now();
-
+        let caught_at     = fire_red_database::unix_now();
+        let shiny_flag    = is_shiny(personality, ot_id);
         let location_name = map_state_from_ewram()
             .map(|s| {
                 let n = fire_red_loop::get_area_name_for(s.map_group_id, s.map_name_id);
-                if n.is_empty() {
-                    format!("{}\u{B7}{}", s.map_group_id, s.map_name_id)
-                } else {
-                    n.to_string()
-                }
+                if n.is_empty() { format!("{}\u{B7}{}", s.map_group_id, s.map_name_id) }
+                else            { n.to_string() }
             })
             .unwrap_or_default();
 
-        let shiny_flag = is_shiny(personality, ot_id);
-        if let Err(e) = fire_red_database::record_event(fire_red_database::EventKind::Catch {
-            species_name: &growth.species_string,
-            nickname:     &pokemon.box_mon.nickname_string,
-            level:        pokemon.level,
-        }) {
-            tracing::warn!("Failed to record Catch event: {e}");
-        }
-        fire_red_database::mark_caught(fire_red_database::CaughtPokemon {
+        // Insert into the DB first. Only fire the event log and webhook when
+        // mark_caught confirms the row was newly inserted — this prevents
+        // duplicate Catch events when a transient DB error causes a retry.
+        let newly_inserted = fire_red_database::mark_caught(fire_red_database::CaughtPokemon {
             player_name:   fire_red_loop::get_trainer_name(),
             personality,
             ot_id,
@@ -296,6 +299,15 @@ pub fn check_for_new_pokemon(thread_party: &Arc<Mutex<Vec<Pokemon>>>) {
             },
             caught_at,
         });
+        if !newly_inserted { continue; }
+
+        if let Err(e) = fire_red_database::record_event(fire_red_database::EventKind::Catch {
+            species_name: &growth.species_string,
+            nickname:     &pokemon.box_mon.nickname_string,
+            level:        pokemon.level,
+        }) {
+            tracing::warn!("Failed to record Catch event: {e}");
+        }
         crate::webhook::fire_event(crate::webhook::WebhookEvent::Catch {
             player:    fire_red_loop::get_trainer_name(),
             timestamp: caught_at,
@@ -308,6 +320,25 @@ pub fn check_for_new_pokemon(thread_party: &Arc<Mutex<Vec<Pokemon>>>) {
             },
         });
     }
+}
+
+/// Resolves the SaveBlock1 base address by dereferencing the 4-byte LE pointer
+/// stored in IWRAM at `SAVE_BLOCK_1_PTR_ADDR`.
+///
+/// Returns `None` if IWRAM is too small to hold the pointer or the pointer falls
+/// outside EWRAM. Centralised here to avoid duplicating the same 8-line bounds-check
+/// pattern across `game_is_loaded`, `count_pokeballs`, and the dev-tool scanners.
+fn read_save_block1_ptr(iwram: &[u8], ewram: &[u8]) -> Option<usize> {
+    let ptr_offset = SAVE_BLOCK_1_PTR_ADDR - IWRAM_BASE;
+    if iwram.len() < ptr_offset + 4 { return None; }
+    let ptr = u32::from_le_bytes([
+        iwram[ptr_offset],
+        iwram[ptr_offset + 1],
+        iwram[ptr_offset + 2],
+        iwram[ptr_offset + 3],
+    ]) as usize;
+    if ptr < EWRAM_BASE || ptr >= EWRAM_BASE + ewram.len() { return None; }
+    Some(ptr)
 }
 
 /// Returns `true` if FireRed appears to be fully loaded with a valid save.
@@ -323,20 +354,8 @@ pub fn game_is_loaded() -> bool {
     let iwram = fire_red_memory::get_iwram();
     let ewram = fire_red_memory::get_ewram();
 
-    // The SaveBlock1 pointer lives in IWRAM at 0x03005008.
-    let ptr_offset = SAVE_BLOCK_1_PTR_ADDR - IWRAM_BASE;
-    if iwram.len() < ptr_offset + 4 {
-        return false;
-    }
-    let save_block_ptr = u32::from_le_bytes([
-        iwram[ptr_offset],
-        iwram[ptr_offset + 1],
-        iwram[ptr_offset + 2],
-        iwram[ptr_offset + 3],
-    ]) as usize;
-
-    // Pointer must fall within EWRAM.
-    if save_block_ptr < EWRAM_BASE || save_block_ptr >= EWRAM_BASE + ewram.len() {
+    // SaveBlock1 pointer must resolve to a valid EWRAM address.
+    if read_save_block1_ptr(&iwram, &ewram).is_none() {
         return false;
     }
 
@@ -399,25 +418,10 @@ pub fn scan_for_balls_pocket() {
     let iwram = fire_red_memory::get_iwram();
     let ewram = fire_red_memory::get_ewram();
 
-    let ptr_offset = SAVE_BLOCK_1_PTR_ADDR - IWRAM_BASE;
-    if iwram.len() < ptr_offset + 4 {
-        eprintln!("IWRAM too small to read SaveBlock1 pointer.");
-        return;
-    }
-
-    let save_block_ptr = u32::from_le_bytes([
-        iwram[ptr_offset],
-        iwram[ptr_offset + 1],
-        iwram[ptr_offset + 2],
-        iwram[ptr_offset + 3],
-    ]) as usize;
-
-    println!("SaveBlock1 ptr: 0x{:08X}", save_block_ptr);
-
-    if save_block_ptr < EWRAM_BASE || save_block_ptr >= EWRAM_BASE + ewram.len() {
-        eprintln!("SaveBlock1 ptr 0x{:08X} is outside EWRAM — is the game loaded?", save_block_ptr);
-        return;
-    }
+    let save_block_ptr = match read_save_block1_ptr(&iwram, &ewram) {
+        Some(p) => { println!("SaveBlock1 ptr: 0x{:08X}", p); p }
+        None    => { eprintln!("SaveBlock1 ptr invalid or EWRAM too small — is the game loaded?"); return; }
+    };
 
     let sb1_start = save_block_ptr - EWRAM_BASE;
     let scan_end  = sb1_start + 0x3000;
@@ -494,21 +498,10 @@ pub fn scan_for_security_key(expected_qty: u16) {
     let ewram = fire_red_memory::get_ewram();
 
     // Resolve the balls pocket so we can read raw slot 0 quantity.
-    let ptr_offset = SAVE_BLOCK_1_PTR_ADDR - IWRAM_BASE;
-    if iwram.len() < ptr_offset + 4 {
-        eprintln!("IWRAM too small to read SaveBlock1 pointer.");
-        return;
-    }
-    let save_block_ptr = u32::from_le_bytes([
-        iwram[ptr_offset],
-        iwram[ptr_offset + 1],
-        iwram[ptr_offset + 2],
-        iwram[ptr_offset + 3],
-    ]) as usize;
-    if save_block_ptr < EWRAM_BASE || save_block_ptr >= EWRAM_BASE + ewram.len() {
-        eprintln!("SaveBlock1 ptr 0x{:08X} is outside EWRAM — is the game loaded?", save_block_ptr);
-        return;
-    }
+    let save_block_ptr = match read_save_block1_ptr(&iwram, &ewram) {
+        Some(p) => p,
+        None    => { eprintln!("SaveBlock1 ptr invalid or EWRAM too small — is the game loaded?"); return; }
+    };
 
     let pocket_start = (save_block_ptr - EWRAM_BASE) + BALLS_POCKET_SAVE_BLOCK_OFFSET;
     let pocket_end   = pocket_start + BALLS_POCKET_SLOTS * 4;
@@ -607,21 +600,10 @@ pub fn count_pokeballs() -> u32 {
     let iwram = fire_red_memory::get_iwram();
     let ewram = fire_red_memory::get_ewram();
 
-    let ptr_offset = SAVE_BLOCK_1_PTR_ADDR - IWRAM_BASE;
-    if iwram.len() < ptr_offset + 4 {
-        return 0;
-    }
-
-    let save_block_ptr = u32::from_le_bytes([
-        iwram[ptr_offset],
-        iwram[ptr_offset + 1],
-        iwram[ptr_offset + 2],
-        iwram[ptr_offset + 3],
-    ]) as usize;
-
-    if save_block_ptr < EWRAM_BASE || save_block_ptr >= EWRAM_BASE + ewram.len() {
-        return 0;
-    }
+    let save_block_ptr = match read_save_block1_ptr(&iwram, &ewram) {
+        Some(p) => p,
+        None    => return 0,
+    };
 
     let pocket_start = (save_block_ptr - EWRAM_BASE) + BALLS_POCKET_SAVE_BLOCK_OFFSET;
     let pocket_end   = pocket_start + BALLS_POCKET_SLOTS * 4;

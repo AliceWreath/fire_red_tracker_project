@@ -151,6 +151,9 @@ pub fn parse_timestamp(s: &str) -> Option<u64> {
     let hour: u64 = tp.next()?.parse().ok()?;
     let min:  u64 = tp.next()?.parse().ok()?;
     let sec:  u64 = tp.next()?.parse().ok()?;
+    // Reject pre-epoch years: the loop `1970..year` is empty for year ≤ 1969,
+    // which would silently return Some(0) — the same value as 1970-01-01.
+    if year < 1970 { return None; }
     if month == 0 || month > 12 { return None; }
     if day   == 0               { return None; }
     if hour  > 23 || min > 59 || sec > 59 { return None; }
@@ -318,7 +321,7 @@ fn db() -> &'static Mutex<DbState> {
 /// `initialize` has already been called.
 /// Increment this whenever a new migration or data-repair statement is added.
 /// `initialize` skips all SQL when the DB already records this version.
-const SCHEMA_VERSION: &str = "8";
+const SCHEMA_VERSION: &str = "9";
 
 pub fn initialize(connection_string: &str) -> Result<(), String> {
     // Accept bare `host/dbname` strings — prepend the scheme so callers don't have to.
@@ -555,6 +558,17 @@ pub fn initialize(connection_string: &str) -> Result<(), String> {
 
         -- Migration v8: index on webhook_log(run_id) for fast per-run queries.
         CREATE INDEX IF NOT EXISTS webhook_log_run_id_idx ON webhook_log(run_id);
+
+        -- Migration v9: manual soul-link overrides — takes precedence over the
+        -- automatic met_location / receipt-order pairing.  One row per
+        -- (run, personality); the partner_personality column stores the target.
+        CREATE TABLE IF NOT EXISTS soul_link_overrides (
+            run_id              INTEGER NOT NULL REFERENCES runs(id),
+            personality         BIGINT  NOT NULL,
+            partner_personality BIGINT  NOT NULL,
+            created_at          BIGINT  NOT NULL,
+            PRIMARY KEY (run_id, personality)
+        );
     ").map_err(|e| format!("Failed to create database schema: {e}"))?;
 
     // Record the schema version so future startups can skip all migrations.
@@ -883,7 +897,7 @@ pub fn mark_dead(pokemon: DeadPokemon) -> Result<bool, postgres::Error> {
     let nickname     = pg_safe(&pokemon.nickname);
     let spec_name    = pg_safe(&pokemon.species_name);
     let ability_name = pg_safe(&pokemon.ability_name);
-    state.client.execute(
+    let n = state.client.execute(
         "INSERT INTO dead_pokemon (
             run_id, player_name, personality, ot_id, ot_name, nickname,
             species, species_name, is_shiny, nature,
@@ -903,7 +917,7 @@ pub fn mark_dead(pokemon: DeadPokemon) -> Result<bool, postgres::Error> {
         ) ON CONFLICT (run_id, personality) DO NOTHING",
         &[
             &(active as i32),
-            &player,       // $2 = player_name
+            &player,       // $2  = player_name
             &(pokemon.personality as i64),
             &(pokemon.ot_id as i64),
             &ot_name,
@@ -950,7 +964,9 @@ pub fn mark_dead(pokemon: DeadPokemon) -> Result<bool, postgres::Error> {
             &pokemon.is_soul_link_death,
         ],
     )?;
-    Ok(true)
+    // execute() returns the number of rows affected. ON CONFLICT DO NOTHING yields 0,
+    // meaning the record already exists — return false so callers don't re-fire events.
+    Ok(n > 0)
 }
 
 /// Returns `true` if the Pokemon with this personality is dead in the active run.
@@ -1077,16 +1093,19 @@ pub fn record_event(event: EventKind<'_>) -> Result<(), postgres::Error> {
 /// Records a Pokemon as caught in the active run.
 ///
 /// No-op if this personality is already recorded (deduplicates on reconnect).
-pub fn mark_caught(pokemon: CaughtPokemon) {
+/// Returns `true` when a new row was inserted, `false` when the record already
+/// existed (`ON CONFLICT DO NOTHING`) or no active run is set. Callers must
+/// only fire downstream events (event log, webhooks) on `true`.
+pub fn mark_caught(pokemon: CaughtPokemon) -> bool {
     let mut state = db().lock_or_recover();
     let active = match state.run_id {
         Some(id) => id,
-        None => return,
+        None => return false,
     };
     let player    = pg_safe(&state.current_player);
     let nickname  = pg_safe(&pokemon.nickname);
     let spec_name = pg_safe(&pokemon.species_name);
-    if let Err(e) = state.client.execute(
+    match state.client.execute(
         "INSERT INTO caught_pokemon (
             run_id, player_name, personality, ot_id, nickname, species, species_name,
             is_shiny, nature, level, met_location,
@@ -1124,7 +1143,11 @@ pub fn mark_caught(pokemon: CaughtPokemon) {
             &pokemon.location_name,
         ],
     ) {
-        tracing::warn!("Failed to record caught pokemon (personality={}): {e}", pokemon.personality);
+        Ok(n) => n > 0,
+        Err(e) => {
+            tracing::warn!("Failed to record caught pokemon (personality={}): {e}", pokemon.personality);
+            false
+        }
     }
 }
 
@@ -1381,20 +1404,34 @@ pub fn has_encounter_for_any_floor(floors: &[(u8, u8)]) -> bool {
         None => return false,
     };
     let player = state.current_player.clone();
-    for &(mg, mn) in floors {
-        let found = state.client
-            .query_one(
-                "SELECT COUNT(*) FROM encounters
-                 WHERE run_id = $1 AND player_name = $2 AND map_group = $3 AND map_name = $4",
-                &[&(active as i32), &player, &(mg as i32), &(mn as i32)],
-            )
-            .map(|row| row.get::<_, i64>(0) > 0)
-            .unwrap_or(false);
-        if found {
-            return true;
-        }
+
+    // Build a single EXISTS query with one OR-clause per floor so we only
+    // issue one round-trip instead of N while holding the DB mutex.
+    // N is always small (≤5 for multi-floor dungeons), so dynamic query
+    // construction is safe and the query planner handles it fine.
+    use std::fmt::Write as _;
+    let mut cond = String::new();
+    let floor_pairs: Vec<(i32, i32)> = floors.iter()
+        .map(|&(mg, mn)| (mg as i32, mn as i32))
+        .collect();
+    for i in 0..floor_pairs.len() {
+        if i > 0 { cond.push_str(" OR "); }
+        write!(&mut cond, "(map_group=${} AND map_name=${})", 3 + i * 2, 4 + i * 2).unwrap();
     }
-    false
+    let sql = format!(
+        "SELECT EXISTS (SELECT 1 FROM encounters \
+         WHERE run_id = $1 AND player_name = $2 AND ({cond}))"
+    );
+    let active_i32 = active as i32;
+    let mut params: Vec<&(dyn postgres::types::ToSql + Sync)> = vec![&active_i32, &player];
+    for (mg, mn) in &floor_pairs {
+        params.push(mg);
+        params.push(mn);
+    }
+    state.client
+        .query_one(&sql, &params)
+        .map(|row| row.get::<_, bool>(0))
+        .unwrap_or(false)
 }
 
 /// Returns `true` if an encounter has already been recorded for this area by the current player.
@@ -1445,6 +1482,51 @@ pub fn list_encounters() -> Vec<Encounter> {
             is_shiny:       row.get(8),
         })
         .collect()
+}
+
+/// Upserts a soul-link override for the active run: `personality` will be
+/// linked to `partner_personality` regardless of met_location.
+///
+/// Replaces any existing override for the same personality in this run.
+pub fn set_soul_link_override(personality: u32, partner_personality: u32) {
+    let mut state = db().lock_or_recover();
+    let active = match state.run_id {
+        Some(id) => id,
+        None => { tracing::warn!("set_soul_link_override: no active run"); return; }
+    };
+    let p       = personality as i64;
+    let pp      = partner_personality as i64;
+    let now     = unix_now() as i64;
+    let run_i32 = active as i32;
+    if let Err(e) = state.client.execute(
+        "INSERT INTO soul_link_overrides (run_id, personality, partner_personality, created_at)
+         VALUES ($1, $2, $3, $4)
+         ON CONFLICT (run_id, personality)
+         DO UPDATE SET partner_personality = EXCLUDED.partner_personality,
+                       created_at          = EXCLUDED.created_at",
+        &[&run_i32, &p, &pp, &now],
+    ) {
+        tracing::warn!("set_soul_link_override: DB error: {e}");
+    }
+}
+
+/// Removes the soul-link override for `personality` in the active run.
+///
+/// After this call the automatic met_location / receipt-order pairing resumes.
+pub fn clear_soul_link_override(personality: u32) {
+    let mut state = db().lock_or_recover();
+    let active = match state.run_id {
+        Some(id) => id,
+        None => return,
+    };
+    let p       = personality as i64;
+    let run_i32 = active as i32;
+    if let Err(e) = state.client.execute(
+        "DELETE FROM soul_link_overrides WHERE run_id = $1 AND personality = $2",
+        &[&run_i32, &p],
+    ) {
+        tracing::warn!("clear_soul_link_override: DB error: {e}");
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1721,6 +1803,68 @@ impl DbReader {
             ],
         )?;
         Ok(())
+    }
+
+    /// Returns all soul-link overrides for the current run as a `HashMap`
+    /// (personality → partner_personality).
+    ///
+    /// Called by `BroadcastLoop` once per cache-refresh cycle so
+    /// `propagate_soul_links` and `build_party_dto` can consult overrides
+    /// without a per-frame DB round-trip.
+    pub fn load_soul_link_overrides(&self) -> HashMap<u32, u32> {
+        let run_id = match *self.run_id.lock_or_recover() {
+            Some(id) => id,
+            None => return HashMap::new(),
+        };
+        let run_i32 = run_id as i32;
+        match self.client.lock_or_recover().query(
+            "SELECT personality, partner_personality FROM soul_link_overrides WHERE run_id = $1",
+            &[&run_i32],
+        ) {
+            Ok(rows) => rows.iter()
+                .map(|r| (r.get::<_, i64>(0) as u32, r.get::<_, i64>(1) as u32))
+                .collect(),
+            Err(e) => {
+                tracing::warn!("load_soul_link_overrides: {e}");
+                HashMap::new()
+            }
+        }
+    }
+
+    /// Returns all soul-link overrides for the current run as a JSON array.
+    ///
+    /// Each element: `{"personality":<u32>,"partner_personality":<u32>,"created_at":<i64>}`.
+    /// Returns `"[]"` when the run ID is unknown or the table is empty.
+    pub fn list_soul_link_overrides_json(&self) -> String {
+        let run_id = match *self.run_id.lock_or_recover() {
+            Some(id) => id,
+            None => return "[]".to_string(),
+        };
+        let run_i32 = run_id as i32;
+        let rows = match self.client.lock_or_recover().query(
+            "SELECT personality, partner_personality, created_at
+             FROM soul_link_overrides WHERE run_id = $1 ORDER BY created_at",
+            &[&run_i32],
+        ) {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::warn!("list_soul_link_overrides_json: {e}");
+                return "[]".to_string();
+            }
+        };
+        let mut out = String::from("[");
+        for (i, row) in rows.iter().enumerate() {
+            let p:  i64 = row.get(0);
+            let pp: i64 = row.get(1);
+            let ca: i64 = row.get(2);
+            if i > 0 { out.push(','); }
+            use std::fmt::Write as _;
+            let _ = write!(&mut out,
+                r#"{{"personality":{p},"partner_personality":{pp},"created_at":{ca}}}"#
+            );
+        }
+        out.push(']');
+        out
     }
 
     /// Inserts a soul-link death record for `caught` in this player's active run.
@@ -2093,14 +2237,18 @@ pub fn export_run(conn_str: &str, run_id: u32) -> serde_json::Value {
 
     let caught_rows = client.query(
         "SELECT nickname, species_name, level, nature, is_shiny, gender, \
-                met_location, location_name, caught_at, player_name, personality \
+                met_location, location_name, caught_at, player_name, personality, \
+                iv_hp, iv_attack, iv_defense, iv_speed, iv_sp_attack, iv_sp_defense, \
+                ev_hp, ev_attack, ev_defense, ev_speed, ev_sp_attack, ev_sp_defense \
          FROM caught_pokemon WHERE run_id = $1 ORDER BY caught_at",
         &[&rid],
     ).unwrap_or_default();
 
     let dead_rows = client.query(
         "SELECT nickname, species_name, level, nature, is_shiny, gender, \
-                met_location, died_at, player_name, is_soul_link_death, personality \
+                met_location, died_at, player_name, is_soul_link_death, personality, \
+                iv_hp, iv_attack, iv_defense, iv_speed, iv_sp_attack, iv_sp_defense, \
+                ev_hp, ev_attack, ev_defense, ev_speed, ev_sp_attack, ev_sp_defense \
          FROM dead_pokemon WHERE run_id = $1 ORDER BY died_at",
         &[&rid],
     ).unwrap_or_default();
@@ -2131,6 +2279,18 @@ pub fn export_run(conn_str: &str, run_id: u32) -> serde_json::Value {
             "caught_at":     format_timestamp(r.get::<_, i64>(8) as u64),
             "player_name":   r.get::<_, String>(9),
             "personality":   r.get::<_, i64>(10),
+            "iv_hp":         r.get::<_, i32>(11),
+            "iv_atk":        r.get::<_, i32>(12),
+            "iv_def":        r.get::<_, i32>(13),
+            "iv_spe":        r.get::<_, i32>(14),
+            "iv_spa":        r.get::<_, i32>(15),
+            "iv_spd":        r.get::<_, i32>(16),
+            "ev_hp":         r.get::<_, i32>(17),
+            "ev_atk":        r.get::<_, i32>(18),
+            "ev_def":        r.get::<_, i32>(19),
+            "ev_spe":        r.get::<_, i32>(20),
+            "ev_spa":        r.get::<_, i32>(21),
+            "ev_spd":        r.get::<_, i32>(22),
         })).collect::<Vec<_>>(),
         "dead": dead_rows.iter().map(|r| serde_json::json!({
             "nickname":          r.get::<_, String>(0),
@@ -2144,6 +2304,18 @@ pub fn export_run(conn_str: &str, run_id: u32) -> serde_json::Value {
             "player_name":       r.get::<_, String>(8),
             "is_soul_link_death": r.get::<_, bool>(9),
             "personality":       r.get::<_, i64>(10),
+            "iv_hp":             r.get::<_, i32>(11),
+            "iv_atk":            r.get::<_, i32>(12),
+            "iv_def":            r.get::<_, i32>(13),
+            "iv_spe":            r.get::<_, i32>(14),
+            "iv_spa":            r.get::<_, i32>(15),
+            "iv_spd":            r.get::<_, i32>(16),
+            "ev_hp":             r.get::<_, i32>(17),
+            "ev_atk":            r.get::<_, i32>(18),
+            "ev_def":            r.get::<_, i32>(19),
+            "ev_spe":            r.get::<_, i32>(20),
+            "ev_spa":            r.get::<_, i32>(21),
+            "ev_spd":            r.get::<_, i32>(22),
         })).collect::<Vec<_>>(),
         "encounters": enc_rows.iter().map(|r| serde_json::json!({
             "species_name":   r.get::<_, String>(0),
@@ -2180,7 +2352,7 @@ ev_hp,ev_atk,ev_def,ev_spe,ev_spa,ev_spd,caught_at\n");
                 ev_hp, ev_attack, ev_defense, ev_speed, ev_sp_attack, ev_sp_defense \
          FROM caught_pokemon WHERE run_id = $1 ORDER BY caught_at",
         &[&rid],
-    ).unwrap_or_default();
+    ).unwrap_or_else(|e| { tracing::warn!("export_run_csv caught query failed for run {run_id}: {e}"); vec![] });
     for r in &caught_rows {
         out.push_str(&format!(
             "caught,{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}\n",
@@ -2222,7 +2394,7 @@ ev_hp,ev_atk,ev_def,ev_spe,ev_spa,ev_spd,died_at\n");
                 ev_hp, ev_attack, ev_defense, ev_speed, ev_sp_attack, ev_sp_defense \
          FROM dead_pokemon WHERE run_id = $1 ORDER BY died_at",
         &[&rid],
-    ).unwrap_or_default();
+    ).unwrap_or_else(|e| { tracing::warn!("export_run_csv dead query failed for run {run_id}: {e}"); vec![] });
     for r in &dead_rows {
         out.push_str(&format!(
             "dead,{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}\n",
@@ -2260,7 +2432,7 @@ ev_hp,ev_atk,ev_def,ev_spe,ev_spa,ev_spd,died_at\n");
                 encountered_at, player_name \
          FROM encounters WHERE run_id = $1 ORDER BY encountered_at",
         &[&rid],
-    ).unwrap_or_default();
+    ).unwrap_or_else(|e| { tracing::warn!("export_run_csv encounters query failed for run {run_id}: {e}"); vec![] });
     for r in &enc_rows {
         out.push_str(&format!(
             "encounter,{},{},{},{},{},{},{},{}\n",
@@ -2392,13 +2564,21 @@ pub fn import_run(conn_str: &str, body: &serde_json::Value) -> serde_json::Value
                 .and_then(parse_timestamp)
                 .map(|t| t as i64)
                 .unwrap_or(now);
-            let _ = client.execute(
+            match client.execute(
                 "INSERT INTO encounters (run_id, player_name, species_name, level, \
                                         map_group, map_name, caught, is_shiny, encountered_at) \
-                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) \
+                 ON CONFLICT DO NOTHING",
                 &[&new_id, &enc_player, &species_name, &level,
                   &map_group, &map_name, &caught, &is_shiny, &encountered_at],
-            );
+            ) {
+                Ok(0) => tracing::warn!(
+                    "import_run: encounter ({species_name}, map {map_group}/{map_name}, \
+                     player {enc_player}) already exists in run {new_id}; skipped"),
+                Ok(_) => {}
+                Err(e) => tracing::warn!(
+                    "import_run: failed to insert encounter ({species_name}): {e}"),
+            }
         }
     }
 
@@ -2424,6 +2604,18 @@ pub fn import_run(conn_str: &str, body: &serde_json::Value) -> serde_json::Value
                 .and_then(parse_timestamp)
                 .map(|t| t as i64)
                 .unwrap_or(now);
+            let iv_hp:  i32 = c.get("iv_hp") .and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+            let iv_atk: i32 = c.get("iv_atk").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+            let iv_def: i32 = c.get("iv_def").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+            let iv_spe: i32 = c.get("iv_spe").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+            let iv_spa: i32 = c.get("iv_spa").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+            let iv_spd: i32 = c.get("iv_spd").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+            let ev_hp:  i32 = c.get("ev_hp") .and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+            let ev_atk: i32 = c.get("ev_atk").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+            let ev_def: i32 = c.get("ev_def").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+            let ev_spe: i32 = c.get("ev_spe").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+            let ev_spa: i32 = c.get("ev_spa").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+            let ev_spd: i32 = c.get("ev_spd").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
             match client.execute(
                 "INSERT INTO caught_pokemon (run_id, player_name, personality, ot_id, \
                                             nickname, species, species_name, is_shiny, \
@@ -2434,11 +2626,13 @@ pub fn import_run(conn_str: &str, body: &serde_json::Value) -> serde_json::Value
                                             ev_sp_attack, ev_sp_defense, \
                                             caught_at, gender) \
                  VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12, \
-                         0,0,0,0,0,0, 0,0,0,0,0,0, $13,$14) \
+                         $13,$14,$15,$16,$17,$18, $19,$20,$21,$22,$23,$24, $25,$26) \
                  ON CONFLICT (run_id, personality) DO NOTHING",
                 &[&new_id, &c_player, &personality, &0i64,
                   &nickname, &0i32, &species_name, &is_shiny,
                   &nature, &level, &met_location, &location_name,
+                  &iv_hp, &iv_atk, &iv_def, &iv_spe, &iv_spa, &iv_spd,
+                  &ev_hp, &ev_atk, &ev_def, &ev_spe, &ev_spa, &ev_spd,
                   &caught_at, &gender],
             ) {
                 Ok(0) => tracing::warn!(
@@ -2475,6 +2669,18 @@ pub fn import_run(conn_str: &str, body: &serde_json::Value) -> serde_json::Value
                 .and_then(parse_timestamp)
                 .map(|t| t as i64)
                 .unwrap_or(now);
+            let iv_hp:  i32 = d.get("iv_hp") .and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+            let iv_atk: i32 = d.get("iv_atk").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+            let iv_def: i32 = d.get("iv_def").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+            let iv_spe: i32 = d.get("iv_spe").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+            let iv_spa: i32 = d.get("iv_spa").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+            let iv_spd: i32 = d.get("iv_spd").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+            let ev_hp:  i32 = d.get("ev_hp") .and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+            let ev_atk: i32 = d.get("ev_atk").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+            let ev_def: i32 = d.get("ev_def").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+            let ev_spe: i32 = d.get("ev_spe").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+            let ev_spa: i32 = d.get("ev_spa").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+            let ev_spd: i32 = d.get("ev_spd").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
             match client.execute(
                 "INSERT INTO dead_pokemon (run_id, player_name, personality, ot_id, \
                                           nickname, species, species_name, is_shiny, \
@@ -2487,12 +2693,14 @@ pub fn import_run(conn_str: &str, body: &serde_json::Value) -> serde_json::Value
                                           held_item, ability, ability_name, friendship, ot_name) \
                  VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,0,$14, \
                          0,0,0,0,0,0, 0,0,0,0,0,0,0,0, \
-                         0,0,0,0,0,0, 0,0,0,0,0,0, 0,0,'',0,'') \
+                         $15,$16,$17,$18,$19,$20, $21,$22,$23,$24,$25,$26, 0,0,'',0,'') \
                  ON CONFLICT (run_id, personality) DO NOTHING",
                 &[&new_id, &d_player, &personality, &0i64,
                   &nickname, &0i32, &species_name, &is_shiny,
                   &nature, &level, &met_location, &died_at, &gender,
-                  &is_soul_link_death],
+                  &is_soul_link_death,
+                  &iv_hp, &iv_atk, &iv_def, &iv_spe, &iv_spa, &iv_spd,
+                  &ev_hp, &ev_atk, &ev_def, &ev_spe, &ev_spa, &ev_spd],
             ) {
                 Ok(0) => tracing::warn!(
                     "import_run: dead personality 0x{personality:08X} ({species_name}) already \
@@ -2658,6 +2866,87 @@ pub fn get_webhook_log_json(conn_str: &str, run_id: u32) -> serde_json::Value {
         "fired_at_human": format_timestamp(row.get::<_, i64>(5) as u64),
     })).collect();
     serde_json::json!({ "run_id": run_id, "webhook_log": entries })
+}
+
+// ---------------------------------------------------------------------------
+// Soul-link override management — connection-string variants for the aggregator
+// ---------------------------------------------------------------------------
+
+/// Returns all soul-link overrides for `run_id` as JSON.
+///
+/// Used by `GET /api/run/:id/soul_link/overrides`.
+pub fn soul_link_overrides_json(conn_str: &str, run_id: u32) -> serde_json::Value {
+    let mut client = match Client::connect(conn_str, NoTls) {
+        Ok(c)  => c,
+        Err(e) => return serde_json::json!({ "error": format!("DB connection failed: {e}") }),
+    };
+    let rows = match client.query(
+        "SELECT personality, partner_personality, created_at
+         FROM soul_link_overrides WHERE run_id = $1 ORDER BY created_at",
+        &[&(run_id as i32)],
+    ) {
+        Ok(r)  => r,
+        Err(e) => return serde_json::json!({ "error": format!("Query error: {e}") }),
+    };
+    let overrides: Vec<serde_json::Value> = rows.iter().map(|row| serde_json::json!({
+        "personality":         row.get::<_, i64>(0) as u64,
+        "partner_personality": row.get::<_, i64>(1) as u64,
+        "created_at":          row.get::<_, i64>(2),
+    })).collect();
+    serde_json::json!({ "run_id": run_id, "overrides": overrides })
+}
+
+/// Upserts a soul-link override for `run_id`: `personality` ↔ `partner_personality`.
+///
+/// Used by `POST /api/run/:id/soul_link/override`.
+pub fn set_soul_link_override_by_run(
+    conn_str:           &str,
+    run_id:             u32,
+    personality:        u32,
+    partner_personality: u32,
+) -> serde_json::Value {
+    let mut client = match Client::connect(conn_str, NoTls) {
+        Ok(c)  => c,
+        Err(e) => return serde_json::json!({ "error": format!("DB connection failed: {e}") }),
+    };
+    let p   = personality as i64;
+    let pp  = partner_personality as i64;
+    let now = unix_now() as i64;
+    let rid = run_id as i32;
+    match client.execute(
+        "INSERT INTO soul_link_overrides (run_id, personality, partner_personality, created_at)
+         VALUES ($1, $2, $3, $4)
+         ON CONFLICT (run_id, personality)
+         DO UPDATE SET partner_personality = EXCLUDED.partner_personality,
+                       created_at          = EXCLUDED.created_at",
+        &[&rid, &p, &pp, &now],
+    ) {
+        Ok(_)  => serde_json::json!({ "ok": true }),
+        Err(e) => serde_json::json!({ "error": format!("DB error: {e}") }),
+    }
+}
+
+/// Deletes the soul-link override for `personality` in `run_id`.
+///
+/// Used by `DELETE /api/run/:id/soul_link/override/:personality`.
+pub fn clear_soul_link_override_by_run(
+    conn_str:    &str,
+    run_id:      u32,
+    personality: u32,
+) -> serde_json::Value {
+    let mut client = match Client::connect(conn_str, NoTls) {
+        Ok(c)  => c,
+        Err(e) => return serde_json::json!({ "error": format!("DB connection failed: {e}") }),
+    };
+    let p   = personality as i64;
+    let rid = run_id as i32;
+    match client.execute(
+        "DELETE FROM soul_link_overrides WHERE run_id = $1 AND personality = $2",
+        &[&rid, &p],
+    ) {
+        Ok(n)  => serde_json::json!({ "ok": true, "deleted": n }),
+        Err(e) => serde_json::json!({ "error": format!("DB error: {e}") }),
+    }
 }
 
 // ---------------------------------------------------------------------------

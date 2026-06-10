@@ -25,7 +25,7 @@ const EFFECTIVENESS: [[u8; NUM_TYPES]; NUM_TYPES] = [
 /* Ground   */ [  8,  8,  0,  16, 8,  16, 4,  8, 16, 16,  8,  4,  0,  8,  8,  8,  8 ],
 /* Rock     */ [  8,  4,  16, 8,  4,  8, 16,  8,  4, 16,  8,  8,  8,  8, 16,  8,  8 ],
 /* Bug      */ [  8,  4,  4,  4,  8,  8,  8,  4,  4,  4,  8, 16,  8, 16,  8,  8,  16],
-/* Ghost    */ [  0,  0,  8,  8,  8,  8,  8, 16,  8,  8,  8,  8,  8, 16,  8,  8,  4 ],
+/* Ghost    */ [  0,  8,  8,  8,  8,  8,  8, 16,  8,  8,  8,  8,  8, 16,  8,  8,  4 ],
 /* Steel    */ [  8,  8,  8,  8,  8, 16,  8,  8,  4,  4,  4,  8,  4,  8, 16,  8,  8 ],
 /* Fire     */ [  8,  8,  8,  8,  8,  4, 16,  8, 16,  4,  4, 16,  8,  8, 16,  4,  8 ],
 /* Water    */ [  8,  8,  8,  8, 16, 16,  8,  8,  8, 16,  4,  4,  8,  8,  8,  4,  8 ],
@@ -231,5 +231,13 @@ mod tests {
         // This assertion directly verifies the corrected table cell.
         assert_eq!(EFFECTIVENESS[16][13], 16, "Dark vs Psychic should be ×2 (EFFECTIVENESS[16][13])");
         assert!(cov.offensive_coverage.contains(&13), "Dark team should cover Psychic (13)");
+    }
+
+    #[test]
+    fn ghost_vs_fighting_is_neutral() {
+        // Was incorrectly coded as 0 (immune) — a Gen I holdover where Ghost
+        // moves could not hit Normal (type 0) or Fighting (type 1) targets.
+        // In Gen III, only Normal is immune to Ghost; Fighting takes ×1.
+        assert_eq!(EFFECTIVENESS[7][1], 8, "Ghost vs Fighting should be ×1");
     }
 }

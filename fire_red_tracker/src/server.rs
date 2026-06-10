@@ -74,19 +74,23 @@ pub fn handle_client(
                         // Send front and back sprites for both palette variants.
                         for shiny in [false, true] {
                             let front_key = (species, shiny, SpriteVariant::Front);
-                            let mut cache = cache_clone.lock_or_recover();
-                            if let Some(data) = cache.get(&front_key) {
-                                sprites.push(data.clone());
+                            // Check the cache under a short-lived lock; release before
+                            // calling build_sprite_data so ROM decode doesn't hold the
+                            // mutex for the full decode duration.
+                            let cached_front = cache_clone.lock_or_recover().get(&front_key).cloned();
+                            if let Some(data) = cached_front {
+                                sprites.push(data);
                             } else if let Some(data) = build_sprite_data(rom, species, shiny) {
-                                cache.insert(front_key, data.clone());
+                                cache_clone.lock_or_recover().insert(front_key, data.clone());
                                 sprites.push(data);
                             }
 
                             let back_key = (species, shiny, SpriteVariant::Back);
-                            if let Some(data) = cache.get(&back_key) {
-                                sprites.push(data.clone());
+                            let cached_back = cache_clone.lock_or_recover().get(&back_key).cloned();
+                            if let Some(data) = cached_back {
+                                sprites.push(data);
                             } else if let Some(data) = build_sprite_data_back(rom, species, shiny) {
-                                cache.insert(back_key, data.clone());
+                                cache_clone.lock_or_recover().insert(back_key, data.clone());
                                 sprites.push(data);
                             }
                         }
@@ -192,11 +196,14 @@ pub fn handle_client(
             break;
         }
 
-        if wipe_signal.swap(false, Ordering::AcqRel)
-            && send_message(&mut ws, &ServerMessage::RunChanged(None)).is_err()
-        {
-            tracing::info!("Client disconnected.");
-            break;
+        // Load without consuming; only clear after confirmed delivery so a
+        // disconnect mid-send cannot permanently drop the wipe notification.
+        if wipe_signal.load(Ordering::Acquire) {
+            if send_message(&mut ws, &ServerMessage::RunChanged(None)).is_err() {
+                tracing::info!("Client disconnected.");
+                break;
+            }
+            wipe_signal.store(false, Ordering::Release);
         }
 
         // Send box snapshot on first tick and every 5 seconds thereafter.

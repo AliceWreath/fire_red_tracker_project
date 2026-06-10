@@ -1,0 +1,361 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Soul Link Overrides — FireRed Nuzlocke</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body {
+    background: #0f0f0f;
+    font-family: 'Segoe UI', Tahoma, sans-serif;
+    color: #e0e0e0;
+    min-height: 100vh;
+}
+#root { max-width: 960px; margin: 0 auto; padding: 16px; }
+
+.page-header {
+    display: flex; align-items: center; gap: 12px;
+    padding-bottom: 12px;
+    border-bottom: 1px solid rgba(255,255,255,0.1);
+    margin-bottom: 16px;
+}
+.page-title { font-size: 20px; font-weight: bold; color: #fff; }
+.nav-links { margin-left: auto; display: flex; gap: 8px; }
+.nav-link {
+    font-size: 12px; font-weight: 600; padding: 4px 12px;
+    background: #1a1a2e; border: 1px solid #334; border-radius: 5px;
+    color: #8899cc; text-decoration: none; cursor: pointer;
+}
+.nav-link:hover { background: #22223e; color: #aabbdd; }
+
+.section { margin-bottom: 20px; }
+.section-title {
+    font-size: 13px; font-weight: 700; color: #c090e0;
+    margin-bottom: 10px; border-bottom: 1px solid rgba(200,150,255,0.15);
+    padding-bottom: 5px;
+}
+
+.run-select-row { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
+.run-select-row label { font-size: 12px; color: #999; }
+select.run-select {
+    background: #1a1a2e; border: 1px solid #334; border-radius: 5px;
+    color: #e0e0e0; font-size: 13px; padding: 5px 10px; outline: none;
+    cursor: pointer;
+}
+select.run-select:focus { border-color: #c090e0; }
+
+/* Override table */
+.override-table-wrap {
+    border: 1px solid rgba(255,255,255,0.08); border-radius: 6px; overflow: hidden;
+}
+table { width: 100%; border-collapse: collapse; font-size: 12px; }
+thead tr { background: #1a1a2e; }
+th {
+    padding: 8px 10px; text-align: left;
+    font-size: 11px; font-weight: 700; color: #8899cc;
+    text-transform: uppercase; letter-spacing: 0.5px;
+    border-bottom: 1px solid rgba(255,255,255,0.1);
+}
+tbody tr { border-bottom: 1px solid rgba(255,255,255,0.04); }
+tbody tr:hover { background: rgba(255,255,255,0.03); }
+td { padding: 6px 10px; color: #ccc; font-size: 12px; }
+td.mono { font-family: 'Consolas', 'Courier New', monospace; color: #aaddcc; }
+
+.empty-row td { text-align: center; color: #555; padding: 18px; }
+
+.del-btn {
+    font-size: 11px; font-weight: 700; padding: 3px 10px;
+    background: rgba(120,20,20,0.4); border: 1px solid rgba(160,60,60,0.4);
+    border-radius: 4px; color: #e08080; cursor: pointer;
+}
+.del-btn:hover { background: rgba(160,30,30,0.5); color: #ff9090; }
+
+/* Add override form */
+.add-form {
+    background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 6px; padding: 14px 16px;
+}
+.form-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.form-row label { font-size: 12px; color: #999; white-space: nowrap; }
+input.pval {
+    width: 130px; background: #111; border: 1px solid #333; border-radius: 5px;
+    color: #aaddcc; font-size: 12px; font-family: 'Consolas', monospace;
+    padding: 5px 9px; outline: none;
+}
+input.pval:focus { border-color: #c090e0; }
+.add-btn {
+    font-size: 13px; font-weight: 700; padding: 6px 18px;
+    background: #1a3a1a; border: 1px solid #2a6a2a; border-radius: 5px;
+    color: #aaffaa; cursor: pointer;
+}
+.add-btn:hover { background: #224a22; }
+.add-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+.form-hint {
+    font-size: 11px; color: #666; margin-top: 8px; line-height: 1.5;
+}
+
+/* Caught Pokémon reference table */
+.caught-section { margin-top: 20px; }
+.slot-label { font-size: 12px; font-weight: 700; color: #c090e0; margin-bottom: 6px; }
+.caught-grid {
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+    gap: 6px; margin-bottom: 14px;
+}
+.caught-card {
+    background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.07);
+    border-radius: 5px; padding: 6px 10px; display: flex; align-items: center; gap: 8px;
+    cursor: pointer; transition: border-color 0.12s;
+}
+.caught-card:hover { border-color: rgba(200,150,255,0.4); }
+.caught-card.selected { border-color: #c090e0; background: rgba(200,150,255,0.08); }
+.card-sprite { width: 32px; height: 32px; image-rendering: pixelated; flex-shrink: 0; }
+.card-info { min-width: 0; }
+.card-name { font-size: 12px; font-weight: 700; color: #e0e0e0; }
+.card-sub { font-size: 10px; color: #888; font-family: 'Consolas', monospace; }
+.card-dead { opacity: 0.5; }
+
+.status-msg {
+    font-size: 12px; padding: 6px 10px; border-radius: 5px;
+    margin-top: 10px; display: none;
+}
+.status-msg.ok  { background: rgba(40,80,40,0.4); border: 1px solid #2a6a2a; color: #aaffaa; display: block; }
+.status-msg.err { background: rgba(80,30,30,0.4); border: 1px solid #5a2a2a; color: #ffaaaa; display: block; }
+</style>
+</head>
+<body>
+<div id="root">
+    <div class="page-header">
+        <div class="page-title">Soul Link Override Manager</div>
+        <div class="nav-links">
+            <a class="nav-link" href="/soullink">Soul Link View</a>
+            <a class="nav-link" href="/">Overlay</a>
+        </div>
+    </div>
+
+    <div class="run-select-row section">
+        <label for="run-sel">Run:</label>
+        <select class="run-select" id="run-sel" onchange="loadOverrides()"></select>
+    </div>
+
+    <div class="section">
+        <div class="section-title">Current Overrides</div>
+        <div class="override-table-wrap">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Personality</th>
+                        <th>Partner Personality</th>
+                        <th>Created</th>
+                        <th></th>
+                    </tr>
+                </thead>
+                <tbody id="overrides-tbody">
+                    <tr class="empty-row"><td colspan="4">Loading…</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <div class="section">
+        <div class="section-title">Add Override</div>
+        <div class="add-form">
+            <div class="form-row">
+                <label>Personality:</label>
+                <input class="pval" type="number" id="inp-personality" placeholder="e.g. 1234567890" min="0">
+                <label>Partner personality:</label>
+                <input class="pval" type="number" id="inp-partner" placeholder="e.g. 9876543210" min="0">
+                <button class="add-btn" id="add-btn" onclick="addOverride()">Add Override</button>
+            </div>
+            <div class="form-hint">
+                Click a caught Pokémon card below to fill a field.
+                Setting an override replaces the automatic met-location pairing for that personality.
+                To create a mutual link, add both directions (A → B and B → A).
+            </div>
+            <div class="status-msg" id="status-msg"></div>
+        </div>
+    </div>
+
+    <div class="section caught-section">
+        <div class="section-title">Caught Pokémon Reference</div>
+        <div id="caught-root">Loading…</div>
+    </div>
+</div>
+
+<script>
+let runId = null;
+let fillTarget = null; // 'personality' or 'partner'
+
+async function loadRuns() {
+    const res = await fetch('/api/runs').catch(() => null);
+    if (!res || !res.ok) return;
+    const data = await res.json();
+    const runs = data.runs || [];
+    const sel = document.getElementById('run-sel');
+    sel.innerHTML = '';
+    if (runs.length === 0) {
+        sel.innerHTML = '<option value="">No runs found</option>';
+        return;
+    }
+    for (const r of [...runs].reverse()) {
+        const ended = r.ended_at ? ' [ended]' : ' [active]';
+        const opt = document.createElement('option');
+        opt.value = r.run_id;
+        opt.textContent = `Run #${r.run_id} — ${r.player_name}${ended} (${r.started_at})`;
+        sel.appendChild(opt);
+    }
+    runId = parseInt(sel.value);
+    await Promise.all([loadOverrides(), loadCaught()]);
+}
+
+async function loadOverrides() {
+    const sel = document.getElementById('run-sel');
+    runId = parseInt(sel.value);
+    if (!runId) return;
+    const res = await fetch(`/api/run/${runId}/soul_link/overrides`).catch(() => null);
+    const tbody = document.getElementById('overrides-tbody');
+    if (!res || !res.ok) {
+        tbody.innerHTML = '<tr class="empty-row"><td colspan="4">Failed to load overrides.</td></tr>';
+        return;
+    }
+    const data = await res.json();
+    if (data.error) {
+        tbody.innerHTML = `<tr class="empty-row"><td colspan="4">${escHtml(data.error)}</td></tr>`;
+        return;
+    }
+    const overrides = data.overrides || [];
+    if (overrides.length === 0) {
+        tbody.innerHTML = '<tr class="empty-row"><td colspan="4">No overrides set — automatic pairing is in effect.</td></tr>';
+        return;
+    }
+    tbody.innerHTML = overrides.map(o => `
+        <tr>
+            <td class="mono">${o.personality}</td>
+            <td class="mono">${o.partner_personality}</td>
+            <td>${fmtTs(o.created_at)}</td>
+            <td><button class="del-btn" onclick="delOverride(${o.personality})">Remove</button></td>
+        </tr>
+    `).join('');
+}
+
+async function addOverride() {
+    const pEl  = document.getElementById('inp-personality');
+    const ppEl = document.getElementById('inp-partner');
+    const p    = parseInt(pEl.value);
+    const pp   = parseInt(ppEl.value);
+    if (isNaN(p) || isNaN(pp) || p < 0 || pp < 0) {
+        showStatus('Both personality values must be non-negative integers.', 'err');
+        return;
+    }
+    if (!runId) { showStatus('No run selected.', 'err'); return; }
+    const btn = document.getElementById('add-btn');
+    btn.disabled = true;
+    const res = await fetch(`/api/run/${runId}/soul_link/override`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ personality: p, partner_personality: pp }),
+    }).catch(() => null);
+    btn.disabled = false;
+    if (!res || !res.ok) { showStatus('Request failed.', 'err'); return; }
+    const data = await res.json();
+    if (data.error) { showStatus(data.error, 'err'); return; }
+    showStatus('Override saved.', 'ok');
+    pEl.value = ''; ppEl.value = '';
+    fillTarget = null;
+    await loadOverrides();
+}
+
+async function delOverride(personality) {
+    if (!runId) return;
+    const res = await fetch(`/api/run/${runId}/soul_link/override/${personality}`, {
+        method: 'DELETE',
+    }).catch(() => null);
+    if (!res || !res.ok) { showStatus('Delete failed.', 'err'); return; }
+    const data = await res.json();
+    if (data.error) { showStatus(data.error, 'err'); return; }
+    showStatus('Override removed.', 'ok');
+    await loadOverrides();
+}
+
+async function loadCaught() {
+    const res = await fetch('/api/state').catch(() => null);
+    const root = document.getElementById('caught-root');
+    if (!res || !res.ok) { root.textContent = 'Could not load state.'; return; }
+    const data = await res.json();
+    const slots = data.slots || [];
+    if (slots.length === 0) { root.textContent = 'No connected slots.'; return; }
+
+    root.innerHTML = '';
+    for (const slot of slots) {
+        const caught = slot.caught || [];
+        if (caught.length === 0) continue;
+        const label = document.createElement('div');
+        label.className = 'slot-label';
+        label.textContent = slot.label || 'Player';
+        root.appendChild(label);
+        const grid = document.createElement('div');
+        grid.className = 'caught-grid';
+        for (const c of caught) {
+            const card = document.createElement('div');
+            card.className = 'caught-card' + (c.dead ? ' card-dead' : '');
+            card.dataset.personality = c.personality;
+            card.title = `Click to fill personality field\nPersonality: ${c.personality}`;
+            card.onclick = () => fillPersonality(c.personality, card);
+            const img = document.createElement('img');
+            img.className = 'card-sprite';
+            if (c.sprite) { img.src = c.sprite; } else { img.style.display = 'none'; }
+            const info = document.createElement('div');
+            info.className = 'card-info';
+            info.innerHTML = `<div class="card-name">${escHtml(c.nickname || c.species_name)}</div>
+                <div class="card-sub">p: ${c.personality}</div>`;
+            card.appendChild(img);
+            card.appendChild(info);
+            grid.appendChild(card);
+        }
+        root.appendChild(grid);
+    }
+}
+
+function fillPersonality(personality, card) {
+    // First click fills personality, second click fills partner; cycles.
+    const pEl  = document.getElementById('inp-personality');
+    const ppEl = document.getElementById('inp-partner');
+    document.querySelectorAll('.caught-card.selected').forEach(el => el.classList.remove('selected'));
+    if (!pEl.value || fillTarget === 'partner') {
+        if (fillTarget === 'partner') {
+            ppEl.value = personality;
+            card.classList.add('selected');
+            fillTarget = 'personality';
+        } else {
+            pEl.value = personality;
+            card.classList.add('selected');
+            fillTarget = 'partner';
+        }
+    } else {
+        ppEl.value = personality;
+        card.classList.add('selected');
+        fillTarget = 'personality';
+    }
+}
+
+function showStatus(msg, cls) {
+    const el = document.getElementById('status-msg');
+    el.textContent = msg;
+    el.className = 'status-msg ' + cls;
+    setTimeout(() => { el.className = 'status-msg'; }, 4000);
+}
+
+function fmtTs(unix) {
+    if (!unix) return '—';
+    const d = new Date(unix * 1000);
+    return d.toLocaleString();
+}
+
+function escHtml(s) {
+    return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+loadRuns();
+</script>
+</body>
+</html>
