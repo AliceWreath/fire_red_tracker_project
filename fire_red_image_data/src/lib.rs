@@ -466,3 +466,230 @@ pub fn get_pokemon_back_sprite(
     }
     Ok(img)
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── decode_4bpp_tiles ─────────────────────────────────────────────────────
+
+    #[test]
+    fn tiles_data_too_short_returns_error() {
+        // 1x1 tile requires 32 bytes; 31 is not enough.
+        assert!(decode_4bpp_tiles(&vec![0u8; 31], 1, 1).is_err());
+    }
+
+    #[test]
+    fn tiles_all_zeros_produce_all_zero_indices() {
+        let pixels = decode_4bpp_tiles(&vec![0u8; 32], 1, 1).unwrap();
+        assert_eq!(pixels.len(), 64);
+        assert!(pixels.iter().all(|&p| p == 0));
+    }
+
+    #[test]
+    fn tiles_low_nibble_is_left_pixel_high_nibble_is_right() {
+        // Byte 0xAB: lo=0xB goes to the left pixel, hi=0xA to the right.
+        let mut data = vec![0u8; 32];
+        data[0] = 0xAB; // row=0, col=0 → px=(0,1) py=0
+        let pixels = decode_4bpp_tiles(&data, 1, 1).unwrap();
+        assert_eq!(pixels[0], 0xB);
+        assert_eq!(pixels[1], 0xA);
+    }
+
+    #[test]
+    fn tiles_pixel_row_col_mapping() {
+        // row=2, col=3 in a single tile lives at data[2*4+3]=data[11].
+        // px = col*2 = 6, py = row = 2 → pixel offsets 22 (lo) and 23 (hi).
+        let mut data = vec![0u8; 32];
+        data[11] = 0x59; // lo=0x9, hi=0x5
+        let pixels = decode_4bpp_tiles(&data, 1, 1).unwrap();
+        assert_eq!(pixels[22], 0x9);
+        assert_eq!(pixels[23], 0x5);
+    }
+
+    #[test]
+    fn tiles_second_horizontal_tile_starts_at_x8() {
+        // 2×1 tiles → 16×8 canvas. Tile 1 data starts at byte 32.
+        // row=0, col=0 of tile 1 → px=8, py=0 → pixel offsets 8 (lo) and 9 (hi).
+        let mut data = vec![0u8; 64];
+        data[32] = 0x73; // lo=0x3, hi=0x7
+        let pixels = decode_4bpp_tiles(&data, 2, 1).unwrap();
+        assert_eq!(pixels[8], 0x3);
+        assert_eq!(pixels[9], 0x7);
+    }
+
+    #[test]
+    fn tiles_second_vertical_tile_starts_at_y8() {
+        // 1×2 tiles → 8×16 canvas. Tile 1 (tile_y=1) data starts at byte 32.
+        // row=0, col=0 → px=0, py=8 → pixel offset 64 (lo) and 65 (hi).
+        let mut data = vec![0u8; 64];
+        data[32] = 0xC1; // lo=0x1, hi=0xC
+        let pixels = decode_4bpp_tiles(&data, 1, 2).unwrap();
+        assert_eq!(pixels[64], 0x1);
+        assert_eq!(pixels[65], 0xC);
+    }
+
+    #[test]
+    fn tiles_2x2_all_four_corners_placed_correctly() {
+        // 2×2 tiles → 16×16 canvas (width=16).
+        // Tile (tx,ty) data starts at [(ty*2 + tx) * 32].
+        // row=0, col=0 of each tile maps to the tile's top-left pixel.
+        let mut data = vec![0u8; 128];
+        data[0]  = 0xAB; // tile(0,0): pixel[0]=0xB,  pixel[1]=0xA
+        data[32] = 0xCD; // tile(1,0): pixel[8]=0xD,  pixel[9]=0xC
+        data[64] = 0xEF; // tile(0,1): pixel[128]=0xF, pixel[129]=0xE  (y=8 → offset=8*16)
+        data[96] = 0x12; // tile(1,1): pixel[136]=0x2, pixel[137]=0x1  (y=8,x=8)
+        let pixels = decode_4bpp_tiles(&data, 2, 2).unwrap();
+        assert_eq!(pixels[0],   0xB);
+        assert_eq!(pixels[1],   0xA);
+        assert_eq!(pixels[8],   0xD);
+        assert_eq!(pixels[9],   0xC);
+        assert_eq!(pixels[128], 0xF);
+        assert_eq!(pixels[129], 0xE);
+        assert_eq!(pixels[136], 0x2);
+        assert_eq!(pixels[137], 0x1);
+    }
+
+    // ── decode_palette ────────────────────────────────────────────────────────
+
+    #[test]
+    fn palette_too_short_returns_error() {
+        assert!(decode_palette(&vec![0u8; 31], 0).is_err());
+    }
+
+    #[test]
+    fn palette_too_short_with_offset_returns_error() {
+        // 33 bytes but offset=2 → only 31 bytes available for the palette.
+        assert!(decode_palette(&vec![0u8; 33], 2).is_err());
+    }
+
+    #[test]
+    fn palette_index_0_is_always_transparent() {
+        // White (0x7FFF) at index 0 must still get alpha=0.
+        let mut data = vec![0u8; 32];
+        data[0] = 0xFF;
+        data[1] = 0x7F; // little-endian 0x7FFF
+        let pal = decode_palette(&data, 0).unwrap();
+        assert_eq!(pal[0][3], 0);
+    }
+
+    #[test]
+    fn palette_non_zero_indices_get_full_alpha() {
+        let pal = decode_palette(&vec![0u8; 32], 0).unwrap();
+        for entry in &pal[1..] {
+            assert_eq!(entry[3], 255);
+        }
+    }
+
+    #[test]
+    fn palette_black_entry_decodes_to_zeros() {
+        // 0x0000 → R=0, G=0, B=0. Index 0 also gets A=0 (transparent).
+        let pal = decode_palette(&vec![0u8; 32], 0).unwrap();
+        assert_eq!(pal[0], [0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn palette_white_decodes_to_full_rgb() {
+        // 0x7FFF: R=G=B=0x1F. Expansion: (0x1F << 3) | (0x1F >> 2) = 0xF8 | 0x07 = 0xFF.
+        let mut data = vec![0u8; 32];
+        data[2] = 0xFF; // index 1, little-endian 0x7FFF
+        data[3] = 0x7F;
+        let pal = decode_palette(&data, 0).unwrap();
+        assert_eq!(pal[1], [0xFF, 0xFF, 0xFF, 255]);
+    }
+
+    #[test]
+    fn palette_pure_red_channel() {
+        // BGR555 bits 4-0 = R. 0x001F → R=0x1F, G=0, B=0.
+        let mut data = vec![0u8; 32];
+        data[2] = 0x1F; // index 1: raw=0x001F
+        data[3] = 0x00;
+        let pal = decode_palette(&data, 0).unwrap();
+        assert_eq!(pal[1], [0xFF, 0, 0, 255]);
+    }
+
+    #[test]
+    fn palette_pure_green_channel() {
+        // BGR555 bits 9-5 = G. 0x03E0 → G=0x1F, R=0, B=0.
+        let mut data = vec![0u8; 32];
+        data[2] = 0xE0; // index 1: raw=0x03E0 little-endian
+        data[3] = 0x03;
+        let pal = decode_palette(&data, 0).unwrap();
+        assert_eq!(pal[1], [0, 0xFF, 0, 255]);
+    }
+
+    #[test]
+    fn palette_pure_blue_channel() {
+        // BGR555 bits 14-10 = B. 0x7C00 → B=0x1F, R=0, G=0.
+        let mut data = vec![0u8; 32];
+        data[2] = 0x00; // index 1: raw=0x7C00 little-endian
+        data[3] = 0x7C;
+        let pal = decode_palette(&data, 0).unwrap();
+        assert_eq!(pal[1], [0, 0, 0xFF, 255]);
+    }
+
+    #[test]
+    fn palette_5bit_mid_value_expansion() {
+        // 0x10 (16): (16 << 3) | (16 >> 2) = 128 | 4 = 132. Use R channel at index 1.
+        let mut data = vec![0u8; 32];
+        data[2] = 0x10; // raw=0x0010 → R=0x10
+        data[3] = 0x00;
+        let pal = decode_palette(&data, 0).unwrap();
+        assert_eq!(pal[1][0], 132);
+        assert_eq!(pal[1][1], 0);
+        assert_eq!(pal[1][2], 0);
+    }
+
+    #[test]
+    fn palette_offset_skips_leading_bytes() {
+        // Palette at offset 32; index 1 bytes at 32 + 2 = 34.
+        let mut data = vec![0u8; 64];
+        data[34] = 0x1F; // pure red at index 1
+        data[35] = 0x00;
+        let pal = decode_palette(&data, 32).unwrap();
+        assert_eq!(pal[1], [0xFF, 0, 0, 255]);
+    }
+
+    // ── decompress_lz77 ───────────────────────────────────────────────────────
+
+    #[test]
+    fn lz77_wrong_type_byte_returns_error() {
+        let data = vec![0x00, 0x03, 0x00, 0x00, 0x00, 0xAA, 0xBB, 0xCC];
+        assert!(decompress_lz77(&data, 0).is_err());
+    }
+
+    #[test]
+    fn lz77_all_literals() {
+        // flags=0x00 → all 8 tokens are literals; read 3 of them then stop.
+        let data = vec![0x10, 0x03, 0x00, 0x00, 0x00, 0xAA, 0xBB, 0xCC];
+        assert_eq!(decompress_lz77(&data, 0).unwrap(), vec![0xAA, 0xBB, 0xCC]);
+    }
+
+    #[test]
+    fn lz77_back_reference_repeats_prior_byte() {
+        // flags=0x40: bit7=0 (literal 0xAA), bit6=1 (back-ref).
+        // back-ref b0=0x00, b1=0x00 → length=3, disp=0 → copies output[0] three times.
+        let data = vec![0x10, 0x04, 0x00, 0x00, 0x40, 0xAA, 0x00, 0x00];
+        assert_eq!(decompress_lz77(&data, 0).unwrap(), vec![0xAA, 0xAA, 0xAA, 0xAA]);
+    }
+
+    #[test]
+    fn lz77_back_reference_with_nonzero_displacement() {
+        // flags=0x10: bits 7-5=0 (literals A,B,C), bit4=1 (back-ref), bits 3-0=0.
+        // back-ref b0=0x00, b1=0x02 → length=3, disp=2 → start=3-2-1=0 → copies "ABC".
+        let data = vec![
+            0x10, 0x06, 0x00, 0x00,
+            0x10,
+            b'A', b'B', b'C',
+            0x00, 0x02,
+        ];
+        assert_eq!(
+            decompress_lz77(&data, 0).unwrap(),
+            vec![b'A', b'B', b'C', b'A', b'B', b'C'],
+        );
+    }
+}
