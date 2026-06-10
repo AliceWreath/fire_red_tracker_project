@@ -149,7 +149,7 @@ const EFF = [
 /* Gnd */ [  8,  8,  0, 16,  8, 16,  4,  8, 16, 16,  8,  4,  0,  8,  8,  8,  8],
 /* Rok */ [  8,  4, 16,  8,  4,  8, 16,  8,  4, 16,  8,  8,  8,  8, 16,  8,  8],
 /* Bug */ [  8,  4,  4,  4,  8,  8,  8,  4,  4,  4,  8, 16,  8, 16,  8,  8, 16],
-/* Gst */ [  0,  0,  8,  8,  8,  8,  8, 16,  8,  8,  8,  8,  8, 16,  8,  8,  4],
+/* Gst */ [  0,  8,  8,  8,  8,  8,  8, 16,  8,  8,  8,  8,  8, 16,  8,  8,  4],
 /* Stl */ [  8,  8,  8,  8,  8, 16,  8,  8,  4,  4,  4,  8,  4,  8, 16,  8,  8],
 /* Fir */ [  8,  8,  8,  8,  8,  4, 16,  8, 16,  4,  4, 16,  8,  8, 16,  4,  8],
 /* Wat */ [  8,  8,  8,  8, 16, 16,  8,  8,  8, 16,  4,  4,  8,  8,  8,  4,  8],
@@ -291,7 +291,7 @@ function renderSlot(slot) {
             <div class="section-title">Party</div>
             <div class="party-list">${partyHtml}</div>
         </div>
-        <div class="section">
+        ${liveMems.length > 0 ? `<div class="section">
             <div class="section-title">Defensive Exposure — worst incoming multiplier per type</div>
             <div class="type-grid-wrap">
                 <div class="type-grid">${gridHtml}</div>
@@ -302,9 +302,9 @@ function renderSlot(slot) {
                 <span style="color:#ff4433"> ■ 4×</span>
                 <span style="color:#5a9a5a"> ■ ½×</span>
                 <span style="color:#3a7a3a"> ■ ¼×</span>
-                <span style="color:#555"> ■ 0</span>
+                <span style="color:#555"> ■ 0×</span>
             </div>
-        </div>
+        </div>` : ''}
     </div>`;
 }
 
