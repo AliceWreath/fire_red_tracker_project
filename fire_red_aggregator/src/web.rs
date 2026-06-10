@@ -482,10 +482,17 @@ impl BroadcastLoop {
                 let met_i = p_i.box_mon.secure.misc.met_location;
                 for j in 0..n {
                     if j == i { continue; }
-                    if met_i == 0 {
+                    let personality_i = p_i.box_mon.personality;
+                    if let Some(&override_p) = self.soul_link_overrides.get(&personality_i) {
+                        // Manual override supersedes met_location pairing — mirrors DB path.
+                        let Some(gs_j) = &states[j].1 else { continue };
+                        if let Some(partner) = gs_j.party.iter().find(|p| p.box_mon.personality == override_p) {
+                            live_soul_link_dead[j].insert(partner.box_mon.personality);
+                        }
+                    } else if met_i == 0 {
                         // Gift Pokémon: pair by receipt order — matches DB path.
                         let Some(idx) = sorted_gifts[i].iter()
-                            .position(|c| c.personality == p_i.box_mon.personality)
+                            .position(|c| c.personality == personality_i)
                             else { continue };
                         if let Some(partner) = sorted_gifts[j].get(idx) {
                             live_soul_link_dead[j].insert(partner.personality);
@@ -960,7 +967,7 @@ impl BroadcastLoop {
                     iv_spd:       cp.ivs.sp_defense,
                     sprite:       self.sprite_uri(cp.species, cp.is_shiny),
                     personality:  cp.personality,
-                    dead:         dead_records.contains_key(&cp.personality),
+                    dead:         dead_records.contains_key(&cp.personality) || soul_link_dead.contains(&cp.personality),
                 }).collect();
 
                 let box_pokemon: Vec<BoxMonDto> = all_box[i].iter()

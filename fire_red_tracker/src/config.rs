@@ -477,6 +477,12 @@ struct SetupApp {
     wipe_url:          String,
     wipe_url_enabled:  bool,
     wipe_template:     String,
+    // Fields with no UI widget — preserved unchanged from the loaded config.
+    badge_url:         Option<String>,
+    badge_template:    Option<String>,
+    nickname_url:      Option<String>,
+    nickname_template: Option<String>,
+    obs_clip_badge:    bool,
 }
 
 impl SetupApp {
@@ -519,6 +525,11 @@ impl SetupApp {
             wipe_url:          String::new(),
             wipe_url_enabled:  false,
             wipe_template:     String::new(),
+            badge_url:         None,
+            badge_template:    None,
+            nickname_url:      None,
+            nickname_template: None,
+            obs_clip_badge:    false,
         }
     }
 
@@ -568,6 +579,11 @@ impl SetupApp {
             wipe_url:          wh.wipe_url.clone().unwrap_or_default(),
             wipe_url_enabled:  wh.wipe_url.is_some(),
             wipe_template:     wh.wipe_template.clone().unwrap_or_default(),
+            badge_url:         wh.badge_url.clone(),
+            badge_template:    wh.badge_template.clone(),
+            nickname_url:      wh.nickname_url.clone(),
+            nickname_template: wh.nickname_template.clone(),
+            obs_clip_badge:    cfg.obs.clip_on_badge,
         }
     }
 }
@@ -906,10 +922,10 @@ impl eframe::App for SetupApp {
                         shiny_template: if self.shiny_url_enabled && !self.shiny_template.trim().is_empty() { Some(self.shiny_template.trim().to_string()) } else { None },
                         wipe_url:       if self.wipe_url_enabled  && !self.wipe_url.trim().is_empty()  { Some(self.wipe_url.trim().to_string())  } else { None },
                         wipe_template:  if self.wipe_url_enabled  && !self.wipe_template.trim().is_empty()  { Some(self.wipe_template.trim().to_string())  } else { None },
-                        badge_url:      None,
-                        badge_template: None,
-                        nickname_url:      None,
-                        nickname_template: None,
+                        badge_url:      self.badge_url.clone(),
+                        badge_template: self.badge_template.clone(),
+                        nickname_url:      self.nickname_url.clone(),
+                        nickname_template: self.nickname_template.clone(),
                     },
                     obs: ObsConfig {
                         host:          self.obs_host.trim().to_string(),
@@ -918,7 +934,7 @@ impl eframe::App for SetupApp {
                         clip_on_death: self.obs_clip_death,
                         clip_on_shiny: self.obs_clip_shiny,
                         clip_on_wipe:  self.obs_clip_wipe,
-                        clip_on_badge: false,
+                        clip_on_badge: self.obs_clip_badge,
                     },
                     dupes_clause: self.dupes_clause,
                     allow_species_repeats: self.allow_species_repeats,

@@ -140,10 +140,14 @@ function populateSelects() {
 
 async function fetchStats(id) {
     if (statsCache[id]) return statsCache[id];
-    const res = await fetch('/api/run/' + id + '/stats');
-    const data = await res.json();
-    statsCache[id] = data;
-    return data;
+    try {
+        const res = await fetch('/api/run/' + id + '/stats');
+        const data = await res.json();
+        statsCache[id] = data;
+        return data;
+    } catch (e) {
+        return { error: e.message };
+    }
 }
 
 async function onSelect() {
@@ -181,7 +185,10 @@ function buildPanel(stats, other, label, id) {
     const panel = document.createElement('div');
     if (!stats || stats.error) {
         panel.className = 'run-panel';
-        panel.innerHTML = '<div class="error-msg">' + (stats ? stats.error : 'No data') + '</div>';
+        const errDiv = document.createElement('div');
+        errDiv.className = 'error-msg';
+        errDiv.textContent = stats ? stats.error : 'No data';
+        panel.appendChild(errDiv);
         return panel;
     }
 
@@ -199,12 +206,14 @@ function buildPanel(stats, other, label, id) {
     dates.textContent = stats.started_at + (stats.ended_at ? ' → ' + stats.ended_at : ' → ongoing') + ' (' + stats.playtime + ')';
     panel.appendChild(dates);
 
-    function statRow(labelText, val, otherVal, higherIsBetter) {
+    // display is an optional override for the rendered text when the comparison
+    // value (val) is a different type/unit than what should be displayed.
+    function statRow(labelText, val, otherVal, higherIsBetter, display) {
         const row = document.createElement('div');
         row.className = 'stat-row';
         const l = document.createElement('span'); l.className = 'stat-label'; l.textContent = labelText;
         const v = document.createElement('span'); v.className = 'stat-val';
-        v.textContent = val;
+        v.textContent = display !== undefined ? display : val;
         if (other && otherVal != null) {
             const better = higherIsBetter ? val > otherVal : val < otherVal;
             const worse  = higherIsBetter ? val < otherVal : val > otherVal;
@@ -218,7 +227,7 @@ function buildPanel(stats, other, label, id) {
     const otherStats = other;
     panel.appendChild(statRow('Encounters',       stats.total_encounters, otherStats && otherStats.total_encounters, true));
     panel.appendChild(statRow('Caught',           stats.total_caught,     otherStats && otherStats.total_caught,     true));
-    panel.appendChild(statRow('Catch rate',       stats.catch_rate_pct + '%', otherStats && otherStats.catch_rate_pct, true));
+    panel.appendChild(statRow('Catch rate',       stats.catch_rate_pct,   otherStats && otherStats.catch_rate_pct,   true, stats.catch_rate_pct + '%'));
     panel.appendChild(statRow('Deaths',           stats.total_deaths,     otherStats && otherStats.total_deaths,     false));
     panel.appendChild(statRow('Avg death level',  stats.avg_death_level,  otherStats && otherStats.avg_death_level,  true));
 

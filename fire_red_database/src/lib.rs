@@ -2242,7 +2242,7 @@ pub fn export_run(conn_str: &str, run_id: u32) -> serde_json::Value {
                 ev_hp, ev_attack, ev_defense, ev_speed, ev_sp_attack, ev_sp_defense \
          FROM caught_pokemon WHERE run_id = $1 ORDER BY caught_at",
         &[&rid],
-    ).unwrap_or_default();
+    ).unwrap_or_else(|e| { tracing::warn!("export_run caught query failed for run {run_id}: {e}"); vec![] });
 
     let dead_rows = client.query(
         "SELECT nickname, species_name, level, nature, is_shiny, gender, \
@@ -2251,14 +2251,14 @@ pub fn export_run(conn_str: &str, run_id: u32) -> serde_json::Value {
                 ev_hp, ev_attack, ev_defense, ev_speed, ev_sp_attack, ev_sp_defense \
          FROM dead_pokemon WHERE run_id = $1 ORDER BY died_at",
         &[&rid],
-    ).unwrap_or_default();
+    ).unwrap_or_else(|e| { tracing::warn!("export_run dead query failed for run {run_id}: {e}"); vec![] });
 
     let enc_rows = client.query(
         "SELECT species_name, level, map_group, map_name, caught, is_shiny, \
                 encountered_at, player_name \
          FROM encounters WHERE run_id = $1 ORDER BY encountered_at",
         &[&rid],
-    ).unwrap_or_default();
+    ).unwrap_or_else(|e| { tracing::warn!("export_run encounters query failed for run {run_id}: {e}"); vec![] });
 
     serde_json::json!({
         "run": {

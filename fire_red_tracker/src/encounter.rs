@@ -84,6 +84,14 @@ impl EncounterTracker {
                 }
             }
 
+            let map_group = current_state.map_group_id;
+            let map_name  = current_state.map_name_id;
+
+            let dungeon = fire_red_location_names::dungeon_floors(map_group, map_name);
+            if fire_red_database::has_encounter_for_any_floor(dungeon) {
+                return;
+            }
+
             let species = enemy.box_mon.secure.growth.species;
             if !allow_species_repeats && fire_red_database::species_encountered(species) {
                 return;
@@ -94,14 +102,6 @@ impl EncounterTracker {
                 DupesClauseMode::Shared    => fire_red_database::species_caught_any(species),
             };
             if skip { return; }
-
-            let map_group = current_state.map_group_id;
-            let map_name  = current_state.map_name_id;
-
-            let dungeon = fire_red_location_names::dungeon_floors(map_group, map_name);
-            if fire_red_database::has_encounter_for_any_floor(dungeon) {
-                return;
-            }
             let now = fire_red_database::unix_now();
 
             let personality = enemy.box_mon.personality;

@@ -197,11 +197,11 @@ async function loadRuns() {
         sel.innerHTML = '<option value="">No runs found</option>';
         return;
     }
-    for (const r of [...runs].reverse()) {
+    for (const r of runs) {
         const ended = r.ended_at ? ' [ended]' : ' [active]';
         const opt = document.createElement('option');
-        opt.value = r.run_id;
-        opt.textContent = `Run #${r.run_id} — ${r.player_name}${ended} (${r.started_at})`;
+        opt.value = r.id;
+        opt.textContent = `Run #${r.id} — ${r.player_name}${ended} (${r.started_at})`;
         sel.appendChild(opt);
     }
     runId = parseInt(sel.value);
@@ -273,6 +273,7 @@ async function delOverride(personality) {
     if (!res || !res.ok) { showStatus('Delete failed.', 'err'); return; }
     const data = await res.json();
     if (data.error) { showStatus(data.error, 'err'); return; }
+    if (!data.deleted) { showStatus('No override found for that personality.', 'err'); return; }
     showStatus('Override removed.', 'ok');
     await loadOverrides();
 }
@@ -282,7 +283,7 @@ async function loadCaught() {
     const root = document.getElementById('caught-root');
     if (!res || !res.ok) { root.textContent = 'Could not load state.'; return; }
     const data = await res.json();
-    const slots = data.slots || [];
+    const slots = Array.isArray(data) ? data : [];
     if (slots.length === 0) { root.textContent = 'No connected slots.'; return; }
 
     root.innerHTML = '';

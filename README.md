@@ -387,7 +387,7 @@ Each object in the `/api/state` array (and on `/api/slot/:index`) contains:
 | `next_gym` | object \| null | `{ leader, city, max_level, type_id }` for the next gym; `type_id` is the leader's primary Gen III type (0–16) |
 | `party` | array | Up to 6 party member objects (see below) |
 | `dead` | array | Dead Pokémon records for the active run, sorted newest first |
-| `caught` | array | Caught Pokémon records for the active run, sorted oldest first. Each record includes `personality` (raw GBA value — used by the soul-link override manager to identify specific Pokémon) and `dead` (true if this Pokémon has a death record or is a soul-link casualty) |
+| `caught` | array | Caught Pokémon records for the active run, sorted newest first. Each record includes `personality` (raw GBA value — used by the soul-link override manager to identify specific Pokémon) and `dead` (true if this Pokémon has a death record or is a soul-link casualty) |
 | `box_pokemon` | array | All Pokémon in PC boxes |
 | `db_encounters` | array | First-encounter records for the active run |
 | `prev_run_encounters` | array | First-encounter records from the most recently completed run (for cross-run hints) |
