@@ -766,9 +766,8 @@ pub fn check_for_new_badges(last_mask: Option<u8>) -> Option<u8> {
 /// Pure logic for [`give_item`]: searches `pocket` for a slot to write to and
 /// builds the 4-byte encrypted payload.
 ///
-/// `pocket` must be at least `ITEMS_POCKET_SLOTS * 4` bytes — the raw bytes of
-/// the items pocket as they appear in EWRAM (quantities are XOR-encrypted with
-/// `key`).
+/// Works for any pocket — slot count is derived from `pocket.len() / 4`.
+/// Quantities are XOR-encrypted with `key`, matching what FireRed expects.
 ///
 /// Returns `Some((slot_index, payload))` where `payload` is the 4 bytes to
 /// write: `[item_id_lo, item_id_hi, qty_enc_lo, qty_enc_hi]`.
@@ -782,14 +781,15 @@ pub(crate) fn compute_give_item_write(
     if item_id == 0 || quantity == 0 {
         return None;
     }
-    if pocket.len() < ITEMS_POCKET_SLOTS * 4 {
+    let n_slots = pocket.len() / 4;
+    if n_slots == 0 {
         return None;
     }
 
     let mut existing_slot: Option<usize> = None;
     let mut empty_slot:    Option<usize> = None;
 
-    for slot in 0..ITEMS_POCKET_SLOTS {
+    for slot in 0..n_slots {
         let base    = slot * 4;
         let slot_id = u16::from_le_bytes([pocket[base], pocket[base + 1]]);
         if slot_id == item_id {
@@ -917,6 +917,29 @@ fn derive_key_from_save_block2(socket: &std::net::UdpSocket, save_block2: u32) -
 
 /// Injects one item into the player's items pocket via `WRITE_CORE_MEMORY`.
 ///
+/// Bag pocket descriptor: SaveBlock1 offset, slot count, and display name.
+struct PocketTarget {
+    offset: usize,
+    slots:  usize,
+    name:   &'static str,
+}
+
+/// Maps a FireRed item ID to the bag pocket it belongs in.
+///
+/// Ranges are based on the pokefirered item data table:
+/// - 1–12:    Poké Balls   → balls pocket
+/// - 236–304: Key items    → key items pocket (bikes, rods, passes, story items, etc.)
+/// - 305–362: TMs / HMs   → TMs/HMs pocket
+/// - all else: consumables, vitamins, hold items, berries → items pocket
+fn pocket_for_item(item_id: u16) -> PocketTarget {
+    match item_id {
+        1..=12    => PocketTarget { offset: BALLS_POCKET_SAVE_BLOCK_OFFSET,     slots: BALLS_POCKET_SLOTS,     name: "balls" },
+        236..=304 => PocketTarget { offset: KEY_ITEMS_POCKET_SAVE_BLOCK_OFFSET, slots: KEY_ITEMS_POCKET_SLOTS, name: "key items" },
+        305..=362 => PocketTarget { offset: TMS_POCKET_SAVE_BLOCK_OFFSET,       slots: TMS_POCKET_SLOTS,       name: "TMs" },
+        _         => PocketTarget { offset: ITEMS_POCKET_SAVE_BLOCK_OFFSET,     slots: ITEMS_POCKET_SLOTS,     name: "items" },
+    }
+}
+
 /// Searches the items pocket for an existing stack of `item_id` to increment,
 /// or the first empty slot if none exists. Quantities are XOR-encrypted with the
 /// save's security key before writing, matching what FireRed expects in RAM.
@@ -964,19 +987,25 @@ pub fn give_item(item_id: u16, quantity: u16) -> bool {
     let key = oracle_key
         .unwrap_or_else(|| derive_key_from_save_block2(&socket, save_block2 as u32));
 
-    // Read items pocket fresh from RetroArch so we see any prior writes.
-    let pocket_addr = save_block1 as u32 + ITEMS_POCKET_SAVE_BLOCK_OFFSET as u32;
-    let pocket = match read_retroarch_bytes(&socket, pocket_addr, ITEMS_POCKET_SLOTS * 4) {
-        Some(b) if b.len() == ITEMS_POCKET_SLOTS * 4 => b,
-        _ => { tracing::warn!("give_item: RetroArch did not respond to items pocket read"); return false; }
+    // Select the correct pocket based on item ID.
+    let pocket_info = pocket_for_item(item_id);
+    let pocket_addr = save_block1 as u32 + pocket_info.offset as u32;
+    let expected_len = pocket_info.slots * 4;
+    let pocket = match read_retroarch_bytes(&socket, pocket_addr, expected_len) {
+        Some(b) if b.len() == expected_len => b,
+        _ => {
+            tracing::warn!("give_item: RetroArch did not respond to {} pocket read", pocket_info.name);
+            return false;
+        }
     };
 
     tracing::info!(
-        "give_item: sb1=0x{save_block1:08X} sb2=0x{save_block2:08X} pocket_addr=0x{pocket_addr:08X} key=0x{key:04X}"
+        "give_item: sb1=0x{save_block1:08X} pocket={} addr=0x{pocket_addr:08X} key=0x{key:04X}",
+        pocket_info.name
     );
 
     let Some((slot, payload)) = compute_give_item_write(&pocket, key, item_id, quantity) else {
-        tracing::warn!("give_item: items pocket is full ({ITEMS_POCKET_SLOTS} slots occupied)");
+        tracing::warn!("give_item: {} pocket is full", pocket_info.name);
         return false;
     };
 
@@ -1164,9 +1193,8 @@ mod tests {
     }
 
     #[test]
-    fn too_short_pocket_returns_none() {
-        let pocket = vec![0u8; ITEMS_POCKET_SLOTS * 4 - 1];
-        assert!(compute_give_item_write(&pocket, 0, 13, 1).is_none());
+    fn zero_length_pocket_returns_none() {
+        assert!(compute_give_item_write(&[], 0, 13, 1).is_none());
     }
 
     #[test]
