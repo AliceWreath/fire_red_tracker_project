@@ -12,7 +12,7 @@
 //! (client disconnect).
 
 use crate::textures::{build_sprite_data, build_sprite_data_back};
-use fire_red_states::*;
+use fire_red_states::{BagPockets, BoxEntry, ClientMessage, GameState, LockOrRecover, MAX_NATIONAL_DEX_FIRERED, ServerMessage, SpriteData, SpriteVariant, recv_message, send_message};
 use std::collections::HashMap;
 use std::net::TcpStream;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -28,6 +28,7 @@ pub(crate) type RomSpriteCache = Arc<Mutex<HashMap<(u16, bool, SpriteVariant), S
 /// * `server_party`      — Shared party data to broadcast.
 /// * `server_encounters` — Shared encounter data to broadcast.
 /// * `server_box`        — Shared PC box snapshot; sent once on connect then every 5 s.
+/// * `server_bag`        — Shared bag pockets snapshot; sent every 2 s.
 /// * `sprite_cache`      — Per-process sprite cache to amortise ROM decode cost.
 /// * `game_loaded`       — Set to `false` during reset/title screen to suppress
 ///   stale badge data from being sent to clients.
@@ -41,6 +42,7 @@ pub fn handle_client(
     server_party: Arc<Mutex<Vec<fire_red_party_monitor::Pokemon>>>,
     server_encounters: Arc<Mutex<fire_red_pokemon_data::WildPokemonHeader>>,
     server_box: Arc<Mutex<Vec<BoxEntry>>>,
+    server_bag: Arc<Mutex<Option<BagPockets>>>,
     sprite_cache: RomSpriteCache,
     game_loaded: Arc<AtomicBool>,
     run_changed: Arc<AtomicBool>,
@@ -128,13 +130,19 @@ pub fn handle_client(
                         Err(e) => tracing::error!("Failed to create new run: {e}"),
                     }
                 }
+                Ok(ClientMessage::GiveItem { item_id, quantity }) => {
+                    crate::game::give_item(item_id, quantity);
+                }
                 Err(_) => break,
             }
         }
     });
 
-    // Writer loop: pushes GameState every 100 ms and BoxData every 5 s.
+    // Writer loop: pushes GameState every 100 ms, BoxData every 5 s, Bag every 2 s.
     let mut last_box_send = std::time::Instant::now()
+        .checked_sub(std::time::Duration::from_secs(10))
+        .unwrap_or_else(std::time::Instant::now);
+    let mut last_bag_send = std::time::Instant::now()
         .checked_sub(std::time::Duration::from_secs(10))
         .unwrap_or_else(std::time::Instant::now);
 
@@ -214,6 +222,17 @@ pub fn handle_client(
                 break;
             }
             last_box_send = std::time::Instant::now();
+        }
+
+        // Send bag pockets every 2 seconds if data is available.
+        if last_bag_send.elapsed() >= std::time::Duration::from_secs(2) {
+            if let Some(pockets) = server_bag.lock_or_recover().clone() {
+                if send_message(&mut ws, &ServerMessage::Bag(pockets)).is_err() {
+                    tracing::info!("Client disconnected.");
+                    break;
+                }
+            }
+            last_bag_send = std::time::Instant::now();
         }
 
         drop(ws);

@@ -197,6 +197,7 @@ fn main() {
             let tex_queue    = slot_arc.texture_request_queue.clone();
             let label        = slot_arc.label.clone();
             let sprite_cache = slot_arc.sprite_cache.clone();
+            let bag_data     = slot_arc.bag_data.clone();
             let cmd_queue    = slot_arc.command_queue.clone();
             let run_chg      = slot_arc.run_changed.clone();
             let box_data     = slot_arc.box_data.clone();
@@ -205,7 +206,7 @@ fn main() {
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     handle_tracker_connection(
                         stream, state.clone(), pending, known, tex_queue,
-                        label, sprite_cache, cmd_queue, run_chg, box_data,
+                        label, sprite_cache, cmd_queue, run_chg, box_data, bag_data,
                     );
                 }));
                 if result.is_err() {

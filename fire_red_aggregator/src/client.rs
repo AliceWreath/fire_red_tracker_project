@@ -14,7 +14,7 @@
 //! returns. The caller (TCP listener loop) can then accept the next connection
 //! and reuse the same slot.
 
-use fire_red_states::{ClientMessage, GameState, LockOrRecover, ServerMessage, recv_message, send_message};
+use fire_red_states::{BagPockets, ClientMessage, GameState, LockOrRecover, ServerMessage, recv_message, send_message};
 use image::ImageEncoder;
 use image::codecs::png::PngEncoder;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -114,6 +114,8 @@ pub struct MonitorSlot {
     pub run_changed: Arc<AtomicBool>,
     /// Latest PC box snapshot received from the tracker (~5 s cadence).
     pub box_data: Arc<Mutex<Vec<fire_red_states::BoxEntry>>>,
+    /// Latest bag pockets snapshot received from the tracker (~2 s cadence).
+    pub bag_data: Arc<Mutex<Option<BagPockets>>>,
 }
 
 impl MonitorSlot {
@@ -141,6 +143,7 @@ impl MonitorSlot {
             command_queue: Arc::new(Mutex::new(VecDeque::new())),
             run_changed:   Arc::new(AtomicBool::new(false)),
             box_data:      Arc::new(Mutex::new(Vec::new())),
+            bag_data:      Arc::new(Mutex::new(None)),
         }
     }
 }
@@ -189,6 +192,7 @@ fn decompress_pixels(data: &[u8]) -> Vec<u8> {
 /// * `command_queue`         - `EndRun`/`NewRun` commands forwarded to the tracker.
 /// * `run_changed`           - Set when the tracker confirms a run change.
 /// * `box_data`              - Updated when a BoxData message arrives (~5 s cadence).
+/// * `bag_data`              - Updated when a Bag message arrives (~2 s cadence).
 #[allow(clippy::too_many_arguments)]
 pub fn handle_tracker_connection(
     stream: TcpStream,
@@ -201,6 +205,7 @@ pub fn handle_tracker_connection(
     command_queue: Arc<Mutex<VecDeque<ClientMessage>>>,
     run_changed: Arc<AtomicBool>,
     box_data: Arc<Mutex<Vec<fire_red_states::BoxEntry>>>,
+    bag_data: Arc<Mutex<Option<BagPockets>>>,
 ) {
     let mut write_stream = match stream.try_clone() {
         Ok(s)  => s,
@@ -283,6 +288,9 @@ pub fn handle_tracker_connection(
             }
             Ok(ServerMessage::BoxData(entries)) => {
                 *box_data.lock_or_recover() = entries;
+            }
+            Ok(ServerMessage::Bag(pockets)) => {
+                *bag_data.lock_or_recover() = Some(pockets);
             }
             Err(_) => {
                 *state.lock_or_recover() = None;

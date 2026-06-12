@@ -1071,6 +1071,7 @@ const SOULLINK_MANAGE_HTML: &str = include_str!("soullink_manage.html");
 const TYPES_HTML:        &str = include_str!("types.html");
 const ABOUT_HTML:        &str = include_str!("about.html");
 const COMPARE_HTML:      &str = include_str!("compare.html");
+const ITEMS_HTML:        &str = include_str!("items.html");
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -1570,6 +1571,37 @@ async fn serve_soullink_manage(State(state): State<WebState>) -> Html<String> {
     Html(apply_page(SOULLINK_MANAGE_HTML, state.testing))
 }
 
+/// `GET /:index/items` — bag item viewer page for a specific tracker slot.
+async fn serve_items(
+    State(state): State<WebState>,
+    Path(_index): Path<usize>,
+    Query(params): Query<HashMap<String, String>>,
+) -> Html<String> {
+    let theme = params.get("theme").map(String::as_str);
+    Html(apply_page_with_theme(ITEMS_HTML, state.testing, theme))
+}
+
+/// `GET /api/slot/:index/bag` — bag pockets JSON for a specific tracker slot.
+async fn api_bag(
+    State(state): State<WebState>,
+    Path(index): Path<usize>,
+) -> axum::Json<serde_json::Value> {
+    let slots = state.live_slots.lock_or_recover().clone();
+    let slot = match slots.get(index) {
+        Some(s) => s.clone(),
+        None    => return axum::Json(serde_json::json!({ "error": "slot index out of range" })),
+    };
+    match slot.bag_data.lock_or_recover().clone() {
+        Some(pockets) => axum::Json(serde_json::json!({
+            "items":     pockets.items.iter().map(|s| serde_json::json!({ "item_id": s.item_id, "quantity": s.quantity })).collect::<Vec<_>>(),
+            "key_items": pockets.key_items.iter().map(|s| serde_json::json!({ "item_id": s.item_id, "quantity": s.quantity })).collect::<Vec<_>>(),
+            "balls":     pockets.balls.iter().map(|s| serde_json::json!({ "item_id": s.item_id, "quantity": s.quantity })).collect::<Vec<_>>(),
+            "tms":       pockets.tms.iter().map(|s| serde_json::json!({ "item_id": s.item_id, "quantity": s.quantity })).collect::<Vec<_>>(),
+        })),
+        None => axum::Json(serde_json::json!({ "error": "bag data not yet available" })),
+    }
+}
+
 /// `GET /api/run/:id/shiny` — shiny odds statistics JSON for a run.
 async fn api_shiny_stats(
     State(state): State<WebState>,
@@ -1670,6 +1702,47 @@ async fn api_run_import(
     axum::Json(result.unwrap_or_else(|_| serde_json::json!({ "error": "Task panicked" })))
 }
 
+/// `POST /api/slot/:index/give_item` — inject an item into the player's bag.
+///
+/// Body: `{ "item_id": <u16>, "quantity": <u16 1–99> }`.
+///
+/// Queues a [`ClientMessage::GiveItem`] for the tracker in the given slot, which
+/// writes the item directly into the in-memory items pocket via RetroArch's
+/// `WRITE_CORE_MEMORY` command. The write happens asynchronously on the tracker
+/// side; this endpoint returns 200 as soon as the command is enqueued.
+///
+/// Returns:
+/// - `200 OK` — command enqueued.
+/// - `400 Bad Request` — missing or invalid body fields.
+/// - `404 Not Found` — slot index out of range.
+/// - `503 Service Unavailable` — slot exists but tracker is not connected.
+async fn api_give_item(
+    State(state): State<WebState>,
+    Path(index): Path<usize>,
+    axum::Json(body): axum::Json<serde_json::Value>,
+) -> impl IntoResponse {
+    let slots = state.live_slots.lock_or_recover().clone();
+    let slot = match slots.get(index) {
+        Some(s) => s.clone(),
+        None    => return (StatusCode::NOT_FOUND, "slot index out of range".to_string()),
+    };
+    if slot.state.lock_or_recover().is_none() {
+        return (StatusCode::SERVICE_UNAVAILABLE, "slot not connected".to_string());
+    }
+    let item_id = match body["item_id"].as_u64().and_then(|v| u16::try_from(v).ok()) {
+        Some(v) if v > 0 => v,
+        _ => return (StatusCode::BAD_REQUEST, "item_id must be a positive u16".to_string()),
+    };
+    let quantity = match body["quantity"].as_u64().and_then(|v| u16::try_from(v).ok()) {
+        Some(v) if v > 0 && v <= 99 => v,
+        _ => return (StatusCode::BAD_REQUEST, "quantity must be 1–99".to_string()),
+    };
+    slot.command_queue
+        .lock_or_recover()
+        .push_back(ClientMessage::GiveItem { item_id, quantity });
+    (StatusCode::OK, format!("queued give_item item_id={item_id} quantity={quantity} for slot {index}"))
+}
+
 /// Broadcasts `end_run` or `new_run` to all connected tracker slots.
 async fn api_command(
     State(state): State<WebState>,
@@ -1756,6 +1829,7 @@ pub fn run(live_slots: SharedSlots, port: u16, db_conn: Option<String>, testing:
             .route("/api/state", get(api_state))
             .route("/api/slot/:index", get(api_slot))
             .route("/api/slot/:index/odds", get(api_slot_odds))
+            .route("/api/slot/:index/give_item", post(api_give_item))
             .route("/api/bot/:index", get(api_bot_summary))
             .route("/api/command/:cmd", post(api_command))
             .route("/api/db/query", post(api_db_query))
@@ -1786,6 +1860,8 @@ pub fn run(live_slots: SharedSlots, port: u16, db_conn: Option<String>, testing:
             .route("/:index/caught", get(serve_focused))
             .route("/:index/box", get(serve_focused))
             .route("/:index/types", get(serve_types_page))
+            .route("/:index/items", get(serve_items))
+            .route("/api/slot/:index/bag", get(api_bag))
             .route("/run/:id/stats", get(serve_run_stats))
             .route("/run/:id/memorial", get(serve_memorial))
             .route("/about", get(serve_about))

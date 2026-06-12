@@ -33,12 +33,16 @@ pub const MAX_NATIONAL_DEX_FIRERED: u16 = 386;
 ///   1 = EndRun
 ///   2 = NewRun
 ///   3 = Hello
+///   4 = GiveItem
 #[derive(serde::Serialize, serde::Deserialize, Clone)]
 pub enum ClientMessage {
     RequestTextures(Vec<u16>), // index 0 — do not reorder
     EndRun,                    // index 1 — do not reorder
     NewRun,                    // index 2 — do not reorder
     Hello(String),             // index 3 — do not reorder
+    /// Inject an item into the player's items pocket. `item_id` is the Gen III
+    /// FireRed item ID (e.g. 13 = Potion). `quantity` is capped at 99 in-game.
+    GiveItem { item_id: u16, quantity: u16 }, // index 4 — do not reorder
     // Append new variants here only.
 }
 
@@ -50,13 +54,34 @@ pub enum ClientMessage {
 ///   1 = Textures
 ///   2 = RunChanged
 ///   3 = BoxData
+///   4 = Bag
 #[derive(serde::Serialize, serde::Deserialize)]
 pub enum ServerMessage {
     State(Box<GameState>),      // index 0 — do not reorder
     Textures(Vec<SpriteData>),  // index 1 — do not reorder
     RunChanged(Option<u32>),    // index 2 — do not reorder
     BoxData(Vec<BoxEntry>),     // index 3 — do not reorder
+    Bag(BagPockets),            // index 4 — do not reorder
     // Append new variants here only.
+}
+
+/// One item slot read from the player's bag (quantity already XOR-decrypted).
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
+pub struct ItemSlot {
+    pub item_id:  u16,
+    pub quantity: u16,
+}
+
+/// All four bag pockets decoded from the player's SaveBlock1.
+///
+/// Sent by the tracker every 2 seconds as [`ServerMessage::Bag`].
+/// Contains only occupied slots (item_id != 0); empty slots are omitted.
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
+pub struct BagPockets {
+    pub items:     Vec<ItemSlot>,
+    pub key_items: Vec<ItemSlot>,
+    pub balls:     Vec<ItemSlot>,
+    pub tms:       Vec<ItemSlot>,
 }
 
 /// A compact snapshot of one PC box slot for network transmission.

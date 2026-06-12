@@ -6,7 +6,7 @@
 
 use fire_red_loop::FireRedState;
 use fire_red_party_monitor::Pokemon;
-use fire_red_states::{LockOrRecover, MAX_NATIONAL_DEX_FIRERED};
+use fire_red_states::{BagPockets, ItemSlot, LockOrRecover, MAX_NATIONAL_DEX_FIRERED};
 use std::sync::{Arc, Mutex};
 
 /// GBA address of the packed (map_group, map_name) bytes in EWRAM.
@@ -27,6 +27,10 @@ const ENEMY_PARTY_ADDR: usize = 0x0202402C;
 /// IWRAM address of the gSaveBlock1Ptr pointer (4-byte little-endian GBA address).
 const SAVE_BLOCK_1_PTR_ADDR: usize = 0x03005008;
 
+/// IWRAM address of the gSaveBlock2Ptr pointer (4-byte little-endian GBA address).
+/// Confirmed empirically: IWRAM[0x500C] = valid EWRAM ptr; IWRAM[0x5004] = 0x00000001 (not a ptr).
+const SAVE_BLOCK_2_PTR_ADDR: usize = 0x0300500C;
+
 /// Byte offset of the balls pocket (13 × ItemSlot) within SaveBlock1.
 /// Confirmed empirically via --scan-balls-pocket: Pokéball (item_id=4) first
 /// appears at slot 0 of the window starting here, with all other slots empty.
@@ -35,13 +39,34 @@ const BALLS_POCKET_SAVE_BLOCK_OFFSET: usize = 0x0430;
 /// Number of slots in the balls pocket.
 const BALLS_POCKET_SLOTS: usize = 13;
 
-/// Fixed EWRAM base address of SaveBlock2 for FireRed USA Rev 1.
-/// Same address used by `fire_red_trainer_data`.
-const SAVE_BLOCK_2_BASE: usize = 0x02024298;
+/// Byte offset of the general items pocket (42 × ItemSlot) within SaveBlock1.
+/// Pockets are laid out: items(0x0310) → key_items(0x03B8) → balls(0x0430) → TMs(0x0464).
+const ITEMS_POCKET_SAVE_BLOCK_OFFSET: usize = 0x0310;
 
-/// Byte offset of `securityKey` (u32) within SaveBlock2.
-/// Confirmed empirically via --scan-security-key: raw_qty 0x91B5 ^ key_low 0x91B0 = 5.
-const SECURITY_KEY_OFFSET: usize = 0x0E4C;
+/// Number of slots in the general items pocket.
+const ITEMS_POCKET_SLOTS: usize = 42;
+
+/// Byte offset of the key items pocket (30 × ItemSlot) within SaveBlock1.
+const KEY_ITEMS_POCKET_SAVE_BLOCK_OFFSET: usize = 0x03B8;
+
+/// Number of slots in the key items pocket.
+const KEY_ITEMS_POCKET_SLOTS: usize = 30;
+
+/// Byte offset of the TMs/HMs pocket (58 × ItemSlot) within SaveBlock1.
+const TMS_POCKET_SAVE_BLOCK_OFFSET: usize = 0x0464;
+
+/// Number of slots in the TMs/HMs pocket.
+const TMS_POCKET_SLOTS: usize = 58;
+
+/// Maximum item quantity storable in a single bag slot (vanilla FireRed cap).
+const MAX_ITEM_QTY: u16 = 99;
+
+/// Fallback EWRAM base for SaveBlock2 when gSaveBlock2Ptr can't be resolved from IWRAM.
+const SAVE_BLOCK_2_BASE: usize = 0x020245DC;
+
+/// Byte offset of `encryptionKey` (u32) within SaveBlock2.
+/// Confirmed empirically: IWRAM[0x500C]+0x0F20 contains the live key.
+const SECURITY_KEY_OFFSET: usize = 0x0F20;
 
 /// Returns `true` if the pokemon with `personality` and `ot_id` is shiny.
 ///
@@ -330,6 +355,19 @@ pub fn check_for_new_pokemon(thread_party: &Arc<Mutex<Vec<Pokemon>>>) {
 /// pattern across `game_is_loaded`, `count_pokeballs`, and the dev-tool scanners.
 fn read_save_block1_ptr(iwram: &[u8], ewram: &[u8]) -> Option<usize> {
     let ptr_offset = SAVE_BLOCK_1_PTR_ADDR - IWRAM_BASE;
+    if iwram.len() < ptr_offset + 4 { return None; }
+    let ptr = u32::from_le_bytes([
+        iwram[ptr_offset],
+        iwram[ptr_offset + 1],
+        iwram[ptr_offset + 2],
+        iwram[ptr_offset + 3],
+    ]) as usize;
+    if ptr < EWRAM_BASE || ptr >= EWRAM_BASE + ewram.len() { return None; }
+    Some(ptr)
+}
+
+fn read_save_block2_ptr(iwram: &[u8], ewram: &[u8]) -> Option<usize> {
+    let ptr_offset = SAVE_BLOCK_2_PTR_ADDR - IWRAM_BASE;
     if iwram.len() < ptr_offset + 4 { return None; }
     let ptr = u32::from_le_bytes([
         iwram[ptr_offset],
@@ -725,10 +763,338 @@ pub fn check_for_new_badges(last_mask: Option<u8>) -> Option<u8> {
     Some(current_mask)
 }
 
+/// Pure logic for [`give_item`]: searches `pocket` for a slot to write to and
+/// builds the 4-byte encrypted payload.
+///
+/// `pocket` must be at least `ITEMS_POCKET_SLOTS * 4` bytes — the raw bytes of
+/// the items pocket as they appear in EWRAM (quantities are XOR-encrypted with
+/// `key`).
+///
+/// Returns `Some((slot_index, payload))` where `payload` is the 4 bytes to
+/// write: `[item_id_lo, item_id_hi, qty_enc_lo, qty_enc_hi]`.
+/// Returns `None` if `item_id`/`quantity` is zero or the pocket is full.
+pub(crate) fn compute_give_item_write(
+    pocket:   &[u8],
+    key:      u16,
+    item_id:  u16,
+    quantity: u16,
+) -> Option<(usize, [u8; 4])> {
+    if item_id == 0 || quantity == 0 {
+        return None;
+    }
+    if pocket.len() < ITEMS_POCKET_SLOTS * 4 {
+        return None;
+    }
+
+    let mut existing_slot: Option<usize> = None;
+    let mut empty_slot:    Option<usize> = None;
+
+    for slot in 0..ITEMS_POCKET_SLOTS {
+        let base    = slot * 4;
+        let slot_id = u16::from_le_bytes([pocket[base], pocket[base + 1]]);
+        if slot_id == item_id {
+            existing_slot = Some(slot);
+            break;
+        }
+        if slot_id == 0 && empty_slot.is_none() {
+            empty_slot = Some(slot);
+        }
+    }
+
+    let (slot, new_qty) = match (existing_slot, empty_slot) {
+        (Some(s), _) => {
+            let base    = s * 4;
+            let raw_qty = u16::from_le_bytes([pocket[base + 2], pocket[base + 3]]);
+            let cur_qty = raw_qty ^ key;
+            let new_qty = (cur_qty as u32 + quantity as u32).min(MAX_ITEM_QTY as u32) as u16;
+            (s, new_qty)
+        }
+        (None, Some(s)) => (s, quantity.min(MAX_ITEM_QTY)),
+        (None, None)    => return None,
+    };
+
+    let qty_enc = new_qty ^ key;
+    Some((slot, [
+        (item_id & 0xFF) as u8,
+        (item_id >> 8)   as u8,
+        (qty_enc & 0xFF) as u8,
+        (qty_enc >> 8)   as u8,
+    ]))
+}
+
+/// Reads `len` raw bytes from GBA address `addr` via a RetroArch UDP request.
+///
+/// Returns `None` if RetroArch doesn't respond or returns a malformed reply.
+fn read_retroarch_bytes(socket: &std::net::UdpSocket, addr: u32, len: usize) -> Option<Vec<u8>> {
+    let cmd    = fire_red_retroarch_interfacing::generate_command(addr, len);
+    let tokens = fire_red_retroarch_interfacing::get_from_retroarch(socket, &cmd, len + 2)?;
+    tokens[2..].iter()
+        .map(|t| u8::from_str_radix(t, 16).ok())
+        .collect()
+}
+
+/// Derives the bag security key by XOR-analysis of every occupied bag slot.
+///
+/// Returns `(Some(key), candidates)` when narrowed to one value,
+/// or `(None, candidates)` with the remaining candidate set when ambiguous.
+/// The caller can use the candidate set to validate a SaveBlock2 probe.
+fn derive_key_from_pockets(socket: &std::net::UdpSocket, save_block1: u32) -> (Option<u16>, Vec<u16>) {
+    // Collect raw encrypted quantities from balls pocket (item IDs 1–12).
+    let balls_addr = save_block1 + BALLS_POCKET_SAVE_BLOCK_OFFSET as u32;
+    let balls_raw: Vec<u16> = read_retroarch_bytes(socket, balls_addr, BALLS_POCKET_SLOTS * 4)
+        .filter(|b| b.len() == BALLS_POCKET_SLOTS * 4)
+        .map(|b| {
+            (0..BALLS_POCKET_SLOTS).filter_map(|s| {
+                let base = s * 4;
+                let id = u16::from_le_bytes([b[base], b[base + 1]]);
+                if (1..=12).contains(&id) { Some(u16::from_le_bytes([b[base + 2], b[base + 3]])) }
+                else { None }
+            }).collect()
+        })
+        .unwrap_or_default();
+
+    // Collect raw encrypted quantities from items pocket (any non-zero item ID).
+    let items_addr = save_block1 + ITEMS_POCKET_SAVE_BLOCK_OFFSET as u32;
+    let items_raw: Vec<u16> = read_retroarch_bytes(socket, items_addr, ITEMS_POCKET_SLOTS * 4)
+        .filter(|b| b.len() == ITEMS_POCKET_SLOTS * 4)
+        .map(|b| {
+            (0..ITEMS_POCKET_SLOTS).filter_map(|s| {
+                let base = s * 4;
+                let id = u16::from_le_bytes([b[base], b[base + 1]]);
+                if id != 0 { Some(u16::from_le_bytes([b[base + 2], b[base + 3]])) }
+                else { None }
+            }).collect()
+        })
+        .unwrap_or_default();
+
+    // Merge: balls first (more reliable IDs), then items.
+    let all_raw: Vec<u16> = balls_raw.into_iter().chain(items_raw).collect();
+    if all_raw.is_empty() {
+        return (None, vec![]);
+    }
+
+    let mut candidates: Vec<u16> = (1u16..=99).map(|q| all_raw[0] ^ q).collect();
+    for &r in &all_raw[1..] {
+        candidates.retain(|&k| (1u16..=99).contains(&(r ^ k)));
+        if candidates.len() == 1 { break; }
+    }
+
+    match candidates.as_slice() {
+        [k] => {
+            tracing::info!("give_item: key=0x{k:04X} from pocket oracle ({} slots)", all_raw.len());
+            (Some(*k), vec![*k])
+        }
+        _ => {
+            tracing::warn!(
+                "give_item: pocket oracle: {} candidates from {} slots",
+                candidates.len(), all_raw.len()
+            );
+            (None, candidates)
+        }
+    }
+}
+
+/// Reads the bag security key from `SaveBlock2 + SECURITY_KEY_OFFSET`.
+///
+/// Falls back to two alternate offsets if the primary read returns zero.
+/// `save_block2` must be the dynamically resolved base address of SaveBlock2
+/// (from `gSaveBlock2Ptr` in IWRAM at `SAVE_BLOCK_2_PTR_ADDR`).
+fn derive_key_from_save_block2(socket: &std::net::UdpSocket, save_block2: u32) -> u16 {
+    for &off in &[SECURITY_KEY_OFFSET as u32, 0x0EE0, 0x0E4C] {
+        if let Some(b) = read_retroarch_bytes(socket, save_block2 + off, 4) {
+            if b.len() == 4 {
+                let v = u32::from_le_bytes([b[0], b[1], b[2], b[3]]) as u16;
+                if v != 0 {
+                    tracing::info!("give_item: key=0x{v:04X} from SaveBlock2+0x{off:04X}");
+                    return v;
+                }
+            }
+        }
+    }
+    tracing::warn!("give_item: all SaveBlock2 key reads returned zero, using key=0x0000");
+    0
+}
+
+/// Injects one item into the player's items pocket via `WRITE_CORE_MEMORY`.
+///
+/// Searches the items pocket for an existing stack of `item_id` to increment,
+/// or the first empty slot if none exists. Quantities are XOR-encrypted with the
+/// save's security key before writing, matching what FireRed expects in RAM.
+///
+/// **Key discovery strategy** (in order):
+/// 1. Balls pocket oracle — derives the key by XOR-analysis of encrypted ball
+///    quantities; no prior knowledge of ball counts needed.
+/// 2. SaveBlock2 candidate scan — probes offsets 0x0F20 (pokefirered canonical),
+///    0x0EE0, and 0x0E4C (empirical) for the first non-zero u16.
+///
+/// **SaveBlock1 resolution** uses the EWRAM/IWRAM snapshot cache rather than a
+/// direct RetroArch read. Direct IWRAM reads can catch transient values during
+/// GBA code execution; the cache is sampled at quiescent moments and is stable.
+///
+/// Returns `true` if the write command was dispatched to RetroArch.
+pub fn give_item(item_id: u16, quantity: u16) -> bool {
+    if item_id == 0 || quantity == 0 {
+        return false;
+    }
+
+    // Resolve both SaveBlock pointers from the snapshot cache.
+    // Direct IWRAM reads via RetroArch can catch transient values mid-GBA-execution;
+    // the cache is sampled at quiescent moments and is stable.
+    let (save_block1, save_block2): (usize, usize) = {
+        let iwram = fire_red_memory::get_iwram();
+        let ewram = fire_red_memory::get_ewram();
+        let sb1 = match read_save_block1_ptr(&iwram, &ewram) {
+            Some(ptr) => ptr,
+            None => {
+                tracing::warn!("give_item: SaveBlock1 ptr invalid in cache — is the game loaded?");
+                return false;
+            }
+        };
+        let sb2 = read_save_block2_ptr(&iwram, &ewram).unwrap_or(SAVE_BLOCK_2_BASE);
+        (sb1, sb2)
+    };
+
+    let socket = match fire_red_retroarch_interfacing::make_socket() {
+        Ok(s)  => s,
+        Err(e) => { tracing::warn!("give_item: failed to create socket: {e}"); return false; }
+    };
+
+    // Derive the security key: pocket oracle first, SaveBlock2 direct read as fallback.
+    let (oracle_key, _candidates) = derive_key_from_pockets(&socket, save_block1 as u32);
+    let key = oracle_key
+        .unwrap_or_else(|| derive_key_from_save_block2(&socket, save_block2 as u32));
+
+    // Read items pocket fresh from RetroArch so we see any prior writes.
+    let pocket_addr = save_block1 as u32 + ITEMS_POCKET_SAVE_BLOCK_OFFSET as u32;
+    let pocket = match read_retroarch_bytes(&socket, pocket_addr, ITEMS_POCKET_SLOTS * 4) {
+        Some(b) if b.len() == ITEMS_POCKET_SLOTS * 4 => b,
+        _ => { tracing::warn!("give_item: RetroArch did not respond to items pocket read"); return false; }
+    };
+
+    tracing::info!(
+        "give_item: sb1=0x{save_block1:08X} sb2=0x{save_block2:08X} pocket_addr=0x{pocket_addr:08X} key=0x{key:04X}"
+    );
+
+    let Some((slot, payload)) = compute_give_item_write(&pocket, key, item_id, quantity) else {
+        tracing::warn!("give_item: items pocket is full ({ITEMS_POCKET_SLOTS} slots occupied)");
+        return false;
+    };
+
+    let write_addr = pocket_addr + slot as u32 * 4;
+    let ok = fire_red_retroarch_interfacing::write_to_retroarch(&socket, write_addr, &payload);
+    if ok {
+        let new_qty = u16::from_le_bytes([payload[2], payload[3]]) ^ key;
+        tracing::info!(
+            "give_item: wrote item_id={item_id} qty={new_qty} to slot {slot} (addr=0x{write_addr:08X})"
+        );
+    }
+    ok
+}
+
+/// Reads all four bag pockets from the player's SaveBlock1 and returns a
+/// [`BagPockets`] with quantities already XOR-decrypted.
+///
+/// Returns `None` if the SaveBlock1 pointer cannot be resolved or if
+/// the RetroArch socket cannot be created.
+pub fn read_bag_pockets() -> Option<BagPockets> {
+    let (save_block1, save_block2) = {
+        let iwram = fire_red_memory::get_iwram();
+        let ewram = fire_red_memory::get_ewram();
+        let sb1 = read_save_block1_ptr(&iwram, &ewram)?;
+        let sb2 = read_save_block2_ptr(&iwram, &ewram).unwrap_or(SAVE_BLOCK_2_BASE);
+        (sb1 as u32, sb2 as u32)
+    };
+
+    let socket = fire_red_retroarch_interfacing::make_socket().ok()?;
+
+    let raw_items = read_retroarch_bytes(
+        &socket,
+        save_block1 + ITEMS_POCKET_SAVE_BLOCK_OFFSET as u32,
+        ITEMS_POCKET_SLOTS * 4,
+    )?;
+    let raw_key_items = read_retroarch_bytes(
+        &socket,
+        save_block1 + KEY_ITEMS_POCKET_SAVE_BLOCK_OFFSET as u32,
+        KEY_ITEMS_POCKET_SLOTS * 4,
+    )?;
+    let raw_balls = read_retroarch_bytes(
+        &socket,
+        save_block1 + BALLS_POCKET_SAVE_BLOCK_OFFSET as u32,
+        BALLS_POCKET_SLOTS * 4,
+    )?;
+    let raw_tms = read_retroarch_bytes(
+        &socket,
+        save_block1 + TMS_POCKET_SAVE_BLOCK_OFFSET as u32,
+        TMS_POCKET_SLOTS * 4,
+    )?;
+
+    // Derive the encryption key using the oracle (balls + items pockets),
+    // falling back to a direct SaveBlock2 read if the oracle is ambiguous.
+    let key = {
+        let mut raws: Vec<u16> = Vec::new();
+        for s in 0..BALLS_POCKET_SLOTS {
+            let b = s * 4;
+            if raw_balls.len() >= b + 4 {
+                let id = u16::from_le_bytes([raw_balls[b], raw_balls[b + 1]]);
+                if (1..=12).contains(&id) {
+                    raws.push(u16::from_le_bytes([raw_balls[b + 2], raw_balls[b + 3]]));
+                }
+            }
+        }
+        for s in 0..ITEMS_POCKET_SLOTS {
+            let b = s * 4;
+            if raw_items.len() >= b + 4 {
+                let id = u16::from_le_bytes([raw_items[b], raw_items[b + 1]]);
+                if id != 0 {
+                    raws.push(u16::from_le_bytes([raw_items[b + 2], raw_items[b + 3]]));
+                }
+            }
+        }
+        let oracle = if !raws.is_empty() {
+            let mut candidates: Vec<u16> = (1u16..=MAX_ITEM_QTY).map(|q| raws[0] ^ q).collect();
+            for &r in &raws[1..] {
+                candidates.retain(|&k| (1u16..=MAX_ITEM_QTY).contains(&(r ^ k)));
+                if candidates.len() == 1 {
+                    break;
+                }
+            }
+            if candidates.len() == 1 { Some(candidates[0]) } else { None }
+        } else {
+            None
+        };
+        oracle.unwrap_or_else(|| derive_key_from_save_block2(&socket, save_block2))
+    };
+
+    let decrypt = |raw: &[u8], n_slots: usize| -> Vec<ItemSlot> {
+        (0..n_slots)
+            .filter_map(|s| {
+                let b = s * 4;
+                if raw.len() < b + 4 {
+                    return None;
+                }
+                let id = u16::from_le_bytes([raw[b], raw[b + 1]]);
+                if id == 0 {
+                    return None;
+                }
+                let qty = u16::from_le_bytes([raw[b + 2], raw[b + 3]]) ^ key;
+                Some(ItemSlot { item_id: id, quantity: qty })
+            })
+            .collect()
+    };
+
+    Some(BagPockets {
+        items:     decrypt(&raw_items,     ITEMS_POCKET_SLOTS),
+        key_items: decrypt(&raw_key_items, KEY_ITEMS_POCKET_SLOTS),
+        balls:     decrypt(&raw_balls,     BALLS_POCKET_SLOTS),
+        tms:       decrypt(&raw_tms,       TMS_POCKET_SLOTS),
+    })
+}
+
 #[cfg(test)]
 mod tests {
-    use super::is_shiny;
+    use super::{compute_give_item_write, is_shiny, ITEMS_POCKET_SLOTS, MAX_ITEM_QTY};
 
+    // ── is_shiny ─────────────────────────────────────────────────────────────
     // Gen III shiny formula: (p_high ^ p_low ^ id_high ^ id_low) < 8
 
     #[test]
@@ -757,5 +1123,246 @@ mod tests {
     #[test]
     fn high_xor_is_not_shiny() {
         assert!(!is_shiny(0x1234_5678, 0x0000_0000));
+    }
+
+    // ── compute_give_item_write helpers ──────────────────────────────────────
+
+    /// Creates an all-zero (empty) pocket buffer.
+    fn empty_pocket() -> Vec<u8> {
+        vec![0u8; ITEMS_POCKET_SLOTS * 4]
+    }
+
+    /// Writes an item slot into `pocket` at `slot_index`.
+    /// `qty_raw` is the already-encrypted quantity (what actually lives in RAM).
+    fn write_slot(pocket: &mut [u8], slot_index: usize, item_id: u16, qty_raw: u16) {
+        let base = slot_index * 4;
+        pocket[base..base + 2].copy_from_slice(&item_id.to_le_bytes());
+        pocket[base + 2..base + 4].copy_from_slice(&qty_raw.to_le_bytes());
+    }
+
+    /// Decodes the quantity from a 4-byte payload produced by compute_give_item_write.
+    fn decode_qty(payload: &[u8; 4], key: u16) -> u16 {
+        u16::from_le_bytes([payload[2], payload[3]]) ^ key
+    }
+
+    fn decode_item_id(payload: &[u8; 4]) -> u16 {
+        u16::from_le_bytes([payload[0], payload[1]])
+    }
+
+    // ── compute_give_item_write tests ─────────────────────────────────────────
+
+    #[test]
+    fn zero_item_id_returns_none() {
+        let pocket = empty_pocket();
+        assert!(compute_give_item_write(&pocket, 0, 0, 1).is_none());
+    }
+
+    #[test]
+    fn zero_quantity_returns_none() {
+        let pocket = empty_pocket();
+        assert!(compute_give_item_write(&pocket, 0, 13, 0).is_none());
+    }
+
+    #[test]
+    fn too_short_pocket_returns_none() {
+        let pocket = vec![0u8; ITEMS_POCKET_SLOTS * 4 - 1];
+        assert!(compute_give_item_write(&pocket, 0, 13, 1).is_none());
+    }
+
+    #[test]
+    fn empty_pocket_places_item_in_slot_0() {
+        let pocket = empty_pocket();
+        let (slot, payload) = compute_give_item_write(&pocket, 0, 13, 5).unwrap();
+        assert_eq!(slot, 0);
+        assert_eq!(decode_item_id(&payload), 13);
+        assert_eq!(decode_qty(&payload, 0), 5);
+    }
+
+    #[test]
+    fn places_in_first_empty_slot_after_other_items() {
+        let mut pocket = empty_pocket();
+        // slots 0 and 1 occupied by a different item
+        write_slot(&mut pocket, 0, 7, 3);
+        write_slot(&mut pocket, 1, 8, 2);
+        let (slot, payload) = compute_give_item_write(&pocket, 0, 13, 1).unwrap();
+        assert_eq!(slot, 2);
+        assert_eq!(decode_item_id(&payload), 13);
+        assert_eq!(decode_qty(&payload, 0), 1);
+    }
+
+    #[test]
+    fn existing_stack_is_incremented_not_overwritten() {
+        let mut pocket = empty_pocket();
+        // item 13 already in slot 2 with qty=10, key=0 → raw=10
+        write_slot(&mut pocket, 2, 13, 10);
+        let (slot, payload) = compute_give_item_write(&pocket, 0, 13, 5).unwrap();
+        assert_eq!(slot, 2);
+        assert_eq!(decode_qty(&payload, 0), 15);
+    }
+
+    #[test]
+    fn existing_stack_preferred_over_earlier_empty_slot() {
+        let mut pocket = empty_pocket();
+        // slot 0 is empty; slot 1 already has the item
+        write_slot(&mut pocket, 1, 13, 20);
+        let (slot, _) = compute_give_item_write(&pocket, 0, 13, 1).unwrap();
+        // must pick slot 1, not slot 0
+        assert_eq!(slot, 1);
+    }
+
+    #[test]
+    fn quantity_capped_at_99_on_increment() {
+        let mut pocket = empty_pocket();
+        // slot 0 already has 98; adding 10 should cap at 99
+        write_slot(&mut pocket, 0, 13, 98);
+        let (_, payload) = compute_give_item_write(&pocket, 0, 13, 10).unwrap();
+        assert_eq!(decode_qty(&payload, 0), MAX_ITEM_QTY);
+    }
+
+    #[test]
+    fn quantity_capped_at_99_on_new_slot() {
+        let pocket = empty_pocket();
+        let (_, payload) = compute_give_item_write(&pocket, 0, 13, 200).unwrap();
+        assert_eq!(decode_qty(&payload, 0), MAX_ITEM_QTY);
+    }
+
+    #[test]
+    fn security_key_applied_to_stored_qty() {
+        let key: u16 = 0x1234;
+        let pocket = empty_pocket();
+        let (_, payload) = compute_give_item_write(&pocket, key, 13, 5).unwrap();
+        // raw stored bytes should be 5 ^ 0x1234
+        let raw_stored = u16::from_le_bytes([payload[2], payload[3]]);
+        assert_eq!(raw_stored, 5 ^ 0x1234);
+        // decoding with the key gives back 5
+        assert_eq!(decode_qty(&payload, key), 5);
+    }
+
+    #[test]
+    fn security_key_applied_when_incrementing_existing_stack() {
+        let key: u16 = 0xABCD;
+        let mut pocket = empty_pocket();
+        // slot 0 has qty=10, stored encrypted: 10 ^ key
+        write_slot(&mut pocket, 0, 13, 10 ^ key);
+        let (_, payload) = compute_give_item_write(&pocket, key, 13, 7).unwrap();
+        assert_eq!(decode_qty(&payload, key), 17);
+    }
+
+    #[test]
+    fn full_pocket_returns_none() {
+        let mut pocket = empty_pocket();
+        // fill all 42 slots with a different item
+        for slot in 0..ITEMS_POCKET_SLOTS {
+            write_slot(&mut pocket, slot, 99, 1);
+        }
+        assert!(compute_give_item_write(&pocket, 0, 13, 1).is_none());
+    }
+
+    #[test]
+    fn item_id_preserved_in_payload_little_endian() {
+        let pocket = empty_pocket();
+        // item_id 0x00FF — low byte 0xFF, high byte 0x00
+        let (_, payload) = compute_give_item_write(&pocket, 0, 0x00FF, 1).unwrap();
+        assert_eq!(payload[0], 0xFF);
+        assert_eq!(payload[1], 0x00);
+    }
+
+    #[test]
+    fn multi_byte_item_id_preserved() {
+        let pocket = empty_pocket();
+        // item_id 0x0121 (TM01 in FireRed)
+        let (_, payload) = compute_give_item_write(&pocket, 0, 0x0121, 1).unwrap();
+        assert_eq!(decode_item_id(&payload), 0x0121);
+    }
+
+    #[test]
+    fn finds_item_in_last_slot() {
+        let mut pocket = empty_pocket();
+        // last slot (41) has the item we want
+        write_slot(&mut pocket, 41, 13, 3);
+        let (slot, payload) = compute_give_item_write(&pocket, 0, 13, 2).unwrap();
+        assert_eq!(slot, 41);
+        assert_eq!(decode_qty(&payload, 0), 5);
+    }
+
+    #[test]
+    fn adding_to_already_maxed_stack_stays_at_99() {
+        let mut pocket = empty_pocket();
+        write_slot(&mut pocket, 0, 13, MAX_ITEM_QTY); // already 99, key=0
+        let (_, payload) = compute_give_item_write(&pocket, 0, 13, 1).unwrap();
+        assert_eq!(decode_qty(&payload, 0), MAX_ITEM_QTY);
+    }
+
+    // ── live RetroArch integration ────────────────────────────────────────────
+
+    /// Reads `len` bytes from GBA address `addr` via RetroArch UDP.
+    fn retroarch_read(socket: &std::net::UdpSocket, addr: u32, len: usize) -> Vec<u8> {
+        use fire_red_retroarch_interfacing::{generate_command, get_from_retroarch};
+        let cmd    = generate_command(addr, len);
+        let tokens = get_from_retroarch(socket, &cmd, len + 2)
+            .unwrap_or_else(|| panic!("RetroArch did not respond to READ_CORE_MEMORY 0x{addr:08X} {len}"));
+        tokens[2..].iter()
+            .map(|t| u8::from_str_radix(t, 16)
+                .unwrap_or_else(|_| panic!("invalid hex token '{t}'")))
+            .collect()
+    }
+
+    /// Gives the player one Potion (item_id 13) and one Rare Candy (item_id 68)
+    /// by writing directly into the items pocket via RetroArch WRITE_CORE_MEMORY.
+    ///
+    /// Requires RetroArch to be running with FireRed USA Rev 1 loaded, with
+    /// "Network Commands" enabled (Settings → Network → Network Commands → ON).
+    /// The game must be past the title screen so SaveBlock1 is initialised.
+    ///
+    /// Run with:
+    ///   cargo test -p fire_red_tracker integration_give -- --ignored --nocapture
+    #[test]
+    #[ignore = "requires live RetroArch with FireRed loaded"]
+    fn integration_give_potion_and_rare_candy() {
+        use fire_red_retroarch_interfacing::{make_socket, write_to_retroarch};
+
+        const POTION_ITEM_ID:     u16   = 13;
+        const RARE_CANDY_ITEM_ID: u16   = 68;
+        const POCKET_OFFSET:      u32   = super::ITEMS_POCKET_SAVE_BLOCK_OFFSET as u32;
+        const POCKET_LEN:         usize = super::ITEMS_POCKET_SLOTS * 4;
+        const SAVE_BLOCK_2_BASE:  u32   = super::SAVE_BLOCK_2_BASE as u32;
+        const SEC_KEY_OFFSET:     u32   = super::SECURITY_KEY_OFFSET as u32;
+
+        let socket = make_socket().expect("failed to bind UDP socket");
+
+        // Resolve the SaveBlock1 GBA address from the pointer in IWRAM.
+        let ptr_bytes     = retroarch_read(&socket, 0x0300_5008, 4);
+        let save_block1   = u32::from_le_bytes(ptr_bytes.try_into().unwrap());
+        assert!(
+            (0x0200_0000..0x0204_0000).contains(&save_block1),
+            "SaveBlock1 ptr 0x{save_block1:08X} is outside EWRAM — is FireRed past the title screen?"
+        );
+        println!("SaveBlock1 @ 0x{save_block1:08X}");
+
+        // Read the security key (low 16 bits of u32 at SaveBlock2 + 0x0E4C).
+        let key_bytes = retroarch_read(&socket, SAVE_BLOCK_2_BASE + SEC_KEY_OFFSET, 4);
+        let key       = u32::from_le_bytes(key_bytes.try_into().unwrap()) as u16;
+        println!("Security key: 0x{key:04X}");
+
+        let pocket_base = save_block1 + POCKET_OFFSET;
+
+        // ── Potion ───────────────────────────────────────────────────────────
+        let pocket = retroarch_read(&socket, pocket_base, POCKET_LEN);
+        let (slot, payload) = compute_give_item_write(&pocket, key, POTION_ITEM_ID, 1)
+            .expect("items pocket is full");
+        let addr = pocket_base + slot as u32 * 4;
+        assert!(write_to_retroarch(&socket, addr, &payload), "write failed");
+        let qty = u16::from_le_bytes([payload[2], payload[3]]) ^ key;
+        println!("Potion     → slot {slot} @ 0x{addr:08X}  (new qty = {qty})");
+
+        // ── Rare Candy ───────────────────────────────────────────────────────
+        // Re-read the pocket so the Rare Candy search sees the just-written Potion.
+        let pocket2 = retroarch_read(&socket, pocket_base, POCKET_LEN);
+        let (slot2, payload2) = compute_give_item_write(&pocket2, key, RARE_CANDY_ITEM_ID, 1)
+            .expect("items pocket is full");
+        let addr2 = pocket_base + slot2 as u32 * 4;
+        assert!(write_to_retroarch(&socket, addr2, &payload2), "write failed");
+        let qty2 = u16::from_le_bytes([payload2[2], payload2[3]]) ^ key;
+        println!("Rare Candy → slot {slot2} @ 0x{addr2:08X}  (new qty = {qty2})");
     }
 }

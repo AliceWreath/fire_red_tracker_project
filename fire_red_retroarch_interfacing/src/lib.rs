@@ -80,6 +80,57 @@ pub fn generate_command(ptr: u32, len: usize) -> String {
     format!("READ_CORE_MEMORY 0x{:08X} {}", ptr, len)
 }
 
+/// Generates a RetroArch `WRITE_CORE_MEMORY` command string.
+///
+/// # Arguments
+///
+/// * `ptr`   - GBA memory address to write to.
+/// * `bytes` - Bytes to write; each is formatted as an uppercase two-hex-digit
+///   token separated by spaces.
+///
+/// # Example
+///
+/// ```
+/// use fire_red_retroarch_interfacing::generate_write_command;
+/// let cmd = generate_write_command(0x02001234, &[0x0D, 0x00, 0x01, 0x00]);
+/// assert_eq!(cmd, "WRITE_CORE_MEMORY 0x02001234 0D 00 01 00");
+/// ```
+pub fn generate_write_command(ptr: u32, bytes: &[u8]) -> String {
+    let hex: Vec<String> = bytes.iter().map(|b| format!("{:02X}", b)).collect();
+    format!("WRITE_CORE_MEMORY 0x{:08X} {}", ptr, hex.join(" "))
+}
+
+/// Sends a `WRITE_CORE_MEMORY` command to RetroArch and waits for its
+/// acknowledgement.
+///
+/// RetroArch responds with `WRITE_CORE_MEMORY <addr> <bytes_written>` on
+/// success. The acknowledgement is read and discarded; the caller does not need
+/// to inspect it.
+///
+/// # Arguments
+///
+/// * `socket` - A bound UDP socket. Create one with [`make_socket`].
+/// * `addr`   - GBA memory address to write to.
+/// * `bytes`  - Bytes to write.
+///
+/// # Returns
+///
+/// `true` if the command was sent (and the ack drained without a hard error).
+/// `false` on send failure.
+pub fn write_to_retroarch(socket: &UdpSocket, addr: u32, bytes: &[u8]) -> bool {
+    let command = generate_write_command(addr, bytes);
+    if let Err(e) = socket.send_to(command.as_bytes(), RETROARCH_ADDR) {
+        tracing::warn!("Failed to send WRITE_CORE_MEMORY to RetroArch: {}", e);
+        return false;
+    }
+    // Drain the ack to keep the socket receive buffer clean. Errors are ignored —
+    // a timeout just means RetroArch didn't reply, which doesn't indicate write
+    // failure on the emulator side.
+    let mut buf = [0u8; 64];
+    let _ = socket.recv_from(&mut buf);
+    true
+}
+
 /// Creates a new UDP socket bound to the loopback interface for RetroArch
 /// communication.
 ///
@@ -240,6 +291,32 @@ mod tests {
         assert_ne!(
             s1.local_addr().expect("s1 local_addr").port(),
             s2.local_addr().expect("s2 local_addr").port()
+        );
+    }
+
+    // ── generate_write_command ───────────────────────────────────────────────
+
+    #[test]
+    fn generate_write_command_single_byte() {
+        assert_eq!(
+            generate_write_command(0x02001234, &[0xFF]),
+            "WRITE_CORE_MEMORY 0x02001234 FF"
+        );
+    }
+
+    #[test]
+    fn generate_write_command_multiple_bytes() {
+        assert_eq!(
+            generate_write_command(0x02001234, &[0x0D, 0x00, 0x01, 0x00]),
+            "WRITE_CORE_MEMORY 0x02001234 0D 00 01 00"
+        );
+    }
+
+    #[test]
+    fn generate_write_command_zero_address() {
+        assert_eq!(
+            generate_write_command(0x00000000, &[0xAB]),
+            "WRITE_CORE_MEMORY 0x00000000 AB"
         );
     }
 }

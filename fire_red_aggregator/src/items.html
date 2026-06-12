@@ -1,0 +1,321 @@
+<!DOCTYPE html>
+<html lang="en">
+<!-- THEME_SLOT -->
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Bag Items — v__VERSION__</title>
+<style>
+:root {
+  --bg: #1a1a1a;
+  --bg2: #242424;
+  --bg3: #2e2e2e;
+  --border: #444;
+  --text: #e8e8e8;
+  --text2: #aaa;
+  --accent: #5b8dd9;
+  --tab-active: #5b8dd9;
+  --tab-hover: #3a3a3a;
+  --empty: #666;
+  --qty: #a0d080;
+  --keyitem: #e8c060;
+  --ball: #e07050;
+  --tm: #80b8e8;
+}
+[data-theme="light"] {
+  --bg: #f5f5f5;
+  --bg2: #fff;
+  --bg3: #e8e8e8;
+  --border: #ccc;
+  --text: #111;
+  --text2: #555;
+  --accent: #2a60c0;
+  --tab-active: #2a60c0;
+  --tab-hover: #e0e0e0;
+  --empty: #999;
+  --qty: #2a7020;
+  --keyitem: #9a6010;
+  --ball: #a03020;
+  --tm: #1050a0;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: 'Segoe UI', sans-serif;
+  font-size: 14px;
+  min-height: 100vh;
+}
+header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 16px;
+  background: var(--bg2);
+  border-bottom: 1px solid var(--border);
+}
+header h1 { font-size: 16px; font-weight: 600; }
+header .meta { font-size: 12px; color: var(--text2); }
+.tabs {
+  display: flex;
+  gap: 2px;
+  padding: 8px 16px 0;
+  background: var(--bg2);
+  border-bottom: 1px solid var(--border);
+}
+.tab {
+  padding: 7px 18px;
+  border: 1px solid var(--border);
+  border-bottom: none;
+  border-radius: 4px 4px 0 0;
+  background: var(--bg3);
+  color: var(--text2);
+  cursor: pointer;
+  font-size: 13px;
+  user-select: none;
+  transition: background 0.1s;
+}
+.tab:hover { background: var(--tab-hover); color: var(--text); }
+.tab.active {
+  background: var(--bg);
+  color: var(--tab-active);
+  border-bottom: 1px solid var(--bg);
+  font-weight: 600;
+  margin-bottom: -1px;
+}
+.panel { display: none; padding: 16px; }
+.panel.active { display: block; }
+.item-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 8px;
+}
+.item-card {
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 12px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.item-name { font-weight: 500; }
+.item-id { font-size: 11px; color: var(--text2); margin-top: 1px; }
+.item-qty {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--qty);
+  min-width: 36px;
+  text-align: right;
+}
+.pocket-items .item-qty { color: var(--qty); }
+.pocket-key .item-qty { color: var(--keyitem); }
+.pocket-balls .item-qty { color: var(--ball); }
+.pocket-tms .item-qty { color: var(--tm); }
+.empty-msg {
+  color: var(--empty);
+  font-style: italic;
+  padding: 20px 0;
+}
+.badge {
+  display: inline-block;
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 10px;
+  background: var(--bg3);
+  color: var(--text2);
+  margin-left: 6px;
+  vertical-align: middle;
+}
+.error { color: #e06060; padding: 20px 0; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Bag Items</h1>
+  <div class="meta" id="meta">Loading...</div>
+</header>
+<div class="tabs">
+  <div class="tab active" data-tab="items">Items <span class="badge" id="cnt-items">0</span></div>
+  <div class="tab" data-tab="key_items">Key Items <span class="badge" id="cnt-key">0</span></div>
+  <div class="tab" data-tab="balls">Balls <span class="badge" id="cnt-balls">0</span></div>
+  <div class="tab" data-tab="tms">TMs/HMs <span class="badge" id="cnt-tms">0</span></div>
+</div>
+<div id="panel-items"    class="panel pocket-items active"></div>
+<div id="panel-key_items" class="panel pocket-key"></div>
+<div id="panel-balls"    class="panel pocket-balls"></div>
+<div id="panel-tms"      class="panel pocket-tms"></div>
+<script>
+// ---------------------------------------------------------------------------
+// Item name lookup table — Gen III FireRed item IDs
+// ---------------------------------------------------------------------------
+const ITEM_NAMES = {
+  // Balls
+  1:"Master Ball",2:"Ultra Ball",3:"Great Ball",4:"Poké Ball",5:"Safari Ball",
+  6:"Net Ball",7:"Dive Ball",8:"Nest Ball",9:"Repeat Ball",10:"Timer Ball",
+  11:"Luxury Ball",12:"Premier Ball",
+  // General items
+  13:"Potion",14:"Antidote",15:"Burn Heal",16:"Ice Heal",17:"Awakening",
+  18:"Parlyz Heal",19:"Full Restore",20:"Max Potion",21:"Hyper Potion",
+  22:"Super Potion",23:"Full Heal",24:"Revive",25:"Max Revive",
+  26:"Fresh Water",27:"Soda Pop",28:"Lemonade",29:"MooMoo Milk",
+  30:"Energy Powder",31:"Energy Root",32:"Heal Powder",33:"Revival Herb",
+  34:"Ether",35:"Max Ether",36:"Elixir",37:"Max Elixir",
+  38:"Lava Cookie",39:"Blue Flute",40:"Yellow Flute",41:"Red Flute",
+  42:"Black Flute",43:"White Flute",44:"Berry Juice",45:"Sacred Ash",
+  46:"Shoal Salt",47:"Shoal Shell",48:"Red Shard",49:"Blue Shard",
+  50:"Yellow Shard",51:"Green Shard",
+  63:"HP Up",64:"Protein",65:"Iron",66:"Carbos",67:"Calcium",
+  68:"Rare Candy",69:"PP Up",70:"Zinc",71:"PP Max",
+  73:"Guard Spec.",74:"Dire Hit",75:"X Attack",76:"X Defend",
+  77:"X Speed",78:"X Accuracy",79:"X Special",80:"Poké Doll",
+  81:"Fluffy Tail",83:"Super Repel",84:"Max Repel",85:"Escape Rope",
+  86:"Repel",87:"Sun Stone",88:"Moon Stone",89:"Fire Stone",90:"Thunder Stone",
+  91:"Water Stone",92:"Leaf Stone",
+  93:"Tiny Mushroom",94:"Big Mushroom",95:"Pearl",96:"Big Pearl",97:"Stardust",
+  98:"Star Piece",99:"Nugget",100:"Heart Scale",
+  107:"Honey",108:"Growth Mulch",109:"Damp Mulch",110:"Stable Mulch",111:"Gooey Mulch",
+  112:"Root Fossil",113:"Claw Fossil",114:"Helix Fossil",115:"Dome Fossil",
+  116:"Old Amber",117:"Armor Fossil",118:"Skull Fossil",
+  // Mail
+  119:"Orange Mail",120:"Harbor Mail",121:"Glitter Mail",122:"Mech Mail",
+  123:"Wood Mail",124:"Wave Mail",125:"Bead Mail",126:"Shadow Mail",
+  127:"Tropic Mail",128:"Dream Mail",129:"Fab Mail",130:"Retro Mail",
+  // Berries
+  133:"Cheri Berry",134:"Chesto Berry",135:"Pecha Berry",136:"Rawst Berry",
+  137:"Aspear Berry",138:"Leppa Berry",139:"Oran Berry",140:"Persim Berry",
+  141:"Lum Berry",142:"Sitrus Berry",143:"Figy Berry",144:"Wiki Berry",
+  145:"Mago Berry",146:"Aguav Berry",147:"Iapapa Berry",148:"Razz Berry",
+  149:"Bluk Berry",150:"Nanab Berry",151:"Wepear Berry",152:"Pinap Berry",
+  153:"Pomeg Berry",154:"Kelpsy Berry",155:"Qualot Berry",156:"Hondew Berry",
+  157:"Grepa Berry",158:"Tamato Berry",159:"Cornn Berry",160:"Magost Berry",
+  161:"Rabuta Berry",162:"Nomel Berry",163:"Spelon Berry",164:"Pamtre Berry",
+  165:"Watmel Berry",166:"Durin Berry",167:"Belue Berry",168:"Liechi Berry",
+  169:"Ganlon Berry",170:"Salac Berry",171:"Petaya Berry",172:"Apicot Berry",
+  173:"Lansat Berry",174:"Starf Berry",175:"Enigma Berry",
+  // Hold items
+  178:"BrightPowder",179:"White Herb",180:"Macho Brace",181:"Exp. Share",
+  182:"Quick Claw",183:"Soothe Bell",184:"Mental Herb",185:"Choice Band",
+  186:"King's Rock",187:"SilverPowder",188:"Amulet Coin",189:"Cleanse Tag",
+  190:"Soul Dew",191:"DeepSeaTooth",192:"DeepSeaScale",193:"Smoke Ball",
+  194:"Everstone",195:"Focus Band",196:"Lucky Egg",197:"Scope Lens",
+  198:"Metal Coat",199:"Leftovers",200:"Dragon Scale",201:"Light Ball",
+  202:"Soft Sand",203:"Hard Stone",204:"Miracle Seed",205:"BlackGlasses",
+  206:"Black Belt",207:"Magnet",208:"Mystic Water",209:"Sharp Beak",
+  210:"Poison Barb",211:"NeverMeltIce",212:"Spell Tag",213:"TwistedSpoon",
+  214:"Charcoal",215:"Dragon Fang",216:"Silk Scarf",217:"Up-Grade",
+  218:"Shell Bell",219:"Sea Incense",220:"Lax Incense",221:"Lucky Punch",
+  222:"Metal Powder",223:"Thick Club",224:"Stick",
+  231:"Red Scarf",232:"Blue Scarf",233:"Pink Scarf",234:"Green Scarf",235:"Yellow Scarf",
+  236:"Mach Bike",237:"Coin Case",238:"Itemfinder",239:"Old Rod",240:"Good Rod",
+  241:"Super Rod",242:"S.S. Ticket",243:"Contest Pass",
+  245:"Wailmer Pail",246:"Devon's Goods",247:"Soot Sack",248:"Basement Key",
+  249:"Acro Bike",250:"PokéBlock Case",251:"Letter",252:"Eon Ticket",
+  253:"Red Orb",254:"Blue Orb",255:"Scanner",256:"Go-Goggles",
+  257:"Meteorite",258:"Rm. 1 Key",259:"Rm. 2 Key",260:"Rm. 4 Key",261:"Rm. 6 Key",
+  // FireRed / LeafGreen key items
+  262:"Storage Key",263:"Root Fossil (key)",264:"Claw Fossil (key)",
+  265:"Silph Scope",266:"Bicycle",267:"Town Map",268:"VS Seeker",
+  269:"Fame Checker",270:"TM Case",271:"Berry Pouch",272:"Teachy TV",
+  273:"Tri-Pass",274:"Rainbow Pass",275:"Tea",276:"MysticTicket",
+  277:"AuroraTicket",278:"Powder Jar",279:"Ruby",280:"Sapphire",
+  281:"Magma Emblem",282:"Old Sea Map",
+  // TMs — item IDs 305..354
+  305:"TM01 Focus Punch",306:"TM02 Dragon Claw",307:"TM03 Water Pulse",
+  308:"TM04 Calm Mind",309:"TM05 Roar",310:"TM06 Toxic",
+  311:"TM07 Hail",312:"TM08 Bulk Up",313:"TM09 Bullet Seed",
+  314:"TM10 Hidden Power",315:"TM11 Sunny Day",316:"TM12 Taunt",
+  317:"TM13 Ice Beam",318:"TM14 Blizzard",319:"TM15 Hyper Beam",
+  320:"TM16 Light Screen",321:"TM17 Protect",322:"TM18 Rain Dance",
+  323:"TM19 Giga Drain",324:"TM20 Safeguard",325:"TM21 Frustration",
+  326:"TM22 SolarBeam",327:"TM23 Iron Tail",328:"TM24 Thunderbolt",
+  329:"TM25 Thunder",330:"TM26 Earthquake",331:"TM27 Return",
+  332:"TM28 Dig",333:"TM29 Psychic",334:"TM30 Shadow Ball",
+  335:"TM31 Brick Break",336:"TM32 Double Team",337:"TM33 Reflect",
+  338:"TM34 Shock Wave",339:"TM35 Flamethrower",340:"TM36 Sludge Bomb",
+  341:"TM37 Sandstorm",342:"TM38 Fire Blast",343:"TM39 Rock Tomb",
+  344:"TM40 Aerial Ace",345:"TM41 Torment",346:"TM42 Facade",
+  347:"TM43 Secret Power",348:"TM44 Rest",349:"TM45 Attract",
+  350:"TM46 Thief",351:"TM47 Steel Wing",352:"TM48 Skill Swap",
+  353:"TM49 Snatch",354:"TM50 Overheat",
+  // HMs — item IDs 339..345 in some builds; FireRed uses 339-345
+  // (In pokefirered, HMs start at ITEM_HM01 = 339 in some builds; these may vary)
+  // Let's use the common FireRed values:
+  355:"HM01 Cut",356:"HM02 Fly",357:"HM03 Surf",358:"HM04 Strength",
+  359:"HM05 Flash",360:"HM06 Rock Smash",361:"HM07 Waterfall",362:"HM08 Dive",
+};
+
+function itemName(id) {
+  return ITEM_NAMES[id] || ("Item #" + id);
+}
+
+// ---------------------------------------------------------------------------
+// Tab switching
+// ---------------------------------------------------------------------------
+document.querySelectorAll(".tab").forEach(tab => {
+  tab.addEventListener("click", () => {
+    const key = tab.dataset.tab;
+    document.querySelectorAll(".tab").forEach(t => t.classList.remove("active"));
+    document.querySelectorAll(".panel").forEach(p => p.classList.remove("active"));
+    tab.classList.add("active");
+    document.getElementById("panel-" + key).classList.add("active");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Fetch and render
+// ---------------------------------------------------------------------------
+const indexMatch = window.location.pathname.match(/^\/(\d+)\//);
+const slotIndex  = indexMatch ? indexMatch[1] : "0";
+
+function renderPocket(panelId, slots, emptyMsg) {
+  const el = document.getElementById(panelId);
+  if (!slots || slots.length === 0) {
+    el.innerHTML = '<p class="empty-msg">' + emptyMsg + '</p>';
+    return 0;
+  }
+  const cards = slots.map(s => {
+    const name = escHtml(itemName(s.item_id));
+    return `<div class="item-card">
+      <div>
+        <div class="item-name">${name}</div>
+        <div class="item-id">ID #${s.item_id}</div>
+      </div>
+      <div class="item-qty">×${s.quantity}</div>
+    </div>`;
+  }).join("");
+  el.innerHTML = '<div class="item-grid">' + cards + '</div>';
+  return slots.length;
+}
+
+function escHtml(s) {
+  return s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+}
+
+async function refresh() {
+  try {
+    const r = await fetch(`/api/slot/${slotIndex}/bag`);
+    const data = await r.json();
+    if (data.error) {
+      document.getElementById("meta").textContent = data.error;
+      return;
+    }
+    const ci = renderPocket("panel-items",     data.items,     "Items pocket is empty.");
+    const ck = renderPocket("panel-key_items", data.key_items, "Key items pocket is empty.");
+    const cb = renderPocket("panel-balls",     data.balls,     "Balls pocket is empty.");
+    const ct = renderPocket("panel-tms",       data.tms,       "TMs/HMs pocket is empty.");
+    document.getElementById("cnt-items").textContent = ci;
+    document.getElementById("cnt-key").textContent   = ck;
+    document.getElementById("cnt-balls").textContent = cb;
+    document.getElementById("cnt-tms").textContent   = ct;
+    document.getElementById("meta").textContent = "Updated " + new Date().toLocaleTimeString();
+  } catch(e) {
+    document.getElementById("meta").textContent = "Error: " + e.message;
+  }
+}
+
+refresh();
+setInterval(refresh, 3000);
+</script>
+</body>
+</html>

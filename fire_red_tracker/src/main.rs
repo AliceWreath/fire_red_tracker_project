@@ -334,6 +334,8 @@ fn main() {
         Arc::new(Mutex::new(fire_red_pokemon_data::WildPokemonHeader::default()));
     let shared_box: Arc<Mutex<Vec<BoxEntry>>> =
         Arc::new(Mutex::new(Vec::new()));
+    let shared_bag: Arc<Mutex<Option<fire_red_states::BagPockets>>> =
+        Arc::new(Mutex::new(None));
     let sprite_cache: RomSpriteCache = Arc::new(Mutex::new(HashMap::new()));
 
     // ── Game-polling thread (both modes) ──────────────────────────────────────
@@ -341,6 +343,7 @@ fn main() {
         let thread_party       = shared_party.clone();
         let thread_encounters  = shared_encounters.clone();
         let thread_box         = shared_box.clone();
+        let thread_bag         = shared_bag.clone();
         let thread_game_loaded = game_loaded.clone();
         let thread_run_changed = run_changed.clone();
         let thread_wipe_signal = wipe_signal.clone();
@@ -386,6 +389,9 @@ fn main() {
             let mut current_state      = initial_state;
             let mut old_party_size     = get_party_size();
             let mut last_party_refresh = std::time::Instant::now();
+            let mut last_bag_refresh   = std::time::Instant::now()
+                .checked_sub(std::time::Duration::from_secs(10))
+                .unwrap_or_else(std::time::Instant::now);
             let mut state_initialized  = false;
             let mut enc_tracker        = encounter::EncounterTracker::new();
             // None = "uninitialized"; check_for_new_badges adopts existing
@@ -514,6 +520,11 @@ fn main() {
                     last_badge_mask = game::check_for_new_badges(last_badge_mask);
                 }
 
+                if last_bag_refresh.elapsed() >= std::time::Duration::from_secs(2) {
+                    *thread_bag.lock_or_recover() = game::read_bag_pockets();
+                    last_bag_refresh = std::time::Instant::now();
+                }
+
                 std::thread::sleep(std::time::Duration::from_millis(poll_ms));
             }
         });
@@ -527,6 +538,7 @@ fn main() {
         let net_party         = shared_party.clone();
         let net_encounters    = shared_encounters.clone();
         let net_box           = shared_box.clone();
+        let net_bag           = shared_bag.clone();
         let net_cache         = sprite_cache.clone();
         let net_loaded        = game_loaded.clone();
         let net_run_changed   = run_changed.clone();
@@ -545,6 +557,7 @@ fn main() {
                             net_party.clone(),
                             net_encounters.clone(),
                             net_box.clone(),
+                            net_bag.clone(),
                             net_cache.clone(),
                             net_loaded.clone(),
                             net_run_changed.clone(),
