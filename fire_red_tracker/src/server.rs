@@ -133,6 +133,9 @@ pub fn handle_client(
                 Ok(ClientMessage::GiveItem { item_id, quantity }) => {
                     crate::game::give_item(item_id, quantity);
                 }
+                Ok(ClientMessage::MakeShiny { party_position }) => {
+                    crate::game::make_shiny(party_position as usize);
+                }
                 Err(_) => break,
             }
         }

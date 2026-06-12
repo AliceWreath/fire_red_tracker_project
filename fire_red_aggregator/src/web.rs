@@ -1743,6 +1743,37 @@ async fn api_give_item(
     (StatusCode::OK, format!("queued give_item item_id={item_id} quantity={quantity} for slot {index}"))
 }
 
+/// `POST /api/slot/:index/make_shiny` — make a party Pokémon shiny in-memory.
+///
+/// Body: `{ "party_position": <u8 0–5> }`.
+///
+/// Queues a [`ClientMessage::MakeShiny`] for the tracker, which patches the
+/// Pokémon's stored OT Secret ID so the Gen III shiny formula holds.
+/// Nature, ability, gender, and all other personality-derived properties are
+/// preserved. Returns 200 as soon as the command is enqueued.
+async fn api_make_shiny(
+    State(state): State<WebState>,
+    Path(index): Path<usize>,
+    axum::Json(body): axum::Json<serde_json::Value>,
+) -> impl IntoResponse {
+    let slots = state.live_slots.lock_or_recover().clone();
+    let slot = match slots.get(index) {
+        Some(s) => s.clone(),
+        None    => return (StatusCode::NOT_FOUND, "slot index out of range".to_string()),
+    };
+    if slot.state.lock_or_recover().is_none() {
+        return (StatusCode::SERVICE_UNAVAILABLE, "slot not connected".to_string());
+    }
+    let party_position = match body["party_position"].as_u64().and_then(|v| u8::try_from(v).ok()) {
+        Some(v) if v < 6 => v,
+        _ => return (StatusCode::BAD_REQUEST, "party_position must be 0–5".to_string()),
+    };
+    slot.command_queue
+        .lock_or_recover()
+        .push_back(ClientMessage::MakeShiny { party_position });
+    (StatusCode::OK, format!("queued make_shiny party_position={party_position} for slot {index}"))
+}
+
 /// Broadcasts `end_run` or `new_run` to all connected tracker slots.
 async fn api_command(
     State(state): State<WebState>,
@@ -1830,6 +1861,7 @@ pub fn run(live_slots: SharedSlots, port: u16, db_conn: Option<String>, testing:
             .route("/api/slot/:index", get(api_slot))
             .route("/api/slot/:index/odds", get(api_slot_odds))
             .route("/api/slot/:index/give_item", post(api_give_item))
+            .route("/api/slot/:index/make_shiny", post(api_make_shiny))
             .route("/api/bot/:index", get(api_bot_summary))
             .route("/api/command/:cmd", post(api_command))
             .route("/api/db/query", post(api_db_query))

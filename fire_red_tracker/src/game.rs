@@ -1020,6 +1020,99 @@ pub fn give_item(item_id: u16, quantity: u16) -> bool {
     ok
 }
 
+/// Makes the party Pokémon at `party_position` (0–5) shiny by patching its
+/// stored OT Secret ID so the Gen III shiny formula evaluates to zero.
+///
+/// **Why change SID, not personality?**
+/// The shiny formula is `(p_high ^ p_low ^ TID ^ SID) < 8`.  Setting
+/// `new_SID = p_high ^ p_low ^ TID` satisfies it with XOR result = 0.
+/// Personality (and therefore nature, ability, gender, and the substructure
+/// block order) is left completely unchanged.
+///
+/// **Encryption re-keying:**
+/// The 48-byte data block (bytes 32–79) is XOR-encrypted with
+/// `personality ^ ot_id`.  Because only `ot_id` changes, each 32-bit word
+/// just needs `XOR (old_ot_id ^ new_ot_id)` — no full decrypt/re-encrypt.
+/// The checksum covers the *decrypted* data, which is unchanged, so no
+/// checksum rewrite is required.
+pub fn make_shiny(party_position: usize) -> bool {
+    if party_position >= 6 {
+        tracing::warn!("make_shiny: party_position {party_position} out of range (must be 0–5)");
+        return false;
+    }
+
+    const PARTY_BASE: u32 = 0x02024284;
+    const MON_SIZE:   u32 = 100;
+    let mon_addr = PARTY_BASE + party_position as u32 * MON_SIZE;
+
+    let socket = match fire_red_retroarch_interfacing::make_socket() {
+        Ok(s)  => s,
+        Err(e) => { tracing::warn!("make_shiny: socket error: {e}"); return false; }
+    };
+
+    // Read the first 80 bytes: unencrypted header (0–31) + encrypted block (32–79).
+    let data = match read_retroarch_bytes(&socket, mon_addr, 80) {
+        Some(b) if b.len() == 80 => b,
+        _ => {
+            tracing::warn!("make_shiny: RetroArch did not respond for party[{party_position}]");
+            return false;
+        }
+    };
+
+    let personality = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
+    let ot_id       = u32::from_le_bytes([data[4], data[5], data[6], data[7]]);
+
+    if personality == 0 {
+        tracing::warn!("make_shiny: party[{party_position}] is empty (personality=0)");
+        return false;
+    }
+    if fire_red_states::is_shiny(personality, ot_id) {
+        tracing::info!(
+            "make_shiny: party[{party_position}] personality=0x{personality:08X} already shiny"
+        );
+        return true;
+    }
+
+    let p_high  = (personality >> 16) as u16;
+    let p_low   = (personality & 0xFFFF) as u16;
+    let tid     = (ot_id & 0xFFFF) as u16;
+    let old_sid = (ot_id >> 16) as u16;
+
+    // new_sid chosen so that p_high ^ p_low ^ tid ^ new_sid == 0.
+    let new_sid: u16   = p_high ^ p_low ^ tid;
+    let new_ot_id: u32 = ((new_sid as u32) << 16) | (tid as u32);
+
+    // Re-key the encrypted data block in-place.
+    // old_key ^ new_key = old_ot_id ^ new_ot_id = (old_sid ^ new_sid) << 16
+    let xor_diff: u32 = ((old_sid ^ new_sid) as u32) << 16;
+    let mut re_encrypted = [0u8; 48];
+    for (i, chunk) in data[32..80].chunks_exact(4).enumerate() {
+        let w = u32::from_le_bytes(chunk.try_into().unwrap()) ^ xor_diff;
+        re_encrypted[i * 4..i * 4 + 4].copy_from_slice(&w.to_le_bytes());
+    }
+
+    // Write new ot_id (4 bytes at mon_addr + 4).
+    if !fire_red_retroarch_interfacing::write_to_retroarch(
+        &socket, mon_addr + 4, &new_ot_id.to_le_bytes(),
+    ) {
+        tracing::warn!("make_shiny: failed to write ot_id for party[{party_position}]");
+        return false;
+    }
+    // Write re-keyed data block (48 bytes at mon_addr + 32).
+    if !fire_red_retroarch_interfacing::write_to_retroarch(
+        &socket, mon_addr + 32, &re_encrypted,
+    ) {
+        tracing::warn!("make_shiny: failed to write encrypted data for party[{party_position}]");
+        return false;
+    }
+
+    tracing::info!(
+        "make_shiny: party[{party_position}] personality=0x{personality:08X} \
+         tid=0x{tid:04X} sid: 0x{old_sid:04X} → 0x{new_sid:04X}"
+    );
+    true
+}
+
 /// Reads all four bag pockets from the player's SaveBlock1 and returns a
 /// [`BagPockets`] with quantities already XOR-decrypted.
 ///

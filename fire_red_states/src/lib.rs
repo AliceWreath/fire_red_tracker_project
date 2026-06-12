@@ -34,6 +34,7 @@ pub const MAX_NATIONAL_DEX_FIRERED: u16 = 386;
 ///   2 = NewRun
 ///   3 = Hello
 ///   4 = GiveItem
+///   5 = MakeShiny
 #[derive(serde::Serialize, serde::Deserialize, Clone)]
 pub enum ClientMessage {
     RequestTextures(Vec<u16>), // index 0 — do not reorder
@@ -43,6 +44,10 @@ pub enum ClientMessage {
     /// Inject an item into the player's items pocket. `item_id` is the Gen III
     /// FireRed item ID (e.g. 13 = Potion). `quantity` is capped at 99 in-game.
     GiveItem { item_id: u16, quantity: u16 }, // index 4 — do not reorder
+    /// Make the party Pokémon at `party_position` (0–5) shiny by rewriting its
+    /// stored OT Secret ID so the Gen III shiny formula holds. Personality is
+    /// unchanged, preserving nature, ability, gender, and data block order.
+    MakeShiny { party_position: u8 },         // index 5 — do not reorder
     // Append new variants here only.
 }
 
