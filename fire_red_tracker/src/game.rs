@@ -953,17 +953,8 @@ fn derive_key_from_pockets(socket: &std::net::UdpSocket, save_block1: u32) -> (O
     }
 
     match candidates.as_slice() {
-        [k] => {
-            tracing::info!("give_item: key=0x{k:04X} from pocket oracle ({} slots)", all_raw.len());
-            (Some(*k), vec![*k])
-        }
-        _ => {
-            tracing::warn!(
-                "give_item: pocket oracle: {} candidates from {} slots",
-                candidates.len(), all_raw.len()
-            );
-            (None, candidates)
-        }
+        [k] => (Some(*k), vec![*k]),
+        _   => (None, candidates),
     }
 }
 
@@ -978,13 +969,11 @@ fn derive_key_from_save_block2(socket: &std::net::UdpSocket, save_block2: u32) -
             if b.len() == 4 {
                 let v = u32::from_le_bytes([b[0], b[1], b[2], b[3]]) as u16;
                 if v != 0 {
-                    tracing::info!("give_item: key=0x{v:04X} from SaveBlock2+0x{off:04X}");
                     return v;
                 }
             }
         }
     }
-    tracing::warn!("give_item: all SaveBlock2 key reads returned zero, using key=0x0000");
     0
 }
 
