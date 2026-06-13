@@ -46,6 +46,11 @@ pub const MAX_NATIONAL_DEX_FIRERED: u16 = 386;
 ///  14 = RestorePp
 ///  15 = SetFriendship
 ///  16 = ChangeMove
+///  17 = SetIvs
+///  18 = IncreaseIvs
+///  19 = SetEvs
+///  20 = IncreaseEvs
+///  21 = RestoreHp
 #[derive(serde::Serialize, serde::Deserialize, Clone)]
 pub enum ClientMessage {
     RequestTextures(Vec<u16>), // index 0 — do not reorder
@@ -112,6 +117,25 @@ pub enum ClientMessage {
     /// new move (base PP + current PP-Up bonus). Use `move_id = 0` to clear the
     /// slot.
     ChangeMove { party_position: u8, slot: u8, move_id: u16 }, // index 16 — do not reorder
+    /// Set all six IVs of the party Pokémon at `party_position` (0–5). Each
+    /// stat is clamped to 0–31. The egg and ability bits in the IV/egg/ability
+    /// word (bits 30–31 of the Misc substructure) are preserved.
+    SetIvs { party_position: u8, hp: u8, atk: u8, def: u8, spd: u8, spa: u8, spdef: u8 }, // index 17 — do not reorder
+    /// Add to each IV of the party Pokémon at `party_position` (0–5), clamping
+    /// each result at 31. Egg and ability bits are preserved.
+    IncreaseIvs { party_position: u8, hp: u8, atk: u8, def: u8, spd: u8, spa: u8, spdef: u8 }, // index 18 — do not reorder
+    /// Set all six EVs of the party Pokémon at `party_position` (0–5). Each
+    /// stat is stored as a raw byte (0–255); the per-stat game cap is not
+    /// enforced by this command.
+    SetEvs { party_position: u8, hp: u8, atk: u8, def: u8, spd: u8, spa: u8, spdef: u8 }, // index 19 — do not reorder
+    /// Add to each EV of the party Pokémon at `party_position` (0–5), clamping
+    /// each result at 255. The 510-total game cap is not enforced.
+    IncreaseEvs { party_position: u8, hp: u8, atk: u8, def: u8, spd: u8, spa: u8, spdef: u8 }, // index 20 — do not reorder
+    /// Restore the current HP of the party Pokémon at `party_position` (0–5)
+    /// to its maximum. Reads the calculated max-HP word (PartyPokemon offset
+    /// 88–89) and writes it to the current-HP word (offset 86–87). No
+    /// encrypted data is touched.
+    RestoreHp { party_position: u8 },                                                          // index 21 — do not reorder
     // Append new variants here only.
 }
 

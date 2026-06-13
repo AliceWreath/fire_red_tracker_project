@@ -2183,6 +2183,35 @@ pub fn change_nature(party_position: usize, target_nature: u8) -> bool {
     }
 }
 
+// ── effort / IV helpers ───────────────────────────────────────────────────────
+
+/// Returns the index (0–3) of the Effort substructure for a given `personality`.
+fn effort_substructure_index(personality: u32) -> usize {
+    SUBSTRUCTURE_ORDER[(personality % 24) as usize][2] as usize
+}
+
+/// Pack six 5-bit IV values into the lower 30 bits of a u32.
+pub(crate) fn pack_ivs(hp: u8, atk: u8, def: u8, spd: u8, spa: u8, spdef: u8) -> u32 {
+      (hp    as u32 & 0x1F)
+    | ((atk   as u32 & 0x1F) << 5)
+    | ((def   as u32 & 0x1F) << 10)
+    | ((spd   as u32 & 0x1F) << 15)
+    | ((spa   as u32 & 0x1F) << 20)
+    | ((spdef as u32 & 0x1F) << 25)
+}
+
+/// Unpack the lower 30 bits of an IV/egg/ability word into `[hp, atk, def, spd, spa, spdef]`.
+fn unpack_ivs(word: u32) -> [u8; 6] {
+    [
+        (word        & 0x1F) as u8,
+        ((word >> 5)  & 0x1F) as u8,
+        ((word >> 10) & 0x1F) as u8,
+        ((word >> 15) & 0x1F) as u8,
+        ((word >> 20) & 0x1F) as u8,
+        ((word >> 25) & 0x1F) as u8,
+    ]
+}
+
 // ── attacks_substructure helpers ──────────────────────────────────────────────
 
 /// Returns the index (0–3) of the Attacks substructure for a given `personality`.
@@ -2537,6 +2566,345 @@ pub fn change_move(party_position: usize, slot: u8, move_id: u16) -> bool {
     }
 }
 
+// ── set_ivs / increase_ivs ────────────────────────────────────────────────────
+
+/// Shared decrypt → modify IV word → recompute checksum → re-encrypt core used by
+/// both [`compute_set_ivs`] and [`compute_increase_ivs`].
+fn apply_iv_word(data: &[u8], new_word_fn: impl FnOnce(u32) -> u32) -> Option<([u8; 2], [u8; 48])> {
+    if data.len() < 80 { return None; }
+    let personality = u32::from_le_bytes(data[0..4].try_into().unwrap());
+    let ot_id       = u32::from_le_bytes(data[4..8].try_into().unwrap());
+    if personality == 0 { return None; }
+    let enc_key = personality ^ ot_id;
+
+    let mut decrypted = [0u8; 48];
+    for (i, chunk) in data[32..80].chunks_exact(4).enumerate() {
+        let w = u32::from_le_bytes(chunk.try_into().unwrap()) ^ enc_key;
+        decrypted[i * 4..i * 4 + 4].copy_from_slice(&w.to_le_bytes());
+    }
+
+    let iv_off   = misc_substructure_index(personality) * 12 + 4;
+    let old_word = u32::from_le_bytes(decrypted[iv_off..iv_off + 4].try_into().unwrap());
+    let new_word = new_word_fn(old_word);
+    if new_word == old_word { return None; }
+    decrypted[iv_off..iv_off + 4].copy_from_slice(&new_word.to_le_bytes());
+
+    let checksum: u16 = decrypted
+        .chunks_exact(2)
+        .map(|c| u16::from_le_bytes([c[0], c[1]]))
+        .fold(0u16, |acc, w| acc.wrapping_add(w));
+
+    let mut encrypted = [0u8; 48];
+    for (i, chunk) in decrypted.chunks_exact(4).enumerate() {
+        let w = u32::from_le_bytes(chunk.try_into().unwrap()) ^ enc_key;
+        encrypted[i * 4..i * 4 + 4].copy_from_slice(&w.to_le_bytes());
+    }
+    Some((checksum.to_le_bytes(), encrypted))
+}
+
+/// Pure logic for [`set_ivs`]: overwrites all six IVs, preserving bits 30–31.
+pub(crate) fn compute_set_ivs(
+    data: &[u8],
+    hp: u8, atk: u8, def: u8, spd: u8, spa: u8, spdef: u8,
+) -> Option<([u8; 2], [u8; 48])> {
+    apply_iv_word(data, |old| {
+        let high = old & 0xC000_0000;
+        high | pack_ivs(hp.min(31), atk.min(31), def.min(31), spd.min(31), spa.min(31), spdef.min(31))
+    })
+}
+
+/// Pure logic for [`increase_ivs`]: adds deltas to each IV clamped at 31, preserving bits 30–31.
+pub(crate) fn compute_increase_ivs(
+    data: &[u8],
+    hp: u8, atk: u8, def: u8, spd: u8, spa: u8, spdef: u8,
+) -> Option<([u8; 2], [u8; 48])> {
+    apply_iv_word(data, |old| {
+        let high = old & 0xC000_0000;
+        let o = unpack_ivs(old);
+        high | pack_ivs(
+            o[0].saturating_add(hp).min(31),
+            o[1].saturating_add(atk).min(31),
+            o[2].saturating_add(def).min(31),
+            o[3].saturating_add(spd).min(31),
+            o[4].saturating_add(spa).min(31),
+            o[5].saturating_add(spdef).min(31),
+        )
+    })
+}
+
+/// Writes the result of an IV compute function to RetroArch.
+fn write_iv_change(
+    party_position: usize,
+    fn_name: &str,
+    result: Option<([u8; 2], [u8; 48])>,
+    data: &[u8],
+    socket: &std::net::UdpSocket,
+    mon_addr: u32,
+    personality: u32,
+) -> bool {
+    match result {
+        None => {
+            tracing::info!("{fn_name}: party[{party_position}] IVs already match or slot empty");
+            true
+        }
+        Some((checksum, encrypted)) => {
+            let mut payload = [0u8; 52];
+            payload[0..2].copy_from_slice(&checksum);
+            payload[2..4].copy_from_slice(&data[30..32]);
+            payload[4..52].copy_from_slice(&encrypted);
+            if !fire_red_retroarch_interfacing::write_to_retroarch(socket, mon_addr + 28, &payload) {
+                tracing::warn!("{fn_name}: write failed for party[{party_position}]");
+                return false;
+            }
+            tracing::info!("{fn_name}: party[{party_position}] personality=0x{personality:08X} IVs updated");
+            true
+        }
+    }
+}
+
+/// Sets all six IVs of the party Pokémon at `party_position` (0–5). Each value
+/// is clamped to 31. Egg and ability bits (30–31 of the Misc IV word) are
+/// preserved.
+pub fn set_ivs(party_position: usize, hp: u8, atk: u8, def: u8, spd: u8, spa: u8, spdef: u8) -> bool {
+    if party_position >= 6 {
+        tracing::warn!("set_ivs: party_position {party_position} out of range (must be 0–5)");
+        return false;
+    }
+    const PARTY_BASE: u32 = 0x02024284;
+    const MON_SIZE:   u32 = 100;
+    let mon_addr = PARTY_BASE + party_position as u32 * MON_SIZE;
+    let socket = match fire_red_retroarch_interfacing::make_socket() {
+        Ok(s)  => s,
+        Err(e) => { tracing::warn!("set_ivs: socket error: {e}"); return false; }
+    };
+    let data = match read_retroarch_bytes(&socket, mon_addr, 80) {
+        Some(b) if b.len() == 80 => b,
+        _ => { tracing::warn!("set_ivs: RetroArch did not respond for party[{party_position}]"); return false; }
+    };
+    let personality = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
+    if personality == 0 { tracing::warn!("set_ivs: party[{party_position}] is empty"); return false; }
+    let result = compute_set_ivs(&data, hp, atk, def, spd, spa, spdef);
+    write_iv_change(party_position, "set_ivs", result, &data, &socket, mon_addr, personality)
+}
+
+/// Adds each delta to the corresponding IV of the party Pokémon at
+/// `party_position` (0–5), clamping each result at 31.
+pub fn increase_ivs(party_position: usize, hp: u8, atk: u8, def: u8, spd: u8, spa: u8, spdef: u8) -> bool {
+    if party_position >= 6 {
+        tracing::warn!("increase_ivs: party_position {party_position} out of range (must be 0–5)");
+        return false;
+    }
+    const PARTY_BASE: u32 = 0x02024284;
+    const MON_SIZE:   u32 = 100;
+    let mon_addr = PARTY_BASE + party_position as u32 * MON_SIZE;
+    let socket = match fire_red_retroarch_interfacing::make_socket() {
+        Ok(s)  => s,
+        Err(e) => { tracing::warn!("increase_ivs: socket error: {e}"); return false; }
+    };
+    let data = match read_retroarch_bytes(&socket, mon_addr, 80) {
+        Some(b) if b.len() == 80 => b,
+        _ => { tracing::warn!("increase_ivs: RetroArch did not respond for party[{party_position}]"); return false; }
+    };
+    let personality = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
+    if personality == 0 { tracing::warn!("increase_ivs: party[{party_position}] is empty"); return false; }
+    let result = compute_increase_ivs(&data, hp, atk, def, spd, spa, spdef);
+    write_iv_change(party_position, "increase_ivs", result, &data, &socket, mon_addr, personality)
+}
+
+// ── set_evs / increase_evs ────────────────────────────────────────────────────
+
+/// Shared decrypt → modify EV bytes → recompute checksum → re-encrypt core.
+fn apply_ev_bytes(data: &[u8], new_evs_fn: impl FnOnce([u8; 6]) -> [u8; 6]) -> Option<([u8; 2], [u8; 48])> {
+    if data.len() < 80 { return None; }
+    let personality = u32::from_le_bytes(data[0..4].try_into().unwrap());
+    let ot_id       = u32::from_le_bytes(data[4..8].try_into().unwrap());
+    if personality == 0 { return None; }
+    let enc_key = personality ^ ot_id;
+
+    let mut decrypted = [0u8; 48];
+    for (i, chunk) in data[32..80].chunks_exact(4).enumerate() {
+        let w = u32::from_le_bytes(chunk.try_into().unwrap()) ^ enc_key;
+        decrypted[i * 4..i * 4 + 4].copy_from_slice(&w.to_le_bytes());
+    }
+
+    let e_off    = effort_substructure_index(personality) * 12;
+    let old_evs: [u8; 6] = decrypted[e_off..e_off + 6].try_into().unwrap();
+    let new_evs  = new_evs_fn(old_evs);
+    if new_evs == old_evs { return None; }
+    decrypted[e_off..e_off + 6].copy_from_slice(&new_evs);
+
+    let checksum: u16 = decrypted
+        .chunks_exact(2)
+        .map(|c| u16::from_le_bytes([c[0], c[1]]))
+        .fold(0u16, |acc, w| acc.wrapping_add(w));
+
+    let mut encrypted = [0u8; 48];
+    for (i, chunk) in decrypted.chunks_exact(4).enumerate() {
+        let w = u32::from_le_bytes(chunk.try_into().unwrap()) ^ enc_key;
+        encrypted[i * 4..i * 4 + 4].copy_from_slice(&w.to_le_bytes());
+    }
+    Some((checksum.to_le_bytes(), encrypted))
+}
+
+/// Pure logic for [`set_evs`]: overwrites the six EV bytes.
+pub(crate) fn compute_set_evs(
+    data: &[u8],
+    hp: u8, atk: u8, def: u8, spd: u8, spa: u8, spdef: u8,
+) -> Option<([u8; 2], [u8; 48])> {
+    apply_ev_bytes(data, |_| [hp, atk, def, spd, spa, spdef])
+}
+
+/// Pure logic for [`increase_evs`]: adds deltas to each EV clamped at 255.
+pub(crate) fn compute_increase_evs(
+    data: &[u8],
+    hp: u8, atk: u8, def: u8, spd: u8, spa: u8, spdef: u8,
+) -> Option<([u8; 2], [u8; 48])> {
+    apply_ev_bytes(data, |o| [
+        o[0].saturating_add(hp),
+        o[1].saturating_add(atk),
+        o[2].saturating_add(def),
+        o[3].saturating_add(spd),
+        o[4].saturating_add(spa),
+        o[5].saturating_add(spdef),
+    ])
+}
+
+/// Writes the result of an EV compute function to RetroArch.
+fn write_ev_change(
+    party_position: usize,
+    fn_name: &str,
+    result: Option<([u8; 2], [u8; 48])>,
+    data: &[u8],
+    socket: &std::net::UdpSocket,
+    mon_addr: u32,
+    personality: u32,
+) -> bool {
+    match result {
+        None => {
+            tracing::info!("{fn_name}: party[{party_position}] EVs already match or slot empty");
+            true
+        }
+        Some((checksum, encrypted)) => {
+            let mut payload = [0u8; 52];
+            payload[0..2].copy_from_slice(&checksum);
+            payload[2..4].copy_from_slice(&data[30..32]);
+            payload[4..52].copy_from_slice(&encrypted);
+            if !fire_red_retroarch_interfacing::write_to_retroarch(socket, mon_addr + 28, &payload) {
+                tracing::warn!("{fn_name}: write failed for party[{party_position}]");
+                return false;
+            }
+            tracing::info!("{fn_name}: party[{party_position}] personality=0x{personality:08X} EVs updated");
+            true
+        }
+    }
+}
+
+/// Sets all six EVs of the party Pokémon at `party_position` (0–5). The
+/// 510-total game cap is not enforced; each value may be 0–255 independently.
+/// Contest-condition bytes in the Effort substructure are preserved.
+pub fn set_evs(party_position: usize, hp: u8, atk: u8, def: u8, spd: u8, spa: u8, spdef: u8) -> bool {
+    if party_position >= 6 {
+        tracing::warn!("set_evs: party_position {party_position} out of range (must be 0–5)");
+        return false;
+    }
+    const PARTY_BASE: u32 = 0x02024284;
+    const MON_SIZE:   u32 = 100;
+    let mon_addr = PARTY_BASE + party_position as u32 * MON_SIZE;
+    let socket = match fire_red_retroarch_interfacing::make_socket() {
+        Ok(s)  => s,
+        Err(e) => { tracing::warn!("set_evs: socket error: {e}"); return false; }
+    };
+    let data = match read_retroarch_bytes(&socket, mon_addr, 80) {
+        Some(b) if b.len() == 80 => b,
+        _ => { tracing::warn!("set_evs: RetroArch did not respond for party[{party_position}]"); return false; }
+    };
+    let personality = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
+    if personality == 0 { tracing::warn!("set_evs: party[{party_position}] is empty"); return false; }
+    let result = compute_set_evs(&data, hp, atk, def, spd, spa, spdef);
+    write_ev_change(party_position, "set_evs", result, &data, &socket, mon_addr, personality)
+}
+
+/// Adds each delta to the corresponding EV of the party Pokémon at
+/// `party_position` (0–5), clamping each at 255. The 510-total game cap is
+/// not enforced.
+pub fn increase_evs(party_position: usize, hp: u8, atk: u8, def: u8, spd: u8, spa: u8, spdef: u8) -> bool {
+    if party_position >= 6 {
+        tracing::warn!("increase_evs: party_position {party_position} out of range (must be 0–5)");
+        return false;
+    }
+    const PARTY_BASE: u32 = 0x02024284;
+    const MON_SIZE:   u32 = 100;
+    let mon_addr = PARTY_BASE + party_position as u32 * MON_SIZE;
+    let socket = match fire_red_retroarch_interfacing::make_socket() {
+        Ok(s)  => s,
+        Err(e) => { tracing::warn!("increase_evs: socket error: {e}"); return false; }
+    };
+    let data = match read_retroarch_bytes(&socket, mon_addr, 80) {
+        Some(b) if b.len() == 80 => b,
+        _ => { tracing::warn!("increase_evs: RetroArch did not respond for party[{party_position}]"); return false; }
+    };
+    let personality = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
+    if personality == 0 { tracing::warn!("increase_evs: party[{party_position}] is empty"); return false; }
+    let result = compute_increase_evs(&data, hp, atk, def, spd, spa, spdef);
+    write_ev_change(party_position, "increase_evs", result, &data, &socket, mon_addr, personality)
+}
+
+// ── restore_hp ────────────────────────────────────────────────────────────────
+
+/// Restores the current HP of the party Pokémon at `party_position` (0–5) to
+/// its calculated maximum.
+///
+/// Reads the max-HP word from PartyPokemon byte offset 88–89 (unencrypted) and
+/// writes it to the current-HP word at offset 86–87. No encrypted data block is
+/// read or written.
+///
+/// Returns `true` when the write was dispatched (or HP was already full).
+pub fn restore_hp(party_position: usize) -> bool {
+    if party_position >= 6 {
+        tracing::warn!("restore_hp: party_position {party_position} out of range (must be 0–5)");
+        return false;
+    }
+
+    const PARTY_BASE: u32 = 0x02024284;
+    const MON_SIZE:   u32 = 100;
+    let mon_addr = PARTY_BASE + party_position as u32 * MON_SIZE;
+
+    let socket = match fire_red_retroarch_interfacing::make_socket() {
+        Ok(s)  => s,
+        Err(e) => { tracing::warn!("restore_hp: socket error: {e}"); return false; }
+    };
+
+    // Read 90 bytes: 0–3 personality check; 86–87 current HP; 88–89 max HP.
+    let data = match read_retroarch_bytes(&socket, mon_addr, 90) {
+        Some(b) if b.len() == 90 => b,
+        _ => {
+            tracing::warn!("restore_hp: RetroArch did not respond for party[{party_position}]");
+            return false;
+        }
+    };
+
+    let personality = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
+    if personality == 0 {
+        tracing::warn!("restore_hp: party[{party_position}] is empty (personality=0)");
+        return false;
+    }
+
+    let current_hp = u16::from_le_bytes([data[86], data[87]]);
+    let max_hp     = u16::from_le_bytes([data[88], data[89]]);
+
+    if current_hp >= max_hp {
+        tracing::info!("restore_hp: party[{party_position}] HP already full ({current_hp}/{max_hp})");
+        return true;
+    }
+
+    if !fire_red_retroarch_interfacing::write_to_retroarch(&socket, mon_addr + 86, &max_hp.to_le_bytes()) {
+        tracing::warn!("restore_hp: write failed for party[{party_position}]");
+        return false;
+    }
+    tracing::info!("restore_hp: party[{party_position}] {current_hp} → {max_hp} HP");
+    true
+}
+
 /// Reads all four bag pockets from the player's SaveBlock1 and returns a
 /// [`BagPockets`] with quantities already XOR-decrypted.
 ///
@@ -2641,8 +3009,10 @@ mod tests {
     use super::{
         ascii_to_gba, compute_change_gender, compute_change_held_item,
         compute_change_move, compute_change_nature, compute_change_species,
-        compute_give_item_write, compute_restore_pp, compute_set_ability_bit,
-        compute_set_friendship, compute_take_item_write, encode_nickname, is_shiny,
+        compute_give_item_write, compute_increase_evs, compute_increase_ivs,
+        compute_restore_pp, compute_set_ability_bit, compute_set_evs,
+        compute_set_friendship, compute_set_ivs, compute_take_item_write,
+        encode_nickname, is_shiny, unpack_ivs,
         ChangeGenderOutcome, ChangeNatureOutcome, ChangeSpeciesOutcome, TakeItemWrite,
         ITEMS_POCKET_SLOTS, MAX_ITEM_QTY,
     };
@@ -3789,6 +4159,172 @@ mod tests {
         let stored_move = u16::from_le_bytes([new_dec[12 + 6], new_dec[12 + 7]]);
         assert_eq!(stored_move, move_id);
         assert_eq!(new_dec[12 + 11], base_pp);
+    }
+
+    // ── compute_set_ivs / compute_increase_ivs tests ─────────────────────────
+
+    #[test]
+    fn set_ivs_empty_slot_returns_none() {
+        assert!(compute_set_ivs(&vec![0u8; 80], 31, 31, 31, 31, 31, 31).is_none());
+    }
+
+    #[test]
+    fn set_ivs_writes_all_six_stats() {
+        // p%24=0 → Misc at pos 3, offset 36; IV word at decrypted[40..44]
+        let p: u32 = 24;
+        let data = make_mon_data(p, 0, [0u8; 48]);
+        let (_, encrypted) = compute_set_ivs(&data, 31, 20, 15, 10, 5, 0).unwrap();
+        let new_dec = decrypt_block(&encrypted, p, 0);
+        let word = u32::from_le_bytes(new_dec[40..44].try_into().unwrap());
+        let ivs = unpack_ivs(word);
+        assert_eq!(ivs, [31, 20, 15, 10, 5, 0]);
+    }
+
+    #[test]
+    fn set_ivs_preserves_egg_and_ability_bits() {
+        let p: u32 = 24; // Misc at offset 36, IV word at 40
+        let mut dec = [0u8; 48];
+        // Set ability bit (31) and egg bit (30)
+        let word_with_flags: u32 = 0xC000_0000 | 0b1_0001_1111; // ability=1, egg=1, hp=31
+        dec[40..44].copy_from_slice(&word_with_flags.to_le_bytes());
+        let data = make_mon_data(p, 0, dec);
+        let (_, encrypted) = compute_set_ivs(&data, 0, 0, 0, 0, 0, 0).unwrap();
+        let new_dec = decrypt_block(&encrypted, p, 0);
+        let new_word = u32::from_le_bytes(new_dec[40..44].try_into().unwrap());
+        assert_eq!(new_word & 0xC000_0000, 0xC000_0000, "bits 30-31 must be preserved");
+        let ivs = unpack_ivs(new_word);
+        assert_eq!(ivs, [0, 0, 0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn set_ivs_clamps_to_31() {
+        let p: u32 = 24;
+        let data = make_mon_data(p, 0, [0u8; 48]);
+        let (_, encrypted) = compute_set_ivs(&data, 255, 255, 255, 255, 255, 255).unwrap();
+        let new_dec = decrypt_block(&encrypted, p, 0);
+        let ivs = unpack_ivs(u32::from_le_bytes(new_dec[40..44].try_into().unwrap()));
+        assert_eq!(ivs, [31, 31, 31, 31, 31, 31]);
+    }
+
+    #[test]
+    fn set_ivs_already_same_returns_none() {
+        let p: u32 = 24;
+        let mut dec = [0u8; 48];
+        let word = 0b11111_10100_01111_01010_00101_00000u32; // hp=0 atk=5 def=10 spd=15 spa=20 spdef=31
+        dec[40..44].copy_from_slice(&word.to_le_bytes());
+        let data = make_mon_data(p, 0, dec);
+        // Same values → None
+        assert!(compute_set_ivs(&data, 0, 5, 10, 15, 20, 31).is_none());
+    }
+
+    #[test]
+    fn increase_ivs_adds_and_clamps() {
+        let p: u32 = 24;
+        let mut dec = [0u8; 48];
+        // Set all IVs to 20
+        let word = super::pack_ivs(20, 20, 20, 20, 20, 20);
+        dec[40..44].copy_from_slice(&word.to_le_bytes());
+        let data = make_mon_data(p, 0, dec);
+        let (_, encrypted) = compute_increase_ivs(&data, 15, 15, 15, 15, 15, 15).unwrap();
+        let new_dec = decrypt_block(&encrypted, p, 0);
+        let ivs = unpack_ivs(u32::from_le_bytes(new_dec[40..44].try_into().unwrap()));
+        assert_eq!(ivs, [31, 31, 31, 31, 31, 31], "20+15 should clamp to 31");
+    }
+
+    #[test]
+    fn increase_ivs_already_max_returns_none() {
+        let p: u32 = 24;
+        let mut dec = [0u8; 48];
+        let word = super::pack_ivs(31, 31, 31, 31, 31, 31);
+        dec[40..44].copy_from_slice(&word.to_le_bytes());
+        let data = make_mon_data(p, 0, dec);
+        assert!(compute_increase_ivs(&data, 1, 1, 1, 1, 1, 1).is_none());
+    }
+
+    #[test]
+    fn set_ivs_non_zero_misc_index() {
+        // p%24=1 → SUBSTRUCTURE_ORDER[1]=[0,1,3,2] → Misc at pos 2, offset 24; IV word at 28
+        let p: u32 = 1;
+        let data = make_mon_data(p, 0, [0u8; 48]);
+        let (_, encrypted) = compute_set_ivs(&data, 10, 11, 12, 13, 14, 15).unwrap();
+        let new_dec = decrypt_block(&encrypted, p, 0);
+        let ivs = unpack_ivs(u32::from_le_bytes(new_dec[28..32].try_into().unwrap()));
+        assert_eq!(ivs, [10, 11, 12, 13, 14, 15]);
+        // IV word at offset 40 (would be Misc if index were 3) should be zero
+        let wrong_word = u32::from_le_bytes(new_dec[40..44].try_into().unwrap());
+        assert_eq!(wrong_word & 0x3FFF_FFFF, 0, "IVs must be at correct substructure offset");
+    }
+
+    // ── compute_set_evs / compute_increase_evs tests ──────────────────────────
+
+    #[test]
+    fn set_evs_empty_slot_returns_none() {
+        assert!(compute_set_evs(&vec![0u8; 80], 1, 0, 0, 0, 0, 0).is_none());
+    }
+
+    #[test]
+    fn set_evs_writes_all_six_bytes() {
+        // p%24=0 → Effort at pos 2, offset 24
+        let p: u32 = 24;
+        let data = make_mon_data(p, 0, [0u8; 48]);
+        let (_, encrypted) = compute_set_evs(&data, 252, 0, 0, 4, 0, 0).unwrap();
+        let new_dec = decrypt_block(&encrypted, p, 0);
+        assert_eq!(&new_dec[24..30], &[252, 0, 0, 4, 0, 0]);
+    }
+
+    #[test]
+    fn set_evs_preserves_contest_bytes() {
+        let p: u32 = 24; // Effort at offset 24
+        let mut dec = [0u8; 48];
+        // Set contest bytes 6-11 to non-zero values
+        dec[30] = 100; // coolness
+        dec[31] = 200; // beauty
+        let data = make_mon_data(p, 0, dec);
+        let (_, encrypted) = compute_set_evs(&data, 0, 0, 0, 0, 0, 0).unwrap();
+        let new_dec = decrypt_block(&encrypted, p, 0);
+        assert_eq!(new_dec[30], 100, "contest bytes must be preserved");
+        assert_eq!(new_dec[31], 200);
+    }
+
+    #[test]
+    fn set_evs_already_same_returns_none() {
+        let p: u32 = 24; // Effort at offset 24
+        let mut dec = [0u8; 48];
+        dec[24..30].copy_from_slice(&[252, 0, 0, 4, 0, 0]);
+        let data = make_mon_data(p, 0, dec);
+        assert!(compute_set_evs(&data, 252, 0, 0, 4, 0, 0).is_none());
+    }
+
+    #[test]
+    fn increase_evs_adds_and_clamps_at_255() {
+        let p: u32 = 24; // Effort at offset 24
+        let mut dec = [0u8; 48];
+        dec[24..30].copy_from_slice(&[200, 200, 200, 200, 200, 200]);
+        let data = make_mon_data(p, 0, dec);
+        let (_, encrypted) = compute_increase_evs(&data, 100, 100, 100, 100, 100, 100).unwrap();
+        let new_dec = decrypt_block(&encrypted, p, 0);
+        assert_eq!(&new_dec[24..30], &[255, 255, 255, 255, 255, 255]);
+    }
+
+    #[test]
+    fn increase_evs_already_max_returns_none() {
+        let p: u32 = 24;
+        let mut dec = [0u8; 48];
+        dec[24..30].copy_from_slice(&[255, 255, 255, 255, 255, 255]);
+        let data = make_mon_data(p, 0, dec);
+        assert!(compute_increase_evs(&data, 1, 1, 1, 1, 1, 1).is_none());
+    }
+
+    #[test]
+    fn set_evs_non_zero_effort_index() {
+        // p%24=1 → SUBSTRUCTURE_ORDER[1]=[0,1,3,2] → Effort at pos 3, offset 36
+        let p: u32 = 1;
+        let data = make_mon_data(p, 0, [0u8; 48]);
+        let (_, encrypted) = compute_set_evs(&data, 1, 2, 3, 4, 5, 6).unwrap();
+        let new_dec = decrypt_block(&encrypted, p, 0);
+        assert_eq!(&new_dec[36..42], &[1, 2, 3, 4, 5, 6]);
+        // Effort at offset 24 should be untouched (zero)
+        assert_eq!(&new_dec[24..30], &[0, 0, 0, 0, 0, 0]);
     }
 
     // ── live RetroArch integration ────────────────────────────────────────────

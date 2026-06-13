@@ -169,6 +169,21 @@ pub fn handle_client(
                 Ok(ClientMessage::ChangeMove { party_position, slot, move_id }) => {
                     crate::game::change_move(party_position as usize, slot, move_id);
                 }
+                Ok(ClientMessage::SetIvs { party_position, hp, atk, def, spd, spa, spdef }) => {
+                    crate::game::set_ivs(party_position as usize, hp, atk, def, spd, spa, spdef);
+                }
+                Ok(ClientMessage::IncreaseIvs { party_position, hp, atk, def, spd, spa, spdef }) => {
+                    crate::game::increase_ivs(party_position as usize, hp, atk, def, spd, spa, spdef);
+                }
+                Ok(ClientMessage::SetEvs { party_position, hp, atk, def, spd, spa, spdef }) => {
+                    crate::game::set_evs(party_position as usize, hp, atk, def, spd, spa, spdef);
+                }
+                Ok(ClientMessage::IncreaseEvs { party_position, hp, atk, def, spd, spa, spdef }) => {
+                    crate::game::increase_evs(party_position as usize, hp, atk, def, spd, spa, spdef);
+                }
+                Ok(ClientMessage::RestoreHp { party_position }) => {
+                    crate::game::restore_hp(party_position as usize);
+                }
                 Err(_) => break,
             }
         }
