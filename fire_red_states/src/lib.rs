@@ -43,6 +43,9 @@ pub const MAX_NATIONAL_DEX_FIRERED: u16 = 386;
 ///  11 = ChangeHeldItem
 ///  12 = CureStatus
 ///  13 = ChangeNature
+///  14 = RestorePp
+///  15 = SetFriendship
+///  16 = ChangeMove
 #[derive(serde::Serialize, serde::Deserialize, Clone)]
 pub enum ClientMessage {
     RequestTextures(Vec<u16>), // index 0 — do not reorder
@@ -95,6 +98,20 @@ pub enum ClientMessage {
     /// gender is personality-derived) and shiny status. The substructure block
     /// order is rearranged when `personality % 24` changes.
     ChangeNature { party_position: u8, target_nature: u8 }, // index 13 — do not reorder
+    /// Restore PP on all four move slots to their current maximum (base PP +
+    /// PP-Up bonus). Only slots with a move equipped are affected; empty slots
+    /// (move_id = 0) are skipped. Shiny status and all other fields are
+    /// untouched.
+    RestorePp { party_position: u8 },                       // index 14 — do not reorder
+    /// Set the friendship (happiness) byte of the party Pokémon at
+    /// `party_position` (0–5) to `friendship` (0–255). Friendship is stored at
+    /// Growth substructure offset 9; checksum is recalculated.
+    SetFriendship { party_position: u8, friendship: u8 },   // index 15 — do not reorder
+    /// Replace the move at `slot` (0–3) of the party Pokémon at
+    /// `party_position` (0–5) with `move_id`. PP is set to the maximum for the
+    /// new move (base PP + current PP-Up bonus). Use `move_id = 0` to clear the
+    /// slot.
+    ChangeMove { party_position: u8, slot: u8, move_id: u16 }, // index 16 — do not reorder
     // Append new variants here only.
 }
 

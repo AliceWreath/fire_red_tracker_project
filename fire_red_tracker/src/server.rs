@@ -160,6 +160,15 @@ pub fn handle_client(
                 Ok(ClientMessage::ChangeNature { party_position, target_nature }) => {
                     crate::game::change_nature(party_position as usize, target_nature);
                 }
+                Ok(ClientMessage::RestorePp { party_position }) => {
+                    crate::game::restore_pp(party_position as usize);
+                }
+                Ok(ClientMessage::SetFriendship { party_position, friendship }) => {
+                    crate::game::set_friendship(party_position as usize, friendship);
+                }
+                Ok(ClientMessage::ChangeMove { party_position, slot, move_id }) => {
+                    crate::game::change_move(party_position as usize, slot, move_id);
+                }
                 Err(_) => break,
             }
         }

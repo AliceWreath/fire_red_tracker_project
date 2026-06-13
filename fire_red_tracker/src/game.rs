@@ -2183,6 +2183,360 @@ pub fn change_nature(party_position: usize, target_nature: u8) -> bool {
     }
 }
 
+// ── attacks_substructure helpers ──────────────────────────────────────────────
+
+/// Returns the index (0–3) of the Attacks substructure for a given `personality`.
+fn attacks_substructure_index(personality: u32) -> usize {
+    SUBSTRUCTURE_ORDER[(personality % 24) as usize][1] as usize
+}
+
+/// Base PP of `move_id` from the ROM move-data table (12 bytes/entry, PP at byte 4).
+fn base_pp_for_move(rom: &[u8], move_data_addr: usize, move_id: u16) -> u8 {
+    let off = move_data_addr + move_id as usize * 12 + 4;
+    rom.get(off).copied().unwrap_or(0)
+}
+
+/// Maximum PP for a single slot given `base_pp` and the 2-bit PP-bonus for that slot.
+fn max_pp_for_slot(base_pp: u8, pp_bonuses: u8, slot: usize) -> u8 {
+    let bonus = (pp_bonuses >> (slot * 2)) & 0x3;
+    base_pp + (base_pp as u16 * bonus as u16 / 5) as u8
+}
+
+// ── restore_pp ────────────────────────────────────────────────────────────────
+
+/// Pure logic for [`restore_pp`]: fills every non-empty move slot to its
+/// current maximum PP.
+///
+/// `data` must be 80 bytes. `rom` is the full ROM image and `move_data_addr`
+/// is the byte offset of the `gBattleMoves` table within it.
+///
+/// Returns `None` when `personality == 0` (empty slot), `data` is too short,
+/// or all move slots are already at maximum PP.
+pub(crate) fn compute_restore_pp(
+    data: &[u8],
+    rom: &[u8],
+    move_data_addr: usize,
+) -> Option<([u8; 2], [u8; 48])> {
+    if data.len() < 80 { return None; }
+    let personality = u32::from_le_bytes(data[0..4].try_into().unwrap());
+    let ot_id       = u32::from_le_bytes(data[4..8].try_into().unwrap());
+    if personality == 0 { return None; }
+    let enc_key = personality ^ ot_id;
+
+    let mut decrypted = [0u8; 48];
+    for (i, chunk) in data[32..80].chunks_exact(4).enumerate() {
+        let w = u32::from_le_bytes(chunk.try_into().unwrap()) ^ enc_key;
+        decrypted[i * 4..i * 4 + 4].copy_from_slice(&w.to_le_bytes());
+    }
+
+    let g_off      = growth_substructure_index(personality)  * 12;
+    let a_off      = attacks_substructure_index(personality) * 12;
+    let pp_bonuses = decrypted[g_off + 8];
+
+    let mut changed = false;
+    for slot in 0..4usize {
+        let move_id = u16::from_le_bytes([decrypted[a_off + slot * 2], decrypted[a_off + slot * 2 + 1]]);
+        if move_id == 0 { continue; }
+        let base_pp = base_pp_for_move(rom, move_data_addr, move_id);
+        if base_pp == 0 { continue; }
+        let target_pp = max_pp_for_slot(base_pp, pp_bonuses, slot);
+        if decrypted[a_off + 8 + slot] < target_pp {
+            decrypted[a_off + 8 + slot] = target_pp;
+            changed = true;
+        }
+    }
+    if !changed { return None; }
+
+    let checksum: u16 = decrypted
+        .chunks_exact(2)
+        .map(|c| u16::from_le_bytes([c[0], c[1]]))
+        .fold(0u16, |acc, w| acc.wrapping_add(w));
+
+    let mut encrypted = [0u8; 48];
+    for (i, chunk) in decrypted.chunks_exact(4).enumerate() {
+        let w = u32::from_le_bytes(chunk.try_into().unwrap()) ^ enc_key;
+        encrypted[i * 4..i * 4 + 4].copy_from_slice(&w.to_le_bytes());
+    }
+    Some((checksum.to_le_bytes(), encrypted))
+}
+
+/// Restores PP on all four move slots of the party Pokémon at `party_position`
+/// (0–5) to their current maximums (base PP + PP-Up bonus).
+///
+/// Only equipped slots (move_id ≠ 0) are modified; the encrypted data block is
+/// decrypted, PP bytes updated, checksum recalculated, and re-encrypted.
+/// Personality, species, IVs, nature, and shiny status are all preserved.
+///
+/// Returns `true` when the write was dispatched (or PP was already full).
+pub fn restore_pp(party_position: usize) -> bool {
+    if party_position >= 6 {
+        tracing::warn!("restore_pp: party_position {party_position} out of range (must be 0–5)");
+        return false;
+    }
+
+    const PARTY_BASE: u32 = 0x02024284;
+    const MON_SIZE:   u32 = 100;
+    let mon_addr = PARTY_BASE + party_position as u32 * MON_SIZE;
+
+    let socket = match fire_red_retroarch_interfacing::make_socket() {
+        Ok(s)  => s,
+        Err(e) => { tracing::warn!("restore_pp: socket error: {e}"); return false; }
+    };
+
+    let data = match read_retroarch_bytes(&socket, mon_addr, 80) {
+        Some(b) if b.len() == 80 => b,
+        _ => {
+            tracing::warn!("restore_pp: RetroArch did not respond for party[{party_position}]");
+            return false;
+        }
+    };
+
+    let personality = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
+    if personality == 0 {
+        tracing::warn!("restore_pp: party[{party_position}] is empty (personality=0)");
+        return false;
+    }
+
+    let rom      = fire_red_rom_buffer::get_rom();
+    let rom_addr = fire_red_rom_buffer::get_rom_addresses();
+
+    match compute_restore_pp(&data, rom, rom_addr.move_data_addr) {
+        None => {
+            tracing::info!("restore_pp: party[{party_position}] PP already full");
+            true
+        }
+        Some((checksum, encrypted)) => {
+            let mut payload = [0u8; 52];
+            payload[0..2].copy_from_slice(&checksum);
+            payload[2..4].copy_from_slice(&data[30..32]);
+            payload[4..52].copy_from_slice(&encrypted);
+            if !fire_red_retroarch_interfacing::write_to_retroarch(&socket, mon_addr + 28, &payload) {
+                tracing::warn!("restore_pp: write failed for party[{party_position}]");
+                return false;
+            }
+            tracing::info!("restore_pp: party[{party_position}] PP restored");
+            true
+        }
+    }
+}
+
+// ── set_friendship ────────────────────────────────────────────────────────────
+
+/// Pure logic for [`set_friendship`]: sets the friendship byte in the Growth
+/// substructure.
+///
+/// Returns `None` when `personality == 0`, `data` is too short, or the
+/// friendship byte already equals `friendship`.
+pub(crate) fn compute_set_friendship(data: &[u8], friendship: u8) -> Option<([u8; 2], [u8; 48])> {
+    if data.len() < 80 { return None; }
+    let personality = u32::from_le_bytes(data[0..4].try_into().unwrap());
+    let ot_id       = u32::from_le_bytes(data[4..8].try_into().unwrap());
+    if personality == 0 { return None; }
+    let enc_key = personality ^ ot_id;
+
+    let mut decrypted = [0u8; 48];
+    for (i, chunk) in data[32..80].chunks_exact(4).enumerate() {
+        let w = u32::from_le_bytes(chunk.try_into().unwrap()) ^ enc_key;
+        decrypted[i * 4..i * 4 + 4].copy_from_slice(&w.to_le_bytes());
+    }
+
+    let g_off = growth_substructure_index(personality) * 12;
+    if decrypted[g_off + 9] == friendship { return None; }
+    decrypted[g_off + 9] = friendship;
+
+    let checksum: u16 = decrypted
+        .chunks_exact(2)
+        .map(|c| u16::from_le_bytes([c[0], c[1]]))
+        .fold(0u16, |acc, w| acc.wrapping_add(w));
+
+    let mut encrypted = [0u8; 48];
+    for (i, chunk) in decrypted.chunks_exact(4).enumerate() {
+        let w = u32::from_le_bytes(chunk.try_into().unwrap()) ^ enc_key;
+        encrypted[i * 4..i * 4 + 4].copy_from_slice(&w.to_le_bytes());
+    }
+    Some((checksum.to_le_bytes(), encrypted))
+}
+
+/// Sets the friendship (happiness) byte of the party Pokémon at
+/// `party_position` (0–5) to `friendship` (0–255).
+///
+/// The friendship byte lives at Growth substructure offset 9. The checksum is
+/// recalculated and the data block re-encrypted. All other fields are
+/// preserved.
+///
+/// Returns `true` when the write was dispatched (or friendship already matches).
+pub fn set_friendship(party_position: usize, friendship: u8) -> bool {
+    if party_position >= 6 {
+        tracing::warn!("set_friendship: party_position {party_position} out of range (must be 0–5)");
+        return false;
+    }
+
+    const PARTY_BASE: u32 = 0x02024284;
+    const MON_SIZE:   u32 = 100;
+    let mon_addr = PARTY_BASE + party_position as u32 * MON_SIZE;
+
+    let socket = match fire_red_retroarch_interfacing::make_socket() {
+        Ok(s)  => s,
+        Err(e) => { tracing::warn!("set_friendship: socket error: {e}"); return false; }
+    };
+
+    let data = match read_retroarch_bytes(&socket, mon_addr, 80) {
+        Some(b) if b.len() == 80 => b,
+        _ => {
+            tracing::warn!("set_friendship: RetroArch did not respond for party[{party_position}]");
+            return false;
+        }
+    };
+
+    let personality = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
+    if personality == 0 {
+        tracing::warn!("set_friendship: party[{party_position}] is empty (personality=0)");
+        return false;
+    }
+
+    match compute_set_friendship(&data, friendship) {
+        None => {
+            tracing::info!("set_friendship: party[{party_position}] already friendship={friendship}");
+            true
+        }
+        Some((checksum, encrypted)) => {
+            let mut payload = [0u8; 52];
+            payload[0..2].copy_from_slice(&checksum);
+            payload[2..4].copy_from_slice(&data[30..32]);
+            payload[4..52].copy_from_slice(&encrypted);
+            if !fire_red_retroarch_interfacing::write_to_retroarch(&socket, mon_addr + 28, &payload) {
+                tracing::warn!("set_friendship: write failed for party[{party_position}]");
+                return false;
+            }
+            tracing::info!("set_friendship: party[{party_position}] → friendship={friendship}");
+            true
+        }
+    }
+}
+
+// ── change_move ───────────────────────────────────────────────────────────────
+
+/// Pure logic for [`change_move`]: replaces the move at `slot` (0–3) and sets
+/// its current PP to the new move's maximum.
+///
+/// `data` must be 80 bytes. `rom` and `move_data_addr` are used to look up the
+/// new move's base PP. Returns `None` when the slot already holds `move_id` or
+/// when `personality == 0`.
+pub(crate) fn compute_change_move(
+    data: &[u8],
+    slot: u8,
+    move_id: u16,
+    rom: &[u8],
+    move_data_addr: usize,
+) -> Option<([u8; 2], [u8; 48])> {
+    if data.len() < 80 || slot > 3 { return None; }
+    let personality = u32::from_le_bytes(data[0..4].try_into().unwrap());
+    let ot_id       = u32::from_le_bytes(data[4..8].try_into().unwrap());
+    if personality == 0 { return None; }
+    let enc_key = personality ^ ot_id;
+
+    let mut decrypted = [0u8; 48];
+    for (i, chunk) in data[32..80].chunks_exact(4).enumerate() {
+        let w = u32::from_le_bytes(chunk.try_into().unwrap()) ^ enc_key;
+        decrypted[i * 4..i * 4 + 4].copy_from_slice(&w.to_le_bytes());
+    }
+
+    let g_off = growth_substructure_index(personality)  * 12;
+    let a_off = attacks_substructure_index(personality) * 12;
+    let s     = slot as usize;
+
+    let old_move = u16::from_le_bytes([decrypted[a_off + s * 2], decrypted[a_off + s * 2 + 1]]);
+    if old_move == move_id { return None; }
+    decrypted[a_off + s * 2..a_off + s * 2 + 2].copy_from_slice(&move_id.to_le_bytes());
+
+    let pp_bonuses = decrypted[g_off + 8];
+    decrypted[a_off + 8 + s] = if move_id == 0 {
+        0
+    } else {
+        let base_pp = base_pp_for_move(rom, move_data_addr, move_id);
+        max_pp_for_slot(base_pp, pp_bonuses, s)
+    };
+
+    let checksum: u16 = decrypted
+        .chunks_exact(2)
+        .map(|c| u16::from_le_bytes([c[0], c[1]]))
+        .fold(0u16, |acc, w| acc.wrapping_add(w));
+
+    let mut encrypted = [0u8; 48];
+    for (i, chunk) in decrypted.chunks_exact(4).enumerate() {
+        let w = u32::from_le_bytes(chunk.try_into().unwrap()) ^ enc_key;
+        encrypted[i * 4..i * 4 + 4].copy_from_slice(&w.to_le_bytes());
+    }
+    Some((checksum.to_le_bytes(), encrypted))
+}
+
+/// Replaces the move at `slot` (0–3) of the party Pokémon at `party_position`
+/// (0–5) with `move_id`, setting current PP to the new move's maximum.
+///
+/// Use `move_id = 0` to clear the slot (current PP is set to 0). The PP-Up
+/// bonus for the slot is preserved — only base PP + existing bonus is applied.
+/// All other data (species, IVs, nature, shiny) is untouched.
+///
+/// Returns `true` when the write was dispatched (or the slot already holds the
+/// requested move).
+pub fn change_move(party_position: usize, slot: u8, move_id: u16) -> bool {
+    if party_position >= 6 {
+        tracing::warn!("change_move: party_position {party_position} out of range (must be 0–5)");
+        return false;
+    }
+    if slot > 3 {
+        tracing::warn!("change_move: slot {slot} out of range (must be 0–3)");
+        return false;
+    }
+
+    const PARTY_BASE: u32 = 0x02024284;
+    const MON_SIZE:   u32 = 100;
+    let mon_addr = PARTY_BASE + party_position as u32 * MON_SIZE;
+
+    let socket = match fire_red_retroarch_interfacing::make_socket() {
+        Ok(s)  => s,
+        Err(e) => { tracing::warn!("change_move: socket error: {e}"); return false; }
+    };
+
+    let data = match read_retroarch_bytes(&socket, mon_addr, 80) {
+        Some(b) if b.len() == 80 => b,
+        _ => {
+            tracing::warn!("change_move: RetroArch did not respond for party[{party_position}]");
+            return false;
+        }
+    };
+
+    let personality = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
+    if personality == 0 {
+        tracing::warn!("change_move: party[{party_position}] is empty (personality=0)");
+        return false;
+    }
+
+    let rom      = fire_red_rom_buffer::get_rom();
+    let rom_addr = fire_red_rom_buffer::get_rom_addresses();
+
+    match compute_change_move(&data, slot, move_id, rom, rom_addr.move_data_addr) {
+        None => {
+            tracing::info!("change_move: party[{party_position}] slot {slot} already move_id={move_id}");
+            true
+        }
+        Some((checksum, encrypted)) => {
+            let mut payload = [0u8; 52];
+            payload[0..2].copy_from_slice(&checksum);
+            payload[2..4].copy_from_slice(&data[30..32]);
+            payload[4..52].copy_from_slice(&encrypted);
+            if !fire_red_retroarch_interfacing::write_to_retroarch(&socket, mon_addr + 28, &payload) {
+                tracing::warn!("change_move: write failed for party[{party_position}]");
+                return false;
+            }
+            tracing::info!(
+                "change_move: party[{party_position}] slot {slot} → move_id={move_id}"
+            );
+            true
+        }
+    }
+}
+
 /// Reads all four bag pockets from the player's SaveBlock1 and returns a
 /// [`BagPockets`] with quantities already XOR-decrypted.
 ///
@@ -2286,8 +2640,9 @@ pub fn read_bag_pockets() -> Option<BagPockets> {
 mod tests {
     use super::{
         ascii_to_gba, compute_change_gender, compute_change_held_item,
-        compute_change_nature, compute_change_species, compute_give_item_write,
-        compute_set_ability_bit, compute_take_item_write, encode_nickname, is_shiny,
+        compute_change_move, compute_change_nature, compute_change_species,
+        compute_give_item_write, compute_restore_pp, compute_set_ability_bit,
+        compute_set_friendship, compute_take_item_write, encode_nickname, is_shiny,
         ChangeGenderOutcome, ChangeNatureOutcome, ChangeSpeciesOutcome, TakeItemWrite,
         ITEMS_POCKET_SLOTS, MAX_ITEM_QTY,
     };
@@ -3250,6 +3605,190 @@ mod tests {
             }
             ChangeNatureOutcome::AlreadyMatches => panic!("expected Write"),
         }
+    }
+
+    // ── compute_restore_pp tests ──────────────────────────────────────────────
+
+    /// Builds a minimal ROM-like byte slice where move `move_id` has `base_pp`
+    /// at the expected offset within gBattleMoves (12 bytes/entry, PP at byte 4).
+    fn make_fake_rom(move_data_addr: usize, move_id: u16, base_pp: u8) -> Vec<u8> {
+        let off = move_data_addr + move_id as usize * 12 + 4;
+        let mut rom = vec![0u8; off + 1];
+        rom[off] = base_pp;
+        rom
+    }
+
+    #[test]
+    fn restore_pp_empty_slot_returns_none() {
+        let rom = vec![0u8; 1];
+        assert!(compute_restore_pp(&vec![0u8; 80], &rom, 0).is_none());
+    }
+
+    #[test]
+    fn restore_pp_already_full_returns_none() {
+        // p%24=0 → Growth at 0, Attacks at 1 (offset 12)
+        let p: u32 = 24;
+        let move_data_addr: usize = 0x1000;
+        let move_id: u16 = 5;
+        let base_pp: u8 = 35;
+        let rom = make_fake_rom(move_data_addr, move_id, base_pp);
+
+        let mut dec = [0u8; 48];
+        // Attacks at pos 1 → offset 12
+        dec[12..14].copy_from_slice(&move_id.to_le_bytes()); // move0 id
+        dec[20] = base_pp; // current PP already at max (no pp-up bonus)
+        let data = make_mon_data(p, 0, dec);
+        assert!(compute_restore_pp(&data, &rom, move_data_addr).is_none());
+    }
+
+    #[test]
+    fn restore_pp_restores_depleted_pp() {
+        let p: u32 = 24; // p%24=0 → Attacks at substructure 1, offset 12
+        let move_data_addr: usize = 0x1000;
+        let move_id: u16 = 5;
+        let base_pp: u8 = 35;
+        let rom = make_fake_rom(move_data_addr, move_id, base_pp);
+
+        let mut dec = [0u8; 48];
+        dec[12..14].copy_from_slice(&move_id.to_le_bytes());
+        dec[20] = 0; // fully depleted
+        let data = make_mon_data(p, 0, dec);
+
+        let (_, encrypted) = compute_restore_pp(&data, &rom, move_data_addr).unwrap();
+        let new_dec = decrypt_block(&encrypted, p, 0);
+        assert_eq!(new_dec[20], base_pp, "PP should be restored to base_pp");
+    }
+
+    #[test]
+    fn restore_pp_skips_empty_move_slots() {
+        let p: u32 = 24; // Attacks at offset 12
+        let move_data_addr: usize = 0x1000;
+        let rom = make_fake_rom(move_data_addr, 5, 35);
+
+        let mut dec = [0u8; 48];
+        // Only slot 0 has a move; slots 1-3 are empty (move_id=0)
+        dec[12..14].copy_from_slice(&5u16.to_le_bytes());
+        dec[20] = 10; // below max
+
+        let data = make_mon_data(p, 0, dec);
+        let (_, encrypted) = compute_restore_pp(&data, &rom, move_data_addr).unwrap();
+        let new_dec = decrypt_block(&encrypted, p, 0);
+        // slots 1-3 PP bytes should remain 0
+        assert_eq!(new_dec[21], 0);
+        assert_eq!(new_dec[22], 0);
+        assert_eq!(new_dec[23], 0);
+    }
+
+    // ── compute_set_friendship tests ──────────────────────────────────────────
+
+    #[test]
+    fn set_friendship_empty_slot_returns_none() {
+        assert!(compute_set_friendship(&vec![0u8; 80], 200).is_none());
+    }
+
+    #[test]
+    fn set_friendship_already_same_returns_none() {
+        let p: u32 = 1; // Growth at offset 0
+        let mut dec = [0u8; 48];
+        dec[9] = 200;
+        let data = make_mon_data(p, 0, dec);
+        assert!(compute_set_friendship(&data, 200).is_none());
+    }
+
+    #[test]
+    fn set_friendship_updates_friendship_byte() {
+        let p: u32 = 1; // Growth at offset 0
+        let mut dec = [0u8; 48];
+        dec[9] = 50;
+        let data = make_mon_data(p, 0, dec);
+        let (_, encrypted) = compute_set_friendship(&data, 255).unwrap();
+        let new_dec = decrypt_block(&encrypted, p, 0);
+        assert_eq!(new_dec[9], 255);
+        // species (g_off+0) should be unchanged
+        assert_eq!(u16::from_le_bytes([new_dec[0], new_dec[1]]), 0);
+    }
+
+    #[test]
+    fn set_friendship_non_zero_growth_index() {
+        // p%24=6 → SUBSTRUCTURE_ORDER[6]=[1,0,2,3] → Growth at pos 1, offset 12
+        let p: u32 = 30;
+        let mut dec = [0u8; 48];
+        dec[12 + 9] = 100;
+        let data = make_mon_data(p, 0, dec);
+        let (_, encrypted) = compute_set_friendship(&data, 0).unwrap();
+        let new_dec = decrypt_block(&encrypted, p, 0);
+        assert_eq!(new_dec[12 + 9], 0);
+        assert_eq!(new_dec[9], 0, "other substructure bytes must be untouched");
+    }
+
+    // ── compute_change_move tests ─────────────────────────────────────────────
+
+    #[test]
+    fn change_move_empty_slot_returns_none() {
+        let rom = vec![0u8; 1];
+        assert!(compute_change_move(&vec![0u8; 80], 0, 1, &rom, 0).is_none());
+    }
+
+    #[test]
+    fn change_move_already_same_returns_none() {
+        let p: u32 = 1; // Attacks at offset 12
+        let mut dec = [0u8; 48];
+        dec[12..14].copy_from_slice(&7u16.to_le_bytes()); // slot 0 = move 7
+        let data = make_mon_data(p, 0, dec);
+        let rom = vec![0u8; 100];
+        assert!(compute_change_move(&data, 0, 7, &rom, 0).is_none());
+    }
+
+    #[test]
+    fn change_move_sets_move_id_and_pp() {
+        // p%24=1 → SUBSTRUCTURE_ORDER[1]=[0,1,3,2] → Attacks at pos 1, offset 12
+        let p: u32 = 1;
+        let move_data_addr: usize = 0x1000;
+        let move_id: u16 = 33; // Tackle (base PP = 35 in Gen III)
+        let base_pp: u8  = 35;
+        let rom = make_fake_rom(move_data_addr, move_id, base_pp);
+
+        let dec = [0u8; 48];
+        let data = make_mon_data(p, 0, dec);
+        let (_, encrypted) = compute_change_move(&data, 0, move_id, &rom, move_data_addr).unwrap();
+        let new_dec = decrypt_block(&encrypted, p, 0);
+        let stored_move = u16::from_le_bytes([new_dec[12], new_dec[13]]);
+        assert_eq!(stored_move, move_id);
+        assert_eq!(new_dec[20], base_pp, "PP should equal base PP (no PP-Up bonus)");
+    }
+
+    #[test]
+    fn change_move_clears_slot_with_zero_move_id() {
+        let p: u32 = 1; // Attacks at offset 12
+        let move_data_addr: usize = 0x1000;
+        let mut dec = [0u8; 48];
+        dec[12..14].copy_from_slice(&5u16.to_le_bytes());
+        dec[20] = 30;
+        let data = make_mon_data(p, 0, dec);
+        let rom = make_fake_rom(move_data_addr, 5, 30);
+        let (_, encrypted) = compute_change_move(&data, 0, 0, &rom, move_data_addr).unwrap();
+        let new_dec = decrypt_block(&encrypted, p, 0);
+        let stored_move = u16::from_le_bytes([new_dec[12], new_dec[13]]);
+        assert_eq!(stored_move, 0);
+        assert_eq!(new_dec[20], 0, "PP should be 0 for empty slot");
+    }
+
+    #[test]
+    fn change_move_slot3_correct_offset() {
+        // p%24=0 → Attacks at pos 1, offset 12. Slot 3 → move at a_off+6, PP at a_off+11
+        let p: u32 = 24;
+        let move_data_addr: usize = 0x2000;
+        let move_id: u16 = 99;
+        let base_pp: u8  = 10;
+        let rom = make_fake_rom(move_data_addr, move_id, base_pp);
+
+        let dec = [0u8; 48];
+        let data = make_mon_data(p, 0, dec);
+        let (_, encrypted) = compute_change_move(&data, 3, move_id, &rom, move_data_addr).unwrap();
+        let new_dec = decrypt_block(&encrypted, p, 0);
+        let stored_move = u16::from_le_bytes([new_dec[12 + 6], new_dec[12 + 7]]);
+        assert_eq!(stored_move, move_id);
+        assert_eq!(new_dec[12 + 11], base_pp);
     }
 
     // ── live RetroArch integration ────────────────────────────────────────────

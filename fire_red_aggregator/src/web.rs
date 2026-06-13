@@ -2182,6 +2182,131 @@ async fn api_change_nature(
     (StatusCode::OK, format!("queued change_nature party_position={party_position} nature={nature} for slot {index}"))
 }
 
+/// `POST /api/slot/:index/restore_pp` — restore all move PP to current maximums.
+///
+/// Body: `{ "party_position": <u8 0–5> }`.
+///
+/// Decrypts the Attacks and Growth substructures, computes maximum PP for each
+/// equipped move slot (base PP + PP-Up bonus), and writes the result back.
+/// Personality, nature, shiny status, and all other data are untouched.
+async fn api_restore_pp(
+    State(state): State<WebState>,
+    Path(index): Path<usize>,
+    axum::Json(body): axum::Json<serde_json::Value>,
+) -> impl IntoResponse {
+    if !state.allow_injections {
+        return (StatusCode::FORBIDDEN, "injection commands are disabled".to_string());
+    }
+    let slots = state.live_slots.lock_or_recover().clone();
+    let slot = match slots.get(index) {
+        Some(s) => s.clone(),
+        None    => return (StatusCode::NOT_FOUND, "slot index out of range".to_string()),
+    };
+    if slot.state.lock_or_recover().is_none() {
+        return (StatusCode::SERVICE_UNAVAILABLE, "slot not connected".to_string());
+    }
+    let party_position = match body["party_position"].as_u64().and_then(|v| u8::try_from(v).ok()) {
+        Some(v) if v < 6 => v,
+        _ => return (StatusCode::BAD_REQUEST, "party_position must be 0–5".to_string()),
+    };
+    slot.command_queue
+        .lock_or_recover()
+        .push_back(ClientMessage::RestorePp { party_position });
+    slot.injection_events.lock_or_recover().push_back(serde_json::json!({
+        "at": now_secs(), "kind": "restore_pp",
+        "label": format!("Restored party[{party_position}] PP"),
+    }));
+    (StatusCode::OK, format!("queued restore_pp party_position={party_position} for slot {index}"))
+}
+
+/// `POST /api/slot/:index/set_friendship` — set the friendship (happiness) byte.
+///
+/// Body: `{ "party_position": <u8 0–5>, "friendship": <u8 0–255> }`.
+///
+/// Common values: 0 = min (max Frustration damage), 255 = max (Happiness
+/// evolutions trigger, max Return damage).
+async fn api_set_friendship(
+    State(state): State<WebState>,
+    Path(index): Path<usize>,
+    axum::Json(body): axum::Json<serde_json::Value>,
+) -> impl IntoResponse {
+    if !state.allow_injections {
+        return (StatusCode::FORBIDDEN, "injection commands are disabled".to_string());
+    }
+    let slots = state.live_slots.lock_or_recover().clone();
+    let slot = match slots.get(index) {
+        Some(s) => s.clone(),
+        None    => return (StatusCode::NOT_FOUND, "slot index out of range".to_string()),
+    };
+    if slot.state.lock_or_recover().is_none() {
+        return (StatusCode::SERVICE_UNAVAILABLE, "slot not connected".to_string());
+    }
+    let party_position = match body["party_position"].as_u64().and_then(|v| u8::try_from(v).ok()) {
+        Some(v) if v < 6 => v,
+        _ => return (StatusCode::BAD_REQUEST, "party_position must be 0–5".to_string()),
+    };
+    let friendship = match body["friendship"].as_u64().and_then(|v| u8::try_from(v).ok()) {
+        Some(v) => v,
+        None    => return (StatusCode::BAD_REQUEST, "friendship must be 0–255".to_string()),
+    };
+    slot.command_queue
+        .lock_or_recover()
+        .push_back(ClientMessage::SetFriendship { party_position, friendship });
+    slot.injection_events.lock_or_recover().push_back(serde_json::json!({
+        "at": now_secs(), "kind": "set_friendship",
+        "label": format!("party[{party_position}] friendship → {friendship}"),
+    }));
+    (StatusCode::OK, format!("queued set_friendship party_position={party_position} friendship={friendship} for slot {index}"))
+}
+
+/// `POST /api/slot/:index/change_move` — replace a move slot.
+///
+/// Body: `{ "party_position": <u8 0–5>, "slot": <u8 0–3>, "move_id": <u16> }`.
+///
+/// PP is set to the new move's maximum (base PP + existing PP-Up bonus).
+/// Use `move_id = 0` to clear the slot.
+async fn api_change_move(
+    State(state): State<WebState>,
+    Path(index): Path<usize>,
+    axum::Json(body): axum::Json<serde_json::Value>,
+) -> impl IntoResponse {
+    if !state.allow_injections {
+        return (StatusCode::FORBIDDEN, "injection commands are disabled".to_string());
+    }
+    let slots = state.live_slots.lock_or_recover().clone();
+    let slot = match slots.get(index) {
+        Some(s) => s.clone(),
+        None    => return (StatusCode::NOT_FOUND, "slot index out of range".to_string()),
+    };
+    if slot.state.lock_or_recover().is_none() {
+        return (StatusCode::SERVICE_UNAVAILABLE, "slot not connected".to_string());
+    }
+    let party_position = match body["party_position"].as_u64().and_then(|v| u8::try_from(v).ok()) {
+        Some(v) if v < 6 => v,
+        _ => return (StatusCode::BAD_REQUEST, "party_position must be 0–5".to_string()),
+    };
+    let move_slot = match body["slot"].as_u64().and_then(|v| u8::try_from(v).ok()) {
+        Some(v) if v <= 3 => v,
+        _ => return (StatusCode::BAD_REQUEST, "slot must be 0–3".to_string()),
+    };
+    let move_id = match body["move_id"].as_u64().and_then(|v| u16::try_from(v).ok()) {
+        Some(v) => v,
+        None    => return (StatusCode::BAD_REQUEST, "move_id must be a u16".to_string()),
+    };
+    slot.command_queue
+        .lock_or_recover()
+        .push_back(ClientMessage::ChangeMove { party_position, slot: move_slot, move_id });
+    let label = if move_id == 0 {
+        format!("Cleared party[{party_position}] move slot {move_slot}")
+    } else {
+        format!("party[{party_position}] move {move_slot} → move_id {move_id}")
+    };
+    slot.injection_events.lock_or_recover().push_back(serde_json::json!({
+        "at": now_secs(), "kind": "change_move", "label": label,
+    }));
+    (StatusCode::OK, format!("queued change_move party_position={party_position} slot={move_slot} move_id={move_id} for slot {index}"))
+}
+
 /// Broadcasts `end_run` or `new_run` to all connected tracker slots.
 async fn api_command(
     State(state): State<WebState>,
@@ -2278,6 +2403,9 @@ pub fn run(live_slots: SharedSlots, port: u16, db_conn: Option<String>, testing:
             .route("/api/slot/:index/change_held_item", post(api_change_held_item))
             .route("/api/slot/:index/cure_status", post(api_cure_status))
             .route("/api/slot/:index/change_nature", post(api_change_nature))
+            .route("/api/slot/:index/restore_pp", post(api_restore_pp))
+            .route("/api/slot/:index/set_friendship", post(api_set_friendship))
+            .route("/api/slot/:index/change_move", post(api_change_move))
             .route("/api/bot/:index", get(api_bot_summary))
             .route("/api/command/:cmd", post(api_command))
             .route("/api/db/query", post(api_db_query))

@@ -104,6 +104,7 @@ pub struct RomAddresses {
     pub ability_names_addr: usize,
     pub item_data_addr:     usize,
     pub base_stats_addr:    usize,
+    pub move_data_addr:     usize,
 
     // GBA bus addresses in EWRAM (0x02xxxxxx)
     pub party_size_addr:         usize,
@@ -140,6 +141,7 @@ const FIRERED_USA_REV1: RomAddresses = RomAddresses {
     ability_names_addr:      0x24FCB0,
     item_data_addr:          0x3DB098,
     base_stats_addr:         0x2547F4,
+    move_data_addr:          0x250C04,
     party_size_addr:         0x02024029,
     party_addr:              0x02024284,
     player_data_addr:        0x02024298,
@@ -170,6 +172,7 @@ const LEAFGREEN_USA_REV1: RomAddresses = RomAddresses {
     ability_names_addr:      0x24FC8C,
     item_data_addr:          0x3DAED4,
     base_stats_addr:         0x2547D0,
+    move_data_addr:          0x250BE0,
     party_size_addr:         0x02024029,
     party_addr:              0x02024284,
     player_data_addr:        0x02024298,
