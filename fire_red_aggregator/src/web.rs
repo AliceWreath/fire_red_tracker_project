@@ -2002,6 +2002,186 @@ async fn api_change_gender(
     (StatusCode::OK, format!("queued change_gender party_position={party_position} target_gender={target_gender} for slot {index}"))
 }
 
+/// `POST /api/slot/:index/change_nickname` — rename a party Pokémon.
+///
+/// Body: `{ "party_position": <u8 0–5>, "nickname": <string, max 10 chars> }`.
+///
+/// The nickname is sent as UTF-8; the tracker converts it to GBA encoding and
+/// silently drops unmapped characters. Only the 10-byte nickname field is written;
+/// the encrypted data block (nature, IVs, etc.) is untouched.
+async fn api_change_nickname(
+    State(state): State<WebState>,
+    Path(index): Path<usize>,
+    axum::Json(body): axum::Json<serde_json::Value>,
+) -> impl IntoResponse {
+    if !state.allow_injections {
+        return (StatusCode::FORBIDDEN, "injection commands are disabled".to_string());
+    }
+    let slots = state.live_slots.lock_or_recover().clone();
+    let slot = match slots.get(index) {
+        Some(s) => s.clone(),
+        None    => return (StatusCode::NOT_FOUND, "slot index out of range".to_string()),
+    };
+    if slot.state.lock_or_recover().is_none() {
+        return (StatusCode::SERVICE_UNAVAILABLE, "slot not connected".to_string());
+    }
+    let party_position = match body["party_position"].as_u64().and_then(|v| u8::try_from(v).ok()) {
+        Some(v) if v < 6 => v,
+        _ => return (StatusCode::BAD_REQUEST, "party_position must be 0–5".to_string()),
+    };
+    let nickname = match body["nickname"].as_str() {
+        Some(s) if !s.is_empty() => s.to_string(),
+        _ => return (StatusCode::BAD_REQUEST, "nickname must be a non-empty string".to_string()),
+    };
+    slot.command_queue
+        .lock_or_recover()
+        .push_back(ClientMessage::ChangeNickname { party_position, nickname: nickname.clone() });
+    slot.injection_events.lock_or_recover().push_back(serde_json::json!({
+        "at": now_secs(), "kind": "change_nickname",
+        "label": format!("Renamed party[{party_position}] to \"{nickname}\""),
+    }));
+    (StatusCode::OK, format!("queued change_nickname party_position={party_position} for slot {index}"))
+}
+
+/// `POST /api/slot/:index/change_held_item` — set the held item of a party Pokémon.
+///
+/// Body: `{ "party_position": <u8 0–5>, "item_id": <u16> }`.
+/// Use `item_id = 0` to remove the held item.
+///
+/// Decrypts the Growth substructure, writes the held-item field, recalculates
+/// the checksum, and re-encrypts. All other data is preserved.
+async fn api_change_held_item(
+    State(state): State<WebState>,
+    Path(index): Path<usize>,
+    axum::Json(body): axum::Json<serde_json::Value>,
+) -> impl IntoResponse {
+    if !state.allow_injections {
+        return (StatusCode::FORBIDDEN, "injection commands are disabled".to_string());
+    }
+    let slots = state.live_slots.lock_or_recover().clone();
+    let slot = match slots.get(index) {
+        Some(s) => s.clone(),
+        None    => return (StatusCode::NOT_FOUND, "slot index out of range".to_string()),
+    };
+    if slot.state.lock_or_recover().is_none() {
+        return (StatusCode::SERVICE_UNAVAILABLE, "slot not connected".to_string());
+    }
+    let party_position = match body["party_position"].as_u64().and_then(|v| u8::try_from(v).ok()) {
+        Some(v) if v < 6 => v,
+        _ => return (StatusCode::BAD_REQUEST, "party_position must be 0–5".to_string()),
+    };
+    let item_id = match body["item_id"].as_u64().and_then(|v| u16::try_from(v).ok()) {
+        Some(v) => v,
+        None    => return (StatusCode::BAD_REQUEST, "item_id must be a u16 (0 = remove)".to_string()),
+    };
+    slot.command_queue
+        .lock_or_recover()
+        .push_back(ClientMessage::ChangeHeldItem { party_position, item_id });
+    let label = if item_id == 0 {
+        format!("Removed party[{party_position}] held item")
+    } else {
+        let rom = fire_red_rom_buffer::get_rom();
+        let item_name = fire_red_party_monitor::get_item_string_from_id(&rom, item_id);
+        format!("party[{party_position}] now holds {item_name}")
+    };
+    slot.injection_events.lock_or_recover().push_back(serde_json::json!({
+        "at": now_secs(), "kind": "change_held_item", "label": label,
+    }));
+    (StatusCode::OK, format!("queued change_held_item party_position={party_position} item_id={item_id} for slot {index}"))
+}
+
+/// `POST /api/slot/:index/cure_status` — clear the status condition of a party Pokémon.
+///
+/// Body: `{ "party_position": <u8 0–5> }`.
+///
+/// Writes 4 zero bytes to the status word (bytes 80–83 of the PartyPokemon
+/// struct), clearing burn, sleep turn counter, paralysis, poison, freeze,
+/// and Toxic stage in one write.
+async fn api_cure_status(
+    State(state): State<WebState>,
+    Path(index): Path<usize>,
+    axum::Json(body): axum::Json<serde_json::Value>,
+) -> impl IntoResponse {
+    if !state.allow_injections {
+        return (StatusCode::FORBIDDEN, "injection commands are disabled".to_string());
+    }
+    let slots = state.live_slots.lock_or_recover().clone();
+    let slot = match slots.get(index) {
+        Some(s) => s.clone(),
+        None    => return (StatusCode::NOT_FOUND, "slot index out of range".to_string()),
+    };
+    if slot.state.lock_or_recover().is_none() {
+        return (StatusCode::SERVICE_UNAVAILABLE, "slot not connected".to_string());
+    }
+    let party_position = match body["party_position"].as_u64().and_then(|v| u8::try_from(v).ok()) {
+        Some(v) if v < 6 => v,
+        _ => return (StatusCode::BAD_REQUEST, "party_position must be 0–5".to_string()),
+    };
+    slot.command_queue
+        .lock_or_recover()
+        .push_back(ClientMessage::CureStatus { party_position });
+    slot.injection_events.lock_or_recover().push_back(serde_json::json!({
+        "at": now_secs(), "kind": "cure_status",
+        "label": format!("Cured party[{party_position}] status"),
+    }));
+    (StatusCode::OK, format!("queued cure_status party_position={party_position} for slot {index}"))
+}
+
+/// `POST /api/slot/:index/change_nature` — change the nature of a party Pokémon.
+///
+/// Body: `{ "party_position": <u8 0–5>, "nature": <u8 0–24> }`.
+///
+/// Adjusts the low byte of the personality to satisfy `personality % 25 ==
+/// nature` while preserving the current gender (for species with
+/// personality-derived gender) and shiny status. Substructures are rearranged
+/// when `personality % 24` changes. Returns `200` with an explanatory message
+/// if no single low byte satisfies all constraints simultaneously.
+///
+/// Nature indices: 0=Hardy 1=Lonely 2=Brave 3=Adamant 4=Naughty 5=Bold
+/// 6=Docile 7=Relaxed 8=Impish 9=Lax 10=Timid 11=Hasty 12=Serious 13=Jolly
+/// 14=Naive 15=Modest 16=Mild 17=Quiet 18=Bashful 19=Rash 20=Calm 21=Gentle
+/// 22=Sassy 23=Careful 24=Quirky
+async fn api_change_nature(
+    State(state): State<WebState>,
+    Path(index): Path<usize>,
+    axum::Json(body): axum::Json<serde_json::Value>,
+) -> impl IntoResponse {
+    if !state.allow_injections {
+        return (StatusCode::FORBIDDEN, "injection commands are disabled".to_string());
+    }
+    let slots = state.live_slots.lock_or_recover().clone();
+    let slot = match slots.get(index) {
+        Some(s) => s.clone(),
+        None    => return (StatusCode::NOT_FOUND, "slot index out of range".to_string()),
+    };
+    if slot.state.lock_or_recover().is_none() {
+        return (StatusCode::SERVICE_UNAVAILABLE, "slot not connected".to_string());
+    }
+    let party_position = match body["party_position"].as_u64().and_then(|v| u8::try_from(v).ok()) {
+        Some(v) if v < 6 => v,
+        _ => return (StatusCode::BAD_REQUEST, "party_position must be 0–5".to_string()),
+    };
+    let nature = match body["nature"].as_u64().and_then(|v| u8::try_from(v).ok()) {
+        Some(v) if v <= 24 => v,
+        _ => return (StatusCode::BAD_REQUEST, "nature must be 0–24".to_string()),
+    };
+    const NATURE_NAMES: [&str; 25] = [
+        "Hardy", "Lonely", "Brave", "Adamant", "Naughty",
+        "Bold", "Docile", "Relaxed", "Impish", "Lax",
+        "Timid", "Hasty", "Serious", "Jolly", "Naive",
+        "Modest", "Mild", "Quiet", "Bashful", "Rash",
+        "Calm", "Gentle", "Sassy", "Careful", "Quirky",
+    ];
+    slot.command_queue
+        .lock_or_recover()
+        .push_back(ClientMessage::ChangeNature { party_position, target_nature: nature });
+    slot.injection_events.lock_or_recover().push_back(serde_json::json!({
+        "at": now_secs(), "kind": "change_nature",
+        "label": format!("Party[{party_position}] → {} nature", NATURE_NAMES[nature as usize]),
+    }));
+    (StatusCode::OK, format!("queued change_nature party_position={party_position} nature={nature} for slot {index}"))
+}
+
 /// Broadcasts `end_run` or `new_run` to all connected tracker slots.
 async fn api_command(
     State(state): State<WebState>,
@@ -2094,6 +2274,10 @@ pub fn run(live_slots: SharedSlots, port: u16, db_conn: Option<String>, testing:
             .route("/api/slot/:index/change_ability", post(api_change_ability))
             .route("/api/slot/:index/change_gender", post(api_change_gender))
             .route("/api/slot/:index/make_shiny", post(api_make_shiny))
+            .route("/api/slot/:index/change_nickname", post(api_change_nickname))
+            .route("/api/slot/:index/change_held_item", post(api_change_held_item))
+            .route("/api/slot/:index/cure_status", post(api_cure_status))
+            .route("/api/slot/:index/change_nature", post(api_change_nature))
             .route("/api/bot/:index", get(api_bot_summary))
             .route("/api/command/:cmd", post(api_command))
             .route("/api/db/query", post(api_db_query))

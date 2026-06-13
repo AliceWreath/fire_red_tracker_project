@@ -148,6 +148,18 @@ pub fn handle_client(
                 Ok(ClientMessage::ChangeGender { party_position, target_gender }) => {
                     crate::game::change_gender(party_position as usize, target_gender);
                 }
+                Ok(ClientMessage::ChangeNickname { party_position, nickname }) => {
+                    crate::game::change_nickname(party_position as usize, &nickname);
+                }
+                Ok(ClientMessage::ChangeHeldItem { party_position, item_id }) => {
+                    crate::game::change_held_item(party_position as usize, item_id);
+                }
+                Ok(ClientMessage::CureStatus { party_position }) => {
+                    crate::game::cure_status(party_position as usize);
+                }
+                Ok(ClientMessage::ChangeNature { party_position, target_nature }) => {
+                    crate::game::change_nature(party_position as usize, target_nature);
+                }
                 Err(_) => break,
             }
         }

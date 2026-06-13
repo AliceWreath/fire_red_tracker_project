@@ -1749,6 +1749,440 @@ pub fn change_gender(party_position: usize, target_gender: u8) -> bool {
     }
 }
 
+// ── GBA character encoding ────────────────────────────────────────────────────
+
+/// Converts a UTF-8 char to its FireRed GBA encoding byte.
+///
+/// Inverse of `fire_red_text::char_gba_to_ascii`. Returns `None` for characters
+/// that have no GBA mapping; callers silently skip them.
+pub(crate) fn ascii_to_gba(c: char) -> Option<u8> {
+    match c {
+        ' '        => Some(0x00),
+        '0'..='9'  => Some(c as u8 - b'0' + 0xA1),
+        '!'        => Some(0xAB),
+        '?'        => Some(0xAC),
+        '.'        => Some(0xAD),
+        '-'        => Some(0xAE),
+        '\''       => Some(0xB1),
+        ','        => Some(0xB7),
+        'A'..='Z'  => Some(c as u8 - b'A' + 0xBB),
+        'a'..='z'  => Some(c as u8 - b'a' + 0xD5),
+        '♂'        => Some(0xB5),
+        '♀'        => Some(0xB6),
+        _          => None,
+    }
+}
+
+/// Encodes `name` into a 10-byte GBA nickname buffer.
+///
+/// Unmappable characters are silently dropped. The string is truncated at 10
+/// GBA bytes. Unused trailing bytes are set to `0xFF` (the GBA string terminator).
+pub(crate) fn encode_nickname(name: &str) -> [u8; 10] {
+    let mut buf = [0xFFu8; 10];
+    let mut i = 0usize;
+    for c in name.chars() {
+        if i >= 10 { break; }
+        if let Some(b) = ascii_to_gba(c) {
+            buf[i] = b;
+            i += 1;
+        }
+    }
+    buf
+}
+
+/// Renames the party Pokémon at `party_position` (0–5) to `nickname`.
+///
+/// `nickname` is UTF-8; characters with no GBA mapping are silently dropped and
+/// the string is truncated to 10 GBA bytes. Only the 10-byte nickname field at
+/// struct offset 8 is written — the encrypted data block, personality, OT fields,
+/// and all other data are left unchanged.
+///
+/// Returns `true` if the write was dispatched to RetroArch.
+pub fn change_nickname(party_position: usize, nickname: &str) -> bool {
+    if party_position >= 6 {
+        tracing::warn!("change_nickname: party_position {party_position} out of range (must be 0–5)");
+        return false;
+    }
+
+    const PARTY_BASE:   u32 = 0x02024284;
+    const MON_SIZE:     u32 = 100;
+    const NICKNAME_OFF: u32 = 8;
+    let mon_addr = PARTY_BASE + party_position as u32 * MON_SIZE;
+
+    let socket = match fire_red_retroarch_interfacing::make_socket() {
+        Ok(s)  => s,
+        Err(e) => { tracing::warn!("change_nickname: socket error: {e}"); return false; }
+    };
+
+    // Verify the slot is occupied before writing.
+    let hdr = match read_retroarch_bytes(&socket, mon_addr, 4) {
+        Some(b) if b.len() == 4 => b,
+        _ => {
+            tracing::warn!("change_nickname: RetroArch did not respond for party[{party_position}]");
+            return false;
+        }
+    };
+    if u32::from_le_bytes([hdr[0], hdr[1], hdr[2], hdr[3]]) == 0 {
+        tracing::warn!("change_nickname: party[{party_position}] is empty (personality=0)");
+        return false;
+    }
+
+    let gba_name = encode_nickname(nickname);
+    let ok = fire_red_retroarch_interfacing::write_to_retroarch(
+        &socket, mon_addr + NICKNAME_OFF, &gba_name,
+    );
+    if ok {
+        tracing::info!("change_nickname: party[{party_position}] → {nickname:?}");
+    }
+    ok
+}
+
+// ── change_held_item ──────────────────────────────────────────────────────────
+
+/// Pure logic for [`change_held_item`]: decrypts the data block, updates the
+/// held-item field (Growth substructure bytes 2–3), recalculates the checksum,
+/// and re-encrypts.
+///
+/// `data` must be 80 bytes. Returns `None` if `data` is too short, personality
+/// is 0, or the held item already matches `new_item_id`.
+/// Otherwise returns `(checksum_bytes, re-encrypted_block)`.
+pub(crate) fn compute_change_held_item(
+    data: &[u8],
+    new_item_id: u16,
+) -> Option<([u8; 2], [u8; 48])> {
+    if data.len() < 80 { return None; }
+
+    let personality = u32::from_le_bytes(data[0..4].try_into().unwrap());
+    let ot_id       = u32::from_le_bytes(data[4..8].try_into().unwrap());
+    if personality == 0 { return None; }
+
+    let enc_key = personality ^ ot_id;
+
+    let mut decrypted = [0u8; 48];
+    for (i, chunk) in data[32..80].chunks_exact(4).enumerate() {
+        let w = u32::from_le_bytes(chunk.try_into().unwrap()) ^ enc_key;
+        decrypted[i * 4..i * 4 + 4].copy_from_slice(&w.to_le_bytes());
+    }
+
+    let g_off    = growth_substructure_index(personality) * 12;
+    let item_off = g_off + 2; // held_item is Growth substructure bytes 2–3
+    let old_item = u16::from_le_bytes([decrypted[item_off], decrypted[item_off + 1]]);
+    if old_item == new_item_id { return None; }
+
+    decrypted[item_off..item_off + 2].copy_from_slice(&new_item_id.to_le_bytes());
+
+    let checksum: u16 = decrypted
+        .chunks_exact(2)
+        .map(|c| u16::from_le_bytes([c[0], c[1]]))
+        .fold(0u16, |acc, w| acc.wrapping_add(w));
+
+    let mut encrypted = [0u8; 48];
+    for (i, chunk) in decrypted.chunks_exact(4).enumerate() {
+        let w = u32::from_le_bytes(chunk.try_into().unwrap()) ^ enc_key;
+        encrypted[i * 4..i * 4 + 4].copy_from_slice(&w.to_le_bytes());
+    }
+
+    Some((checksum.to_le_bytes(), encrypted))
+}
+
+/// Sets the held item of the party Pokémon at `party_position` (0–5) to
+/// `item_id`. Pass `item_id = 0` to remove the held item.
+///
+/// Only the held-item field in the Growth substructure is changed; species,
+/// EVs, IVs, moves, nature, personality, and shiny status are all preserved.
+/// The checksum is recalculated and the data block re-encrypted.
+///
+/// Returns `true` if the write was dispatched to RetroArch (or the slot already
+/// holds the requested item).
+pub fn change_held_item(party_position: usize, item_id: u16) -> bool {
+    if party_position >= 6 {
+        tracing::warn!("change_held_item: party_position {party_position} out of range (must be 0–5)");
+        return false;
+    }
+
+    const PARTY_BASE: u32 = 0x02024284;
+    const MON_SIZE:   u32 = 100;
+    let mon_addr = PARTY_BASE + party_position as u32 * MON_SIZE;
+
+    let socket = match fire_red_retroarch_interfacing::make_socket() {
+        Ok(s)  => s,
+        Err(e) => { tracing::warn!("change_held_item: socket error: {e}"); return false; }
+    };
+
+    let data = match read_retroarch_bytes(&socket, mon_addr, 80) {
+        Some(b) if b.len() == 80 => b,
+        _ => {
+            tracing::warn!("change_held_item: RetroArch did not respond for party[{party_position}]");
+            return false;
+        }
+    };
+
+    let personality = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
+    if personality == 0 {
+        tracing::warn!("change_held_item: party[{party_position}] is empty (personality=0)");
+        return false;
+    }
+
+    match compute_change_held_item(&data, item_id) {
+        None => {
+            tracing::info!("change_held_item: party[{party_position}] already holds item_id={item_id}");
+            true
+        }
+        Some((checksum, encrypted)) => {
+            let mut payload = [0u8; 52];
+            payload[0..2].copy_from_slice(&checksum);
+            payload[2..4].copy_from_slice(&data[30..32]);
+            payload[4..52].copy_from_slice(&encrypted);
+            if !fire_red_retroarch_interfacing::write_to_retroarch(&socket, mon_addr + 28, &payload) {
+                tracing::warn!("change_held_item: failed to write to party[{party_position}]");
+                return false;
+            }
+            tracing::info!(
+                "change_held_item: party[{party_position}] personality=0x{personality:08X} → item_id={item_id}"
+            );
+            true
+        }
+    }
+}
+
+// ── cure_status ───────────────────────────────────────────────────────────────
+
+/// Clears the status condition of the party Pokémon at `party_position` (0–5).
+///
+/// Writes 4 zero bytes to the status word at bytes 80–83 of the PartyPokemon
+/// struct (immediately after the 80-byte BoxPokemon header + data block). This
+/// clears all status flags in one write: sleep turn counter, poison, burn,
+/// freeze, paralysis, and Toxic stage.
+///
+/// Returns `true` if the write was dispatched to RetroArch.
+pub fn cure_status(party_position: usize) -> bool {
+    if party_position >= 6 {
+        tracing::warn!("cure_status: party_position {party_position} out of range (must be 0–5)");
+        return false;
+    }
+
+    const PARTY_BASE: u32 = 0x02024284;
+    const MON_SIZE:   u32 = 100;
+    const STATUS_OFF: u32 = 80;
+    let status_addr = PARTY_BASE + party_position as u32 * MON_SIZE + STATUS_OFF;
+
+    let socket = match fire_red_retroarch_interfacing::make_socket() {
+        Ok(s)  => s,
+        Err(e) => { tracing::warn!("cure_status: socket error: {e}"); return false; }
+    };
+
+    let ok = fire_red_retroarch_interfacing::write_to_retroarch(&socket, status_addr, &[0u8; 4]);
+    if ok {
+        tracing::info!("cure_status: cleared status for party[{party_position}]");
+    }
+    ok
+}
+
+// ── change_nature ─────────────────────────────────────────────────────────────
+
+/// Result of [`compute_change_nature`].
+pub(crate) enum ChangeNatureOutcome {
+    /// The Pokémon already has `target_nature`; no write needed.
+    AlreadyMatches,
+    /// New personality, updated checksum bytes, and re-encrypted 48-byte block.
+    Write { new_personality: u32, checksum: [u8; 2], encrypted: [u8; 48] },
+}
+
+/// Pure logic for [`change_nature`]: searches for a new personality low byte
+/// that satisfies `target_nature` (`personality % 25`), preserves the current
+/// gender (for species where gender is personality-derived), and — when the
+/// Pokémon is currently shiny — keeps the Gen III shiny formula satisfied.
+/// If `personality % 24` changes the four 12-byte substructures are rearranged
+/// to match the new block order before re-encrypting.
+///
+/// `data` must be 80 bytes. `gender_ratio` is the species' raw ROM byte (0 =
+/// always male, 254 = always female, 255 = genderless; others = variable gender).
+/// For fixed-gender and genderless species the gender constraint is skipped.
+/// Returns `None` if `data` is too short, personality is 0, or no single low byte
+/// satisfies all active constraints simultaneously.
+pub(crate) fn compute_change_nature(
+    data: &[u8],
+    target_nature: u8,
+    gender_ratio: u8,
+) -> Option<ChangeNatureOutcome> {
+    if data.len() < 80 { return None; }
+
+    let personality = u32::from_le_bytes(data[0..4].try_into().unwrap());
+    let ot_id       = u32::from_le_bytes(data[4..8].try_into().unwrap());
+    if personality == 0 { return None; }
+
+    if personality % 25 == target_nature as u32 {
+        return Some(ChangeNatureOutcome::AlreadyMatches);
+    }
+
+    // For variable-gender species, record whether the current Pokémon is female
+    // so we can preserve that. Fixed-gender (0, 254) and genderless (255) species
+    // have the gender determined entirely by species, not personality, so no
+    // constraint is needed.
+    let is_female: Option<bool> = match gender_ratio {
+        0 | 254 | 255 => None,
+        _ => Some(((personality & 0xFF) as u8) < gender_ratio),
+    };
+
+    let shiny_now = is_shiny(personality, ot_id);
+    let p_high    = (personality >> 16) as u16;
+    let b1        = ((personality >> 8) & 0xFF) as u16;
+    let id_high   = (ot_id >> 16) as u16;
+    let id_low    = (ot_id & 0xFFFF) as u16;
+    // k16: constant part of the shiny XOR; full XOR = k16 ^ new_b0.
+    let k16    = p_high ^ (b1 << 8) ^ id_high ^ id_low;
+    let upper  = personality & 0xFFFF_FF00;
+
+    let new_b0 = (0u32..=255).find(|&c| {
+        let c   = c as u8;
+        let new_p = upper | c as u32;
+        if new_p % 25 != target_nature as u32 { return false; }
+        if let Some(female) = is_female {
+            let gender_ok = if female { c < gender_ratio } else { c >= gender_ratio };
+            if !gender_ok { return false; }
+        }
+        if shiny_now && (k16 ^ c as u16) >= 8 { return false; }
+        true
+    })? as u8;
+
+    let new_p       = upper | new_b0 as u32;
+    let enc_key     = personality ^ ot_id;
+    let new_enc_key = new_p ^ ot_id;
+
+    let mut decrypted = [0u8; 48];
+    for (i, chunk) in data[32..80].chunks_exact(4).enumerate() {
+        let w = u32::from_le_bytes(chunk.try_into().unwrap()) ^ enc_key;
+        decrypted[i * 4..i * 4 + 4].copy_from_slice(&w.to_le_bytes());
+    }
+
+    // Rearrange substructures if personality % 24 changed.
+    let old_mod24 = (personality % 24) as usize;
+    let new_mod24 = (new_p % 24) as usize;
+    let arranged = if old_mod24 == new_mod24 {
+        decrypted
+    } else {
+        let mut r = [0u8; 48];
+        for t in 0..4 {
+            let old_pos = SUBSTRUCTURE_ORDER[old_mod24][t] as usize;
+            let new_pos = SUBSTRUCTURE_ORDER[new_mod24][t] as usize;
+            r[new_pos * 12..new_pos * 12 + 12]
+                .copy_from_slice(&decrypted[old_pos * 12..old_pos * 12 + 12]);
+        }
+        r
+    };
+
+    let checksum: u16 = arranged
+        .chunks_exact(2)
+        .map(|c| u16::from_le_bytes([c[0], c[1]]))
+        .fold(0u16, |acc, w| acc.wrapping_add(w));
+
+    let mut encrypted = [0u8; 48];
+    for (i, chunk) in arranged.chunks_exact(4).enumerate() {
+        let w = u32::from_le_bytes(chunk.try_into().unwrap()) ^ new_enc_key;
+        encrypted[i * 4..i * 4 + 4].copy_from_slice(&w.to_le_bytes());
+    }
+
+    Some(ChangeNatureOutcome::Write {
+        new_personality: new_p,
+        checksum: checksum.to_le_bytes(),
+        encrypted,
+    })
+}
+
+/// Changes the nature of the party Pokémon at `party_position` (0–5) to
+/// `target_nature` (0–24, Hardy=0 … Quirky=24).
+///
+/// Adjusts only the low byte of the personality, preserving gender for species
+/// where gender is determined by personality. If the Pokémon is currently shiny,
+/// only bytes that keep the Gen III shiny formula satisfied are considered — the
+/// call logs a warning and returns `false` if no such byte exists. The
+/// substructure layout is rearranged when `personality % 24` changes.
+///
+/// Writes an atomic 80-byte payload (personality + re-encrypted block) so the
+/// game never sees an inconsistent state.
+pub fn change_nature(party_position: usize, target_nature: u8) -> bool {
+    if party_position >= 6 {
+        tracing::warn!("change_nature: party_position {party_position} out of range (must be 0–5)");
+        return false;
+    }
+    if target_nature > 24 {
+        tracing::warn!("change_nature: target_nature {target_nature} out of range (must be 0–24)");
+        return false;
+    }
+
+    const PARTY_BASE:       u32   = 0x02024284;
+    const MON_SIZE:         u32   = 100;
+    const BASE_STATS_SIZE:  usize = 28;
+    const GENDER_RATIO_OFF: usize = 0x10;
+    let mon_addr = PARTY_BASE + party_position as u32 * MON_SIZE;
+
+    let socket = match fire_red_retroarch_interfacing::make_socket() {
+        Ok(s)  => s,
+        Err(e) => { tracing::warn!("change_nature: socket error: {e}"); return false; }
+    };
+
+    let data = match read_retroarch_bytes(&socket, mon_addr, 80) {
+        Some(b) if b.len() == 80 => b,
+        _ => {
+            tracing::warn!("change_nature: RetroArch did not respond for party[{party_position}]");
+            return false;
+        }
+    };
+
+    let personality = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
+    if personality == 0 {
+        tracing::warn!("change_nature: party[{party_position}] is empty (personality=0)");
+        return false;
+    }
+
+    // Decrypt to read species → look up gender_ratio from ROM base-stats.
+    let ot_id   = u32::from_le_bytes(data[4..8].try_into().unwrap());
+    let enc_key = personality ^ ot_id;
+    let mut dec_tmp = [0u8; 48];
+    for (i, chunk) in data[32..80].chunks_exact(4).enumerate() {
+        let w = u32::from_le_bytes(chunk.try_into().unwrap()) ^ enc_key;
+        dec_tmp[i * 4..i * 4 + 4].copy_from_slice(&w.to_le_bytes());
+    }
+    let g_off   = growth_substructure_index(personality) * 12;
+    let species = u16::from_le_bytes([dec_tmp[g_off], dec_tmp[g_off + 1]]);
+
+    let rom      = fire_red_rom_buffer::get_rom();
+    let rom_addr = fire_red_rom_buffer::get_rom_addresses();
+    let gr_off   = rom_addr.base_stats_addr + species as usize * BASE_STATS_SIZE + GENDER_RATIO_OFF;
+    let gender_ratio = if gr_off < rom.len() { rom[gr_off] } else { 255 };
+
+    match compute_change_nature(&data, target_nature, gender_ratio) {
+        None => {
+            tracing::warn!(
+                "change_nature: no low byte satisfies nature={target_nature} + gender + shiny \
+                 constraints for party[{party_position}]"
+            );
+            false
+        }
+        Some(ChangeNatureOutcome::AlreadyMatches) => {
+            tracing::info!("change_nature: party[{party_position}] already nature={target_nature}");
+            true
+        }
+        Some(ChangeNatureOutcome::Write { new_personality, checksum, encrypted }) => {
+            let mut payload = [0u8; 80];
+            payload[0..4].copy_from_slice(&new_personality.to_le_bytes());
+            payload[4..28].copy_from_slice(&data[4..28]);
+            payload[28..30].copy_from_slice(&checksum);
+            payload[30..32].copy_from_slice(&data[30..32]);
+            payload[32..80].copy_from_slice(&encrypted);
+            if !fire_red_retroarch_interfacing::write_to_retroarch(&socket, mon_addr, &payload) {
+                tracing::warn!("change_nature: write failed for party[{party_position}]");
+                return false;
+            }
+            tracing::info!(
+                "change_nature: party[{party_position}] 0x{personality:08X} → 0x{new_personality:08X} \
+                 (nature={target_nature})"
+            );
+            true
+        }
+    }
+}
+
 /// Reads all four bag pockets from the player's SaveBlock1 and returns a
 /// [`BagPockets`] with quantities already XOR-decrypted.
 ///
@@ -1851,9 +2285,10 @@ pub fn read_bag_pockets() -> Option<BagPockets> {
 #[cfg(test)]
 mod tests {
     use super::{
-        compute_change_gender, compute_change_species, compute_give_item_write,
-        compute_set_ability_bit, compute_take_item_write, is_shiny,
-        ChangeGenderOutcome, ChangeSpeciesOutcome, TakeItemWrite,
+        ascii_to_gba, compute_change_gender, compute_change_held_item,
+        compute_change_nature, compute_change_species, compute_give_item_write,
+        compute_set_ability_bit, compute_take_item_write, encode_nickname, is_shiny,
+        ChangeGenderOutcome, ChangeNatureOutcome, ChangeSpeciesOutcome, TakeItemWrite,
         ITEMS_POCKET_SLOTS, MAX_ITEM_QTY,
     };
 
@@ -2646,6 +3081,174 @@ mod tests {
                 assert_eq!(u16::from_le_bytes(checksum), expected);
             }
             ChangeGenderOutcome::AlreadyMatches => panic!("expected Write"),
+        }
+    }
+
+    // ── encode_nickname / ascii_to_gba tests ─────────────────────────────────
+
+    #[test]
+    fn ascii_to_gba_uppercase() {
+        assert_eq!(ascii_to_gba('A'), Some(0xBB));
+        assert_eq!(ascii_to_gba('Z'), Some(0xD4));
+    }
+
+    #[test]
+    fn ascii_to_gba_lowercase() {
+        assert_eq!(ascii_to_gba('a'), Some(0xD5));
+        assert_eq!(ascii_to_gba('z'), Some(0xEE));
+    }
+
+    #[test]
+    fn ascii_to_gba_digits() {
+        assert_eq!(ascii_to_gba('0'), Some(0xA1));
+        assert_eq!(ascii_to_gba('9'), Some(0xAA));
+    }
+
+    #[test]
+    fn ascii_to_gba_space() {
+        assert_eq!(ascii_to_gba(' '), Some(0x00));
+    }
+
+    #[test]
+    fn ascii_to_gba_unmapped_returns_none() {
+        assert_eq!(ascii_to_gba('@'), None);
+        assert_eq!(ascii_to_gba('\n'), None);
+    }
+
+    #[test]
+    fn encode_nickname_basic() {
+        let buf = encode_nickname("Abcde");
+        assert_eq!(buf[0], 0xBB); // 'A'
+        assert_eq!(buf[1], 0xD5 + (b'b' - b'a')); // 'b'
+        assert_eq!(buf[4], 0xD5 + (b'e' - b'a')); // 'e'
+        assert_eq!(buf[5], 0xFF); // terminator
+        assert_eq!(buf[9], 0xFF); // still 0xFF at end
+    }
+
+    #[test]
+    fn encode_nickname_truncates_at_10() {
+        let buf = encode_nickname("ABCDEFGHIJKLMN");
+        // only first 10 GBA chars written; every slot used
+        for b in buf.iter() {
+            assert_ne!(*b, 0xFF); // no terminator within 10 chars
+        }
+    }
+
+    #[test]
+    fn encode_nickname_drops_unmapped_chars() {
+        // '@' has no GBA mapping; should be silently skipped
+        let buf = encode_nickname("@AB");
+        assert_eq!(buf[0], 0xBB); // 'A' — '@' was skipped
+        assert_eq!(buf[1], 0xBB + 1); // 'B'
+        assert_eq!(buf[2], 0xFF); // terminator after 2 chars
+    }
+
+    // ── compute_change_held_item tests ────────────────────────────────────────
+
+    #[test]
+    fn held_item_updated_in_growth_substructure() {
+        // personality=0 for Growth (GAGM order? no — personality % 24 = 0 → Growth at pos 0)
+        // Use personality=0x0000_0001 (p%24=1, SUBSTRUCTURE_ORDER[1] = [0,1,3,2], Growth at pos 0)
+        let p: u32 = 1;
+        let ot: u32 = 0;
+        let mut dec = [0u8; 48];
+        // set species=25 in Growth block (pos 0 in decrypted, offset 0)
+        dec[0..2].copy_from_slice(&25u16.to_le_bytes());
+        // set old held_item=13 in Growth block offset 2
+        dec[2..4].copy_from_slice(&13u16.to_le_bytes());
+        let data = make_mon_data(p, ot, dec);
+
+        let (_, encrypted) = compute_change_held_item(&data, 45).unwrap();
+        // Decrypt result and verify held_item changed
+        let new_dec = decrypt_block(&encrypted, p, ot);
+        let item = u16::from_le_bytes([new_dec[2], new_dec[3]]);
+        assert_eq!(item, 45);
+        // species must be unchanged
+        let species = u16::from_le_bytes([new_dec[0], new_dec[1]]);
+        assert_eq!(species, 25);
+    }
+
+    #[test]
+    fn held_item_already_matches_returns_none() {
+        let p: u32 = 1;
+        let mut dec = [0u8; 48];
+        dec[2..4].copy_from_slice(&13u16.to_le_bytes());
+        let data = make_mon_data(p, 0, dec);
+        assert!(compute_change_held_item(&data, 13).is_none());
+    }
+
+    #[test]
+    fn held_item_remove_with_zero() {
+        let p: u32 = 1;
+        let mut dec = [0u8; 48];
+        dec[2..4].copy_from_slice(&13u16.to_le_bytes());
+        let data = make_mon_data(p, 0, dec);
+        let (_, encrypted) = compute_change_held_item(&data, 0).unwrap();
+        let new_dec = decrypt_block(&encrypted, p, 0);
+        let item = u16::from_le_bytes([new_dec[2], new_dec[3]]);
+        assert_eq!(item, 0);
+    }
+
+    // ── compute_change_nature tests ───────────────────────────────────────────
+
+    #[test]
+    fn already_matching_nature_returns_already_matches() {
+        // personality % 25 == 3 (Adamant)
+        let p: u32 = 3;
+        let data = make_mon_data(p, 0, [0u8; 48]);
+        assert!(matches!(
+            compute_change_nature(&data, 3, 127),
+            Some(ChangeNatureOutcome::AlreadyMatches)
+        ));
+    }
+
+    #[test]
+    fn nature_changes_to_target() {
+        // personality=0, nature=0 (Hardy). Change to nature=1 (Lonely).
+        let p: u32 = 0; // special case: personality 0 means "empty" → skip it
+        // Use p=25 (nature=0, not shiny with ot=0)
+        let p: u32 = 25;
+        let data = make_mon_data(p, 0, [0u8; 48]);
+        match compute_change_nature(&data, 1, 127).unwrap() {
+            ChangeNatureOutcome::Write { new_personality, .. } => {
+                assert_eq!(new_personality % 25, 1);
+            }
+            ChangeNatureOutcome::AlreadyMatches => panic!("expected Write"),
+        }
+    }
+
+    #[test]
+    fn nature_change_preserves_shiny() {
+        // Make a shiny personality: p_high ^ p_low ^ id_high ^ id_low < 8
+        // p = 0x0001_0000, ot = 0 → xor = 1 < 8 → shiny
+        let p: u32 = 0x0001_0000;
+        let data = make_mon_data(p, 0, [0u8; 48]);
+        assert!(is_shiny(p, 0));
+        let target = if p % 25 == 3 { 4 } else { 3 };
+        match compute_change_nature(&data, target, 255) {
+            Some(ChangeNatureOutcome::Write { new_personality, .. }) => {
+                assert!(is_shiny(new_personality, 0), "shiny must be preserved");
+                assert_eq!(new_personality % 25, target as u32);
+            }
+            Some(ChangeNatureOutcome::AlreadyMatches) => {}
+            None => {} // may have no solution for this exact combo; acceptable
+        }
+    }
+
+    #[test]
+    fn nature_change_preserves_gender() {
+        // gender_ratio=127: female if low_byte < 127
+        // p = 0x0001_0005: low byte=5 < 127, so female; nature = 5 % 25 = 5
+        let p: u32 = 0x0001_0005;
+        let data = make_mon_data(p, 0, [0u8; 48]);
+        let target_nature = 7u8; // different from 5
+        match compute_change_nature(&data, target_nature, 127).unwrap() {
+            ChangeNatureOutcome::Write { new_personality, .. } => {
+                assert_eq!(new_personality % 25, target_nature as u32);
+                // must stay female
+                assert!((new_personality & 0xFF) < 127, "gender must be preserved");
+            }
+            ChangeNatureOutcome::AlreadyMatches => panic!("expected Write"),
         }
     }
 

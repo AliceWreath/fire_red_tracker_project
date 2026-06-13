@@ -39,6 +39,10 @@ pub const MAX_NATIONAL_DEX_FIRERED: u16 = 386;
 ///   7 = ChangeSpecies
 ///   8 = ChangeAbility
 ///   9 = ChangeGender
+///  10 = ChangeNickname
+///  11 = ChangeHeldItem
+///  12 = CureStatus
+///  13 = ChangeNature
 #[derive(serde::Serialize, serde::Deserialize, Clone)]
 pub enum ClientMessage {
     RequestTextures(Vec<u16>), // index 0 — do not reorder
@@ -72,6 +76,25 @@ pub enum ClientMessage {
     /// only personality bytes that keep the shiny formula satisfied are
     /// considered; the call fails if no such byte exists for the requested gender.
     ChangeGender { party_position: u8, target_gender: u8 }, // index 9 — do not reorder
+    /// Rename the party Pokémon at `party_position` (0–5). `nickname` is UTF-8;
+    /// the tracker converts it to GBA encoding, silently dropping unmapped chars
+    /// and truncating to 10 characters. Shiny, nature, gender, and all encrypted
+    /// data are untouched.
+    ChangeNickname { party_position: u8, nickname: String }, // index 10 — do not reorder
+    /// Set the held item of the party Pokémon at `party_position` (0–5) to
+    /// `item_id`. Use `item_id = 0` to remove the held item. The held-item field
+    /// in the Growth substructure is updated; checksum is recalculated.
+    ChangeHeldItem { party_position: u8, item_id: u16 },    // index 11 — do not reorder
+    /// Clear the status condition (burn, sleep, paralysis, poison, freeze) of the
+    /// party Pokémon at `party_position` (0–5) by zeroing the 4-byte status word
+    /// at bytes 80–83 of the PartyPokemon struct.
+    CureStatus { party_position: u8 },                      // index 12 — do not reorder
+    /// Change the nature of the party Pokémon at `party_position` (0–5) to
+    /// `target_nature` (0–24). Adjusts the low byte of the personality to satisfy
+    /// `personality % 25 == target_nature`, preserving gender (for species where
+    /// gender is personality-derived) and shiny status. The substructure block
+    /// order is rearranged when `personality % 24` changes.
+    ChangeNature { party_position: u8, target_nature: u8 }, // index 13 — do not reorder
     // Append new variants here only.
 }
 
