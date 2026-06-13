@@ -184,6 +184,9 @@ pub fn handle_client(
                 Ok(ClientMessage::RestoreHp { party_position }) => {
                     crate::game::restore_hp(party_position as usize);
                 }
+                Ok(ClientMessage::HealParty) => {
+                    crate::game::heal_party();
+                }
                 Err(_) => break,
             }
         }

@@ -2905,6 +2905,53 @@ pub fn restore_hp(party_position: usize) -> bool {
     true
 }
 
+// ── heal_party ────────────────────────────────────────────────────────────────
+
+/// Restores HP and clears the status condition for every occupied party slot.
+///
+/// Reuses a single UDP socket and reads each slot once (90 bytes). For each
+/// slot with a non-zero personality: writes 4 zero bytes to the status word
+/// (offset 80) and, if current HP < max HP, writes the max-HP value to the
+/// current-HP word (offset 86).
+///
+/// Returns `true` if at least one slot was healed. Slots with `personality == 0`
+/// (empty) are silently skipped.
+pub fn heal_party() -> bool {
+    const PARTY_BASE: u32 = 0x02024284;
+    const MON_SIZE:   u32 = 100;
+
+    let socket = match fire_red_retroarch_interfacing::make_socket() {
+        Ok(s)  => s,
+        Err(e) => { tracing::warn!("heal_party: socket error: {e}"); return false; }
+    };
+
+    let mut healed = 0usize;
+    for slot in 0..6usize {
+        let mon_addr = PARTY_BASE + slot as u32 * MON_SIZE;
+
+        let data = match read_retroarch_bytes(&socket, mon_addr, 90) {
+            Some(b) if b.len() == 90 => b,
+            _ => continue,
+        };
+
+        let personality = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
+        if personality == 0 { continue; }
+
+        fire_red_retroarch_interfacing::write_to_retroarch(&socket, mon_addr + 80, &[0u8; 4]);
+
+        let current_hp = u16::from_le_bytes([data[86], data[87]]);
+        let max_hp     = u16::from_le_bytes([data[88], data[89]]);
+        if current_hp < max_hp {
+            fire_red_retroarch_interfacing::write_to_retroarch(&socket, mon_addr + 86, &max_hp.to_le_bytes());
+        }
+
+        healed += 1;
+    }
+
+    tracing::info!("heal_party: healed {healed} party slot(s)");
+    healed > 0
+}
+
 /// Reads all four bag pockets from the player's SaveBlock1 and returns a
 /// [`BagPockets`] with quantities already XOR-decrypted.
 ///

@@ -51,6 +51,7 @@ pub const MAX_NATIONAL_DEX_FIRERED: u16 = 386;
 ///  19 = SetEvs
 ///  20 = IncreaseEvs
 ///  21 = RestoreHp
+///  22 = HealParty
 #[derive(serde::Serialize, serde::Deserialize, Clone)]
 pub enum ClientMessage {
     RequestTextures(Vec<u16>), // index 0 — do not reorder
@@ -136,6 +137,10 @@ pub enum ClientMessage {
     /// 88–89) and writes it to the current-HP word (offset 86–87). No
     /// encrypted data is touched.
     RestoreHp { party_position: u8 },                                                          // index 21 — do not reorder
+    /// Restore the HP and cure the status condition of every occupied party
+    /// slot in one command. Equivalent to calling [`RestoreHp`] + [`CureStatus`]
+    /// on each of the six party positions, but reuses a single UDP socket.
+    HealParty,                                                                                  // index 22 — do not reorder
     // Append new variants here only.
 }
 

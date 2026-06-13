@@ -2509,6 +2509,36 @@ async fn api_restore_hp(
     (StatusCode::OK, format!("queued restore_hp party_position={party_position} for slot {index}"))
 }
 
+/// `POST /api/slot/:index/heal_party` — restore HP and cure status for the whole party.
+///
+/// No request body required.
+///
+/// The tracker reuses a single UDP socket and processes all six party slots in
+/// one pass: zeroes the status word and writes max HP to current HP for every
+/// occupied slot.
+async fn api_heal_party(
+    State(state): State<WebState>,
+    Path(index): Path<usize>,
+) -> impl IntoResponse {
+    if !state.allow_injections {
+        return (StatusCode::FORBIDDEN, "injection commands are disabled".to_string());
+    }
+    let slots = state.live_slots.lock_or_recover().clone();
+    let slot = match slots.get(index) {
+        Some(s) => s.clone(),
+        None    => return (StatusCode::NOT_FOUND, "slot index out of range".to_string()),
+    };
+    if slot.state.lock_or_recover().is_none() {
+        return (StatusCode::SERVICE_UNAVAILABLE, "slot not connected".to_string());
+    }
+    slot.command_queue.lock_or_recover().push_back(ClientMessage::HealParty);
+    slot.injection_events.lock_or_recover().push_back(serde_json::json!({
+        "at": now_secs(), "kind": "heal_party",
+        "label": "Full party heal (HP + status)",
+    }));
+    (StatusCode::OK, format!("queued heal_party for slot {index}"))
+}
+
 /// Broadcasts `end_run` or `new_run` to all connected tracker slots.
 async fn api_command(
     State(state): State<WebState>,
@@ -2613,6 +2643,7 @@ pub fn run(live_slots: SharedSlots, port: u16, db_conn: Option<String>, testing:
             .route("/api/slot/:index/set_evs", post(api_set_evs))
             .route("/api/slot/:index/increase_evs", post(api_increase_evs))
             .route("/api/slot/:index/restore_hp", post(api_restore_hp))
+            .route("/api/slot/:index/heal_party", post(api_heal_party))
             .route("/api/bot/:index", get(api_bot_summary))
             .route("/api/command/:cmd", post(api_command))
             .route("/api/db/query", post(api_db_query))
