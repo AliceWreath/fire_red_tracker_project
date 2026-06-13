@@ -37,6 +37,7 @@ pub const MAX_NATIONAL_DEX_FIRERED: u16 = 386;
 ///   5 = MakeShiny
 ///   6 = TakeItem
 ///   7 = ChangeSpecies
+///   8 = ChangeAbility
 #[derive(serde::Serialize, serde::Deserialize, Clone)]
 pub enum ClientMessage {
     RequestTextures(Vec<u16>), // index 0 — do not reorder
@@ -59,6 +60,11 @@ pub enum ClientMessage {
     /// Only the species field in the Growth substructure is updated; the
     /// checksum is recalculated and the data block re-encrypted.
     ChangeSpecies { party_position: u8, new_species: u16 }, // index 7 — do not reorder
+    /// Switch the party Pokémon at `party_position` (0–5) to ability slot
+    /// `ability_slot` (0 = first ability, 1 = second ability). Sets or clears
+    /// bit 31 of the IV/egg/ability word in the Misc substructure and
+    /// recalculates the checksum.
+    ChangeAbility { party_position: u8, ability_slot: u8 }, // index 8 — do not reorder
     // Append new variants here only.
 }
 

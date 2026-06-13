@@ -1421,6 +1421,129 @@ pub fn change_species(party_position: usize, new_species: u16) -> bool {
     }
 }
 
+/// Returns the index (0–3) of the Misc substructure for a given `personality`.
+fn misc_substructure_index(personality: u32) -> usize {
+    SUBSTRUCTURE_ORDER[(personality % 24) as usize][3] as usize
+}
+
+/// Pure logic for [`change_ability`]: decrypts the data block, updates bit 31
+/// of the IV/egg/ability word in the Misc substructure, recalculates the
+/// checksum, and re-encrypts.
+///
+/// `data` must be 80 bytes. Returns `None` if `data` is too short, personality
+/// is 0 (empty slot), or the ability bit already matches `ability_slot`.
+/// Otherwise returns `(checksum_bytes, re-encrypted_block)`.
+pub(crate) fn compute_set_ability_bit(
+    data: &[u8],
+    ability_slot: u8,
+) -> Option<([u8; 2], [u8; 48])> {
+    if data.len() < 80 { return None; }
+
+    let personality = u32::from_le_bytes(data[0..4].try_into().unwrap());
+    let ot_id       = u32::from_le_bytes(data[4..8].try_into().unwrap());
+    if personality == 0 { return None; }
+
+    let enc_key = personality ^ ot_id;
+
+    let mut decrypted = [0u8; 48];
+    for (i, chunk) in data[32..80].chunks_exact(4).enumerate() {
+        let w = u32::from_le_bytes(chunk.try_into().unwrap()) ^ enc_key;
+        decrypted[i * 4..i * 4 + 4].copy_from_slice(&w.to_le_bytes());
+    }
+
+    // Misc substructure: byte 4 within the block is the IV/egg/ability u32.
+    let m_off = misc_substructure_index(personality) * 12;
+    let iv_ea_off = m_off + 4;
+    let mut iv_ea = u32::from_le_bytes(decrypted[iv_ea_off..iv_ea_off + 4].try_into().unwrap());
+
+    let current_bit = ((iv_ea >> 31) & 1) as u8;
+    if current_bit == ability_slot { return None; }
+
+    if ability_slot == 1 {
+        iv_ea |= 1u32 << 31;
+    } else {
+        iv_ea &= !(1u32 << 31);
+    }
+    decrypted[iv_ea_off..iv_ea_off + 4].copy_from_slice(&iv_ea.to_le_bytes());
+
+    let checksum: u16 = decrypted
+        .chunks_exact(2)
+        .map(|c| u16::from_le_bytes([c[0], c[1]]))
+        .fold(0u16, |acc, w| acc.wrapping_add(w));
+
+    let mut encrypted = [0u8; 48];
+    for (i, chunk) in decrypted.chunks_exact(4).enumerate() {
+        let w = u32::from_le_bytes(chunk.try_into().unwrap()) ^ enc_key;
+        encrypted[i * 4..i * 4 + 4].copy_from_slice(&w.to_le_bytes());
+    }
+
+    Some((checksum.to_le_bytes(), encrypted))
+}
+
+/// Switches the party Pokémon at `party_position` (0–5) to ability slot
+/// `ability_slot` (0 = first ability, 1 = second ability).
+///
+/// Sets or clears bit 31 of the IV/egg/ability word in the Misc substructure.
+/// All other fields — species, EVs, IVs, moves, nature, personality — are
+/// preserved. The checksum is recalculated and the data block re-encrypted.
+///
+/// Returns `true` if the write was dispatched to RetroArch (or the slot already
+/// had the requested ability bit set).
+pub fn change_ability(party_position: usize, ability_slot: u8) -> bool {
+    if party_position >= 6 {
+        tracing::warn!("change_ability: party_position {party_position} out of range (must be 0–5)");
+        return false;
+    }
+    if ability_slot > 1 {
+        tracing::warn!("change_ability: ability_slot {ability_slot} out of range (must be 0 or 1)");
+        return false;
+    }
+
+    const PARTY_BASE: u32 = 0x02024284;
+    const MON_SIZE:   u32 = 100;
+    let mon_addr = PARTY_BASE + party_position as u32 * MON_SIZE;
+
+    let socket = match fire_red_retroarch_interfacing::make_socket() {
+        Ok(s)  => s,
+        Err(e) => { tracing::warn!("change_ability: socket error: {e}"); return false; }
+    };
+
+    let data = match read_retroarch_bytes(&socket, mon_addr, 80) {
+        Some(b) if b.len() == 80 => b,
+        _ => {
+            tracing::warn!("change_ability: RetroArch did not respond for party[{party_position}]");
+            return false;
+        }
+    };
+
+    let personality = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
+    if personality == 0 {
+        tracing::warn!("change_ability: party[{party_position}] is empty (personality=0)");
+        return false;
+    }
+
+    match compute_set_ability_bit(&data, ability_slot) {
+        None => {
+            tracing::info!("change_ability: party[{party_position}] already on ability slot {ability_slot}");
+            true
+        }
+        Some((checksum, encrypted)) => {
+            let mut payload = [0u8; 52];
+            payload[0..2].copy_from_slice(&checksum);
+            payload[2..4].copy_from_slice(&data[30..32]);
+            payload[4..52].copy_from_slice(&encrypted);
+            if !fire_red_retroarch_interfacing::write_to_retroarch(&socket, mon_addr + 28, &payload) {
+                tracing::warn!("change_ability: failed to write to party[{party_position}]");
+                return false;
+            }
+            tracing::info!(
+                "change_ability: party[{party_position}] personality=0x{personality:08X} → ability_slot={ability_slot}"
+            );
+            true
+        }
+    }
+}
+
 /// Reads all four bag pockets from the player's SaveBlock1 and returns a
 /// [`BagPockets`] with quantities already XOR-decrypted.
 ///
@@ -1523,8 +1646,9 @@ pub fn read_bag_pockets() -> Option<BagPockets> {
 #[cfg(test)]
 mod tests {
     use super::{
-        compute_change_species, compute_give_item_write, compute_take_item_write,
-        is_shiny, ChangeSpeciesOutcome, TakeItemWrite, ITEMS_POCKET_SLOTS, MAX_ITEM_QTY,
+        compute_change_species, compute_give_item_write, compute_set_ability_bit,
+        compute_take_item_write, is_shiny, ChangeSpeciesOutcome, TakeItemWrite,
+        ITEMS_POCKET_SLOTS, MAX_ITEM_QTY,
     };
 
     // ── is_shiny ─────────────────────────────────────────────────────────────
@@ -2018,6 +2142,137 @@ mod tests {
             }
             ChangeSpeciesOutcome::AlreadyMatches => panic!("expected Write"),
         }
+    }
+
+    // ── compute_set_ability_bit tests ─────────────────────────────────────────
+
+    /// Builds an 80-byte Pokémon data buffer with the given decrypted block.
+    /// (Re-uses the same make_mon_data helper from the change_species tests above.)
+
+    #[test]
+    fn set_ability_bit_empty_slot_returns_none() {
+        assert!(compute_set_ability_bit(&[0u8; 80], 0).is_none());
+    }
+
+    #[test]
+    fn set_ability_bit_short_data_returns_none() {
+        assert!(compute_set_ability_bit(&[1u8; 79], 0).is_none());
+    }
+
+    #[test]
+    fn set_ability_bit_already_slot0_returns_none() {
+        // personality=24, order 0 = [0,1,2,3] → M at pos 3, iv_ea at byte 40.
+        let personality: u32 = 24;
+        let mut dec = [0u8; 48];
+        // bit 31 = 0 → already slot 0
+        dec[40..44].copy_from_slice(&0u32.to_le_bytes());
+        let data = make_mon_data(personality, 0, dec);
+        assert!(compute_set_ability_bit(&data, 0).is_none());
+    }
+
+    #[test]
+    fn set_ability_bit_already_slot1_returns_none() {
+        let personality: u32 = 24;
+        let mut dec = [0u8; 48];
+        dec[40..44].copy_from_slice(&(1u32 << 31).to_le_bytes());
+        let data = make_mon_data(personality, 0, dec);
+        assert!(compute_set_ability_bit(&data, 1).is_none());
+    }
+
+    #[test]
+    fn set_ability_bit_sets_bit31_for_slot1() {
+        // personality=24 → M at position 3, iv_ea at decrypted byte 40.
+        let personality: u32 = 24;
+        let ot_id:       u32 = 0;
+        let mut dec = [0u8; 48];
+        dec[40..44].copy_from_slice(&0u32.to_le_bytes()); // slot 0 initially
+        let data = make_mon_data(personality, ot_id, dec);
+        let (_, encrypted) = compute_set_ability_bit(&data, 1).expect("should write");
+        let new_dec = decrypt_block(&encrypted, personality, ot_id);
+        let iv_ea = u32::from_le_bytes(new_dec[40..44].try_into().unwrap());
+        assert_eq!((iv_ea >> 31) & 1, 1, "ability bit should be 1");
+        // IVs (bits 0-29) should be unchanged (all zero)
+        assert_eq!(iv_ea & 0x3FFF_FFFF, 0);
+    }
+
+    #[test]
+    fn set_ability_bit_clears_bit31_for_slot0() {
+        let personality: u32 = 24;
+        let ot_id:       u32 = 0;
+        let mut dec = [0u8; 48];
+        dec[40..44].copy_from_slice(&(1u32 << 31).to_le_bytes()); // slot 1 initially
+        let data = make_mon_data(personality, ot_id, dec);
+        let (_, encrypted) = compute_set_ability_bit(&data, 0).expect("should write");
+        let new_dec = decrypt_block(&encrypted, personality, ot_id);
+        let iv_ea = u32::from_le_bytes(new_dec[40..44].try_into().unwrap());
+        assert_eq!((iv_ea >> 31) & 1, 0, "ability bit should be 0");
+    }
+
+    #[test]
+    fn set_ability_bit_preserves_ivs() {
+        // Set some IV bits and verify they survive the toggle.
+        let personality: u32 = 24;
+        let ot_id:       u32 = 0;
+        let iv_value: u32 = 0b11111_10101_01010_11001_00110_10011; // 30 IV bits
+        let mut dec = [0u8; 48];
+        dec[40..44].copy_from_slice(&iv_value.to_le_bytes()); // bit 31 = 0 → slot 0
+        let data = make_mon_data(personality, ot_id, dec);
+        let (_, encrypted) = compute_set_ability_bit(&data, 1).expect("should write");
+        let new_dec = decrypt_block(&encrypted, personality, ot_id);
+        let iv_ea = u32::from_le_bytes(new_dec[40..44].try_into().unwrap());
+        assert_eq!(iv_ea & 0x3FFF_FFFF, iv_value & 0x3FFF_FFFF, "IVs must be preserved");
+        assert_eq!((iv_ea >> 31) & 1, 1, "ability bit should be 1");
+    }
+
+    #[test]
+    fn set_ability_bit_checksum_correct_after_change() {
+        let personality: u32 = 24;
+        let ot_id:       u32 = 0;
+        let mut dec = [0u8; 48];
+        dec[40..44].copy_from_slice(&0u32.to_le_bytes());
+        let data = make_mon_data(personality, ot_id, dec);
+        let (cs_bytes, encrypted) = compute_set_ability_bit(&data, 1).expect("should write");
+        let new_dec = decrypt_block(&encrypted, personality, ot_id);
+        let expected: u16 = new_dec
+            .chunks_exact(2)
+            .map(|c| u16::from_le_bytes([c[0], c[1]]))
+            .fold(0u16, |acc, w| acc.wrapping_add(w));
+        assert_eq!(u16::from_le_bytes(cs_bytes), expected);
+    }
+
+    #[test]
+    fn set_ability_bit_misc_at_correct_substructure_position() {
+        // personality=18 → 18%24=18 → ORDER[18]=[1,2,3,0] → M(type 3) at position 0
+        // → iv_ea at decrypted byte 4, NOT byte 40 (which would be M at pos 3).
+        let personality: u32 = 18;
+        let ot_id:       u32 = 0;
+        let mut dec = [0u8; 48];
+        // Place zero at byte 4 (M at pos 0), something non-zero elsewhere.
+        dec[4..8].copy_from_slice(&0u32.to_le_bytes());
+        dec[40..44].copy_from_slice(&(1u32 << 31).to_le_bytes()); // would be wrong M pos
+        let data = make_mon_data(personality, ot_id, dec);
+        let (_, encrypted) = compute_set_ability_bit(&data, 1).expect("should write");
+        let new_dec = decrypt_block(&encrypted, personality, ot_id);
+        // Only byte 4 should have been modified (M is at pos 0)
+        let iv_ea_correct = u32::from_le_bytes(new_dec[4..8].try_into().unwrap());
+        let iv_ea_wrong   = u32::from_le_bytes(new_dec[40..44].try_into().unwrap());
+        assert_eq!((iv_ea_correct >> 31) & 1, 1, "bit set at Misc offset 4");
+        assert_eq!((iv_ea_wrong >> 31) & 1, 1, "byte 40 unchanged (had 1 already)");
+        // More specifically: byte 40 should be exactly what we put there (unchanged).
+        assert_eq!(iv_ea_wrong, 1u32 << 31);
+    }
+
+    #[test]
+    fn set_ability_bit_ot_id_xor_key_applied() {
+        let personality: u32 = 24;
+        let ot_id:       u32 = 0xDEAD_BEEF;
+        let mut dec = [0u8; 48];
+        dec[40..44].copy_from_slice(&0u32.to_le_bytes());
+        let data = make_mon_data(personality, ot_id, dec);
+        let (_, encrypted) = compute_set_ability_bit(&data, 1).expect("should write");
+        let new_dec = decrypt_block(&encrypted, personality, ot_id);
+        let iv_ea = u32::from_le_bytes(new_dec[40..44].try_into().unwrap());
+        assert_eq!((iv_ea >> 31) & 1, 1);
     }
 
     // ── live RetroArch integration ────────────────────────────────────────────

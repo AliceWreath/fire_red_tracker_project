@@ -142,6 +142,9 @@ pub fn handle_client(
                 Ok(ClientMessage::ChangeSpecies { party_position, new_species }) => {
                     crate::game::change_species(party_position as usize, new_species);
                 }
+                Ok(ClientMessage::ChangeAbility { party_position, ability_slot }) => {
+                    crate::game::change_ability(party_position as usize, ability_slot);
+                }
                 Err(_) => break,
             }
         }
