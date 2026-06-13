@@ -89,27 +89,29 @@ impl SlotDbCache {
 // ---------------------------------------------------------------------------
 
 struct SettingsDraft {
-    listen_port_str: String,
-    db:              String,
-    db_enabled:      bool,
-    ws_port_str:     String,
-    ws_port_enabled: bool,
-    default_test:    bool,
-    test:            Option<crate::config::AggregatorTestOverrides>,
+    listen_port_str:  String,
+    db:               String,
+    db_enabled:       bool,
+    ws_port_str:      String,
+    ws_port_enabled:  bool,
+    default_test:     bool,
+    test:             Option<crate::config::AggregatorTestOverrides>,
+    allow_injections: bool,
 }
 
 impl SettingsDraft {
     fn from_config(cfg: &AggregatorConfig) -> Self {
         Self {
-            listen_port_str: cfg.listen_port.to_string(),
-            db:              cfg.db.as_deref()
+            listen_port_str:  cfg.listen_port.to_string(),
+            db:               cfg.db.as_deref()
                 .map(|s| s.trim_start_matches("postgresql://").trim_start_matches("postgres://").to_string())
                 .unwrap_or_else(|| "localhost/nuzlocke".to_string()),
-            db_enabled:      cfg.db.is_some(),
-            ws_port_str:     cfg.ws_port.map(|p| p.to_string()).unwrap_or_else(|| "9090".to_string()),
-            ws_port_enabled: cfg.ws_port.is_some(),
-            default_test:    cfg.default_test,
-            test:            cfg.test.clone(),
+            db_enabled:       cfg.db.is_some(),
+            ws_port_str:      cfg.ws_port.map(|p| p.to_string()).unwrap_or_else(|| "9090".to_string()),
+            ws_port_enabled:  cfg.ws_port.is_some(),
+            default_test:     cfg.default_test,
+            test:             cfg.test.clone(),
+            allow_injections: cfg.allow_injections,
         }
     }
 }
@@ -612,6 +614,10 @@ impl AggregatorApp {
                 ui.checkbox(&mut s.default_test, "Default to test mode:");
                 ui.small("Uses [test] config overrides on every launch (same as always passing --test).");
                 ui.end_row();
+
+                ui.checkbox(&mut s.allow_injections, "Allow injections:");
+                ui.small("Enable give_item, make_shiny, change_species, etc. API endpoints.");
+                ui.end_row();
             });
 
         ui.add_space(8.0);
@@ -630,11 +636,12 @@ impl AggregatorApp {
                     Some(if raw.starts_with("postgresql://") || raw.starts_with("postgres://") { raw } else { format!("postgresql://{}", raw) })
                 } else { None };
                 let cfg = AggregatorConfig {
-                    listen_port:  s.listen_port_str.trim().parse().unwrap_or(7878),
+                    listen_port:      s.listen_port_str.trim().parse().unwrap_or(7878),
                     db,
-                    ws_port:      if s.ws_port_enabled { s.ws_port_str.trim().parse().ok() } else { None },
-                    default_test: s.default_test,
-                    test:         s.test.clone(),
+                    ws_port:          if s.ws_port_enabled { s.ws_port_str.trim().parse().ok() } else { None },
+                    default_test:     s.default_test,
+                    test:             s.test.clone(),
+                    allow_injections: s.allow_injections,
                 };
                 save_config(&cfg, &self.config_path);
                 self.settings_open = false;

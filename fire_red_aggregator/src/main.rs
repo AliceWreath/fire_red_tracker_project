@@ -60,6 +60,11 @@ struct Cli {
     /// Explicit flags (--db, --listen-port, --ws-port) still override the test section.
     #[arg(long)]
     test: bool,
+
+    /// Disable all injection API endpoints (give_item, make_shiny, change_species, etc.).
+    /// Overrides allow_injections = true in the config file.
+    #[arg(long)]
+    no_injections: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -142,6 +147,8 @@ fn main() {
     let ws_port = cli.ws_port
         .or_else(|| test.and_then(|t| t.ws_port))
         .or(cfg.ws_port);
+    // --no-injections overrides allow_injections = true in config; config false always wins.
+    let allow_injections = cfg.allow_injections && !cli.no_injections;
 
     // Shared slot list — grown as trackers connect.
     let shared_slots: SharedSlots = Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -220,7 +227,7 @@ fn main() {
 
     if let Some(port) = ws_port {
         // Headless WebSocket overlay mode.
-        web::run(shared_slots, port, db, use_test);
+        web::run(shared_slots, port, db, use_test, allow_injections);
     } else {
         // Normal egui window mode.
         let update_available: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));

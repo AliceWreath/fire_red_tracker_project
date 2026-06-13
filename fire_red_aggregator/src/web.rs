@@ -1049,10 +1049,11 @@ impl BroadcastLoop {
 
 #[derive(Clone)]
 struct WebState {
-    tx:         watch::Sender<String>,
-    live_slots: SharedSlots,
-    db_conn:    Option<String>,
-    testing:    bool,
+    tx:               watch::Sender<String>,
+    live_slots:       SharedSlots,
+    db_conn:          Option<String>,
+    testing:          bool,
+    allow_injections: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -1734,6 +1735,9 @@ async fn api_give_item(
     Path(index): Path<usize>,
     axum::Json(body): axum::Json<serde_json::Value>,
 ) -> impl IntoResponse {
+    if !state.allow_injections {
+        return (StatusCode::FORBIDDEN, "injection commands are disabled".to_string());
+    }
     let slots = state.live_slots.lock_or_recover().clone();
     let slot = match slots.get(index) {
         Some(s) => s.clone(),
@@ -1775,6 +1779,9 @@ async fn api_make_shiny(
     Path(index): Path<usize>,
     axum::Json(body): axum::Json<serde_json::Value>,
 ) -> impl IntoResponse {
+    if !state.allow_injections {
+        return (StatusCode::FORBIDDEN, "injection commands are disabled".to_string());
+    }
     let slots = state.live_slots.lock_or_recover().clone();
     let slot = match slots.get(index) {
         Some(s) => s.clone(),
@@ -1816,6 +1823,9 @@ async fn api_take_item(
     Path(index): Path<usize>,
     axum::Json(body): axum::Json<serde_json::Value>,
 ) -> impl IntoResponse {
+    if !state.allow_injections {
+        return (StatusCode::FORBIDDEN, "injection commands are disabled".to_string());
+    }
     let slots = state.live_slots.lock_or_recover().clone();
     let slot = match slots.get(index) {
         Some(s) => s.clone(),
@@ -1863,6 +1873,9 @@ async fn api_change_species(
     Path(index): Path<usize>,
     axum::Json(body): axum::Json<serde_json::Value>,
 ) -> impl IntoResponse {
+    if !state.allow_injections {
+        return (StatusCode::FORBIDDEN, "injection commands are disabled".to_string());
+    }
     let slots = state.live_slots.lock_or_recover().clone();
     let slot = match slots.get(index) {
         Some(s) => s.clone(),
@@ -1908,6 +1921,9 @@ async fn api_change_ability(
     Path(index): Path<usize>,
     axum::Json(body): axum::Json<serde_json::Value>,
 ) -> impl IntoResponse {
+    if !state.allow_injections {
+        return (StatusCode::FORBIDDEN, "injection commands are disabled".to_string());
+    }
     let slots = state.live_slots.lock_or_recover().clone();
     let slot = match slots.get(index) {
         Some(s) => s.clone(),
@@ -1956,6 +1972,9 @@ async fn api_change_gender(
     Path(index): Path<usize>,
     axum::Json(body): axum::Json<serde_json::Value>,
 ) -> impl IntoResponse {
+    if !state.allow_injections {
+        return (StatusCode::FORBIDDEN, "injection commands are disabled".to_string());
+    }
     let slots = state.live_slots.lock_or_recover().clone();
     let slot = match slots.get(index) {
         Some(s) => s.clone(),
@@ -2027,7 +2046,7 @@ async fn api_db_query(
 // Entry point
 // ---------------------------------------------------------------------------
 
-pub fn run(live_slots: SharedSlots, port: u16, db_conn: Option<String>, testing: bool) {
+pub fn run(live_slots: SharedSlots, port: u16, db_conn: Option<String>, testing: bool, allow_injections: bool) {
     let sprites: PngSpriteCache = Arc::new(Mutex::new(HashMap::new()));
 
     // Wire the shared sprite cache into any already-connected slots and keep
@@ -2054,7 +2073,7 @@ pub fn run(live_slots: SharedSlots, port: u16, db_conn: Option<String>, testing:
         }
     });
 
-    let web_state = WebState { tx, live_slots, db_conn, testing };
+    let web_state = WebState { tx, live_slots, db_conn, testing, allow_injections };
 
     let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
     rt.block_on(async move {

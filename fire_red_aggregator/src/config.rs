@@ -21,9 +21,14 @@ pub struct AggregatorConfig {
     /// Settings applied when `--test` is passed (overrides base config; explicit CLI flags still win).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub test: Option<AggregatorTestOverrides>,
+    /// Whether the injection API endpoints (give_item, make_shiny, etc.) are enabled.
+    /// Defaults to true. Set to false (or pass --no-injections) to disable all injection commands.
+    #[serde(default = "default_true")]
+    pub allow_injections: bool,
 }
 
 fn default_listen_port() -> u16 { 7878 }
+fn default_true() -> bool { true }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct AggregatorTestOverrides {
@@ -90,31 +95,33 @@ pub fn save_config(config: &AggregatorConfig, path: &PathBuf) {
 // ---------------------------------------------------------------------------
 
 struct SetupApp {
-    listen_port_str: String,
-    db:              String,
-    db_enabled:      bool,
-    ws_port_str:     String,
-    ws_port_enabled: bool,
-    result:          Arc<Mutex<Option<AggregatorConfig>>>,
-    should_close:    bool,
-    heading:         &'static str,
-    default_test:    bool,
-    test:            Option<AggregatorTestOverrides>,
+    listen_port_str:   String,
+    db:                String,
+    db_enabled:        bool,
+    ws_port_str:       String,
+    ws_port_enabled:   bool,
+    result:            Arc<Mutex<Option<AggregatorConfig>>>,
+    should_close:      bool,
+    heading:           &'static str,
+    default_test:      bool,
+    test:              Option<AggregatorTestOverrides>,
+    allow_injections:  bool,
 }
 
 impl SetupApp {
     fn new(result: Arc<Mutex<Option<AggregatorConfig>>>) -> Self {
         Self {
-            listen_port_str: "7878".to_string(),
-            db:              "localhost/nuzlocke".to_string(),
-            db_enabled:      false,
-            ws_port_str:     "9090".to_string(),
-            ws_port_enabled: false,
+            listen_port_str:  "7878".to_string(),
+            db:               "localhost/nuzlocke".to_string(),
+            db_enabled:       false,
+            ws_port_str:      "9090".to_string(),
+            ws_port_enabled:  false,
             result,
-            should_close:    false,
-            heading:         "First-Run Setup",
-            default_test:    false,
-            test:            None,
+            should_close:     false,
+            heading:          "First-Run Setup",
+            default_test:     false,
+            test:             None,
+            allow_injections: true,
         }
     }
 
@@ -133,16 +140,17 @@ impl SetupApp {
             None    => ("9090".to_string(), false),
         };
         Self {
-            listen_port_str: cfg.listen_port.to_string(),
+            listen_port_str:  cfg.listen_port.to_string(),
             db,
             db_enabled,
             ws_port_str,
             ws_port_enabled,
             result,
-            should_close:    false,
-            heading:         "Edit Config",
-            default_test:    cfg.default_test,
-            test:            cfg.test.clone(),
+            should_close:     false,
+            heading:          "Edit Config",
+            default_test:     cfg.default_test,
+            test:             cfg.test.clone(),
+            allow_injections: cfg.allow_injections,
         }
     }
 }
@@ -206,6 +214,13 @@ impl eframe::App for SetupApp {
                     });
                 });
                 ui.end_row();
+
+                // Injection API toggle
+                ui.checkbox(&mut self.allow_injections, "Allow injections:");
+                ui.vertical(|ui| {
+                    ui.small("enable give_item, make_shiny, change_species, etc.");
+                });
+                ui.end_row();
             });
 
         ui.add_space(12.0);
@@ -234,11 +249,12 @@ impl eframe::App for SetupApp {
                 let ws_port = if self.ws_port_enabled { ws_parse.ok() } else { None };
 
                 *self.result.lock().unwrap() = Some(AggregatorConfig {
-                    listen_port:  listen_parse.unwrap_or(7878),
+                    listen_port:      listen_parse.unwrap_or(7878),
                     db,
                     ws_port,
-                    default_test: self.default_test,
-                    test:         self.test.clone(),
+                    default_test:     self.default_test,
+                    test:             self.test.clone(),
+                    allow_injections: self.allow_injections,
                 });
                 self.should_close = true;
             }
