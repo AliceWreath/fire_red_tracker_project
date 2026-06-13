@@ -74,6 +74,13 @@ Support crates (no external deps):
 │  │  │  • receives ClientMessage  │   │               │
 │  │  │  • EndRun / NewRun → DB    │   │               │
 │  │  │  • RequestTextures → build │   │               │
+│  │  │  • GiveItem / TakeItem /   │   │               │
+│  │  │    MakeShiny /             │   │               │
+│  │  │    ChangeSpecies /         │   │               │
+│  │  │    ChangeAbility /         │   │               │
+│  │  │    ChangeGender            │   │               │
+│  │  │    → game::* fn →          │   │               │
+│  │  │      WRITE_CORE_MEMORY UDP │   │               │
 │  │  └────────────────────────────┘   │               │
 │  │  Writer loop (100 ms)             │               │
 │  │  • sends ServerMessage::State     │               │
@@ -99,7 +106,11 @@ Support crates (no external deps):
 │  │  ┌─────────────────────────────────────┐   │     │
 │  │  │ Writer thread  (50 ms)              │   │     │
 │  │  │  • drains command_queue             │   │     │
-│  │  │    (EndRun / NewRun → tracker)      │   │     │
+│  │  │    EndRun / NewRun /                │   │     │
+│  │  │    GiveItem / TakeItem /            │   │     │
+│  │  │    MakeShiny / ChangeSpecies /      │   │     │
+│  │  │    ChangeAbility / ChangeGender     │   │     │
+│  │  │    → tracker over TCP               │   │     │
 │  │  │  • drains texture_request_queue     │   │     │
 │  │  └─────────────────────────────────────┘   │     │
 │  │  Reader loop                                │     │

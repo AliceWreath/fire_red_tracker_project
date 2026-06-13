@@ -118,12 +118,27 @@ handle_client()  [tracker, Connected mode]
     │    run_changed.store(true, Release)
     │    sends ServerMessage::RunChanged(None)
     │
-    └─ NewRun
-         fire_red_database::new_run("Unknown")
-           INSERT INTO runs → returns id
-           set_meta("active_run_id", id)
-         run_changed.store(true, Release)
-         sends ServerMessage::RunChanged(Some(id))
+    ├─ NewRun
+    │    fire_red_database::new_run("Unknown")
+    │      INSERT INTO runs → returns id
+    │      set_meta("active_run_id", id)
+    │    run_changed.store(true, Release)
+    │    sends ServerMessage::RunChanged(Some(id))
+    │
+    ├─ GiveItem { item_id, quantity }
+    │    game::give_item(ewram, item_id, quantity)
+    │      locate items pocket via SaveBlock1 ptr + security key
+    │      compute_give_item_write() → (addr, encoded_bytes)
+    │    WRITE_CORE_MEMORY addr bytes → RetroArch UDP :55355
+    │
+    ├─ TakeItem { item_id, quantity }  → game::take_item() → UDP
+    ├─ MakeShiny { party_position }    → game::make_shiny() → UDP
+    ├─ ChangeSpecies { party_position, new_species }
+    │                                   → game::change_species() → UDP
+    ├─ ChangeAbility { party_position, ability_slot }
+    │                                   → game::change_ability() → UDP
+    └─ ChangeGender { party_position, target_gender }
+                                        → game::change_gender() → UDP
 
   │
   │  TCP
@@ -148,7 +163,9 @@ handle_tracker_connection()  [aggregator]
 
   Writer thread (50 ms):
     drains slot.command_queue
-      → sends ClientMessage::EndRun or NewRun to tracker
+      → sends ClientMessage::EndRun / NewRun / GiveItem / TakeItem /
+               MakeShiny / ChangeSpecies / ChangeAbility / ChangeGender
+               to tracker over TCP
     drains slot.texture_request_queue
       → dedup species ids → sends ClientMessage::RequestTextures
 
@@ -460,4 +477,51 @@ GET /compare
 GET /api/run/:id/export?format=csv   (pre-existing endpoint, now linked from /db)
     linked as a direct browser download from the CSV column in the Runs table
     on the /db page — no new server handler, just surfaced in the UI
+```
+
+## Injection Commands Flow (v0.9.x)
+
+```
+HTTP POST /api/slot/:index/give_item  (or take_item / make_shiny / etc.)
+    │
+    web handler validates body fields
+    if state.allow_injections == false → 403 Forbidden (early return)
+    push ClientMessage::GiveItem { item_id, quantity }
+      to slot.command_queue  (Arc<Mutex<VecDeque<ClientMessage>>>)
+    return 200 OK
+    │
+    │  (next aggregator writer thread tick, 50 ms)
+    ▼
+handle_tracker_connection() writer thread
+    drain slot.command_queue
+    serialise ClientMessage::GiveItem → bincode → length-prefixed TCP frame
+    send to tracker
+    │
+    │  TCP
+    ▼
+handle_client() tracker reader thread
+    deserialise ClientMessage::GiveItem { item_id, quantity }
+    game::give_item(ewram_snapshot, item_id, quantity)
+      read SaveBlock1 ptr from IWRAM
+      locate items pocket base address
+      derive XOR security key (pocket oracle or SaveBlock2 scan)
+      compute_give_item_write() → Vec<(addr, encoded_4_bytes)>
+    for each (addr, bytes):
+      "WRITE_CORE_MEMORY 0x{addr:08X} {hex_bytes}" → UDP :55355 → RetroArch
+    │
+    ▼ (next memory thread tick, 100 ms)
+    fill_party_list() reads updated EWRAM
+    ServerMessage::State pushed to aggregator → WS broadcast → overlay updated
+
+Injection event toast path:
+    game::give_item() returns InjectionEvent { at, kind, label }
+    MonitorSlot.injection_events.lock().push_back(event)
+    BroadcastLoop::tick() drains injection_events
+      → SlotDto.injection_events (cleared each broadcast cycle)
+    alerts.html handleState():
+      for ev of slot.injection_events:
+        if _seenInjectionAts.has(ev.at) → skip (dedup)
+        _seenInjectionAts.add(ev.at)
+        showInjectToast(ev.label)
+          → queued 4s sequential toasts with 0.4s gap
 ```

@@ -51,6 +51,7 @@ A dedicated transparent OBS source (`/:index/alerts`) that shows timed toast not
 - **Faint** — fires when a party member's HP reaches zero. Shows nickname, species, level, and nature.
 - **Shiny encounter** — fires when a new encounter is recorded with the shiny flag set. Shows species, level, and zone name. Stays visible for 10 seconds.
 - **Party wipe / blackout** — fires when every party member is dead simultaneously. The tracker detects the wipe and calls `end_run()` automatically; the overlay displays the "PARTY WIPED" banner in response to the resulting run-state change.
+- **Injection command** — fires when an injection API endpoint is successfully executed. Shows a green "INJECTION" toast with a description of the command (e.g. "Gave 1× Rare Candy", "Made party[0] shiny"). Multiple rapid injections are queued and shown sequentially, 4 seconds each with a 0.4-second gap between toasts.
 
 ### OBS clip trigger
 
@@ -227,6 +228,7 @@ The same background version check runs here: 10 seconds after the window opens, 
 ```
 aggregator
 aggregator --listen-port 7878
+aggregator --no-injections       # disable give_item, take_item, make_shiny, change_species, etc.
 aggregator --update              # check GitHub for a newer release and self-update
 ```
 
@@ -294,7 +296,7 @@ The following pages are available:
 | `http://localhost:PORT/1/box` | Player 2's PC box contents |
 | `http://localhost:PORT/0/routes` | Player 1's route completion board — all Nuzlocke zones colour-coded caught / failed / unvisited, with encountered species shown inline on each zone card |
 | `http://localhost:PORT/1/routes` | Player 2's route completion board |
-| `http://localhost:PORT/0/alerts` | Player 1's alerts overlay — transparent OBS source for zone, death, shiny, and wipe toasts |
+| `http://localhost:PORT/0/alerts` | Player 1's alerts overlay — transparent OBS source for zone, death, shiny, wipe, and injection-command toasts |
 | `http://localhost:PORT/1/alerts` | Player 2's alerts overlay |
 | `http://localhost:PORT/history` | Run history — all past runs with expandable catch / death / encounter logs |
 | `http://localhost:PORT/shiny` | Shiny odds tracker — encounter count since last shiny encounter, last shiny detail card, full encounter list since last shiny |
@@ -357,6 +359,12 @@ All endpoints are served on the same port as the WebSocket overlay (`--ws-port`)
 | `/api/runs` | `GET` | JSON array of all stored run summaries: `id`, `player`, `started_at`, `ended_at`, `deaths`, `catches`, `encounters`. Requires `--db` |
 | `/api/run/import` | `POST` | Import a previously-exported run. Accepts the JSON body produced by `/api/run/:id/export`; creates a new run and re-inserts all encounter, caught, and dead records. Returns `{ "run_id": <new_id> }`. Requires `--db` |
 | `/api/slot/:index/odds` | `GET` | Wild-encounter table for the specified slot's current map area — land, water, rock-smash, and fishing slots with encounter rates. Returns `404` if the slot index is out of range or the slot is disconnected |
+| `/api/slot/:index/give_item` | `POST` | **Injection.** Body: `{ "item_id": <u16>, "quantity": <u16 1–99> }`. Add `quantity` of item `item_id` to the player's bag items pocket. Writes directly into the running game's EWRAM via RetroArch's `WRITE_CORE_MEMORY` UDP command. Returns `403` when `allow_injections` is false or `--no-injections` is set |
+| `/api/slot/:index/take_item` | `POST` | **Injection.** Body: `{ "item_id": <u16>, "quantity": <u16 1–99> }`. Remove up to `quantity` of item `item_id` from the bag; fully removes the stack if smaller than `quantity`. Returns `403` when injections are disabled |
+| `/api/slot/:index/make_shiny` | `POST` | **Injection.** Body: `{ "party_position": <u8 0–5> }`. Patch the OT Secret ID so the Gen III shiny formula is satisfied for the party member at `party_position`. Nature, ability, gender, and IVs are preserved. Returns `403` when injections are disabled |
+| `/api/slot/:index/change_species` | `POST` | **Injection.** Body: `{ "party_position": <u8 0–5>, "new_species": <u16 1–386> }`. Rewrite the species field in the Growth substructure; personality, moves, EVs, IVs, and nature are preserved and the checksum is recalculated. Returns `403` when injections are disabled |
+| `/api/slot/:index/change_ability` | `POST` | **Injection.** Body: `{ "party_position": <u8 0–5>, "ability_slot": <u8 0 or 1> }`. Set bit 31 of the IV/egg/ability word in the Misc substructure (`0` = primary ability, `1` = secondary ability). Returns `403` when injections are disabled |
+| `/api/slot/:index/change_gender` | `POST` | **Injection.** Body: `{ "party_position": <u8 0–5>, "target_gender": <u8 0 or 1> }`. Adjust the personality low byte to satisfy `target_gender` (`0` = male, `1` = female) while preserving nature and shiny status. Returns `200` with an explanatory message for genderless or fixed-gender species. Returns `403` when injections are disabled |
 
 ##### WebSocket payload filtering (`?show=`)
 
@@ -491,7 +499,7 @@ A **Soul Link** is a Nuzlocke variant played with a partner: each player's catch
 | `cli.rs` | `Cli` and `Command` structs (clap definitions) |
 | `config.rs` | Config file load/save, first-run setup dialog |
 | `encounter.rs` | `EncounterTracker` — wild battle detection via personality change, balls-gate latch, duplicate species check, shiny detection (Gen III formula), catch detection via party membership |
-| `game.rs` | `fill_party_list`, `check_for_dead_pokemon`, `check_for_new_pokemon`, `check_for_run_over`, `map_state_from_ewram`, `game_is_loaded`, `has_pokeballs`, `count_pokeballs`, `read_security_key`, `scan_for_balls_pocket`, `scan_for_security_key` |
+| `game.rs` | `fill_party_list`, `check_for_dead_pokemon`, `check_for_new_pokemon`, `check_for_run_over`, `map_state_from_ewram`, `game_is_loaded`, `has_pokeballs`, `count_pokeballs`, `read_security_key`, `scan_for_balls_pocket`, `scan_for_security_key`; injection commands: `give_item`, `take_item`, `make_shiny`, `change_species`, `change_ability`, `change_gender` |
 | `textures.rs` | `PendingTexture`, sprite compression, `build_sprite_data` |
 | `gui.rs` | `WindowInfo`, `eframe::App` impl, party panel, encounters viewport |
 | `server.rs` | Aggregator connection handler — manages the bidirectional push stream over an established TCP connection |
@@ -802,6 +810,21 @@ Add `http://localhost:9090/cmd` in a browser tab to manage runs — **End Run** 
 ---
 
 ## Project status
+
+**v0.9.16** — injection command API, alerts overlay injection toasts, `allow_injections` config/CLI flag:
+
+- **Injection API** — six new `POST` endpoints write directly into the running game's EWRAM via RetroArch `WRITE_CORE_MEMORY`:
+  - `POST /api/slot/:index/give_item` — add items to the bag items pocket (body: `{ item_id, quantity }`).
+  - `POST /api/slot/:index/take_item` — remove items from the bag.
+  - `POST /api/slot/:index/make_shiny` — patch OT Secret ID so the Gen III shiny formula is satisfied; preserves nature, ability, gender, and IVs.
+  - `POST /api/slot/:index/change_species` — rewrite the Growth substructure species field; recalculates the checksum; preserves personality and all other data.
+  - `POST /api/slot/:index/change_ability` — toggle bit 31 of the IV/egg/ability word in the Misc substructure (primary vs. secondary ability).
+  - `POST /api/slot/:index/change_gender` — adjust the personality low byte to satisfy a target gender while preserving nature (`personality % 25`) and shiny status; returns `200` with an explanatory message for genderless or fixed-gender species.
+  - All six commands are dispatched through the aggregator TCP connection as `ClientMessage` variants; the tracker applies them on the next EWRAM read cycle.
+- **`allow_injections` config flag and `--no-injections` CLI flag** — set `allow_injections = false` in the aggregator config or pass `--no-injections` at startup to disable all six injection endpoints. All six return `403 Forbidden` when disabled. The egui Settings panel exposes a checkbox. `--no-injections` overrides `allow_injections = true` in the config file; `allow_injections = false` in the config cannot be overridden by omitting the flag.
+- **Injection toasts in the alerts overlay** — `/:index/alerts` now shows a green "INJECTION" toast whenever an injection command completes. The label describes the action (e.g. "Gave 1× Rare Candy", "Made party[0] shiny"). Multiple rapid injections are queued and shown sequentially (4 s each, 0.4 s gap). Toast deduplication uses the `ev.at` unix-second timestamp from `injection_events` in `SlotDto`.
+
+---
 
 **v0.8.98** — type coverage overlay, E4/game-clear tracking, static species-type table:
 
