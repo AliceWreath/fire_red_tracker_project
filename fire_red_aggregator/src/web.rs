@@ -84,6 +84,9 @@ struct SlotDto {
     e4_progress:         Vec<bool>,
     /// True when all 8 badges and all 5 Elite 4 members (incl. Champion) are defeated.
     game_cleared:        bool,
+    /// Injection events (give/take item, make shiny, etc.) queued since the last
+    /// tick. Drained on every broadcast; alerts.html shows toasts for each entry.
+    injection_events:    Vec<serde_json::Value>,
 }
 
 #[derive(serde::Serialize, Clone)]
@@ -1025,7 +1028,9 @@ impl BroadcastLoop {
                     })
                     .collect();
 
-                SlotDto { label: label.clone(), connected, db_connected, active_run_id, run_summary, db_encounters, badges, next_gym, party, encounters, dead, caught, box_pokemon, current_map_group, current_map_name, current_zone_name, prev_run_encounters, e4_progress, game_cleared }
+                let injection_events: Vec<serde_json::Value> =
+                    slots[i].injection_events.lock_or_recover().drain(..).collect();
+                SlotDto { label: label.clone(), connected, db_connected, active_run_id, run_summary, db_encounters, badges, next_gym, party, encounters, dead, caught, box_pokemon, current_map_group, current_map_name, current_zone_name, prev_run_encounters, e4_progress, game_cleared, injection_events }
             })
             .collect();
 
@@ -1702,6 +1707,14 @@ async fn api_run_import(
     axum::Json(result.unwrap_or_else(|_| serde_json::json!({ "error": "Task panicked" })))
 }
 
+/// Returns the current time as a Unix timestamp (seconds).
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
 /// `POST /api/slot/:index/give_item` — inject an item into the player's bag.
 ///
 /// Body: `{ "item_id": <u16>, "quantity": <u16 1–99> }`.
@@ -1740,6 +1753,12 @@ async fn api_give_item(
     slot.command_queue
         .lock_or_recover()
         .push_back(ClientMessage::GiveItem { item_id, quantity });
+    let rom = fire_red_rom_buffer::get_rom();
+    let item_name = fire_red_party_monitor::get_item_string_from_id(&rom, item_id);
+    slot.injection_events.lock_or_recover().push_back(serde_json::json!({
+        "at": now_secs(), "kind": "give_item",
+        "label": format!("Gave {quantity}× {item_name}"),
+    }));
     (StatusCode::OK, format!("queued give_item item_id={item_id} quantity={quantity} for slot {index}"))
 }
 
@@ -1771,6 +1790,10 @@ async fn api_make_shiny(
     slot.command_queue
         .lock_or_recover()
         .push_back(ClientMessage::MakeShiny { party_position });
+    slot.injection_events.lock_or_recover().push_back(serde_json::json!({
+        "at": now_secs(), "kind": "make_shiny",
+        "label": format!("Made party[{party_position}] shiny"),
+    }));
     (StatusCode::OK, format!("queued make_shiny party_position={party_position} for slot {index}"))
 }
 
@@ -1812,6 +1835,12 @@ async fn api_take_item(
     slot.command_queue
         .lock_or_recover()
         .push_back(ClientMessage::TakeItem { item_id, quantity });
+    let rom = fire_red_rom_buffer::get_rom();
+    let item_name = fire_red_party_monitor::get_item_string_from_id(&rom, item_id);
+    slot.injection_events.lock_or_recover().push_back(serde_json::json!({
+        "at": now_secs(), "kind": "take_item",
+        "label": format!("Took {quantity}× {item_name}"),
+    }));
     (StatusCode::OK, format!("queued take_item item_id={item_id} quantity={quantity} for slot {index}"))
 }
 
@@ -1853,6 +1882,10 @@ async fn api_change_species(
     slot.command_queue
         .lock_or_recover()
         .push_back(ClientMessage::ChangeSpecies { party_position, new_species });
+    slot.injection_events.lock_or_recover().push_back(serde_json::json!({
+        "at": now_secs(), "kind": "change_species",
+        "label": format!("Changed party[{party_position}] to species #{new_species}"),
+    }));
     (StatusCode::OK, format!("queued change_species party_position={party_position} new_species={new_species} for slot {index}"))
 }
 
@@ -1894,6 +1927,11 @@ async fn api_change_ability(
     slot.command_queue
         .lock_or_recover()
         .push_back(ClientMessage::ChangeAbility { party_position, ability_slot });
+    let ability_label = if ability_slot == 0 { "primary" } else { "secondary" };
+    slot.injection_events.lock_or_recover().push_back(serde_json::json!({
+        "at": now_secs(), "kind": "change_ability",
+        "label": format!("Party[{party_position}] → {ability_label} ability"),
+    }));
     (StatusCode::OK, format!("queued change_ability party_position={party_position} ability_slot={ability_slot} for slot {index}"))
 }
 
@@ -1937,6 +1975,11 @@ async fn api_change_gender(
     slot.command_queue
         .lock_or_recover()
         .push_back(ClientMessage::ChangeGender { party_position, target_gender });
+    let gender_label = if target_gender == 0 { "male" } else { "female" };
+    slot.injection_events.lock_or_recover().push_back(serde_json::json!({
+        "at": now_secs(), "kind": "change_gender",
+        "label": format!("Party[{party_position}] → {gender_label}"),
+    }));
     (StatusCode::OK, format!("queued change_gender party_position={party_position} target_gender={target_gender} for slot {index}"))
 }
 

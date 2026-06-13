@@ -14,7 +14,7 @@ html, body {
     overflow: hidden;
 }
 /* Shared position and chrome for all alert toasts — top-left */
-#zone-toast, #death-toast, #shiny-toast, #wipe-toast {
+#zone-toast, #death-toast, #shiny-toast, #wipe-toast, #inject-toast {
     position: fixed; top: 12px; left: 12px;
     border-radius: 8px; padding: 10px 16px;
     max-width: 340px; min-width: 220px;
@@ -22,7 +22,7 @@ html, body {
     z-index: 9998; pointer-events: none;
     opacity: 0; transition: opacity 0.4s ease;
 }
-#zone-toast.visible, #death-toast.visible, #shiny-toast.visible, #wipe-toast.visible {
+#zone-toast.visible, #death-toast.visible, #shiny-toast.visible, #wipe-toast.visible, #inject-toast.visible {
     opacity: 1;
 }
 /* Per-toast colours */
@@ -47,6 +47,10 @@ html, body {
 /* Wipe toast content */
 .wt-label { font-size: 15px; font-weight: bold; color: #ff4444; margin-bottom: 4px; }
 .wt-sub   { font-size: 11px; color: #cc8888; }
+/* Injection toast */
+#inject-toast { background: rgba(5, 25, 10, 0.93); border: 1px solid rgba(80, 200, 120, 0.45); }
+.it-label { font-size: 11px; font-weight: bold; color: #aaa; margin-bottom: 2px; letter-spacing: 0.05em; text-transform: uppercase; }
+.it-msg   { font-size: 13px; color: #7defa0; font-weight: 600; }
 </style>
 </head>
 <body>
@@ -69,6 +73,10 @@ html, body {
   <div class="wt-label">PARTY WIPED — RUN ENDED</div>
   <div class="wt-sub"  id="wt-sub"></div>
 </div>
+<div id="inject-toast">
+  <div class="it-label">INJECTION</div>
+  <div class="it-msg"  id="it-msg"></div>
+</div>
 <script>
 // Player slot index — path takes priority (/0/alerts), falls back to ?slot=N, then 0
 const _pathParts  = window.location.pathname.split('/').filter(Boolean);
@@ -78,6 +86,9 @@ const playerIndex = !isNaN(_pathIndex) ? _pathIndex : parseInt(_params.get('slot
 
 let _lastZoneKey = '';
 let _toastTimer  = null;
+let _seenInjectionAts = new Set();
+let _injectQueue  = [];
+let _injectTimer  = null;
 
 // Shows the zone-entry toast.
 // alreadyEncountered — true if this area already has a recorded encounter this run.
@@ -148,6 +159,23 @@ let _wipeEndSent        = false;
 let _wipeTimer          = null;
 let _prevRunId          = null;
 
+// Injection toasts queue so rapid-fire calls don't clobber each other.
+function showInjectToast(label) {
+    _injectQueue.push(label);
+    if (_injectTimer === null) drainInjectQueue();
+}
+function drainInjectQueue() {
+    if (_injectQueue.length === 0) { _injectTimer = null; return; }
+    const label = _injectQueue.shift();
+    const toast = document.getElementById('inject-toast');
+    document.getElementById('it-msg').textContent = label;
+    toast.classList.add('visible');
+    _injectTimer = setTimeout(() => {
+        toast.classList.remove('visible');
+        setTimeout(drainInjectQueue, 400); // wait for fade-out before next
+    }, 4000);
+}
+
 function showShinyToast(enc) {
     const toast = document.getElementById('shiny-toast');
     document.getElementById('st-name').textContent =
@@ -185,6 +213,14 @@ function showDeathToast(mon) {
 function handleState(slots) {
     const slot = slots[playerIndex];
     if (!slot || !slot.connected) return;
+
+    // Injection alerts — show a toast for each event not yet seen.
+    for (const ev of (slot.injection_events || [])) {
+        if (!_seenInjectionAts.has(ev.at)) {
+            _seenInjectionAts.add(ev.at);
+            showInjectToast(ev.label);
+        }
+    }
 
     const currentRunId = slot.active_run_id;
     const party        = slot.party || [];

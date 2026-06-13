@@ -109,6 +109,9 @@ pub struct MonitorSlot {
     pub sprite_cache: Arc<Mutex<Option<PngSpriteCache>>>,
     /// Commands queued by the web server to be forwarded to the tracker over TCP.
     pub command_queue: Arc<Mutex<VecDeque<ClientMessage>>>,
+    /// Injection events queued by API endpoints and drained by BroadcastLoop each
+    /// tick into the WebSocket JSON so alerts.html can show toasts.
+    pub injection_events: Arc<Mutex<VecDeque<serde_json::Value>>>,
     /// Set to `true` when the tracker confirms a run change (EndRun / NewRun),
     /// so the BroadcastLoop can mark the DB reader dirty and re-sync.
     pub run_changed: Arc<AtomicBool>,
@@ -140,8 +143,9 @@ impl MonitorSlot {
             _db_path: db_path,
             db,
             sprite_cache:  Arc::new(Mutex::new(None)),
-            command_queue: Arc::new(Mutex::new(VecDeque::new())),
-            run_changed:   Arc::new(AtomicBool::new(false)),
+            command_queue:    Arc::new(Mutex::new(VecDeque::new())),
+            injection_events: Arc::new(Mutex::new(VecDeque::new())),
+            run_changed:      Arc::new(AtomicBool::new(false)),
             box_data:      Arc::new(Mutex::new(Vec::new())),
             bag_data:      Arc::new(Mutex::new(None)),
         }
