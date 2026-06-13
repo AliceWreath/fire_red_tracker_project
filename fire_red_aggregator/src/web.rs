@@ -1774,6 +1774,88 @@ async fn api_make_shiny(
     (StatusCode::OK, format!("queued make_shiny party_position={party_position} for slot {index}"))
 }
 
+/// `POST /api/slot/:index/take_item` — remove an item from the player's bag.
+///
+/// Body: `{ "item_id": <u16>, "quantity": <u16 1–99> }`.
+///
+/// Queues a [`ClientMessage::TakeItem`] for the tracker. If the current stack
+/// quantity is ≤ `quantity` the item is fully removed and the pocket is
+/// compacted; otherwise only the quantity is decremented. Returns 200 as soon
+/// as the command is enqueued.
+///
+/// Returns:
+/// - `200 OK` — command enqueued.
+/// - `400 Bad Request` — missing or invalid body fields.
+/// - `404 Not Found` — slot index out of range.
+/// - `503 Service Unavailable` — slot exists but tracker is not connected.
+async fn api_take_item(
+    State(state): State<WebState>,
+    Path(index): Path<usize>,
+    axum::Json(body): axum::Json<serde_json::Value>,
+) -> impl IntoResponse {
+    let slots = state.live_slots.lock_or_recover().clone();
+    let slot = match slots.get(index) {
+        Some(s) => s.clone(),
+        None    => return (StatusCode::NOT_FOUND, "slot index out of range".to_string()),
+    };
+    if slot.state.lock_or_recover().is_none() {
+        return (StatusCode::SERVICE_UNAVAILABLE, "slot not connected".to_string());
+    }
+    let item_id = match body["item_id"].as_u64().and_then(|v| u16::try_from(v).ok()) {
+        Some(v) if v > 0 => v,
+        _ => return (StatusCode::BAD_REQUEST, "item_id must be a positive u16".to_string()),
+    };
+    let quantity = match body["quantity"].as_u64().and_then(|v| u16::try_from(v).ok()) {
+        Some(v) if v > 0 && v <= 99 => v,
+        _ => return (StatusCode::BAD_REQUEST, "quantity must be 1–99".to_string()),
+    };
+    slot.command_queue
+        .lock_or_recover()
+        .push_back(ClientMessage::TakeItem { item_id, quantity });
+    (StatusCode::OK, format!("queued take_item item_id={item_id} quantity={quantity} for slot {index}"))
+}
+
+/// `POST /api/slot/:index/change_species` — change a party Pokémon's species.
+///
+/// Body: `{ "party_position": <u8 0–5>, "new_species": <u16 1–386> }`.
+///
+/// Queues a [`ClientMessage::ChangeSpecies`] for the tracker, which decrypts
+/// the party Pokémon's data block, updates the species field in the Growth
+/// substructure, recalculates the checksum, and re-encrypts. Personality,
+/// nickname, moves, EVs, IVs, nature, ability, and gender are all preserved.
+///
+/// Returns:
+/// - `200 OK` — command enqueued.
+/// - `400 Bad Request` — missing or invalid body fields.
+/// - `404 Not Found` — slot index out of range.
+/// - `503 Service Unavailable` — slot exists but tracker is not connected.
+async fn api_change_species(
+    State(state): State<WebState>,
+    Path(index): Path<usize>,
+    axum::Json(body): axum::Json<serde_json::Value>,
+) -> impl IntoResponse {
+    let slots = state.live_slots.lock_or_recover().clone();
+    let slot = match slots.get(index) {
+        Some(s) => s.clone(),
+        None    => return (StatusCode::NOT_FOUND, "slot index out of range".to_string()),
+    };
+    if slot.state.lock_or_recover().is_none() {
+        return (StatusCode::SERVICE_UNAVAILABLE, "slot not connected".to_string());
+    }
+    let party_position = match body["party_position"].as_u64().and_then(|v| u8::try_from(v).ok()) {
+        Some(v) if v < 6 => v,
+        _ => return (StatusCode::BAD_REQUEST, "party_position must be 0–5".to_string()),
+    };
+    let new_species = match body["new_species"].as_u64().and_then(|v| u16::try_from(v).ok()) {
+        Some(v) if v > 0 && v <= 386 => v,
+        _ => return (StatusCode::BAD_REQUEST, "new_species must be 1–386".to_string()),
+    };
+    slot.command_queue
+        .lock_or_recover()
+        .push_back(ClientMessage::ChangeSpecies { party_position, new_species });
+    (StatusCode::OK, format!("queued change_species party_position={party_position} new_species={new_species} for slot {index}"))
+}
+
 /// Broadcasts `end_run` or `new_run` to all connected tracker slots.
 async fn api_command(
     State(state): State<WebState>,
@@ -1861,6 +1943,8 @@ pub fn run(live_slots: SharedSlots, port: u16, db_conn: Option<String>, testing:
             .route("/api/slot/:index", get(api_slot))
             .route("/api/slot/:index/odds", get(api_slot_odds))
             .route("/api/slot/:index/give_item", post(api_give_item))
+            .route("/api/slot/:index/take_item", post(api_take_item))
+            .route("/api/slot/:index/change_species", post(api_change_species))
             .route("/api/slot/:index/make_shiny", post(api_make_shiny))
             .route("/api/bot/:index", get(api_bot_summary))
             .route("/api/command/:cmd", post(api_command))

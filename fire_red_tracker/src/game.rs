@@ -822,6 +822,79 @@ pub(crate) fn compute_give_item_write(
     ]))
 }
 
+/// Result of [`compute_take_item_write`]: either a single-slot quantity update
+/// or a full pocket rewrite after the removed item is compacted out.
+pub(crate) enum TakeItemWrite {
+    /// Write 4 bytes at `slot * 4` within the pocket: item_id + encrypted qty.
+    UpdateSlot { slot: usize, payload: [u8; 4] },
+    /// Item fully removed. `pocket` is the complete re-encoded pocket bytes.
+    WritePocket(Vec<u8>),
+}
+
+/// Pure logic for [`take_item`]: finds `item_id` in `pocket` and either
+/// decrements its quantity or removes it entirely (compacting the pocket).
+///
+/// Works for any pocket — slot count is derived from `pocket.len() / 4`.
+/// Returns `None` when `item_id` is zero, `quantity` is zero, the pocket is
+/// empty, or the item is not present in the pocket.
+pub(crate) fn compute_take_item_write(
+    pocket:   &[u8],
+    key:      u16,
+    item_id:  u16,
+    quantity: u16,
+) -> Option<TakeItemWrite> {
+    if item_id == 0 || quantity == 0 {
+        return None;
+    }
+    let n_slots = pocket.len() / 4;
+    if n_slots == 0 {
+        return None;
+    }
+
+    let mut found_slot: Option<usize> = None;
+    for slot in 0..n_slots {
+        let base = slot * 4;
+        if u16::from_le_bytes([pocket[base], pocket[base + 1]]) == item_id {
+            found_slot = Some(slot);
+            break;
+        }
+    }
+    let slot = found_slot?;
+
+    let base    = slot * 4;
+    let raw_qty = u16::from_le_bytes([pocket[base + 2], pocket[base + 3]]);
+    let cur_qty = raw_qty ^ key;
+
+    if cur_qty <= quantity {
+        // Full removal: drop the slot and compact remaining occupied slots left.
+        let mut compacted: Vec<(u16, u16)> = Vec::with_capacity(n_slots);
+        for s in 0..n_slots {
+            let b  = s * 4;
+            let id = u16::from_le_bytes([pocket[b], pocket[b + 1]]);
+            if id == 0 || s == slot { continue; }
+            let rq = u16::from_le_bytes([pocket[b + 2], pocket[b + 3]]);
+            compacted.push((id, rq ^ key));
+        }
+        let mut new_pocket = vec![0u8; pocket.len()];
+        for (i, (id, qty)) in compacted.iter().enumerate() {
+            let b = i * 4;
+            new_pocket[b..b + 2].copy_from_slice(&id.to_le_bytes());
+            new_pocket[b + 2..b + 4].copy_from_slice(&(qty ^ key).to_le_bytes());
+        }
+        Some(TakeItemWrite::WritePocket(new_pocket))
+    } else {
+        let new_qty = cur_qty - quantity;
+        let enc_qty = new_qty ^ key;
+        let payload = [
+            (item_id & 0xFF) as u8,
+            (item_id >> 8)   as u8,
+            (enc_qty & 0xFF) as u8,
+            (enc_qty >> 8)   as u8,
+        ];
+        Some(TakeItemWrite::UpdateSlot { slot, payload })
+    }
+}
+
 /// Reads `len` raw bytes from GBA address `addr` via a RetroArch UDP request.
 ///
 /// Returns `None` if RetroArch doesn't respond or returns a malformed reply.
@@ -1020,6 +1093,91 @@ pub fn give_item(item_id: u16, quantity: u16) -> bool {
     ok
 }
 
+/// Removes `quantity` of `item_id` from the player's bag pocket.
+///
+/// Uses the same SaveBlock1/key-derivation strategy as [`give_item`].  If the
+/// current stack quantity is ≤ `quantity` the item is fully removed and the
+/// pocket is compacted (remaining slots shift left) so FireRed's bag UI is
+/// consistent.  Otherwise only the quantity is decremented in place.
+///
+/// Returns `true` if the write command was dispatched to RetroArch.
+pub fn take_item(item_id: u16, quantity: u16) -> bool {
+    if item_id == 0 || quantity == 0 {
+        return false;
+    }
+
+    let (save_block1, save_block2): (usize, usize) = {
+        let iwram = fire_red_memory::get_iwram();
+        let ewram = fire_red_memory::get_ewram();
+        let sb1 = match read_save_block1_ptr(&iwram, &ewram) {
+            Some(ptr) => ptr,
+            None => {
+                tracing::warn!("take_item: SaveBlock1 ptr invalid in cache — is the game loaded?");
+                return false;
+            }
+        };
+        let sb2 = read_save_block2_ptr(&iwram, &ewram).unwrap_or(SAVE_BLOCK_2_BASE);
+        (sb1, sb2)
+    };
+
+    let socket = match fire_red_retroarch_interfacing::make_socket() {
+        Ok(s)  => s,
+        Err(e) => { tracing::warn!("take_item: failed to create socket: {e}"); return false; }
+    };
+
+    let (oracle_key, _) = derive_key_from_pockets(&socket, save_block1 as u32);
+    let key = oracle_key
+        .unwrap_or_else(|| derive_key_from_save_block2(&socket, save_block2 as u32));
+
+    let pocket_info  = pocket_for_item(item_id);
+    let pocket_addr  = save_block1 as u32 + pocket_info.offset as u32;
+    let expected_len = pocket_info.slots * 4;
+    let pocket = match read_retroarch_bytes(&socket, pocket_addr, expected_len) {
+        Some(b) if b.len() == expected_len => b,
+        _ => {
+            tracing::warn!("take_item: RetroArch did not respond to {} pocket read", pocket_info.name);
+            return false;
+        }
+    };
+
+    tracing::info!(
+        "take_item: sb1=0x{save_block1:08X} pocket={} addr=0x{pocket_addr:08X} key=0x{key:04X}",
+        pocket_info.name
+    );
+
+    let result = match compute_take_item_write(&pocket, key, item_id, quantity) {
+        Some(r) => r,
+        None => {
+            tracing::warn!("take_item: item_id={item_id} not found in {} pocket", pocket_info.name);
+            return false;
+        }
+    };
+
+    match result {
+        TakeItemWrite::UpdateSlot { slot, payload } => {
+            let write_addr = pocket_addr + slot as u32 * 4;
+            let ok = fire_red_retroarch_interfacing::write_to_retroarch(&socket, write_addr, &payload);
+            if ok {
+                let remaining = u16::from_le_bytes([payload[2], payload[3]]) ^ key;
+                tracing::info!(
+                    "take_item: item_id={item_id} remaining qty={remaining} at slot {slot} (addr=0x{write_addr:08X})"
+                );
+            }
+            ok
+        }
+        TakeItemWrite::WritePocket(new_pocket) => {
+            let ok = fire_red_retroarch_interfacing::write_to_retroarch(&socket, pocket_addr, &new_pocket);
+            if ok {
+                tracing::info!(
+                    "take_item: removed item_id={item_id} from {} pocket and compacted",
+                    pocket_info.name
+                );
+            }
+            ok
+        }
+    }
+}
+
 /// Makes the party Pokémon at `party_position` (0–5) shiny by patching its
 /// stored OT Secret ID so the Gen III shiny formula evaluates to zero.
 ///
@@ -1111,6 +1269,156 @@ pub fn make_shiny(party_position: usize) -> bool {
          tid=0x{tid:04X} sid: 0x{old_sid:04X} → 0x{new_sid:04X}"
     );
     true
+}
+
+/// Substructure order table for Gen III Pokémon data blocks.
+///
+/// `SUBSTRUCTURE_ORDER[personality % 24][i]` is the type at substructure
+/// position `i` (G=0 Growth, A=1 Attacks, E=2 Effort, M=3 Misc).
+const SUBSTRUCTURE_ORDER: [[u8; 4]; 24] = [
+    [0, 1, 2, 3], [0, 1, 3, 2], [0, 2, 1, 3], [0, 3, 1, 2],
+    [0, 2, 3, 1], [0, 3, 2, 1], [1, 0, 2, 3], [1, 0, 3, 2],
+    [2, 0, 1, 3], [3, 0, 1, 2], [2, 0, 3, 1], [3, 0, 2, 1],
+    [1, 2, 0, 3], [1, 3, 0, 2], [2, 1, 0, 3], [3, 1, 0, 2],
+    [2, 3, 0, 1], [3, 2, 0, 1], [1, 2, 3, 0], [1, 3, 2, 0],
+    [2, 1, 3, 0], [3, 1, 2, 0], [2, 3, 1, 0], [3, 2, 1, 0],
+];
+
+/// Returns the index (0–3) of the Growth substructure for a given `personality`.
+///
+/// `SUBSTRUCTURE_ORDER[p%24][substructType]` = the position of that type in
+/// the block, so Growth (type 0) is simply at `table[p%24][0]`.
+fn growth_substructure_index(personality: u32) -> usize {
+    SUBSTRUCTURE_ORDER[(personality % 24) as usize][0] as usize
+}
+
+/// Result of [`compute_change_species`].
+pub(crate) enum ChangeSpeciesOutcome {
+    /// The Growth block already holds `new_species`; no write is needed.
+    AlreadyMatches,
+    /// Updated checksum bytes and fully re-encrypted 48-byte data block.
+    Write { checksum: [u8; 2], encrypted: [u8; 48] },
+}
+
+/// Pure logic for [`change_species`]: decrypts the data block, updates the
+/// species in the Growth substructure, recalculates the checksum, and
+/// re-encrypts.
+///
+/// `data` must be 80 bytes (Pokémon header + encrypted data block).
+/// Returns `None` if `data` is too short or personality is 0 (empty slot).
+pub(crate) fn compute_change_species(
+    data: &[u8],
+    new_species: u16,
+) -> Option<ChangeSpeciesOutcome> {
+    if data.len() < 80 { return None; }
+
+    let personality = u32::from_le_bytes(data[0..4].try_into().unwrap());
+    let ot_id       = u32::from_le_bytes(data[4..8].try_into().unwrap());
+    if personality == 0 { return None; }
+
+    let enc_key = personality ^ ot_id;
+
+    // Decrypt the 48-byte data block (bytes 32–79).
+    let mut decrypted = [0u8; 48];
+    for (i, chunk) in data[32..80].chunks_exact(4).enumerate() {
+        let w = u32::from_le_bytes(chunk.try_into().unwrap()) ^ enc_key;
+        decrypted[i * 4..i * 4 + 4].copy_from_slice(&w.to_le_bytes());
+    }
+
+    let g_offset    = growth_substructure_index(personality) * 12;
+    let old_species = u16::from_le_bytes([decrypted[g_offset], decrypted[g_offset + 1]]);
+    if old_species == new_species {
+        return Some(ChangeSpeciesOutcome::AlreadyMatches);
+    }
+
+    decrypted[g_offset..g_offset + 2].copy_from_slice(&new_species.to_le_bytes());
+
+    // Recalculate checksum over the full modified decrypted block.
+    let checksum: u16 = decrypted
+        .chunks_exact(2)
+        .map(|c| u16::from_le_bytes([c[0], c[1]]))
+        .fold(0u16, |acc, w| acc.wrapping_add(w));
+
+    // Re-encrypt.
+    let mut encrypted = [0u8; 48];
+    for (i, chunk) in decrypted.chunks_exact(4).enumerate() {
+        let w = u32::from_le_bytes(chunk.try_into().unwrap()) ^ enc_key;
+        encrypted[i * 4..i * 4 + 4].copy_from_slice(&w.to_le_bytes());
+    }
+
+    Some(ChangeSpeciesOutcome::Write { checksum: checksum.to_le_bytes(), encrypted })
+}
+
+/// Changes the party Pokémon at `party_position` (0–5) to `new_species`.
+///
+/// Only the species field in the encrypted Growth substructure is updated.
+/// Personality, OT ID, nickname, moves, EVs, IVs, nature, ability, and gender
+/// are all preserved. The checksum is recalculated after the change.
+///
+/// The party stats (max HP, attack, etc.) in bytes 80–99 are not updated here —
+/// FireRed recomputes them via `CalculateMonStats` on the next relevant game event.
+///
+/// Returns `true` if the write was dispatched to RetroArch.
+pub fn change_species(party_position: usize, new_species: u16) -> bool {
+    if party_position >= 6 {
+        tracing::warn!("change_species: party_position {party_position} out of range (must be 0–5)");
+        return false;
+    }
+    if new_species == 0 || new_species > MAX_NATIONAL_DEX_FIRERED {
+        tracing::warn!("change_species: new_species {new_species} out of range (must be 1–386)");
+        return false;
+    }
+
+    const PARTY_BASE: u32 = 0x02024284;
+    const MON_SIZE:   u32 = 100;
+    let mon_addr = PARTY_BASE + party_position as u32 * MON_SIZE;
+
+    let socket = match fire_red_retroarch_interfacing::make_socket() {
+        Ok(s)  => s,
+        Err(e) => { tracing::warn!("change_species: socket error: {e}"); return false; }
+    };
+
+    let data = match read_retroarch_bytes(&socket, mon_addr, 80) {
+        Some(b) if b.len() == 80 => b,
+        _ => {
+            tracing::warn!("change_species: RetroArch did not respond for party[{party_position}]");
+            return false;
+        }
+    };
+
+    let personality = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
+    if personality == 0 {
+        tracing::warn!("change_species: party[{party_position}] is empty (personality=0)");
+        return false;
+    }
+
+    match compute_change_species(&data, new_species) {
+        None => {
+            tracing::warn!("change_species: unexpected None for party[{party_position}]");
+            false
+        }
+        Some(ChangeSpeciesOutcome::AlreadyMatches) => {
+            tracing::info!("change_species: party[{party_position}] already species={new_species}");
+            true
+        }
+        Some(ChangeSpeciesOutcome::Write { checksum, encrypted }) => {
+            // Write checksum (+28, 2 bytes) + unknown (+30, 2 bytes preserved) +
+            // encrypted block (+32, 48 bytes) as one 52-byte payload so the game
+            // never sees a state where the checksum and data are inconsistent.
+            let mut payload = [0u8; 52];
+            payload[0..2].copy_from_slice(&checksum);
+            payload[2..4].copy_from_slice(&data[30..32]); // preserve unknown field
+            payload[4..52].copy_from_slice(&encrypted);
+            if !fire_red_retroarch_interfacing::write_to_retroarch(&socket, mon_addr + 28, &payload) {
+                tracing::warn!("change_species: failed to write to party[{party_position}]");
+                return false;
+            }
+            tracing::info!(
+                "change_species: party[{party_position}] personality=0x{personality:08X} → species={new_species}"
+            );
+            true
+        }
+    }
 }
 
 /// Reads all four bag pockets from the player's SaveBlock1 and returns a
@@ -1214,7 +1522,10 @@ pub fn read_bag_pockets() -> Option<BagPockets> {
 
 #[cfg(test)]
 mod tests {
-    use super::{compute_give_item_write, is_shiny, ITEMS_POCKET_SLOTS, MAX_ITEM_QTY};
+    use super::{
+        compute_change_species, compute_give_item_write, compute_take_item_write,
+        is_shiny, ChangeSpeciesOutcome, TakeItemWrite, ITEMS_POCKET_SLOTS, MAX_ITEM_QTY,
+    };
 
     // ── is_shiny ─────────────────────────────────────────────────────────────
     // Gen III shiny formula: (p_high ^ p_low ^ id_high ^ id_low) < 8
@@ -1412,6 +1723,301 @@ mod tests {
         write_slot(&mut pocket, 0, 13, MAX_ITEM_QTY); // already 99, key=0
         let (_, payload) = compute_give_item_write(&pocket, 0, 13, 1).unwrap();
         assert_eq!(decode_qty(&payload, 0), MAX_ITEM_QTY);
+    }
+
+    // ── compute_take_item_write tests ─────────────────────────────────────────
+
+    #[test]
+    fn take_item_zero_id_returns_none() {
+        let pocket = empty_pocket();
+        assert!(compute_take_item_write(&pocket, 0, 0, 1).is_none());
+    }
+
+    #[test]
+    fn take_item_zero_quantity_returns_none() {
+        let pocket = empty_pocket();
+        assert!(compute_take_item_write(&pocket, 0, 13, 0).is_none());
+    }
+
+    #[test]
+    fn take_item_not_in_pocket_returns_none() {
+        let pocket = empty_pocket();
+        assert!(compute_take_item_write(&pocket, 0, 13, 1).is_none());
+    }
+
+    #[test]
+    fn take_item_partial_decrements_quantity() {
+        let mut pocket = empty_pocket();
+        write_slot(&mut pocket, 0, 13, 10); // qty=10, key=0
+        let result = compute_take_item_write(&pocket, 0, 13, 3).unwrap();
+        match result {
+            TakeItemWrite::UpdateSlot { slot, payload } => {
+                assert_eq!(slot, 0);
+                assert_eq!(decode_qty(&payload, 0), 7);
+                assert_eq!(decode_item_id(&payload), 13);
+            }
+            TakeItemWrite::WritePocket(_) => panic!("expected UpdateSlot for partial take"),
+        }
+    }
+
+    #[test]
+    fn take_item_exact_quantity_removes_and_compacts() {
+        let mut pocket = empty_pocket();
+        write_slot(&mut pocket, 0, 13, 5); // qty=5, key=0
+        let result = compute_take_item_write(&pocket, 0, 13, 5).unwrap();
+        match result {
+            TakeItemWrite::WritePocket(new_pocket) => {
+                assert_eq!(new_pocket.len(), pocket.len());
+                assert_eq!(u16::from_le_bytes([new_pocket[0], new_pocket[1]]), 0);
+            }
+            TakeItemWrite::UpdateSlot { .. } => panic!("expected WritePocket for full removal"),
+        }
+    }
+
+    #[test]
+    fn take_item_excess_quantity_removes() {
+        let mut pocket = empty_pocket();
+        write_slot(&mut pocket, 0, 13, 3); // qty=3 < take 99
+        let result = compute_take_item_write(&pocket, 0, 13, 99).unwrap();
+        assert!(matches!(result, TakeItemWrite::WritePocket(_)));
+    }
+
+    #[test]
+    fn take_item_compaction_shifts_slots_left() {
+        let mut pocket = empty_pocket();
+        write_slot(&mut pocket, 0, 7,  2);  // slot 0: item 7,  qty=2
+        write_slot(&mut pocket, 1, 13, 5);  // slot 1: item 13, qty=5 — removed
+        write_slot(&mut pocket, 2, 99, 10); // slot 2: item 99, qty=10
+        let result = compute_take_item_write(&pocket, 0, 13, 99).unwrap();
+        match result {
+            TakeItemWrite::WritePocket(new_pocket) => {
+                let id0 = u16::from_le_bytes([new_pocket[0], new_pocket[1]]);
+                let id1 = u16::from_le_bytes([new_pocket[4], new_pocket[5]]);
+                let id2 = u16::from_le_bytes([new_pocket[8], new_pocket[9]]);
+                assert_eq!(id0, 7,  "slot 0 should be item 7 after compaction");
+                assert_eq!(id1, 99, "slot 1 should be item 99 (shifted) after compaction");
+                assert_eq!(id2, 0,  "slot 2 should be empty after compaction");
+            }
+            TakeItemWrite::UpdateSlot { .. } => panic!("expected WritePocket"),
+        }
+    }
+
+    #[test]
+    fn take_item_security_key_applied() {
+        let key: u16 = 0xABCD;
+        let mut pocket = empty_pocket();
+        write_slot(&mut pocket, 0, 13, 10 ^ key); // qty=10 stored encrypted
+        let result = compute_take_item_write(&pocket, key, 13, 3).unwrap();
+        match result {
+            TakeItemWrite::UpdateSlot { payload, .. } => {
+                assert_eq!(decode_qty(&payload, key), 7);
+            }
+            TakeItemWrite::WritePocket(_) => panic!("expected UpdateSlot"),
+        }
+    }
+
+    #[test]
+    fn take_item_security_key_applied_on_removal() {
+        let key: u16 = 0x1234;
+        let mut pocket = empty_pocket();
+        write_slot(&mut pocket, 0, 7,  2 ^ key);  // slot 0: item 7
+        write_slot(&mut pocket, 1, 13, 5 ^ key);  // slot 1: item 13 — removed
+        write_slot(&mut pocket, 2, 99, 10 ^ key); // slot 2: item 99 — shifts to slot 1
+        let result = compute_take_item_write(&pocket, key, 13, 99).unwrap();
+        match result {
+            TakeItemWrite::WritePocket(new_pocket) => {
+                let qty1 = u16::from_le_bytes([new_pocket[4 + 2], new_pocket[4 + 3]]) ^ key;
+                assert_eq!(qty1, 10, "item 99 qty should survive re-keying");
+            }
+            TakeItemWrite::UpdateSlot { .. } => panic!("expected WritePocket"),
+        }
+    }
+
+    #[test]
+    fn take_item_finds_in_non_zero_slot() {
+        let mut pocket = empty_pocket();
+        write_slot(&mut pocket, 0, 7, 3);
+        write_slot(&mut pocket, 1, 8, 2);
+        write_slot(&mut pocket, 2, 13, 6); // target is in slot 2
+        let result = compute_take_item_write(&pocket, 0, 13, 2).unwrap();
+        match result {
+            TakeItemWrite::UpdateSlot { slot, payload } => {
+                assert_eq!(slot, 2);
+                assert_eq!(decode_qty(&payload, 0), 4);
+            }
+            TakeItemWrite::WritePocket(_) => panic!("expected UpdateSlot"),
+        }
+    }
+
+    // ── compute_change_species tests ──────────────────────────────────────────
+
+    /// Builds valid 80-byte Pokémon data from a decrypted block (for testing).
+    fn make_mon_data(personality: u32, ot_id: u32, decrypted: [u8; 48]) -> Vec<u8> {
+        let mut data = vec![0u8; 80];
+        data[0..4].copy_from_slice(&personality.to_le_bytes());
+        data[4..8].copy_from_slice(&ot_id.to_le_bytes());
+        let checksum: u16 = decrypted.chunks_exact(2)
+            .map(|c| u16::from_le_bytes([c[0], c[1]]))
+            .fold(0u16, |acc, w| acc.wrapping_add(w));
+        data[28..30].copy_from_slice(&checksum.to_le_bytes()); // checksum at +28, not +30
+        let key = personality ^ ot_id;
+        for (i, chunk) in decrypted.chunks_exact(4).enumerate() {
+            let w = u32::from_le_bytes(chunk.try_into().unwrap()) ^ key;
+            data[32 + i * 4..32 + i * 4 + 4].copy_from_slice(&w.to_le_bytes());
+        }
+        data
+    }
+
+    /// Decrypts the data block out of the bytes returned by compute_change_species.
+    fn decrypt_block(encrypted: &[u8; 48], personality: u32, ot_id: u32) -> [u8; 48] {
+        let key = personality ^ ot_id;
+        let mut dec = [0u8; 48];
+        for (i, chunk) in encrypted.chunks_exact(4).enumerate() {
+            let w = u32::from_le_bytes(chunk.try_into().unwrap()) ^ key;
+            dec[i * 4..i * 4 + 4].copy_from_slice(&w.to_le_bytes());
+        }
+        dec
+    }
+
+    #[test]
+    fn change_species_empty_slot_returns_none() {
+        let data = vec![0u8; 80]; // personality = 0
+        assert!(compute_change_species(&data, 1).is_none());
+    }
+
+    #[test]
+    fn change_species_short_data_returns_none() {
+        assert!(compute_change_species(&[0u8; 79], 1).is_none());
+    }
+
+    #[test]
+    fn change_species_already_same_returns_already_matches() {
+        // personality=24 → 24%24=0 → order[0]=[0,1,2,3] → Growth at index 0, offset 0
+        let mut dec = [0u8; 48];
+        dec[0..2].copy_from_slice(&25u16.to_le_bytes()); // species=25
+        let data = make_mon_data(24, 0, dec);
+        let result = compute_change_species(&data, 25).unwrap();
+        assert!(matches!(result, ChangeSpeciesOutcome::AlreadyMatches));
+    }
+
+    #[test]
+    fn change_species_writes_correct_species_at_growth_offset_0() {
+        // personality=24 → Growth at substructure 0, decrypted offset 0
+        let mut dec = [0u8; 48];
+        dec[0..2].copy_from_slice(&1u16.to_le_bytes()); // old species=1
+        let data = make_mon_data(24, 0, dec);
+        let result = compute_change_species(&data, 25).unwrap();
+        match result {
+            ChangeSpeciesOutcome::Write { encrypted, .. } => {
+                let new_dec = decrypt_block(&encrypted, 24, 0);
+                let species = u16::from_le_bytes([new_dec[0], new_dec[1]]);
+                assert_eq!(species, 25);
+            }
+            ChangeSpeciesOutcome::AlreadyMatches => panic!("expected Write"),
+        }
+    }
+
+    #[test]
+    fn change_species_writes_correct_species_at_non_zero_growth_index() {
+        // personality=30 → 30%24=6 → order[6]=[1,0,2,3] → Growth at index 1, offset 12
+        let mut dec = [0u8; 48];
+        dec[12..14].copy_from_slice(&7u16.to_le_bytes()); // old species=7 at offset 12
+        let data = make_mon_data(30, 0, dec);
+        let result = compute_change_species(&data, 25).unwrap();
+        match result {
+            ChangeSpeciesOutcome::Write { encrypted, .. } => {
+                let new_dec = decrypt_block(&encrypted, 30, 0);
+                let species = u16::from_le_bytes([new_dec[12], new_dec[13]]);
+                assert_eq!(species, 25, "species should be at growth offset 12");
+                // Other substructures should be unchanged (still zero).
+                assert_eq!(u16::from_le_bytes([new_dec[0], new_dec[1]]), 0, "non-growth slot 0 unchanged");
+            }
+            ChangeSpeciesOutcome::AlreadyMatches => panic!("expected Write"),
+        }
+    }
+
+    #[test]
+    fn change_species_checksum_is_correct() {
+        let mut dec = [0u8; 48];
+        dec[0..2].copy_from_slice(&1u16.to_le_bytes());
+        let data = make_mon_data(24, 0, dec);
+        let result = compute_change_species(&data, 25).unwrap();
+        match result {
+            ChangeSpeciesOutcome::Write { checksum, encrypted } => {
+                let new_dec = decrypt_block(&encrypted, 24, 0);
+                let expected: u16 = new_dec.chunks_exact(2)
+                    .map(|c| u16::from_le_bytes([c[0], c[1]]))
+                    .fold(0u16, |acc, w| acc.wrapping_add(w));
+                assert_eq!(u16::from_le_bytes(checksum), expected);
+            }
+            ChangeSpeciesOutcome::AlreadyMatches => panic!("expected Write"),
+        }
+    }
+
+    #[test]
+    fn change_species_non_growth_fields_preserved() {
+        // Fill the whole decrypted block with non-zero data, change only species.
+        // personality=24 → Growth at index 0 (offset 0-11)
+        let mut dec = [0xABu8; 48];
+        dec[0..2].copy_from_slice(&1u16.to_le_bytes()); // species field
+        let data = make_mon_data(24, 0, dec);
+        let result = compute_change_species(&data, 25).unwrap();
+        match result {
+            ChangeSpeciesOutcome::Write { encrypted, .. } => {
+                let new_dec = decrypt_block(&encrypted, 24, 0);
+                // Species changed
+                assert_eq!(u16::from_le_bytes([new_dec[0], new_dec[1]]), 25);
+                // Rest of Growth block (bytes 2-11) unchanged
+                assert_eq!(&new_dec[2..12], &dec[2..12]);
+                // Other substructures completely unchanged
+                assert_eq!(&new_dec[12..], &dec[12..]);
+            }
+            ChangeSpeciesOutcome::AlreadyMatches => panic!("expected Write"),
+        }
+    }
+
+    #[test]
+    fn change_species_growth_position_derived_from_table_not_inverse() {
+        // personality=8 → 8%24=8 → SUBSTRUCTURE_ORDER[8]=[2,0,1,3]
+        // table[8][0]=2 → Growth is at position 2, byte offset 24.
+        // The old buggy `.position(|&t|t==0)` would find value 0 at index 1
+        // and write species to offset 12 instead — corrupting the Attacks block.
+        let mut dec = [0u8; 48];
+        dec[24..26].copy_from_slice(&7u16.to_le_bytes()); // species=7 at correct offset
+        let data = make_mon_data(8, 0, dec);
+        let result = compute_change_species(&data, 25).unwrap();
+        match result {
+            ChangeSpeciesOutcome::Write { encrypted, .. } => {
+                let new_dec = decrypt_block(&encrypted, 8, 0);
+                assert_eq!(
+                    u16::from_le_bytes([new_dec[24], new_dec[25]]), 25,
+                    "species must be written to growth offset 24, not 12"
+                );
+                assert_eq!(
+                    u16::from_le_bytes([new_dec[12], new_dec[13]]), 0,
+                    "Attacks block at offset 12 must be untouched"
+                );
+            }
+            ChangeSpeciesOutcome::AlreadyMatches => panic!("expected Write"),
+        }
+    }
+
+    #[test]
+    fn change_species_ot_id_xor_key_applied() {
+        // Use a non-zero ot_id so enc_key = personality ^ ot_id != personality.
+        let personality: u32 = 24;
+        let ot_id:       u32 = 0xDEAD_BEEF;
+        let mut dec = [0u8; 48];
+        dec[0..2].copy_from_slice(&1u16.to_le_bytes());
+        let data = make_mon_data(personality, ot_id, dec);
+        let result = compute_change_species(&data, 25).unwrap();
+        match result {
+            ChangeSpeciesOutcome::Write { encrypted, .. } => {
+                let new_dec = decrypt_block(&encrypted, personality, ot_id);
+                assert_eq!(u16::from_le_bytes([new_dec[0], new_dec[1]]), 25);
+            }
+            ChangeSpeciesOutcome::AlreadyMatches => panic!("expected Write"),
+        }
     }
 
     // ── live RetroArch integration ────────────────────────────────────────────

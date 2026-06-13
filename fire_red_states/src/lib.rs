@@ -35,6 +35,8 @@ pub const MAX_NATIONAL_DEX_FIRERED: u16 = 386;
 ///   3 = Hello
 ///   4 = GiveItem
 ///   5 = MakeShiny
+///   6 = TakeItem
+///   7 = ChangeSpecies
 #[derive(serde::Serialize, serde::Deserialize, Clone)]
 pub enum ClientMessage {
     RequestTextures(Vec<u16>), // index 0 — do not reorder
@@ -48,6 +50,15 @@ pub enum ClientMessage {
     /// stored OT Secret ID so the Gen III shiny formula holds. Personality is
     /// unchanged, preserving nature, ability, gender, and data block order.
     MakeShiny { party_position: u8 },         // index 5 — do not reorder
+    /// Remove `quantity` of `item_id` from the player's bag. If the current
+    /// quantity is ≤ `quantity` the item is fully removed and the pocket is
+    /// compacted; otherwise the quantity is decremented in place.
+    TakeItem { item_id: u16, quantity: u16 }, // index 6 — do not reorder
+    /// Change the party Pokémon at `party_position` (0–5) to `new_species`.
+    /// Personality, OT ID, nickname, EVs, IVs, and moves are all preserved.
+    /// Only the species field in the Growth substructure is updated; the
+    /// checksum is recalculated and the data block re-encrypted.
+    ChangeSpecies { party_position: u8, new_species: u16 }, // index 7 — do not reorder
     // Append new variants here only.
 }
 

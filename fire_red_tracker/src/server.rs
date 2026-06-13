@@ -136,6 +136,12 @@ pub fn handle_client(
                 Ok(ClientMessage::MakeShiny { party_position }) => {
                     crate::game::make_shiny(party_position as usize);
                 }
+                Ok(ClientMessage::TakeItem { item_id, quantity }) => {
+                    crate::game::take_item(item_id, quantity);
+                }
+                Ok(ClientMessage::ChangeSpecies { party_position, new_species }) => {
+                    crate::game::change_species(party_position as usize, new_species);
+                }
                 Err(_) => break,
             }
         }
