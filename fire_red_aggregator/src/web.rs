@@ -1897,6 +1897,49 @@ async fn api_change_ability(
     (StatusCode::OK, format!("queued change_ability party_position={party_position} ability_slot={ability_slot} for slot {index}"))
 }
 
+/// `POST /api/slot/:index/change_gender` — change the gender of a party Pokémon.
+///
+/// Body: `{ "party_position": <u8 0–5>, "target_gender": <u8 0 or 1> }` where
+/// 0 = male and 1 = female.
+///
+/// Adjusts only the low byte of the personality, preserving nature
+/// (personality % 25). If the Pokémon is currently shiny only bytes that keep
+/// the shiny formula satisfied are considered; the command is rejected (logged as
+/// a warning) if none exist for the requested gender.  Genderless and
+/// fixed-gender species are also rejected.
+///
+/// Returns:
+/// - `200 OK` — command enqueued.
+/// - `400 Bad Request` — missing or invalid body fields.
+/// - `404 Not Found` — slot index out of range.
+/// - `503 Service Unavailable` — slot exists but tracker is not connected.
+async fn api_change_gender(
+    State(state): State<WebState>,
+    Path(index): Path<usize>,
+    axum::Json(body): axum::Json<serde_json::Value>,
+) -> impl IntoResponse {
+    let slots = state.live_slots.lock_or_recover().clone();
+    let slot = match slots.get(index) {
+        Some(s) => s.clone(),
+        None    => return (StatusCode::NOT_FOUND, "slot index out of range".to_string()),
+    };
+    if slot.state.lock_or_recover().is_none() {
+        return (StatusCode::SERVICE_UNAVAILABLE, "slot not connected".to_string());
+    }
+    let party_position = match body["party_position"].as_u64().and_then(|v| u8::try_from(v).ok()) {
+        Some(v) if v < 6 => v,
+        _ => return (StatusCode::BAD_REQUEST, "party_position must be 0–5".to_string()),
+    };
+    let target_gender = match body["target_gender"].as_u64().and_then(|v| u8::try_from(v).ok()) {
+        Some(v) if v <= 1 => v,
+        _ => return (StatusCode::BAD_REQUEST, "target_gender must be 0 (male) or 1 (female)".to_string()),
+    };
+    slot.command_queue
+        .lock_or_recover()
+        .push_back(ClientMessage::ChangeGender { party_position, target_gender });
+    (StatusCode::OK, format!("queued change_gender party_position={party_position} target_gender={target_gender} for slot {index}"))
+}
+
 /// Broadcasts `end_run` or `new_run` to all connected tracker slots.
 async fn api_command(
     State(state): State<WebState>,
@@ -1987,6 +2030,7 @@ pub fn run(live_slots: SharedSlots, port: u16, db_conn: Option<String>, testing:
             .route("/api/slot/:index/take_item", post(api_take_item))
             .route("/api/slot/:index/change_species", post(api_change_species))
             .route("/api/slot/:index/change_ability", post(api_change_ability))
+            .route("/api/slot/:index/change_gender", post(api_change_gender))
             .route("/api/slot/:index/make_shiny", post(api_make_shiny))
             .route("/api/bot/:index", get(api_bot_summary))
             .route("/api/command/:cmd", post(api_command))

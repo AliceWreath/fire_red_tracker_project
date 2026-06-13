@@ -38,6 +38,7 @@ pub const MAX_NATIONAL_DEX_FIRERED: u16 = 386;
 ///   6 = TakeItem
 ///   7 = ChangeSpecies
 ///   8 = ChangeAbility
+///   9 = ChangeGender
 #[derive(serde::Serialize, serde::Deserialize, Clone)]
 pub enum ClientMessage {
     RequestTextures(Vec<u16>), // index 0 — do not reorder
@@ -65,6 +66,12 @@ pub enum ClientMessage {
     /// bit 31 of the IV/egg/ability word in the Misc substructure and
     /// recalculates the checksum.
     ChangeAbility { party_position: u8, ability_slot: u8 }, // index 8 — do not reorder
+    /// Change the party Pokémon at `party_position` (0–5) to `target_gender`
+    /// (0 = male, 1 = female) by adjusting the low byte of the personality.
+    /// Nature (personality % 25) is always preserved. If the Pokémon is shiny
+    /// only personality bytes that keep the shiny formula satisfied are
+    /// considered; the call fails if no such byte exists for the requested gender.
+    ChangeGender { party_position: u8, target_gender: u8 }, // index 9 — do not reorder
     // Append new variants here only.
 }
 

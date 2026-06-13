@@ -145,6 +145,9 @@ pub fn handle_client(
                 Ok(ClientMessage::ChangeAbility { party_position, ability_slot }) => {
                     crate::game::change_ability(party_position as usize, ability_slot);
                 }
+                Ok(ClientMessage::ChangeGender { party_position, target_gender }) => {
+                    crate::game::change_gender(party_position as usize, target_gender);
+                }
                 Err(_) => break,
             }
         }

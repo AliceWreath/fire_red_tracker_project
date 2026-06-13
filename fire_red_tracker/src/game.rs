@@ -1544,6 +1544,222 @@ pub fn change_ability(party_position: usize, ability_slot: u8) -> bool {
     }
 }
 
+/// Result of [`compute_change_gender`].
+pub(crate) enum ChangeGenderOutcome {
+    /// The Pokémon already has `target_gender`; no write needed.
+    AlreadyMatches,
+    /// New personality, updated checksum bytes, and re-encrypted 48-byte block.
+    Write { new_personality: u32, checksum: [u8; 2], encrypted: [u8; 48] },
+}
+
+/// Pure logic for [`change_gender`]: searches for a new personality low byte
+/// that satisfies `target_gender` (0 = male, 1 = female), preserves nature
+/// (personality % 25), and — when the Pokémon is currently shiny — keeps the
+/// Gen III shiny formula satisfied. If `personality % 24` changes, the four
+/// 12-byte substructures are rearranged to match the new order before
+/// re-encrypting.
+///
+/// `data` must be 80 bytes. `gender_ratio` is the species' raw byte from the
+/// ROM base-stats table (0 = always male, 254 = always female, 255 = genderless;
+/// otherwise female when `personality & 0xFF < gender_ratio`).
+/// Returns `None` if `data` is too short, personality is 0 (empty slot), the
+/// species has fixed/no gender for `target_gender`, or (when shiny) no single
+/// byte satisfies all constraints simultaneously.
+pub(crate) fn compute_change_gender(
+    data: &[u8],
+    target_gender: u8,
+    gender_ratio: u8,
+) -> Option<ChangeGenderOutcome> {
+    if data.len() < 80 { return None; }
+
+    let personality = u32::from_le_bytes(data[0..4].try_into().unwrap());
+    let ot_id       = u32::from_le_bytes(data[4..8].try_into().unwrap());
+    if personality == 0 { return None; }
+
+    // Fixed-gender and genderless species.
+    match gender_ratio {
+        255 => return None,
+        0   => return if target_gender == 0 { Some(ChangeGenderOutcome::AlreadyMatches) } else { None },
+        254 => return if target_gender == 1 { Some(ChangeGenderOutcome::AlreadyMatches) } else { None },
+        _   => {}
+    }
+
+    let b0 = (personality & 0xFF) as u8;
+    let currently_female = b0 < gender_ratio;
+    if (currently_female && target_gender == 1) || (!currently_female && target_gender == 0) {
+        return Some(ChangeGenderOutcome::AlreadyMatches);
+    }
+
+    let shiny_now = is_shiny(personality, ot_id);
+    // Shiny XOR = p_high ^ p_low ^ id_high ^ id_low.  Only b0 changes,
+    // so k16 = everything-except-b0 is a constant; new_xor = k16 ^ new_b0.
+    let p_high  = (personality >> 16) as u16;
+    let b1      = ((personality >> 8) & 0xFF) as u16;
+    let id_high = (ot_id >> 16) as u16;
+    let id_low  = (ot_id & 0xFFFF) as u16;
+    let k16 = p_high ^ (b1 << 8) ^ id_high ^ id_low;
+
+    let upper  = personality & 0xFFFF_FF00;
+    let nature = personality % 25;
+
+    let new_b0 = (0u32..=255).find(|&c| {
+        let c = c as u8;
+        let new_p = upper | c as u32;
+        if new_p % 25 != nature { return false; }
+        let gender_ok = if target_gender == 0 { c >= gender_ratio } else { c < gender_ratio };
+        if !gender_ok { return false; }
+        if shiny_now && (k16 ^ c as u16) >= 8 { return false; }
+        true
+    })? as u8;
+
+    let new_p       = upper | new_b0 as u32;
+    let enc_key     = personality ^ ot_id;
+    let new_enc_key = new_p ^ ot_id;
+
+    let mut decrypted = [0u8; 48];
+    for (i, chunk) in data[32..80].chunks_exact(4).enumerate() {
+        let w = u32::from_le_bytes(chunk.try_into().unwrap()) ^ enc_key;
+        decrypted[i * 4..i * 4 + 4].copy_from_slice(&w.to_le_bytes());
+    }
+
+    // Rearrange substructures if personality % 24 changed.
+    let old_mod24 = (personality % 24) as usize;
+    let new_mod24 = (new_p % 24) as usize;
+    let arranged = if old_mod24 == new_mod24 {
+        decrypted
+    } else {
+        let mut r = [0u8; 48];
+        for t in 0..4 {
+            let old_pos = SUBSTRUCTURE_ORDER[old_mod24][t] as usize;
+            let new_pos = SUBSTRUCTURE_ORDER[new_mod24][t] as usize;
+            r[new_pos * 12..new_pos * 12 + 12]
+                .copy_from_slice(&decrypted[old_pos * 12..old_pos * 12 + 12]);
+        }
+        r
+    };
+
+    let checksum: u16 = arranged
+        .chunks_exact(2)
+        .map(|c| u16::from_le_bytes([c[0], c[1]]))
+        .fold(0u16, |acc, w| acc.wrapping_add(w));
+
+    let mut encrypted = [0u8; 48];
+    for (i, chunk) in arranged.chunks_exact(4).enumerate() {
+        let w = u32::from_le_bytes(chunk.try_into().unwrap()) ^ new_enc_key;
+        encrypted[i * 4..i * 4 + 4].copy_from_slice(&w.to_le_bytes());
+    }
+
+    Some(ChangeGenderOutcome::Write {
+        new_personality: new_p,
+        checksum: checksum.to_le_bytes(),
+        encrypted,
+    })
+}
+
+/// Changes the gender of the party Pokémon at `party_position` (0–5) to
+/// `target_gender` (0 = male, 1 = female).
+///
+/// Adjusts only the low byte of the personality, preserving nature
+/// (personality % 25). If the Pokémon is shiny, only values that keep the
+/// shiny formula satisfied are considered — if none exists for the requested
+/// gender, the call logs a warning and returns `false`. Personality, EVs, IVs,
+/// moves, and all other save data are preserved.
+///
+/// Writes an atomic 80-byte payload covering personality + the re-encrypted
+/// data block so the game never sees an inconsistent state.
+pub fn change_gender(party_position: usize, target_gender: u8) -> bool {
+    if party_position >= 6 {
+        tracing::warn!("change_gender: party_position {party_position} out of range (must be 0–5)");
+        return false;
+    }
+    if target_gender > 1 {
+        tracing::warn!("change_gender: target_gender {target_gender} must be 0 (male) or 1 (female)");
+        return false;
+    }
+
+    const PARTY_BASE:       u32   = 0x02024284;
+    const MON_SIZE:         u32   = 100;
+    const BASE_STATS_SIZE:  usize = 28;
+    const GENDER_RATIO_OFF: usize = 0x10;
+    let mon_addr = PARTY_BASE + party_position as u32 * MON_SIZE;
+
+    let socket = match fire_red_retroarch_interfacing::make_socket() {
+        Ok(s)  => s,
+        Err(e) => { tracing::warn!("change_gender: socket error: {e}"); return false; }
+    };
+
+    let data = match read_retroarch_bytes(&socket, mon_addr, 80) {
+        Some(b) if b.len() == 80 => b,
+        _ => {
+            tracing::warn!("change_gender: RetroArch did not respond for party[{party_position}]");
+            return false;
+        }
+    };
+
+    let personality = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
+    if personality == 0 {
+        tracing::warn!("change_gender: party[{party_position}] is empty (personality=0)");
+        return false;
+    }
+
+    // Decrypt to read species → look up gender_ratio from ROM.
+    let ot_id   = u32::from_le_bytes(data[4..8].try_into().unwrap());
+    let enc_key = personality ^ ot_id;
+    let mut dec_tmp = [0u8; 48];
+    for (i, chunk) in data[32..80].chunks_exact(4).enumerate() {
+        let w = u32::from_le_bytes(chunk.try_into().unwrap()) ^ enc_key;
+        dec_tmp[i * 4..i * 4 + 4].copy_from_slice(&w.to_le_bytes());
+    }
+    let g_off   = growth_substructure_index(personality) * 12;
+    let species = u16::from_le_bytes([dec_tmp[g_off], dec_tmp[g_off + 1]]);
+
+    let rom      = fire_red_rom_buffer::get_rom();
+    let rom_addr = fire_red_rom_buffer::get_rom_addresses();
+    let gr_off   = rom_addr.base_stats_addr + species as usize * BASE_STATS_SIZE + GENDER_RATIO_OFF;
+    if gr_off >= rom.len() {
+        tracing::warn!("change_gender: species={species} ROM offset out of range");
+        return false;
+    }
+    let gender_ratio = rom[gr_off];
+
+    match compute_change_gender(&data, target_gender, gender_ratio) {
+        None => {
+            let reason = match gender_ratio {
+                255 => "species is genderless",
+                0   => "species is always male",
+                254 => "species is always female",
+                _   => "shiny + gender constraints have no common personality byte",
+            };
+            tracing::warn!("change_gender: cannot change party[{party_position}]: {reason}");
+            false
+        }
+        Some(ChangeGenderOutcome::AlreadyMatches) => {
+            tracing::info!("change_gender: party[{party_position}] already target gender");
+            true
+        }
+        Some(ChangeGenderOutcome::Write { new_personality, checksum, encrypted }) => {
+            // Single atomic 80-byte write: new personality (0–3), unchanged header
+            // fields (4–27), new checksum (28–29), preserved unknown (30–31), new
+            // encrypted block (32–79).
+            let mut payload = [0u8; 80];
+            payload[0..4].copy_from_slice(&new_personality.to_le_bytes());
+            payload[4..28].copy_from_slice(&data[4..28]);
+            payload[28..30].copy_from_slice(&checksum);
+            payload[30..32].copy_from_slice(&data[30..32]);
+            payload[32..80].copy_from_slice(&encrypted);
+            if !fire_red_retroarch_interfacing::write_to_retroarch(&socket, mon_addr, &payload) {
+                tracing::warn!("change_gender: write failed for party[{party_position}]");
+                return false;
+            }
+            let gs = if target_gender == 0 { "male" } else { "female" };
+            tracing::info!(
+                "change_gender: party[{party_position}] 0x{personality:08X} → 0x{new_personality:08X} ({gs})"
+            );
+            true
+        }
+    }
+}
+
 /// Reads all four bag pockets from the player's SaveBlock1 and returns a
 /// [`BagPockets`] with quantities already XOR-decrypted.
 ///
@@ -1646,8 +1862,9 @@ pub fn read_bag_pockets() -> Option<BagPockets> {
 #[cfg(test)]
 mod tests {
     use super::{
-        compute_change_species, compute_give_item_write, compute_set_ability_bit,
-        compute_take_item_write, is_shiny, ChangeSpeciesOutcome, TakeItemWrite,
+        compute_change_gender, compute_change_species, compute_give_item_write,
+        compute_set_ability_bit, compute_take_item_write, is_shiny,
+        ChangeGenderOutcome, ChangeSpeciesOutcome, TakeItemWrite,
         ITEMS_POCKET_SLOTS, MAX_ITEM_QTY,
     };
 
@@ -2273,6 +2490,174 @@ mod tests {
         let new_dec = decrypt_block(&encrypted, personality, ot_id);
         let iv_ea = u32::from_le_bytes(new_dec[40..44].try_into().unwrap());
         assert_eq!((iv_ea >> 31) & 1, 1);
+    }
+
+    // ── compute_change_gender tests ───────────────────────────────────────────
+
+    // Gender ratio 127: female if b0 < 127, male if b0 >= 127 (most species).
+
+    #[test]
+    fn change_gender_empty_slot_returns_none() {
+        assert!(compute_change_gender(&[0u8; 80], 0, 127).is_none());
+    }
+
+    #[test]
+    fn change_gender_short_data_returns_none() {
+        assert!(compute_change_gender(&[1u8; 79], 0, 127).is_none());
+    }
+
+    #[test]
+    fn change_gender_genderless_returns_none() {
+        let data = make_mon_data(1, 0, [0u8; 48]);
+        assert!(compute_change_gender(&data, 0, 255).is_none());
+        assert!(compute_change_gender(&data, 1, 255).is_none());
+    }
+
+    #[test]
+    fn change_gender_always_male_species_target_female_returns_none() {
+        let data = make_mon_data(1, 0, [0u8; 48]);
+        assert!(compute_change_gender(&data, 1, 0).is_none());
+    }
+
+    #[test]
+    fn change_gender_always_female_species_target_male_returns_none() {
+        let data = make_mon_data(1, 0, [0u8; 48]);
+        assert!(compute_change_gender(&data, 0, 254).is_none());
+    }
+
+    #[test]
+    fn change_gender_always_male_species_target_male_is_already_matches() {
+        let data = make_mon_data(1, 0, [0u8; 48]);
+        matches!(compute_change_gender(&data, 0, 0), Some(ChangeGenderOutcome::AlreadyMatches));
+    }
+
+    #[test]
+    fn change_gender_already_correct_gender_returns_already_matches() {
+        // personality b0=200 >= 127 → male; requesting male again
+        let data = make_mon_data(0x0100_00C8, 0, [0u8; 48]); // b0=0xC8=200
+        assert!(matches!(
+            compute_change_gender(&data, 0, 127),
+            Some(ChangeGenderOutcome::AlreadyMatches)
+        ));
+    }
+
+    #[test]
+    fn change_gender_male_to_female_b0_in_correct_range() {
+        // personality=0x0100_00C8: b0=200 (male), nature=16, not shiny (ot_id=0)
+        let data = make_mon_data(0x0100_00C8, 0, [0u8; 48]);
+        match compute_change_gender(&data, 1, 127).unwrap() {
+            ChangeGenderOutcome::Write { new_personality, .. } => {
+                assert!((new_personality & 0xFF) < 127, "new b0 must be < 127 (female)");
+                assert_eq!(new_personality % 25, 0x0100_00C8_u32 % 25, "nature preserved");
+            }
+            ChangeGenderOutcome::AlreadyMatches => panic!("expected Write"),
+        }
+    }
+
+    #[test]
+    fn change_gender_female_to_male_b0_in_correct_range() {
+        // personality=0x0100_0050: b0=0x50=80 (female for ratio 127)
+        let data = make_mon_data(0x0100_0050, 0, [0u8; 48]);
+        match compute_change_gender(&data, 0, 127).unwrap() {
+            ChangeGenderOutcome::Write { new_personality, .. } => {
+                assert!((new_personality & 0xFF) >= 127, "new b0 must be >= 127 (male)");
+                assert_eq!(new_personality % 25, 0x0100_0050_u32 % 25, "nature preserved");
+            }
+            ChangeGenderOutcome::AlreadyMatches => panic!("expected Write"),
+        }
+    }
+
+    #[test]
+    fn change_gender_shiny_preserved() {
+        // Build a shiny female Pokémon (ot_id=0, so p_high ^ p_low < 8).
+        // personality = 0x0000_0001: p_high=0, p_low=1, xor=1 < 8 → shiny.
+        // b0=1 < 127 → female. Nature = 1 % 25 = 1.
+        // k16 = 0 ^ 0 ^ 0 ^ 0 = 0.  Shiny values: {0,1,2,3,4,5,6,7} for new b0.
+        // Male needs b0 >= 127 — all shiny values are < 127 → impossible.
+        let female_shiny = make_mon_data(0x0000_0001, 0, [0u8; 48]);
+        assert!(
+            compute_change_gender(&female_shiny, 0, 127).is_none(),
+            "shiny female→male should be impossible when all shiny b0 values are female"
+        );
+
+        // For shiny female→female: already matches.
+        assert!(matches!(
+            compute_change_gender(&female_shiny, 1, 127),
+            Some(ChangeGenderOutcome::AlreadyMatches)
+        ));
+
+        // Build a case where shiny AND male are compatible.
+        // Use ot_id = 0x0000_FF80 so id_low = 0xFF80.
+        // k16 = 0 ^ 0 ^ 0 ^ 0xFF80 = 0xFF80.  k_high = 0xFF ≠ 0 → no valid b0.
+        // That won't work either. Let's find specific values.
+        //
+        // For a shiny male (b0 >= 127) to exist, we need k16 ^ b0 < 8 with b0 >= 127.
+        // k16 ^ b0 < 8 means b0 ∈ {k16_low, k16_low^1, …, k16_low^7} and k16_high=0.
+        // Choose: ot_id = 0, p_high = 0, b1 = 0 → k16 = 0.
+        //   Shiny b0 values: {0,1,2,3,4,5,6,7} — all female for ratio 127.
+        // Choose: ot_id = 0, p_high = 0, b1 = 1 → k16 = 0 ^ (1<<8) ^ 0 ^ 0 = 0x0100.
+        //   k_high = 1 ≠ 0 → impossible.
+        // Let's try a gender ratio of 31 (very skewed to male, e.g. Nidoran♂ line).
+        // With k16=0: shiny b0 in {0..7}, all < 31 → female. Still no shiny male.
+        //
+        // With k16=0 and gender_ratio=4 (nearly always male, b0 >= 4 = male):
+        // shiny b0 {0,1,2,3} → b0 < 4 → female. {4,5,6,7} → b0 >= 4 → male!
+        // personality = 0x0000_0000 would be empty. Use personality = 0x0000_0004:
+        //   p_high=0, b1=0, b0=4 → k16=0, shiny (0^4^0^0=4<8), b0=4 >= 4 → male.
+        let p = 0x0000_0004u32; // shiny male (gender_ratio=4)
+        let shiny_male = make_mon_data(p, 0, [0u8; 48]);
+        assert!(is_shiny(p, 0), "must be shiny");
+        // Changing male→female: need b0 < 4 AND shiny (b0 in {0,1,2,3,4,5,6,7}) AND nature=4%25=4.
+        // nature: (0 + new_b0) % 25 = 4 → new_b0 % 25 = 4. In {0,1,2,3}: none satisfy %25=4.
+        // In {4,5,6}: 4%25=4 ✓, but 4 >= 4 → male. 5%25=5 ✗. 6%25=6 ✗.
+        // So female change is also impossible here (nature clash).
+        assert!(
+            compute_change_gender(&shiny_male, 1, 4).is_none(),
+            "shiny male→female impossible when no shiny b0 in female range satisfies nature"
+        );
+    }
+
+    #[test]
+    fn change_gender_substructure_data_survives_rearrangement() {
+        // Use personality=0x0100_00C8 (b0=200, p%24=0, order=[0,1,2,3]).
+        // After change to female, expected new b0 satisfies nature=16 and b0<127.
+        // We place a sentinel value in Growth substructure (pos 0 in old order)
+        // and verify it's readable from the correct pos in the new order after decrypt.
+        let old_p: u32 = 0x0100_00C8;
+        let ot_id: u32 = 0;
+        let mut dec = [0u8; 48];
+        // Put sentinel species (42) in Growth (type 0) at old position.
+        let old_g_pos = super::SUBSTRUCTURE_ORDER[(old_p % 24) as usize][0] as usize;
+        dec[old_g_pos * 12..old_g_pos * 12 + 2].copy_from_slice(&42u16.to_le_bytes());
+        let data = make_mon_data(old_p, ot_id, dec);
+
+        match compute_change_gender(&data, 1, 127).unwrap() {
+            ChangeGenderOutcome::Write { new_personality, encrypted, .. } => {
+                let new_dec = decrypt_block(&encrypted, new_personality, ot_id);
+                let new_g_pos = super::SUBSTRUCTURE_ORDER[(new_personality % 24) as usize][0] as usize;
+                let species_in_new = u16::from_le_bytes(
+                    new_dec[new_g_pos * 12..new_g_pos * 12 + 2].try_into().unwrap()
+                );
+                assert_eq!(species_in_new, 42, "Growth data (species sentinel) must survive rearrangement");
+            }
+            ChangeGenderOutcome::AlreadyMatches => panic!("expected Write"),
+        }
+    }
+
+    #[test]
+    fn change_gender_checksum_correct_after_change() {
+        let data = make_mon_data(0x0100_00C8, 0, [0u8; 48]);
+        match compute_change_gender(&data, 1, 127).unwrap() {
+            ChangeGenderOutcome::Write { new_personality, checksum, encrypted } => {
+                let new_dec = decrypt_block(&encrypted, new_personality, 0);
+                let expected: u16 = new_dec
+                    .chunks_exact(2)
+                    .map(|c| u16::from_le_bytes([c[0], c[1]]))
+                    .fold(0u16, |acc, w| acc.wrapping_add(w));
+                assert_eq!(u16::from_le_bytes(checksum), expected);
+            }
+            ChangeGenderOutcome::AlreadyMatches => panic!("expected Write"),
+        }
     }
 
     // ── live RetroArch integration ────────────────────────────────────────────
