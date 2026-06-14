@@ -188,6 +188,21 @@ pub fn handle_client(
                 Ok(ClientMessage::HealParty) => {
                     crate::game::heal_party();
                 }
+                Ok(ClientMessage::SetExp { party_position, exp }) => {
+                    crate::game::set_exp(party_position as usize, exp);
+                }
+                Ok(ClientMessage::SetLevel { party_position, level }) => {
+                    crate::game::set_level(party_position as usize, level);
+                }
+                Ok(ClientMessage::LearnMove { party_position, move_id }) => {
+                    crate::game::learn_move(party_position as usize, move_id);
+                }
+                Ok(ClientMessage::ForgetMove { party_position, slot }) => {
+                    crate::game::forget_move(party_position as usize, slot);
+                }
+                Ok(ClientMessage::SetPokerus { party_position }) => {
+                    crate::game::set_pokerus(party_position as usize);
+                }
                 Err(_) => break,
             }
         }

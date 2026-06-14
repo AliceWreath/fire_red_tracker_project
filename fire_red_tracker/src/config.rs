@@ -1165,6 +1165,11 @@ mod tests {
             allow_species_repeats: false,
             preset: None,
             run_start_balls: None,
+            livesplit_host:            None,
+            livesplit_port:            None,
+            livesplit_split_on_badges: false,
+            livesplit_split_on_clear:  true,
+            discord_client_id:         None,
         }
     }
 
@@ -1265,5 +1270,106 @@ mod tests {
     fn obs_config_not_default_when_clip_on_death() {
         let cfg = ObsConfig { clip_on_death: true, ..Default::default() };
         assert!(!cfg.is_default());
+    }
+
+    // ── livesplit / discord config fields ─────────────────────────────────────
+
+    #[test]
+    fn livesplit_host_defaults_to_none_when_absent() {
+        let cfg: TrackerConfig = toml::from_str(&minimal_toml("")).unwrap();
+        assert!(cfg.livesplit_host.is_none());
+    }
+
+    #[test]
+    fn livesplit_port_defaults_to_none_when_absent() {
+        let cfg: TrackerConfig = toml::from_str(&minimal_toml("")).unwrap();
+        assert!(cfg.livesplit_port.is_none());
+    }
+
+    #[test]
+    fn livesplit_split_on_badges_defaults_to_false() {
+        let cfg: TrackerConfig = toml::from_str(&minimal_toml("")).unwrap();
+        assert!(!cfg.livesplit_split_on_badges);
+    }
+
+    #[test]
+    fn livesplit_split_on_clear_defaults_to_true() {
+        let cfg: TrackerConfig = toml::from_str(&minimal_toml("")).unwrap();
+        assert!(cfg.livesplit_split_on_clear);
+    }
+
+    #[test]
+    fn discord_client_id_defaults_to_none_when_absent() {
+        let cfg: TrackerConfig = toml::from_str(&minimal_toml("")).unwrap();
+        assert!(cfg.discord_client_id.is_none());
+    }
+
+    #[test]
+    fn livesplit_host_parsed_when_present() {
+        let cfg: TrackerConfig = toml::from_str(&minimal_toml("livesplit_host = \"localhost\"\n")).unwrap();
+        assert_eq!(cfg.livesplit_host.as_deref(), Some("localhost"));
+    }
+
+    #[test]
+    fn livesplit_port_parsed_when_present() {
+        let cfg: TrackerConfig = toml::from_str(&minimal_toml("livesplit_port = 16834\n")).unwrap();
+        assert_eq!(cfg.livesplit_port, Some(16834));
+    }
+
+    #[test]
+    fn livesplit_split_on_clear_can_be_disabled() {
+        let cfg: TrackerConfig = toml::from_str(&minimal_toml("livesplit_split_on_clear = false\n")).unwrap();
+        assert!(!cfg.livesplit_split_on_clear);
+    }
+
+    #[test]
+    fn discord_client_id_parsed_when_present() {
+        let cfg: TrackerConfig = toml::from_str(&minimal_toml("discord_client_id = 123456789\n")).unwrap();
+        assert_eq!(cfg.discord_client_id, Some(123456789u64));
+    }
+
+    #[test]
+    fn livesplit_discord_fields_not_serialized_when_none() {
+        let cfg: TrackerConfig = toml::from_str(&minimal_toml("")).unwrap();
+        let s = toml::to_string(&cfg).unwrap();
+        assert!(!s.contains("livesplit_host"),    "livesplit_host should be omitted when None");
+        assert!(!s.contains("livesplit_port"),    "livesplit_port should be omitted when None");
+        assert!(!s.contains("discord_client_id"), "discord_client_id should be omitted when None");
+    }
+
+    // ── try_load_config ───────────────────────────────────────────────────────
+
+    #[test]
+    fn try_load_config_returns_some_for_valid_file() {
+        let path = std::path::PathBuf::from("/tmp/__test_try_load_valid__.toml");
+        std::fs::write(&path, minimal_toml("")).unwrap();
+        let result = try_load_config(&path);
+        std::fs::remove_file(&path).ok();
+        assert!(result.is_some());
+    }
+
+    #[test]
+    fn try_load_config_returns_none_for_invalid_toml() {
+        let path = std::path::PathBuf::from("/tmp/__test_try_load_invalid__.toml");
+        std::fs::write(&path, "this is [[[not valid toml").unwrap();
+        let result = try_load_config(&path);
+        std::fs::remove_file(&path).ok();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn try_load_config_returns_none_for_missing_file() {
+        let result = try_load_config(std::path::Path::new("/tmp/__nonexistent_tracker_config__.toml"));
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn try_load_config_applies_preset_overrides() {
+        let path = std::path::PathBuf::from("/tmp/__test_try_load_preset__.toml");
+        std::fs::write(&path, minimal_toml("preset = \"hardcore\"\n")).unwrap();
+        let cfg = try_load_config(&path).expect("should parse");
+        std::fs::remove_file(&path).ok();
+        assert_eq!(cfg.dupes_clause, DupesClauseMode::PerPlayer,
+            "hardcore preset should set per_player dupes clause");
     }
 }

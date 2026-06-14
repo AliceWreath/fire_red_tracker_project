@@ -251,4 +251,39 @@ mod tests {
         t.run_tracking_active = false;
         assert!(!t.run_tracking_active());
     }
+
+    // ── drain_warnings ────────────────────────────────────────────────────────
+
+    #[test]
+    fn drain_warnings_empty_by_default() {
+        let mut t = EncounterTracker::new();
+        assert!(t.drain_warnings().is_empty());
+    }
+
+    #[test]
+    fn drain_warnings_returns_accumulated_warnings() {
+        let mut t = EncounterTracker::new();
+        t.pending_warnings.push("warning one".to_string());
+        t.pending_warnings.push("warning two".to_string());
+        let warnings = t.drain_warnings();
+        assert_eq!(warnings, vec!["warning one", "warning two"]);
+    }
+
+    #[test]
+    fn drain_warnings_clears_after_drain() {
+        let mut t = EncounterTracker::new();
+        t.pending_warnings.push("ephemeral warning".to_string());
+        let _ = t.drain_warnings();
+        assert!(t.drain_warnings().is_empty(), "second drain should be empty");
+    }
+
+    #[test]
+    fn drain_warnings_each_warning_appears_exactly_once() {
+        let mut t = EncounterTracker::new();
+        t.pending_warnings.push("once".to_string());
+        let first  = t.drain_warnings();
+        let second = t.drain_warnings();
+        assert_eq!(first.len(), 1);
+        assert_eq!(second.len(), 0);
+    }
 }

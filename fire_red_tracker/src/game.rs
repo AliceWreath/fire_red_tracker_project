@@ -807,10 +807,27 @@ fn read_trainer_flag_bytes() -> Option<Vec<u8>> {
 /// Named entries can be added by looking up `FLAG_TRAINER_*` constants in the
 /// pokefirered decompilation at `include/constants/flags.h`. Unknown flags fall
 /// back to `"Trainer 0x###"`.
-fn trainer_name_for_flag(flag: u16) -> String {
+pub(crate) fn trainer_name_for_flag(flag: u16) -> String {
     // Named constants can be added here once empirically confirmed, e.g.:
     //   0x14C => "Brock".to_string(),
     format!("Trainer 0x{flag:03X}")
+}
+
+/// Pure logic: compares two trainer-flag byte slices and returns the flag index
+/// (0x100–0x3DF) for each bit that is newly set in `current` but was not set in `last`.
+///
+/// Slices are walked in tandem via `zip`; unequal lengths are handled safely
+/// (the shorter one terminates the walk). Returns an empty `Vec` when nothing changed.
+pub(crate) fn compute_new_trainer_flags(current: &[u8], last: &[u8]) -> Vec<u16> {
+    current.iter().zip(last.iter()).enumerate()
+        .flat_map(|(byte_idx, (&new_byte, &old_byte))| {
+            let newly_set = new_byte & !old_byte;
+            (0u8..8).filter_map(move |bit| {
+                if (newly_set >> bit) & 1 == 0 { return None; }
+                Some(((TRAINER_FLAGS_BYTE_START + byte_idx) * 8 + bit as usize) as u16)
+            })
+        })
+        .collect()
 }
 
 /// Scans the trainer flag range (0x100–0x3DF) for newly-set bits and records
@@ -838,24 +855,18 @@ pub fn check_for_new_trainer_battles(last_flags: Option<Vec<u8>>) -> Option<Vec<
         .unwrap_or_default();
     let timestamp = fire_red_database::unix_now();
 
-    for (byte_idx, (&new_byte, &old_byte)) in current.iter().zip(last.iter()).enumerate() {
-        let newly_set = new_byte & !old_byte;
-        if newly_set == 0 { continue; }
-        for bit in 0u32..8 {
-            if (newly_set >> bit) & 1 == 0 { continue; }
-            let flag = ((TRAINER_FLAGS_BYTE_START + byte_idx) * 8 + bit as usize) as u16;
-            let name = trainer_name_for_flag(flag);
-            match fire_red_database::record_trainer_defeat(fire_red_database::TrainerDefeat {
-                player_name:  player.clone(),
-                flag_index:   flag as u32,
-                trainer_name: name,
-                location:     location.clone(),
-                defeated_at:  timestamp,
-            }) {
-                Ok(true)  => tracing::info!("Trainer defeated (flag=0x{flag:03X}) at {location}"),
-                Ok(false) => {}
-                Err(e)    => tracing::warn!("Failed to record trainer defeat (flag=0x{flag:03X}): {e}"),
-            }
+    for flag in compute_new_trainer_flags(&current, &last) {
+        let name = trainer_name_for_flag(flag);
+        match fire_red_database::record_trainer_defeat(fire_red_database::TrainerDefeat {
+            player_name:  player.clone(),
+            flag_index:   flag as u32,
+            trainer_name: name,
+            location:     location.clone(),
+            defeated_at:  timestamp,
+        }) {
+            Ok(true)  => tracing::info!("Trainer defeated (flag=0x{flag:03X}) at {location}"),
+            Ok(false) => {}
+            Err(e)    => tracing::warn!("Failed to record trainer defeat (flag=0x{flag:03X}): {e}"),
         }
     }
 
@@ -3051,6 +3062,556 @@ pub fn heal_party() -> bool {
     healed > 0
 }
 
+// ── set_exp ───────────────────────────────────────────────────────────────────
+
+/// Returns the minimum accumulated experience to be at `level` for the given
+/// Gen III `growth_rate` (0=Medium Fast, 1=Erratic, 2=Fluctuating,
+/// 3=Medium Slow, 4=Fast, 5=Slow).
+///
+/// Implements the GBA integer formulas exactly as the game does.  Level 0 and 1
+/// both return 0 (the game treats fresh-caught level-1 mons as having 0 exp).
+fn gen3_min_exp(level: u8, growth_rate: u8) -> u32 {
+    if level <= 1 { return 0; }
+    let l = level as u64;
+    let l3 = l * l * l;
+    let exp: u64 = match growth_rate {
+        0 => l3,
+        1 => {
+            if l < 50      { l3 * (100 - l) / 50 }
+            else if l < 68 { l3 * (150 - l) / 100 }
+            else if l < 98 { l3 * (1911 - 10 * l) / 3 / 500 }
+            else           { l3 * (160 - l) / 100 }
+        }
+        2 => {
+            let f = if l < 15 { (l + 1) / 3 + 24 }
+                    else if l < 36 { l + 14 }
+                    else { l / 2 + 32 };
+            l3 * f / 50
+        }
+        3 => {
+            let pos = 6 * l3 / 5 + 100 * l;
+            let neg = 15 * l * l + 140;
+            pos.saturating_sub(neg)
+        }
+        4 => 4 * l3 / 5,
+        5 => 5 * l3 / 4,
+        _ => l3,
+    };
+    exp.min(u32::MAX as u64) as u32
+}
+
+/// Pure logic for [`set_exp`]: overwrites the experience field (Growth bytes
+/// 4–7), recalculates the checksum, and re-encrypts.
+///
+/// Returns `None` if `data` is too short, personality is 0, or `exp` already
+/// matches the stored value.
+pub(crate) fn compute_set_exp(data: &[u8], exp: u32) -> Option<([u8; 2], [u8; 48])> {
+    if data.len() < 80 { return None; }
+    let personality = u32::from_le_bytes(data[0..4].try_into().unwrap());
+    let ot_id       = u32::from_le_bytes(data[4..8].try_into().unwrap());
+    if personality == 0 { return None; }
+    let enc_key = personality ^ ot_id;
+
+    let mut decrypted = [0u8; 48];
+    for (i, chunk) in data[32..80].chunks_exact(4).enumerate() {
+        let w = u32::from_le_bytes(chunk.try_into().unwrap()) ^ enc_key;
+        decrypted[i * 4..i * 4 + 4].copy_from_slice(&w.to_le_bytes());
+    }
+
+    let g_off = growth_substructure_index(personality) * 12;
+    let old_exp = u32::from_le_bytes(decrypted[g_off + 4..g_off + 8].try_into().unwrap());
+    if old_exp == exp { return None; }
+    decrypted[g_off + 4..g_off + 8].copy_from_slice(&exp.to_le_bytes());
+
+    let checksum: u16 = decrypted
+        .chunks_exact(2)
+        .map(|c| u16::from_le_bytes([c[0], c[1]]))
+        .fold(0u16, |acc, w| acc.wrapping_add(w));
+
+    let mut encrypted = [0u8; 48];
+    for (i, chunk) in decrypted.chunks_exact(4).enumerate() {
+        let w = u32::from_le_bytes(chunk.try_into().unwrap()) ^ enc_key;
+        encrypted[i * 4..i * 4 + 4].copy_from_slice(&w.to_le_bytes());
+    }
+    Some((checksum.to_le_bytes(), encrypted))
+}
+
+/// Sets the experience points of the party Pokémon at `party_position` (0–5)
+/// to exactly `exp`. Updates the Growth substructure, recalculates the
+/// checksum, and re-encrypts. The level byte is not updated; use [`set_level`]
+/// to change both simultaneously.
+///
+/// Returns `true` when the write was dispatched (or exp already matches).
+pub fn set_exp(party_position: usize, exp: u32) -> bool {
+    if party_position >= 6 {
+        tracing::warn!("set_exp: party_position {party_position} out of range (must be 0–5)");
+        return false;
+    }
+    const PARTY_BASE: u32 = 0x02024284;
+    const MON_SIZE:   u32 = 100;
+    let mon_addr = PARTY_BASE + party_position as u32 * MON_SIZE;
+    let socket = match fire_red_retroarch_interfacing::make_socket() {
+        Ok(s)  => s,
+        Err(e) => { tracing::warn!("set_exp: socket error: {e}"); return false; }
+    };
+    let data = match read_retroarch_bytes(&socket, mon_addr, 80) {
+        Some(b) if b.len() == 80 => b,
+        _ => { tracing::warn!("set_exp: RetroArch did not respond for party[{party_position}]"); return false; }
+    };
+    let personality = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
+    if personality == 0 {
+        tracing::warn!("set_exp: party[{party_position}] is empty");
+        return false;
+    }
+    match compute_set_exp(&data, exp) {
+        None => {
+            tracing::info!("set_exp: party[{party_position}] exp already {exp}");
+            true
+        }
+        Some((checksum, encrypted)) => {
+            let mut payload = [0u8; 52];
+            payload[0..2].copy_from_slice(&checksum);
+            payload[2..4].copy_from_slice(&data[30..32]);
+            payload[4..52].copy_from_slice(&encrypted);
+            if !fire_red_retroarch_interfacing::write_to_retroarch(&socket, mon_addr + 28, &payload) {
+                tracing::warn!("set_exp: write failed for party[{party_position}]");
+                return false;
+            }
+            tracing::info!("set_exp: party[{party_position}] → exp={exp}");
+            true
+        }
+    }
+}
+
+// ── set_level ─────────────────────────────────────────────────────────────────
+
+/// Pure logic for [`set_level`]: reads the species from the Growth substructure,
+/// looks up the growth rate in `rom` at `base_stats_addr`, computes the Gen III
+/// minimum experience for `level`, and overwrites Growth bytes 4–7.
+///
+/// Returns `None` if `data` is too short, personality is 0, `level` is 0 or
+/// already matches the stored exp, or the growth rate is unknown.
+pub(crate) fn compute_set_level(
+    data: &[u8],
+    level: u8,
+    rom: &[u8],
+    base_stats_addr: usize,
+) -> Option<([u8; 2], [u8; 48])> {
+    if data.len() < 80 || level == 0 { return None; }
+    let personality = u32::from_le_bytes(data[0..4].try_into().unwrap());
+    let ot_id       = u32::from_le_bytes(data[4..8].try_into().unwrap());
+    if personality == 0 { return None; }
+    let enc_key = personality ^ ot_id;
+
+    let mut decrypted = [0u8; 48];
+    for (i, chunk) in data[32..80].chunks_exact(4).enumerate() {
+        let w = u32::from_le_bytes(chunk.try_into().unwrap()) ^ enc_key;
+        decrypted[i * 4..i * 4 + 4].copy_from_slice(&w.to_le_bytes());
+    }
+
+    let g_off   = growth_substructure_index(personality) * 12;
+    let species = u16::from_le_bytes([decrypted[g_off], decrypted[g_off + 1]]);
+    if species == 0 { return None; }
+
+    const BASE_STATS_SIZE:  usize = 28;
+    const GROWTH_RATE_OFF:  usize = 0x13;
+    let gr_off   = base_stats_addr + species as usize * BASE_STATS_SIZE + GROWTH_RATE_OFF;
+    let growth_rate = rom.get(gr_off).copied().unwrap_or(0);
+
+    let target_exp = gen3_min_exp(level.min(100), growth_rate);
+    let old_exp    = u32::from_le_bytes(decrypted[g_off + 4..g_off + 8].try_into().unwrap());
+    if old_exp == target_exp { return None; }
+    decrypted[g_off + 4..g_off + 8].copy_from_slice(&target_exp.to_le_bytes());
+
+    let checksum: u16 = decrypted
+        .chunks_exact(2)
+        .map(|c| u16::from_le_bytes([c[0], c[1]]))
+        .fold(0u16, |acc, w| acc.wrapping_add(w));
+
+    let mut encrypted = [0u8; 48];
+    for (i, chunk) in decrypted.chunks_exact(4).enumerate() {
+        let w = u32::from_le_bytes(chunk.try_into().unwrap()) ^ enc_key;
+        encrypted[i * 4..i * 4 + 4].copy_from_slice(&w.to_le_bytes());
+    }
+    Some((checksum.to_le_bytes(), encrypted))
+}
+
+/// Sets the level of the party Pokémon at `party_position` (0–5) to `level`
+/// (1–100). Writes the level byte at PartyMon offset 84 directly, and also
+/// updates the experience in the Growth substructure to the Gen III minimum for
+/// that level so the game does not immediately re-sync to a lower level.
+///
+/// Returns `true` when the writes were dispatched.
+pub fn set_level(party_position: usize, level: u8) -> bool {
+    if party_position >= 6 {
+        tracing::warn!("set_level: party_position {party_position} out of range (must be 0–5)");
+        return false;
+    }
+    if level == 0 || level > 100 {
+        tracing::warn!("set_level: level {level} out of range (must be 1–100)");
+        return false;
+    }
+    const PARTY_BASE: u32 = 0x02024284;
+    const MON_SIZE:   u32 = 100;
+    let mon_addr = PARTY_BASE + party_position as u32 * MON_SIZE;
+    let socket = match fire_red_retroarch_interfacing::make_socket() {
+        Ok(s)  => s,
+        Err(e) => { tracing::warn!("set_level: socket error: {e}"); return false; }
+    };
+    // Read 90 bytes: header + encrypted block (0–79) + level byte (84).
+    let data = match read_retroarch_bytes(&socket, mon_addr, 90) {
+        Some(b) if b.len() == 90 => b,
+        _ => { tracing::warn!("set_level: RetroArch did not respond for party[{party_position}]"); return false; }
+    };
+    let personality = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
+    if personality == 0 {
+        tracing::warn!("set_level: party[{party_position}] is empty");
+        return false;
+    }
+    let current_level = data[84];
+    if current_level == level {
+        tracing::info!("set_level: party[{party_position}] already level={level}");
+        return true;
+    }
+
+    let rom      = fire_red_rom_buffer::get_rom();
+    let rom_addr = fire_red_rom_buffer::get_rom_addresses();
+
+    // Update exp in Growth substructure.
+    if let Some((checksum, encrypted)) =
+        compute_set_level(&data[..80], level, rom, rom_addr.base_stats_addr)
+    {
+        let mut payload = [0u8; 52];
+        payload[0..2].copy_from_slice(&checksum);
+        payload[2..4].copy_from_slice(&data[30..32]);
+        payload[4..52].copy_from_slice(&encrypted);
+        if !fire_red_retroarch_interfacing::write_to_retroarch(&socket, mon_addr + 28, &payload) {
+            tracing::warn!("set_level: exp write failed for party[{party_position}]");
+            return false;
+        }
+    }
+
+    // Write the level byte directly (unencrypted, offset 84).
+    if !fire_red_retroarch_interfacing::write_to_retroarch(&socket, mon_addr + 84, &[level]) {
+        tracing::warn!("set_level: level byte write failed for party[{party_position}]");
+        return false;
+    }
+    tracing::info!("set_level: party[{party_position}] level {current_level} → {level}");
+    true
+}
+
+// ── learn_move ────────────────────────────────────────────────────────────────
+
+/// Pure logic for [`learn_move`]: places `move_id` into the first empty move
+/// slot (move_id == 0) of the Attacks substructure and sets PP to the maximum
+/// for that move.
+///
+/// Returns `None` if `data` is too short, personality is 0, or all four move
+/// slots are occupied.
+pub(crate) fn compute_learn_move(
+    data: &[u8],
+    move_id: u16,
+    rom: &[u8],
+    move_data_addr: usize,
+) -> Option<([u8; 2], [u8; 48])> {
+    if data.len() < 80 || move_id == 0 { return None; }
+    let personality = u32::from_le_bytes(data[0..4].try_into().unwrap());
+    let ot_id       = u32::from_le_bytes(data[4..8].try_into().unwrap());
+    if personality == 0 { return None; }
+    let enc_key = personality ^ ot_id;
+
+    let mut decrypted = [0u8; 48];
+    for (i, chunk) in data[32..80].chunks_exact(4).enumerate() {
+        let w = u32::from_le_bytes(chunk.try_into().unwrap()) ^ enc_key;
+        decrypted[i * 4..i * 4 + 4].copy_from_slice(&w.to_le_bytes());
+    }
+
+    let g_off = growth_substructure_index(personality)  * 12;
+    let a_off = attacks_substructure_index(personality) * 12;
+
+    // Find the first empty slot.
+    let empty_slot = (0..4usize).find(|&s| {
+        u16::from_le_bytes([decrypted[a_off + s * 2], decrypted[a_off + s * 2 + 1]]) == 0
+    })?;
+
+    decrypted[a_off + empty_slot * 2..a_off + empty_slot * 2 + 2]
+        .copy_from_slice(&move_id.to_le_bytes());
+    let pp_bonuses = decrypted[g_off + 8];
+    let base_pp    = base_pp_for_move(rom, move_data_addr, move_id);
+    decrypted[a_off + 8 + empty_slot] = max_pp_for_slot(base_pp, pp_bonuses, empty_slot);
+
+    let checksum: u16 = decrypted
+        .chunks_exact(2)
+        .map(|c| u16::from_le_bytes([c[0], c[1]]))
+        .fold(0u16, |acc, w| acc.wrapping_add(w));
+
+    let mut encrypted = [0u8; 48];
+    for (i, chunk) in decrypted.chunks_exact(4).enumerate() {
+        let w = u32::from_le_bytes(chunk.try_into().unwrap()) ^ enc_key;
+        encrypted[i * 4..i * 4 + 4].copy_from_slice(&w.to_le_bytes());
+    }
+    Some((checksum.to_le_bytes(), encrypted))
+}
+
+/// Places `move_id` into the first empty move slot of the party Pokémon at
+/// `party_position` (0–5). PP is set to the maximum for the new move (base PP
+/// + PP-Up bonus for that slot, which is zero for a fresh empty slot).
+///
+/// No-op if the Pokémon already knows `move_id` or if all four slots are full.
+/// Returns `true` when the write was dispatched.
+pub fn learn_move(party_position: usize, move_id: u16) -> bool {
+    if party_position >= 6 {
+        tracing::warn!("learn_move: party_position {party_position} out of range (must be 0–5)");
+        return false;
+    }
+    if move_id == 0 {
+        tracing::warn!("learn_move: move_id 0 is not a valid move");
+        return false;
+    }
+    const PARTY_BASE: u32 = 0x02024284;
+    const MON_SIZE:   u32 = 100;
+    let mon_addr = PARTY_BASE + party_position as u32 * MON_SIZE;
+    let socket = match fire_red_retroarch_interfacing::make_socket() {
+        Ok(s)  => s,
+        Err(e) => { tracing::warn!("learn_move: socket error: {e}"); return false; }
+    };
+    let data = match read_retroarch_bytes(&socket, mon_addr, 80) {
+        Some(b) if b.len() == 80 => b,
+        _ => { tracing::warn!("learn_move: RetroArch did not respond for party[{party_position}]"); return false; }
+    };
+    let personality = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
+    if personality == 0 {
+        tracing::warn!("learn_move: party[{party_position}] is empty");
+        return false;
+    }
+
+    // Check if already known.
+    {
+        let ot_id   = u32::from_le_bytes([data[4], data[5], data[6], data[7]]);
+        let enc_key = personality ^ ot_id;
+        let a_off   = attacks_substructure_index(personality) * 12;
+        let mut dec = [0u8; 48];
+        for (i, chunk) in data[32..80].chunks_exact(4).enumerate() {
+            let w = u32::from_le_bytes(chunk.try_into().unwrap()) ^ enc_key;
+            dec[i * 4..i * 4 + 4].copy_from_slice(&w.to_le_bytes());
+        }
+        if (0..4).any(|s| u16::from_le_bytes([dec[a_off + s * 2], dec[a_off + s * 2 + 1]]) == move_id) {
+            tracing::info!("learn_move: party[{party_position}] already knows move_id={move_id}");
+            return true;
+        }
+    }
+
+    let rom      = fire_red_rom_buffer::get_rom();
+    let rom_addr = fire_red_rom_buffer::get_rom_addresses();
+
+    match compute_learn_move(&data, move_id, rom, rom_addr.move_data_addr) {
+        None => {
+            tracing::warn!("learn_move: party[{party_position}] all 4 move slots are occupied");
+            false
+        }
+        Some((checksum, encrypted)) => {
+            let mut payload = [0u8; 52];
+            payload[0..2].copy_from_slice(&checksum);
+            payload[2..4].copy_from_slice(&data[30..32]);
+            payload[4..52].copy_from_slice(&encrypted);
+            if !fire_red_retroarch_interfacing::write_to_retroarch(&socket, mon_addr + 28, &payload) {
+                tracing::warn!("learn_move: write failed for party[{party_position}]");
+                return false;
+            }
+            tracing::info!("learn_move: party[{party_position}] → move_id={move_id}");
+            true
+        }
+    }
+}
+
+// ── forget_move ───────────────────────────────────────────────────────────────
+
+/// Pure logic for [`forget_move`]: clears the move at `slot` (0–3) and
+/// compacts subsequent moves leftward. PP bytes are shifted to match.
+///
+/// Returns `None` if `data` is too short, personality is 0, `slot` > 3, or
+/// the slot is already empty.
+pub(crate) fn compute_forget_move(data: &[u8], slot: u8) -> Option<([u8; 2], [u8; 48])> {
+    if data.len() < 80 || slot > 3 { return None; }
+    let personality = u32::from_le_bytes(data[0..4].try_into().unwrap());
+    let ot_id       = u32::from_le_bytes(data[4..8].try_into().unwrap());
+    if personality == 0 { return None; }
+    let enc_key = personality ^ ot_id;
+
+    let mut decrypted = [0u8; 48];
+    for (i, chunk) in data[32..80].chunks_exact(4).enumerate() {
+        let w = u32::from_le_bytes(chunk.try_into().unwrap()) ^ enc_key;
+        decrypted[i * 4..i * 4 + 4].copy_from_slice(&w.to_le_bytes());
+    }
+
+    let a_off = attacks_substructure_index(personality) * 12;
+    let s     = slot as usize;
+
+    let existing = u16::from_le_bytes([decrypted[a_off + s * 2], decrypted[a_off + s * 2 + 1]]);
+    if existing == 0 { return None; } // already empty
+
+    // Shift moves and PP left starting from `slot`.
+    for i in s..3 {
+        let next_move = u16::from_le_bytes([decrypted[a_off + (i + 1) * 2], decrypted[a_off + (i + 1) * 2 + 1]]);
+        decrypted[a_off + i * 2..a_off + i * 2 + 2].copy_from_slice(&next_move.to_le_bytes());
+        decrypted[a_off + 8 + i] = decrypted[a_off + 8 + i + 1];
+    }
+    // Zero the last slot.
+    decrypted[a_off + 3 * 2..a_off + 3 * 2 + 2].copy_from_slice(&0u16.to_le_bytes());
+    decrypted[a_off + 11] = 0;
+
+    let checksum: u16 = decrypted
+        .chunks_exact(2)
+        .map(|c| u16::from_le_bytes([c[0], c[1]]))
+        .fold(0u16, |acc, w| acc.wrapping_add(w));
+
+    let mut encrypted = [0u8; 48];
+    for (i, chunk) in decrypted.chunks_exact(4).enumerate() {
+        let w = u32::from_le_bytes(chunk.try_into().unwrap()) ^ enc_key;
+        encrypted[i * 4..i * 4 + 4].copy_from_slice(&w.to_le_bytes());
+    }
+    Some((checksum.to_le_bytes(), encrypted))
+}
+
+/// Clears the move at `slot` (0–3) of the party Pokémon at `party_position`
+/// (0–5) and compacts subsequent moves leftward so there are no gaps. PP bytes
+/// shift to match. The final vacated slot is zeroed.
+///
+/// Returns `true` when the write was dispatched (or the slot was already empty).
+pub fn forget_move(party_position: usize, slot: u8) -> bool {
+    if party_position >= 6 {
+        tracing::warn!("forget_move: party_position {party_position} out of range (must be 0–5)");
+        return false;
+    }
+    if slot > 3 {
+        tracing::warn!("forget_move: slot {slot} out of range (must be 0–3)");
+        return false;
+    }
+    const PARTY_BASE: u32 = 0x02024284;
+    const MON_SIZE:   u32 = 100;
+    let mon_addr = PARTY_BASE + party_position as u32 * MON_SIZE;
+    let socket = match fire_red_retroarch_interfacing::make_socket() {
+        Ok(s)  => s,
+        Err(e) => { tracing::warn!("forget_move: socket error: {e}"); return false; }
+    };
+    let data = match read_retroarch_bytes(&socket, mon_addr, 80) {
+        Some(b) if b.len() == 80 => b,
+        _ => { tracing::warn!("forget_move: RetroArch did not respond for party[{party_position}]"); return false; }
+    };
+    let personality = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
+    if personality == 0 {
+        tracing::warn!("forget_move: party[{party_position}] is empty");
+        return false;
+    }
+    match compute_forget_move(&data, slot) {
+        None => {
+            tracing::info!("forget_move: party[{party_position}] slot {slot} already empty");
+            true
+        }
+        Some((checksum, encrypted)) => {
+            let mut payload = [0u8; 52];
+            payload[0..2].copy_from_slice(&checksum);
+            payload[2..4].copy_from_slice(&data[30..32]);
+            payload[4..52].copy_from_slice(&encrypted);
+            if !fire_red_retroarch_interfacing::write_to_retroarch(&socket, mon_addr + 28, &payload) {
+                tracing::warn!("forget_move: write failed for party[{party_position}]");
+                return false;
+            }
+            tracing::info!("forget_move: party[{party_position}] slot {slot} cleared and compacted");
+            true
+        }
+    }
+}
+
+// ── set_pokerus ───────────────────────────────────────────────────────────────
+
+/// Pure logic for [`set_pokerus`]: sets the Pokérus byte (Misc substructure
+/// byte 0) to `0x14` (strain 1, 4 days remaining) if the Pokémon is not
+/// already actively infected (pkrs low nibble ≠ 0).
+///
+/// Returns `None` if already infected, slot is empty, or `data` is too short.
+pub(crate) fn compute_set_pokerus(data: &[u8]) -> Option<([u8; 2], [u8; 48])> {
+    if data.len() < 80 { return None; }
+    let personality = u32::from_le_bytes(data[0..4].try_into().unwrap());
+    let ot_id       = u32::from_le_bytes(data[4..8].try_into().unwrap());
+    if personality == 0 { return None; }
+    let enc_key = personality ^ ot_id;
+
+    let mut decrypted = [0u8; 48];
+    for (i, chunk) in data[32..80].chunks_exact(4).enumerate() {
+        let w = u32::from_le_bytes(chunk.try_into().unwrap()) ^ enc_key;
+        decrypted[i * 4..i * 4 + 4].copy_from_slice(&w.to_le_bytes());
+    }
+
+    let m_off = misc_substructure_index(personality) * 12;
+    let pkrs  = decrypted[m_off];
+    if pkrs & 0x0F != 0 { return None; } // already actively infected
+
+    // strain=1 (0x10), days=4 (0x04) → 0x14
+    decrypted[m_off] = 0x14;
+
+    let checksum: u16 = decrypted
+        .chunks_exact(2)
+        .map(|c| u16::from_le_bytes([c[0], c[1]]))
+        .fold(0u16, |acc, w| acc.wrapping_add(w));
+
+    let mut encrypted = [0u8; 48];
+    for (i, chunk) in decrypted.chunks_exact(4).enumerate() {
+        let w = u32::from_le_bytes(chunk.try_into().unwrap()) ^ enc_key;
+        encrypted[i * 4..i * 4 + 4].copy_from_slice(&w.to_le_bytes());
+    }
+    Some((checksum.to_le_bytes(), encrypted))
+}
+
+/// Infects the party Pokémon at `party_position` (0–5) with Pokérus (strain 1,
+/// 4 days remaining). Sets the Pokérus byte in the Misc substructure and writes
+/// the days-remaining byte at PartyMon offset 85.
+///
+/// No-op if already actively infected (Pokérus days remaining > 0).
+/// Returns `true` when the write was dispatched.
+pub fn set_pokerus(party_position: usize) -> bool {
+    if party_position >= 6 {
+        tracing::warn!("set_pokerus: party_position {party_position} out of range (must be 0–5)");
+        return false;
+    }
+    const PARTY_BASE: u32 = 0x02024284;
+    const MON_SIZE:   u32 = 100;
+    let mon_addr = PARTY_BASE + party_position as u32 * MON_SIZE;
+    let socket = match fire_red_retroarch_interfacing::make_socket() {
+        Ok(s)  => s,
+        Err(e) => { tracing::warn!("set_pokerus: socket error: {e}"); return false; }
+    };
+    let data = match read_retroarch_bytes(&socket, mon_addr, 80) {
+        Some(b) if b.len() == 80 => b,
+        _ => { tracing::warn!("set_pokerus: RetroArch did not respond for party[{party_position}]"); return false; }
+    };
+    let personality = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
+    if personality == 0 {
+        tracing::warn!("set_pokerus: party[{party_position}] is empty");
+        return false;
+    }
+    match compute_set_pokerus(&data) {
+        None => {
+            tracing::info!("set_pokerus: party[{party_position}] already infected");
+            true
+        }
+        Some((checksum, encrypted)) => {
+            let mut payload = [0u8; 52];
+            payload[0..2].copy_from_slice(&checksum);
+            payload[2..4].copy_from_slice(&data[30..32]);
+            payload[4..52].copy_from_slice(&encrypted);
+            if !fire_red_retroarch_interfacing::write_to_retroarch(&socket, mon_addr + 28, &payload) {
+                tracing::warn!("set_pokerus: encrypted write failed for party[{party_position}]");
+                return false;
+            }
+            // Also set the unencrypted days-remaining byte at PartyMon offset 85.
+            fire_red_retroarch_interfacing::write_to_retroarch(&socket, mon_addr + 85, &[4u8]);
+            tracing::info!("set_pokerus: party[{party_position}] infected with PKRS (strain=1, days=4)");
+            true
+        }
+    }
+}
+
 /// Reads all four bag pockets from the player's SaveBlock1 and returns a
 /// [`BagPockets`] with quantities already XOR-decrypted.
 ///
@@ -3155,12 +3716,13 @@ mod tests {
     use super::{
         ascii_to_gba, compute_change_gender, compute_change_held_item,
         compute_change_move, compute_change_nature, compute_change_species,
-        compute_give_item_write, compute_increase_evs, compute_increase_ivs,
-        compute_restore_pp, compute_set_ability_bit, compute_set_evs,
-        compute_set_friendship, compute_set_ivs, compute_take_item_write,
-        encode_nickname, is_shiny, unpack_ivs,
+        compute_forget_move, compute_give_item_write, compute_increase_evs, compute_increase_ivs,
+        compute_learn_move, compute_new_trainer_flags, compute_restore_pp,
+        compute_set_ability_bit, compute_set_evs, compute_set_exp, compute_set_friendship,
+        compute_set_ivs, compute_set_level, compute_set_pokerus, compute_take_item_write,
+        encode_nickname, gen3_min_exp, is_shiny, pack_ivs, trainer_name_for_flag, unpack_ivs,
         ChangeGenderOutcome, ChangeNatureOutcome, ChangeSpeciesOutcome, TakeItemWrite,
-        ITEMS_POCKET_SLOTS, MAX_ITEM_QTY,
+        ITEMS_POCKET_SLOTS, MAX_ITEM_QTY, TRAINER_FLAGS_BYTE_START,
     };
 
     // ── is_shiny ─────────────────────────────────────────────────────────────
@@ -4108,11 +4670,11 @@ mod tests {
 
     #[test]
     fn nature_change_preserves_gender() {
-        // gender_ratio=127: female if low_byte < 127
-        // p = 0x0001_0005: low byte=5 < 127, so female; nature = 5 % 25 = 5
-        let p: u32 = 0x0001_0005;
+        // p=0x0100_005A: b0=90 < 127 (female); p_high=0x0100, p_low=90 → xor=346 ≥ 8 (not shiny)
+        // p%25 = 0x0100005A % 25 = 16777306 % 25 = 6, so nature=6 ≠ 7
+        let p: u32 = 0x0100_005A;
         let data = make_mon_data(p, 0, [0u8; 48]);
-        let target_nature = 7u8; // different from 5
+        let target_nature = 7u8;
         match compute_change_nature(&data, target_nature, 127).unwrap() {
             ChangeNatureOutcome::Write { new_personality, .. } => {
                 assert_eq!(new_personality % 25, target_nature as u32);
@@ -4422,7 +4984,9 @@ mod tests {
     fn set_evs_preserves_contest_bytes() {
         let p: u32 = 24; // Effort at offset 24
         let mut dec = [0u8; 48];
-        // Set contest bytes 6-11 to non-zero values
+        // Set initial EVs to non-zero so the "set to zero" call actually modifies the block.
+        dec[24..30].copy_from_slice(&[252, 0, 0, 4, 0, 0]);
+        // Contest bytes are at Effort substructure bytes 6-11 (decrypted offsets 30-35).
         dec[30] = 100; // coolness
         dec[31] = 200; // beauty
         let data = make_mon_data(p, 0, dec);
@@ -4471,6 +5035,457 @@ mod tests {
         assert_eq!(&new_dec[36..42], &[1, 2, 3, 4, 5, 6]);
         // Effort at offset 24 should be untouched (zero)
         assert_eq!(&new_dec[24..30], &[0, 0, 0, 0, 0, 0]);
+    }
+
+    // ── pack_ivs tests ────────────────────────────────────────────────────────
+
+    #[test]
+    fn pack_ivs_all_zeros() {
+        assert_eq!(pack_ivs(0, 0, 0, 0, 0, 0), 0);
+    }
+
+    #[test]
+    fn pack_ivs_all_max() {
+        assert_eq!(pack_ivs(31, 31, 31, 31, 31, 31), 0x3FFF_FFFF);
+    }
+
+    #[test]
+    fn pack_ivs_known_bit_positions() {
+        assert_eq!(pack_ivs(1, 0, 0, 0, 0, 0), 1);          // hp: bits 0-4
+        assert_eq!(pack_ivs(0, 1, 0, 0, 0, 0), 1 << 5);     // atk: bits 5-9
+        assert_eq!(pack_ivs(0, 0, 1, 0, 0, 0), 1 << 10);    // def: bits 10-14
+        assert_eq!(pack_ivs(0, 0, 0, 1, 0, 0), 1 << 15);    // spd: bits 15-19
+        assert_eq!(pack_ivs(0, 0, 0, 0, 1, 0), 1 << 20);    // spa: bits 20-24
+        assert_eq!(pack_ivs(0, 0, 0, 0, 0, 1), 1 << 25);    // spdef: bits 25-29
+    }
+
+    #[test]
+    fn pack_ivs_roundtrip_with_unpack() {
+        let vals = [20u8, 15, 31, 0, 10, 25];
+        let packed = pack_ivs(vals[0], vals[1], vals[2], vals[3], vals[4], vals[5]);
+        assert_eq!(unpack_ivs(packed), vals);
+    }
+
+    #[test]
+    fn pack_ivs_truncates_to_5_bits() {
+        // Values > 31 are AND'd with 0x1F — this is what the caller relies on via .min(31),
+        // but the raw pack function itself masks.
+        assert_eq!(pack_ivs(32, 0, 0, 0, 0, 0), 0); // 32 & 0x1F = 0
+        assert_eq!(pack_ivs(33, 0, 0, 0, 0, 0), 1); // 33 & 0x1F = 1
+    }
+
+    // ── compute_new_trainer_flags tests ──────────────────────────────────────
+
+    #[test]
+    fn new_trainer_flags_empty_slices() {
+        assert!(compute_new_trainer_flags(&[], &[]).is_empty());
+    }
+
+    #[test]
+    fn new_trainer_flags_no_change() {
+        let flags = vec![0b0000_0000u8, 0b1111_1111u8];
+        assert!(compute_new_trainer_flags(&flags, &flags).is_empty());
+    }
+
+    #[test]
+    fn new_trainer_flags_cleared_bits_not_reported() {
+        let old = vec![0b0000_0001u8];
+        let new = vec![0b0000_0000u8];
+        assert!(compute_new_trainer_flags(&new, &old).is_empty());
+    }
+
+    #[test]
+    fn new_trainer_flags_single_newly_set_bit() {
+        // byte_idx=0, bit=0 → flag = (TRAINER_FLAGS_BYTE_START + 0) * 8 + 0 = 0x100
+        let old = vec![0u8];
+        let new = vec![0b0000_0001u8];
+        assert_eq!(compute_new_trainer_flags(&new, &old), vec![0x100]);
+    }
+
+    #[test]
+    fn new_trainer_flags_bit7_in_first_byte() {
+        // byte_idx=0, bit=7 → flag = 32*8 + 7 = 0x107
+        let old = vec![0u8];
+        let new = vec![0b1000_0000u8];
+        assert_eq!(compute_new_trainer_flags(&new, &old), vec![0x107]);
+    }
+
+    #[test]
+    fn new_trainer_flags_second_byte() {
+        // byte_idx=1, bit=0 → flag = (TRAINER_FLAGS_BYTE_START+1)*8 = 0x108
+        let old = vec![0u8; 2];
+        let new = vec![0u8, 0b0000_0001u8];
+        assert_eq!(compute_new_trainer_flags(&new, &old), vec![0x108]);
+    }
+
+    #[test]
+    fn new_trainer_flags_multiple_bits_in_same_byte() {
+        // byte_idx=0, bits 0 and 2 → flags 0x100 and 0x102
+        let old = vec![0u8];
+        let new = vec![0b0000_0101u8];
+        let mut flags = compute_new_trainer_flags(&new, &old);
+        flags.sort();
+        assert_eq!(flags, vec![0x100, 0x102]);
+    }
+
+    #[test]
+    fn new_trainer_flags_incremental_update() {
+        // old has bits 0+1 set; new adds bit 2 → only 0x102 reported
+        let old = vec![0b0000_0011u8];
+        let new = vec![0b0000_0111u8];
+        assert_eq!(compute_new_trainer_flags(&new, &old), vec![0x102]);
+    }
+
+    #[test]
+    fn new_trainer_flags_byte_start_constant_is_correct() {
+        // TRAINER_FLAGS_BYTE_START = 0x100 / 8 = 32
+        assert_eq!(TRAINER_FLAGS_BYTE_START, 32);
+    }
+
+    // ── trainer_name_for_flag tests ──────────────────────────────────────────
+
+    #[test]
+    fn trainer_name_for_flag_formats_unknown_as_hex() {
+        assert_eq!(trainer_name_for_flag(0x100), "Trainer 0x100");
+        assert_eq!(trainer_name_for_flag(0x3DF), "Trainer 0x3DF");
+        assert_eq!(trainer_name_for_flag(0x1AB), "Trainer 0x1AB");
+    }
+
+    #[test]
+    fn trainer_name_for_flag_low_flag_formats_with_leading_zeros() {
+        // 3-digit hex format: 0x001 should format as "0x001" not "0x1"
+        assert_eq!(trainer_name_for_flag(0x001), "Trainer 0x001");
+    }
+
+    // ── gen3_min_exp ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn gen3_min_exp_level_0_and_1_always_zero() {
+        for rate in 0u8..=5 {
+            assert_eq!(gen3_min_exp(0, rate), 0, "rate={rate} level=0");
+            assert_eq!(gen3_min_exp(1, rate), 0, "rate={rate} level=1");
+        }
+    }
+
+    #[test]
+    fn gen3_min_exp_medium_fast_level_5() {
+        // 0 = Medium Fast: L³
+        assert_eq!(gen3_min_exp(5, 0), 125);
+    }
+
+    #[test]
+    fn gen3_min_exp_medium_fast_level_100() {
+        assert_eq!(gen3_min_exp(100, 0), 1_000_000);
+    }
+
+    #[test]
+    fn gen3_min_exp_fast_level_100() {
+        // 4 = Fast: 4*L³/5
+        assert_eq!(gen3_min_exp(100, 4), 800_000);
+    }
+
+    #[test]
+    fn gen3_min_exp_slow_level_100() {
+        // 5 = Slow: 5*L³/4
+        assert_eq!(gen3_min_exp(100, 5), 1_250_000);
+    }
+
+    #[test]
+    fn gen3_min_exp_medium_slow_level_5() {
+        // 3 = Medium Slow: 6/5*L³ - 15L² + 100L - 140
+        // L=5: 6*125/5 + 500 - 15*25 - 140 = 150+500-375-140 = 135
+        assert_eq!(gen3_min_exp(5, 3), 135);
+    }
+
+    #[test]
+    fn gen3_min_exp_medium_slow_level_100() {
+        // 6*1_000_000/5 + 10_000 - 15*10_000 - 140 = 1_200_000+10_000-150_000-140 = 1_059_860
+        assert_eq!(gen3_min_exp(100, 3), 1_059_860);
+    }
+
+    #[test]
+    fn gen3_min_exp_erratic_level_50_boundary() {
+        // 1 = Erratic, L=50 uses L<68 formula: L³*(150-L)/100 = 125000*100/100 = 125000
+        assert_eq!(gen3_min_exp(50, 1), 125_000);
+    }
+
+    #[test]
+    fn gen3_min_exp_erratic_level_100() {
+        // L>=98: L³*(160-L)/100 = 1_000_000*60/100 = 600_000
+        assert_eq!(gen3_min_exp(100, 1), 600_000);
+    }
+
+    // ── compute_set_exp ───────────────────────────────────────────────────────
+
+    #[test]
+    fn set_exp_empty_slot_returns_none() {
+        let data = vec![0u8; 80]; // personality = 0
+        assert!(compute_set_exp(&data, 1000).is_none());
+    }
+
+    #[test]
+    fn set_exp_already_same_returns_none() {
+        // p%24=0 → Growth at offset 0, exp at dec[4..8]
+        let p: u32 = 24;
+        let mut dec = [0u8; 48];
+        dec[4..8].copy_from_slice(&1000u32.to_le_bytes());
+        let data = make_mon_data(p, 0, dec);
+        assert!(compute_set_exp(&data, 1000).is_none());
+    }
+
+    #[test]
+    fn set_exp_writes_to_growth_offset_zero() {
+        // p%24=0 → Growth at position 0, exp at decrypted[4..8]
+        let p: u32 = 24;
+        let data = make_mon_data(p, 0, [0u8; 48]);
+        let (_, encrypted) = compute_set_exp(&data, 125).unwrap();
+        let new_dec = decrypt_block(&encrypted, p, 0);
+        assert_eq!(u32::from_le_bytes(new_dec[4..8].try_into().unwrap()), 125);
+    }
+
+    #[test]
+    fn set_exp_writes_to_growth_offset_nonzero() {
+        // p=6, p%24=6 → SUBSTRUCTURE_ORDER[6]=[1,0,2,3] → Growth at position 1
+        // g_off = 1*12 = 12, exp at dec[16..20]
+        let p: u32 = 6;
+        let data = make_mon_data(p, 0, [0u8; 48]);
+        let (_, encrypted) = compute_set_exp(&data, 999_999).unwrap();
+        let new_dec = decrypt_block(&encrypted, p, 0);
+        assert_eq!(u32::from_le_bytes(new_dec[16..20].try_into().unwrap()), 999_999);
+    }
+
+    // ── compute_set_level ─────────────────────────────────────────────────────
+
+    #[test]
+    fn set_level_empty_slot_returns_none() {
+        let data = vec![0u8; 80];
+        let rom = vec![0u8; 512];
+        assert!(compute_set_level(&data, 5, &rom, 0).is_none());
+    }
+
+    #[test]
+    fn set_level_zero_level_returns_none() {
+        let p: u32 = 24;
+        let data = make_mon_data(p, 0, [0u8; 48]);
+        let rom = vec![0u8; 512];
+        assert!(compute_set_level(&data, 0, &rom, 0).is_none());
+    }
+
+    #[test]
+    fn set_level_writes_exp_for_medium_fast() {
+        // p%24=0 → Growth at offset 0: species at dec[0..2], exp at dec[4..8]
+        // base_stats_addr=0, species=1: growth_rate at rom[1*28+0x13=47]=0 (Medium Fast)
+        // Level 5: exp = 5³ = 125
+        let p: u32 = 24;
+        let mut dec = [0u8; 48];
+        dec[0..2].copy_from_slice(&1u16.to_le_bytes()); // species = 1
+        let data = make_mon_data(p, 0, dec);
+        let mut rom = vec![0u8; 512];
+        rom[47] = 0; // Medium Fast for species 1
+        let (_, encrypted) = compute_set_level(&data, 5, &rom, 0).unwrap();
+        let new_dec = decrypt_block(&encrypted, p, 0);
+        assert_eq!(u32::from_le_bytes(new_dec[4..8].try_into().unwrap()), 125);
+    }
+
+    #[test]
+    fn set_level_already_at_exp_returns_none() {
+        // If the exp already matches the target for that level, returns None.
+        let p: u32 = 24;
+        let mut dec = [0u8; 48];
+        dec[0..2].copy_from_slice(&1u16.to_le_bytes()); // species = 1
+        dec[4..8].copy_from_slice(&125u32.to_le_bytes()); // exp = 125 = 5³
+        let data = make_mon_data(p, 0, dec);
+        let mut rom = vec![0u8; 512];
+        rom[47] = 0; // Medium Fast
+        assert!(compute_set_level(&data, 5, &rom, 0).is_none());
+    }
+
+    // ── compute_learn_move ────────────────────────────────────────────────────
+
+    #[test]
+    fn learn_move_empty_slot_returns_none() {
+        // personality=0 → None
+        let data = vec![0u8; 80];
+        let rom = vec![0u8; 512];
+        assert!(compute_learn_move(&data, 1, &rom, 0).is_none());
+    }
+
+    #[test]
+    fn learn_move_zero_move_id_returns_none() {
+        let p: u32 = 24;
+        let data = make_mon_data(p, 0, [0u8; 48]);
+        let rom = vec![0u8; 512];
+        assert!(compute_learn_move(&data, 0, &rom, 0).is_none());
+    }
+
+    #[test]
+    fn learn_move_fills_first_empty_slot() {
+        // p%24=0 → Attacks at position 1, a_off=12; Growth at 0, g_off=0
+        // move_data_addr=0, move_id=1: PP at rom[1*12+4]=rom[16]=20
+        // pp_bonuses=dec[8]=0 → max_pp_for_slot(20,0,0)=20
+        let p: u32 = 24;
+        let data = make_mon_data(p, 0, [0u8; 48]);
+        let mut rom = vec![0u8; 512];
+        rom[16] = 20; // base PP for move_id=1
+        let (_, encrypted) = compute_learn_move(&data, 1, &rom, 0).unwrap();
+        let new_dec = decrypt_block(&encrypted, p, 0);
+        assert_eq!(u16::from_le_bytes([new_dec[12], new_dec[13]]), 1, "slot 0 should have move 1");
+        assert_eq!(new_dec[20], 20, "slot 0 PP should be 20");
+    }
+
+    #[test]
+    fn learn_move_fills_second_slot_when_first_occupied() {
+        // Slot 0 already has move_id=5; new move goes into slot 1
+        let p: u32 = 24; // a_off=12
+        let mut dec = [0u8; 48];
+        dec[12..14].copy_from_slice(&5u16.to_le_bytes()); // slot 0 = move 5
+        dec[20] = 10; // PP for slot 0
+        let data = make_mon_data(p, 0, dec);
+        let mut rom = vec![0u8; 512];
+        rom[28] = 15; // base PP for move_id=2 (2*12+4=28)
+        let (_, encrypted) = compute_learn_move(&data, 2, &rom, 0).unwrap();
+        let new_dec = decrypt_block(&encrypted, p, 0);
+        assert_eq!(u16::from_le_bytes([new_dec[12], new_dec[13]]), 5, "slot 0 unchanged");
+        assert_eq!(u16::from_le_bytes([new_dec[14], new_dec[15]]), 2, "slot 1 should have move 2");
+        assert_eq!(new_dec[21], 15, "slot 1 PP should be 15");
+    }
+
+    #[test]
+    fn learn_move_all_slots_full_returns_none() {
+        // All 4 slots occupied → None
+        let p: u32 = 24;
+        let mut dec = [0u8; 48];
+        dec[12..14].copy_from_slice(&1u16.to_le_bytes());
+        dec[14..16].copy_from_slice(&2u16.to_le_bytes());
+        dec[16..18].copy_from_slice(&3u16.to_le_bytes());
+        dec[18..20].copy_from_slice(&4u16.to_le_bytes());
+        let data = make_mon_data(p, 0, dec);
+        let rom = vec![0u8; 512];
+        assert!(compute_learn_move(&data, 5, &rom, 0).is_none());
+    }
+
+    // ── compute_forget_move ───────────────────────────────────────────────────
+
+    #[test]
+    fn forget_move_already_empty_returns_none() {
+        // Slot 1 is empty → None
+        let p: u32 = 24; // a_off=12
+        let mut dec = [0u8; 48];
+        dec[12..14].copy_from_slice(&1u16.to_le_bytes()); // slot 0 = move 1
+        // slot 1 = 0 (empty)
+        let data = make_mon_data(p, 0, dec);
+        assert!(compute_forget_move(&data, 1).is_none());
+    }
+
+    #[test]
+    fn forget_move_clears_middle_slot_and_compacts() {
+        // [1,2,3,4] forget slot 1 → [1,3,4,0]; PP [10,15,20,25] → [10,20,25,0]
+        let p: u32 = 24;
+        let mut dec = [0u8; 48];
+        dec[12..14].copy_from_slice(&1u16.to_le_bytes());
+        dec[14..16].copy_from_slice(&2u16.to_le_bytes());
+        dec[16..18].copy_from_slice(&3u16.to_le_bytes());
+        dec[18..20].copy_from_slice(&4u16.to_le_bytes());
+        dec[20] = 10; dec[21] = 15; dec[22] = 20; dec[23] = 25;
+        let data = make_mon_data(p, 0, dec);
+        let (_, encrypted) = compute_forget_move(&data, 1).unwrap();
+        let nd = decrypt_block(&encrypted, p, 0);
+        assert_eq!(u16::from_le_bytes([nd[12], nd[13]]), 1);
+        assert_eq!(u16::from_le_bytes([nd[14], nd[15]]), 3);
+        assert_eq!(u16::from_le_bytes([nd[16], nd[17]]), 4);
+        assert_eq!(u16::from_le_bytes([nd[18], nd[19]]), 0);
+        assert_eq!(&nd[20..24], &[10, 20, 25, 0]);
+    }
+
+    #[test]
+    fn forget_move_slot_0_shifts_all() {
+        // [A,B,C,D] forget slot 0 → [B,C,D,0]
+        let p: u32 = 24;
+        let mut dec = [0u8; 48];
+        dec[12..14].copy_from_slice(&10u16.to_le_bytes());
+        dec[14..16].copy_from_slice(&20u16.to_le_bytes());
+        dec[16..18].copy_from_slice(&30u16.to_le_bytes());
+        dec[18..20].copy_from_slice(&40u16.to_le_bytes());
+        dec[20] = 5; dec[21] = 6; dec[22] = 7; dec[23] = 8;
+        let data = make_mon_data(p, 0, dec);
+        let (_, encrypted) = compute_forget_move(&data, 0).unwrap();
+        let nd = decrypt_block(&encrypted, p, 0);
+        assert_eq!(u16::from_le_bytes([nd[12], nd[13]]), 20);
+        assert_eq!(u16::from_le_bytes([nd[14], nd[15]]), 30);
+        assert_eq!(u16::from_le_bytes([nd[16], nd[17]]), 40);
+        assert_eq!(u16::from_le_bytes([nd[18], nd[19]]), 0);
+        assert_eq!(&nd[20..24], &[6, 7, 8, 0]);
+    }
+
+    #[test]
+    fn forget_move_last_slot() {
+        // [A,B,C,D] forget slot 3 → [A,B,C,0]
+        let p: u32 = 24;
+        let mut dec = [0u8; 48];
+        dec[12..14].copy_from_slice(&1u16.to_le_bytes());
+        dec[14..16].copy_from_slice(&2u16.to_le_bytes());
+        dec[16..18].copy_from_slice(&3u16.to_le_bytes());
+        dec[18..20].copy_from_slice(&4u16.to_le_bytes());
+        dec[20] = 10; dec[21] = 10; dec[22] = 10; dec[23] = 10;
+        let data = make_mon_data(p, 0, dec);
+        let (_, encrypted) = compute_forget_move(&data, 3).unwrap();
+        let nd = decrypt_block(&encrypted, p, 0);
+        assert_eq!(u16::from_le_bytes([nd[12], nd[13]]), 1);
+        assert_eq!(u16::from_le_bytes([nd[14], nd[15]]), 2);
+        assert_eq!(u16::from_le_bytes([nd[16], nd[17]]), 3);
+        assert_eq!(u16::from_le_bytes([nd[18], nd[19]]), 0);
+        assert_eq!(nd[23], 0, "last PP slot zeroed");
+    }
+
+    // ── compute_set_pokerus ───────────────────────────────────────────────────
+
+    #[test]
+    fn set_pokerus_empty_slot_returns_none() {
+        let data = vec![0u8; 80];
+        assert!(compute_set_pokerus(&data).is_none());
+    }
+
+    #[test]
+    fn set_pokerus_sets_pkrs_byte_in_misc() {
+        // p%24=0 → SUBSTRUCTURE_ORDER[0]=[0,1,2,3] → Misc at position 3, m_off=36
+        // pkrs byte is dec[36]; should be set to 0x14
+        let p: u32 = 24;
+        let data = make_mon_data(p, 0, [0u8; 48]);
+        let (_, encrypted) = compute_set_pokerus(&data).unwrap();
+        let nd = decrypt_block(&encrypted, p, 0);
+        assert_eq!(nd[36], 0x14, "PKRS byte should be 0x14 (strain=1, days=4)");
+    }
+
+    #[test]
+    fn set_pokerus_already_infected_returns_none() {
+        // pkrs low nibble = 4 (days remaining) → already active
+        let p: u32 = 24; // m_off=36
+        let mut dec = [0u8; 48];
+        dec[36] = 0x14; // strain=1, days=4
+        let data = make_mon_data(p, 0, dec);
+        assert!(compute_set_pokerus(&data).is_none());
+    }
+
+    #[test]
+    fn set_pokerus_cured_mon_gets_reinfected() {
+        // pkrs = 0x10 (strain=1, days=0) → cured; should be re-infectable
+        let p: u32 = 24; // m_off=36
+        let mut dec = [0u8; 48];
+        dec[36] = 0x10; // cured (days=0)
+        let data = make_mon_data(p, 0, dec);
+        let (_, encrypted) = compute_set_pokerus(&data).unwrap();
+        let nd = decrypt_block(&encrypted, p, 0);
+        assert_eq!(nd[36], 0x14);
+    }
+
+    #[test]
+    fn set_pokerus_non_zero_misc_index() {
+        // p=7, p%24=7 → SUBSTRUCTURE_ORDER[7]=[1,0,3,2] → Misc (type 3) at position 2, m_off=24
+        let p: u32 = 7;
+        let data = make_mon_data(p, 0, [0u8; 48]);
+        let (_, encrypted) = compute_set_pokerus(&data).unwrap();
+        let nd = decrypt_block(&encrypted, p, 0);
+        assert_eq!(nd[24], 0x14, "PKRS should be at Misc offset 24 for p%24=7");
     }
 
     // ── live RetroArch integration ────────────────────────────────────────────

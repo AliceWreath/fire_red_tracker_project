@@ -2615,6 +2615,183 @@ async fn api_heal_party(
     (StatusCode::OK, format!("queued heal_party for slot {index}"))
 }
 
+/// `POST /api/slot/:index/set_exp` — set the experience points of a party Pokémon.
+///
+/// Body: `{ "party_position": <u8 0–5>, "exp": <u32> }`.
+/// Updates the Growth substructure; the level byte is not changed.
+async fn api_set_exp(
+    State(state): State<WebState>,
+    Path(index): Path<usize>,
+    axum::Json(body): axum::Json<serde_json::Value>,
+) -> impl IntoResponse {
+    if !state.allow_injections {
+        return (StatusCode::FORBIDDEN, "injection commands are disabled".to_string());
+    }
+    let slots = state.live_slots.lock_or_recover().clone();
+    let slot = match slots.get(index) {
+        Some(s) => s.clone(),
+        None    => return (StatusCode::NOT_FOUND, "slot index out of range".to_string()),
+    };
+    if slot.state.lock_or_recover().is_none() {
+        return (StatusCode::SERVICE_UNAVAILABLE, "slot not connected".to_string());
+    }
+    let party_position = match body["party_position"].as_u64().and_then(|v| u8::try_from(v).ok()) {
+        Some(v) if v < 6 => v,
+        _ => return (StatusCode::BAD_REQUEST, "party_position must be 0–5".to_string()),
+    };
+    let exp = match body["exp"].as_u64().and_then(|v| u32::try_from(v).ok()) {
+        Some(v) => v,
+        None => return (StatusCode::BAD_REQUEST, "exp must be a u32".to_string()),
+    };
+    slot.command_queue.lock_or_recover().push_back(ClientMessage::SetExp { party_position, exp });
+    slot.injection_events.lock_or_recover().push_back(serde_json::json!({
+        "at": now_secs(), "kind": "set_exp",
+        "label": format!("party[{party_position}] exp → {exp}"),
+    }));
+    (StatusCode::OK, format!("queued set_exp party_position={party_position} exp={exp} for slot {index}"))
+}
+
+/// `POST /api/slot/:index/set_level` — set the level of a party Pokémon (1–100).
+///
+/// Body: `{ "party_position": <u8 0–5>, "level": <u8 1–100> }`.
+/// Writes both the level byte and updates the experience in the Growth
+/// substructure to the Gen III minimum for the target level.
+async fn api_set_level(
+    State(state): State<WebState>,
+    Path(index): Path<usize>,
+    axum::Json(body): axum::Json<serde_json::Value>,
+) -> impl IntoResponse {
+    if !state.allow_injections {
+        return (StatusCode::FORBIDDEN, "injection commands are disabled".to_string());
+    }
+    let slots = state.live_slots.lock_or_recover().clone();
+    let slot = match slots.get(index) {
+        Some(s) => s.clone(),
+        None    => return (StatusCode::NOT_FOUND, "slot index out of range".to_string()),
+    };
+    if slot.state.lock_or_recover().is_none() {
+        return (StatusCode::SERVICE_UNAVAILABLE, "slot not connected".to_string());
+    }
+    let party_position = match body["party_position"].as_u64().and_then(|v| u8::try_from(v).ok()) {
+        Some(v) if v < 6 => v,
+        _ => return (StatusCode::BAD_REQUEST, "party_position must be 0–5".to_string()),
+    };
+    let level = match body["level"].as_u64().and_then(|v| u8::try_from(v).ok()) {
+        Some(v) if (1..=100).contains(&v) => v,
+        _ => return (StatusCode::BAD_REQUEST, "level must be 1–100".to_string()),
+    };
+    slot.command_queue.lock_or_recover().push_back(ClientMessage::SetLevel { party_position, level });
+    slot.injection_events.lock_or_recover().push_back(serde_json::json!({
+        "at": now_secs(), "kind": "set_level",
+        "label": format!("party[{party_position}] → level {level}"),
+    }));
+    (StatusCode::OK, format!("queued set_level party_position={party_position} level={level} for slot {index}"))
+}
+
+/// `POST /api/slot/:index/learn_move` — add a move to the first empty move slot.
+///
+/// Body: `{ "party_position": <u8 0–5>, "move_id": <u16> }`.
+/// No-op if the Pokémon already knows the move or all four slots are occupied.
+async fn api_learn_move(
+    State(state): State<WebState>,
+    Path(index): Path<usize>,
+    axum::Json(body): axum::Json<serde_json::Value>,
+) -> impl IntoResponse {
+    if !state.allow_injections {
+        return (StatusCode::FORBIDDEN, "injection commands are disabled".to_string());
+    }
+    let slots = state.live_slots.lock_or_recover().clone();
+    let slot = match slots.get(index) {
+        Some(s) => s.clone(),
+        None    => return (StatusCode::NOT_FOUND, "slot index out of range".to_string()),
+    };
+    if slot.state.lock_or_recover().is_none() {
+        return (StatusCode::SERVICE_UNAVAILABLE, "slot not connected".to_string());
+    }
+    let party_position = match body["party_position"].as_u64().and_then(|v| u8::try_from(v).ok()) {
+        Some(v) if v < 6 => v,
+        _ => return (StatusCode::BAD_REQUEST, "party_position must be 0–5".to_string()),
+    };
+    let move_id = match body["move_id"].as_u64().and_then(|v| u16::try_from(v).ok()) {
+        Some(v) if v > 0 => v,
+        _ => return (StatusCode::BAD_REQUEST, "move_id must be a non-zero u16".to_string()),
+    };
+    slot.command_queue.lock_or_recover().push_back(ClientMessage::LearnMove { party_position, move_id });
+    slot.injection_events.lock_or_recover().push_back(serde_json::json!({
+        "at": now_secs(), "kind": "learn_move",
+        "label": format!("party[{party_position}] learn move_id={move_id}"),
+    }));
+    (StatusCode::OK, format!("queued learn_move party_position={party_position} move_id={move_id} for slot {index}"))
+}
+
+/// `POST /api/slot/:index/forget_move` — clear a move slot and compact.
+///
+/// Body: `{ "party_position": <u8 0–5>, "slot": <u8 0–3> }`.
+/// Clears the move at `slot` and shifts subsequent moves left to fill the gap.
+async fn api_forget_move(
+    State(state): State<WebState>,
+    Path(index): Path<usize>,
+    axum::Json(body): axum::Json<serde_json::Value>,
+) -> impl IntoResponse {
+    if !state.allow_injections {
+        return (StatusCode::FORBIDDEN, "injection commands are disabled".to_string());
+    }
+    let slots = state.live_slots.lock_or_recover().clone();
+    let slot = match slots.get(index) {
+        Some(s) => s.clone(),
+        None    => return (StatusCode::NOT_FOUND, "slot index out of range".to_string()),
+    };
+    if slot.state.lock_or_recover().is_none() {
+        return (StatusCode::SERVICE_UNAVAILABLE, "slot not connected".to_string());
+    }
+    let party_position = match body["party_position"].as_u64().and_then(|v| u8::try_from(v).ok()) {
+        Some(v) if v < 6 => v,
+        _ => return (StatusCode::BAD_REQUEST, "party_position must be 0–5".to_string()),
+    };
+    let move_slot = match body["slot"].as_u64().and_then(|v| u8::try_from(v).ok()) {
+        Some(v) if v < 4 => v,
+        _ => return (StatusCode::BAD_REQUEST, "slot must be 0–3".to_string()),
+    };
+    slot.command_queue.lock_or_recover().push_back(ClientMessage::ForgetMove { party_position, slot: move_slot });
+    slot.injection_events.lock_or_recover().push_back(serde_json::json!({
+        "at": now_secs(), "kind": "forget_move",
+        "label": format!("party[{party_position}] forget slot {move_slot}"),
+    }));
+    (StatusCode::OK, format!("queued forget_move party_position={party_position} slot={move_slot} for slot {index}"))
+}
+
+/// `POST /api/slot/:index/set_pokerus` — infect a party Pokémon with Pokérus.
+///
+/// Body: `{ "party_position": <u8 0–5> }`.
+/// Sets Pokérus to strain 1, 4 days remaining. No-op if already actively infected.
+async fn api_set_pokerus(
+    State(state): State<WebState>,
+    Path(index): Path<usize>,
+    axum::Json(body): axum::Json<serde_json::Value>,
+) -> impl IntoResponse {
+    if !state.allow_injections {
+        return (StatusCode::FORBIDDEN, "injection commands are disabled".to_string());
+    }
+    let slots = state.live_slots.lock_or_recover().clone();
+    let slot = match slots.get(index) {
+        Some(s) => s.clone(),
+        None    => return (StatusCode::NOT_FOUND, "slot index out of range".to_string()),
+    };
+    if slot.state.lock_or_recover().is_none() {
+        return (StatusCode::SERVICE_UNAVAILABLE, "slot not connected".to_string());
+    }
+    let party_position = match body["party_position"].as_u64().and_then(|v| u8::try_from(v).ok()) {
+        Some(v) if v < 6 => v,
+        _ => return (StatusCode::BAD_REQUEST, "party_position must be 0–5".to_string()),
+    };
+    slot.command_queue.lock_or_recover().push_back(ClientMessage::SetPokerus { party_position });
+    slot.injection_events.lock_or_recover().push_back(serde_json::json!({
+        "at": now_secs(), "kind": "set_pokerus",
+        "label": format!("party[{party_position}] infected with Pokérus"),
+    }));
+    (StatusCode::OK, format!("queued set_pokerus party_position={party_position} for slot {index}"))
+}
+
 /// Broadcasts `end_run` or `new_run` to all connected tracker slots.
 async fn api_command(
     State(state): State<WebState>,
@@ -2720,6 +2897,11 @@ pub fn run(live_slots: SharedSlots, port: u16, db_conn: Option<String>, testing:
             .route("/api/slot/:index/increase_evs", post(api_increase_evs))
             .route("/api/slot/:index/restore_hp", post(api_restore_hp))
             .route("/api/slot/:index/heal_party", post(api_heal_party))
+            .route("/api/slot/:index/set_exp", post(api_set_exp))
+            .route("/api/slot/:index/set_level", post(api_set_level))
+            .route("/api/slot/:index/learn_move", post(api_learn_move))
+            .route("/api/slot/:index/forget_move", post(api_forget_move))
+            .route("/api/slot/:index/set_pokerus", post(api_set_pokerus))
             .route("/api/bot/:index", get(api_bot_summary))
             .route("/api/command/:cmd", post(api_command))
             .route("/api/db/query", post(api_db_query))

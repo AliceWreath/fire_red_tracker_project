@@ -52,6 +52,11 @@ pub const MAX_NATIONAL_DEX_FIRERED: u16 = 386;
 ///  20 = IncreaseEvs
 ///  21 = RestoreHp
 ///  22 = HealParty
+///  23 = SetExp
+///  24 = SetLevel
+///  25 = LearnMove
+///  26 = ForgetMove
+///  27 = SetPokerus
 #[derive(serde::Serialize, serde::Deserialize, Clone)]
 pub enum ClientMessage {
     RequestTextures(Vec<u16>), // index 0 — do not reorder
@@ -141,6 +146,27 @@ pub enum ClientMessage {
     /// slot in one command. Equivalent to calling [`RestoreHp`] + [`CureStatus`]
     /// on each of the six party positions, but reuses a single UDP socket.
     HealParty,                                                                                  // index 22 — do not reorder
+    /// Set the experience points of the party Pokémon at `party_position` (0–5)
+    /// to exactly `exp`. The Growth substructure is updated, checksum is
+    /// recalculated, and the block is re-encrypted. The level byte is NOT
+    /// updated — use [`SetLevel`] to change both atomically.
+    SetExp { party_position: u8, exp: u32 },                                                    // index 23 — do not reorder
+    /// Set the level of the party Pokémon at `party_position` (0–5) to `level`
+    /// (1–100). Writes the level byte at PartyMon offset 84, and also updates
+    /// the experience in the Growth substructure to the Gen III minimum for that
+    /// level and growth rate so the game does not immediately re-sync downwards.
+    SetLevel { party_position: u8, level: u8 },                                                 // index 24 — do not reorder
+    /// Place `move_id` into the first empty move slot (move_id == 0) of the
+    /// party Pokémon at `party_position` (0–5). PP is set to the maximum for
+    /// the move. No-op if all four slots are occupied or the move is already
+    /// known.
+    LearnMove { party_position: u8, move_id: u16 },                                             // index 25 — do not reorder
+    /// Clear the move at `slot` (0–3) of the party Pokémon at `party_position`
+    /// (0–5) and compact subsequent moves left. PP bytes are shifted to match.
+    ForgetMove { party_position: u8, slot: u8 },                                                // index 26 — do not reorder
+    /// Infect the party Pokémon at `party_position` (0–5) with Pokérus (strain
+    /// 1, 4 days remaining). No-op if already actively infected.
+    SetPokerus { party_position: u8 },                                                          // index 27 — do not reorder
     // Append new variants here only.
 }
 
