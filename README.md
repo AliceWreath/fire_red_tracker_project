@@ -228,7 +228,7 @@ The same background version check runs here: 10 seconds after the window opens, 
 ```
 aggregator
 aggregator --listen-port 7878
-aggregator --no-injections       # disable give_item, take_item, make_shiny, change_species, etc.
+aggregator --no-injections       # disable all injection endpoints (give_item, change_species, set_ivs, heal_party, etc.)
 aggregator --update              # check GitHub for a newer release and self-update
 ```
 
@@ -365,6 +365,19 @@ All endpoints are served on the same port as the WebSocket overlay (`--ws-port`)
 | `/api/slot/:index/change_species` | `POST` | **Injection.** Body: `{ "party_position": <u8 0–5>, "new_species": <u16 1–386> }`. Rewrite the species field in the Growth substructure; personality, moves, EVs, IVs, and nature are preserved and the checksum is recalculated. Returns `403` when injections are disabled |
 | `/api/slot/:index/change_ability` | `POST` | **Injection.** Body: `{ "party_position": <u8 0–5>, "ability_slot": <u8 0 or 1> }`. Set bit 31 of the IV/egg/ability word in the Misc substructure (`0` = primary ability, `1` = secondary ability). Returns `403` when injections are disabled |
 | `/api/slot/:index/change_gender` | `POST` | **Injection.** Body: `{ "party_position": <u8 0–5>, "target_gender": <u8 0 or 1> }`. Adjust the personality low byte to satisfy `target_gender` (`0` = male, `1` = female) while preserving nature and shiny status. Returns `200` with an explanatory message for genderless or fixed-gender species. Returns `403` when injections are disabled |
+| `/api/slot/:index/change_nickname` | `POST` | **Injection.** Body: `{ "party_position": <u8 0–5>, "nickname": <string> }`. Write a new nickname (max 10 chars, GBA encoding; unmapped characters are silently dropped). The encrypted data block is untouched. Returns `403` when injections are disabled |
+| `/api/slot/:index/change_held_item` | `POST` | **Injection.** Body: `{ "party_position": <u8 0–5>, "item_id": <u16> }`. Set the held item in the Growth substructure. `item_id = 0` removes the held item. Returns `403` when injections are disabled |
+| `/api/slot/:index/cure_status` | `POST` | **Injection.** Body: `{ "party_position": <u8 0–5> }`. Zero the 4-byte status word (clears burn, sleep, paralysis, poison, freeze). Returns `403` when injections are disabled |
+| `/api/slot/:index/change_nature` | `POST` | **Injection.** Body: `{ "party_position": <u8 0–5>, "nature": <u8 0–24> }`. Adjust the personality low byte so `personality % 25 == nature`, preserving gender and shiny status. Substructures are rearranged when `personality % 24` changes. Returns `403` when injections are disabled |
+| `/api/slot/:index/restore_pp` | `POST` | **Injection.** Body: `{ "party_position": <u8 0–5> }`. Restore PP on all four move slots to their current maximum (base PP + PP-Up bonus). Empty slots (move_id = 0) are skipped. Returns `403` when injections are disabled |
+| `/api/slot/:index/set_friendship` | `POST` | **Injection.** Body: `{ "party_position": <u8 0–5>, "friendship": <u8 0–255> }`. Set the friendship byte in the Growth substructure (0 = min, 255 = max). Returns `403` when injections are disabled |
+| `/api/slot/:index/change_move` | `POST` | **Injection.** Body: `{ "party_position": <u8 0–5>, "slot": <u8 0–3>, "move_id": <u16> }`. Replace a move slot and set current PP to the new move's maximum. `move_id = 0` clears the slot. Returns `403` when injections are disabled |
+| `/api/slot/:index/set_ivs` | `POST` | **Injection.** Body: `{ "party_position": <u8 0–5>, "hp": <u8>, "atk": <u8>, "def": <u8>, "spd": <u8>, "spa": <u8>, "spdef": <u8> }`. Set all six IVs (each clamped to 31). Egg and ability bits in the Misc substructure are preserved. Returns `403` when injections are disabled |
+| `/api/slot/:index/increase_ivs` | `POST` | **Injection.** Same body as `set_ivs`. Add each value to the corresponding IV, clamping at 31. Returns `403` when injections are disabled |
+| `/api/slot/:index/set_evs` | `POST` | **Injection.** Body: `{ "party_position": <u8 0–5>, "hp": <u8>, "atk": <u8>, "def": <u8>, "spd": <u8>, "spa": <u8>, "spdef": <u8> }`. Set all six EVs (0–255 each; 510-total cap not enforced). Contest-condition bytes are preserved. Returns `403` when injections are disabled |
+| `/api/slot/:index/increase_evs` | `POST` | **Injection.** Same body as `set_evs`. Add each value to the corresponding EV, clamping at 255. Returns `403` when injections are disabled |
+| `/api/slot/:index/restore_hp` | `POST` | **Injection.** Body: `{ "party_position": <u8 0–5> }`. Write the calculated max-HP value (PartyPokemon offset 88–89) to current HP (offset 86–87). No encrypted block is touched. Returns `403` when injections are disabled |
+| `/api/slot/:index/heal_party` | `POST` | **Injection.** No body required. Restore HP and cure status for all six party slots in one pass (single UDP socket). Returns `403` when injections are disabled |
 
 ##### WebSocket payload filtering (`?show=`)
 
@@ -499,7 +512,7 @@ A **Soul Link** is a Nuzlocke variant played with a partner: each player's catch
 | `cli.rs` | `Cli` and `Command` structs (clap definitions) |
 | `config.rs` | Config file load/save, first-run setup dialog |
 | `encounter.rs` | `EncounterTracker` — wild battle detection via personality change, balls-gate latch, duplicate species check, shiny detection (Gen III formula), catch detection via party membership |
-| `game.rs` | `fill_party_list`, `check_for_dead_pokemon`, `check_for_new_pokemon`, `check_for_run_over`, `map_state_from_ewram`, `game_is_loaded`, `has_pokeballs`, `count_pokeballs`, `read_security_key`, `scan_for_balls_pocket`, `scan_for_security_key`; injection commands: `give_item`, `take_item`, `make_shiny`, `change_species`, `change_ability`, `change_gender` |
+| `game.rs` | `fill_party_list`, `check_for_dead_pokemon`, `check_for_new_pokemon`, `check_for_run_over`, `map_state_from_ewram`, `game_is_loaded`, `has_pokeballs`, `count_pokeballs`, `read_security_key`, `scan_for_balls_pocket`, `scan_for_security_key`; injection commands: `give_item`, `take_item`, `make_shiny`, `change_species`, `change_ability`, `change_gender`, `change_nickname`, `change_held_item`, `cure_status`, `change_nature`, `restore_pp`, `set_friendship`, `change_move`, `set_ivs`, `increase_ivs`, `set_evs`, `increase_evs`, `restore_hp`, `heal_party` |
 | `textures.rs` | `PendingTexture`, sprite compression, `build_sprite_data` |
 | `gui.rs` | `WindowInfo`, `eframe::App` impl, party panel, encounters viewport |
 | `server.rs` | Aggregator connection handler — manages the bidirectional push stream over an established TCP connection |
@@ -810,6 +823,41 @@ Add `http://localhost:9090/cmd` in a browser tab to manage runs — **End Run** 
 ---
 
 ## Project status
+
+**v0.9.20** — `heal_party` injection command:
+
+- **`POST /api/slot/:index/heal_party`** — restore HP and cure the status condition for all six party slots in a single command. Reuses one UDP socket for the full pass; no request body needed.
+
+---
+
+**v0.9.19** — IV/EV injection commands and `restore_hp`:
+
+- **`POST /api/slot/:index/set_ivs`** — set all six IVs at once (each clamped to 31). Egg and ability bits in the Misc substructure IV word are preserved.
+- **`POST /api/slot/:index/increase_ivs`** — add to each IV, clamping at 31. Same body as `set_ivs`.
+- **`POST /api/slot/:index/set_evs`** — set all six EVs (0–255 each; 510-total game cap not enforced). Contest-condition bytes in the Effort substructure are preserved.
+- **`POST /api/slot/:index/increase_evs`** — add to each EV, clamping at 255. Same body as `set_evs`.
+- **`POST /api/slot/:index/restore_hp`** — write max HP to current HP. Reads the calculated max-HP word at PartyPokemon offset 88–89 and writes it to offset 86–87; no encrypted block is touched.
+- Added `move_data_addr` to `RomAddresses` (0x250C04 FireRed / 0x250BE0 LeafGreen) for ROM-based base-PP lookups.
+
+---
+
+**v0.9.18** — PP, friendship, and move-slot injection commands:
+
+- **`POST /api/slot/:index/restore_pp`** — restore all four move slots to their current maximum PP (base PP + PP-Up bonus). ROM move table is used to look up base PP per move.
+- **`POST /api/slot/:index/set_friendship`** — set the friendship byte in the Growth substructure (0 = min / max Frustration, 255 = max / Happiness evolutions trigger).
+- **`POST /api/slot/:index/change_move`** — replace the move at a given slot (0–3) with a new move ID and set current PP to the new move's maximum. `move_id = 0` clears the slot.
+
+---
+
+**v0.9.17** — nickname, held-item, status, and nature injection commands:
+
+- **`POST /api/slot/:index/change_nickname`** — write a new nickname (UTF-8 input, converted to GBA encoding; unmapped characters dropped, truncated at 10). Only the 10-byte unencrypted nickname field is written; shiny status and all encrypted data are untouched.
+- **`POST /api/slot/:index/change_held_item`** — update the held-item field in the Growth substructure. `item_id = 0` removes the item.
+- **`POST /api/slot/:index/cure_status`** — zero the 4-byte status word (clears burn, sleep turn counter, paralysis, poison, freeze, and Toxic stage in one write).
+- **`POST /api/slot/:index/change_nature`** — adjust the personality low byte so `personality % 25 == nature` (0–24), preserving gender (for species with personality-derived gender) and shiny status. Substructures are physically rearranged when `personality % 24` changes.
+- All four commands preserve shiny status; `change_nature` uses the same k16 low-byte search as `change_gender`.
+
+---
 
 **v0.9.16** — injection command API, alerts overlay injection toasts, `allow_injections` config/CLI flag:
 
