@@ -5679,9 +5679,7 @@ mod tests {
 
     #[test]
     fn nature_changes_to_target() {
-        // personality=0, nature=0 (Hardy). Change to nature=1 (Lonely).
-        let p: u32 = 0; // special case: personality 0 means "empty" → skip it
-        // Use p=25 (nature=0, not shiny with ot=0)
+        // personality=0, nature=0 (Hardy), but p=0 means "empty slot" so use p=25 instead
         let p: u32 = 25;
         let data = make_mon_data(p, 0, [0u8; 48]);
         match compute_change_nature(&data, 1, 127).unwrap() {
