@@ -573,7 +573,7 @@ fn main() {
                     let max_hp = mon.max_hp;
                     if personality != 0 && hp > 0 && max_hp > 0 {
                         fire_red_database::update_min_hp_seen(personality, hp, max_hp);
-                        let changed = last_party_hp.get(&personality).map_or(true, |&last| last != hp);
+                        let changed = last_party_hp.get(&personality).is_none_or(|&last| last != hp);
                         if changed {
                             fire_red_database::record_hp_observation(personality, hp, max_hp);
                             last_party_hp.insert(personality, hp);

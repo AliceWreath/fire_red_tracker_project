@@ -1657,17 +1657,17 @@ pub fn get_battle_damage_log(conn_str: &str, run_id: u32) -> serde_json::Value {
         let nickname: String = row.get(4);
         let species_name: String = row.get(5);
         mon_labels.entry(personality).or_insert((nickname.clone(), species_name.clone()));
-        if let Some(&(_prev_at, prev_hp)) = prev.get(&personality) {
-            if hp < prev_hp {
-                let (nick, spec) = mon_labels.get(&personality).cloned().unwrap_or_default();
-                damage_events.push(DamageEvent {
-                    personality,
-                    at,
-                    damage: prev_hp - hp,
-                    nickname: nick,
-                    species_name: spec,
-                });
-            }
+        if let Some(&(_prev_at, prev_hp)) = prev.get(&personality)
+            && hp < prev_hp
+        {
+            let (nick, spec) = mon_labels.get(&personality).cloned().unwrap_or_default();
+            damage_events.push(DamageEvent {
+                personality,
+                at,
+                damage: prev_hp - hp,
+                nickname: nick,
+                species_name: spec,
+            });
         }
         prev.insert(personality, (at, hp));
     }
@@ -1684,13 +1684,13 @@ pub fn get_battle_damage_log(conn_str: &str, run_id: u32) -> serde_json::Value {
     }
     let mut battles: Vec<Battle> = Vec::new();
     for ev in &damage_events {
-        if let Some(last) = battles.last_mut() {
-            if ev.at - last.end_at <= BATTLE_GAP_SECS {
-                last.end_at = ev.at;
-                let entry = last.mons.entry(ev.personality).or_insert((0, ev.nickname.clone(), ev.species_name.clone()));
-                entry.0 += ev.damage;
-                continue;
-            }
+        if let Some(last) = battles.last_mut()
+            && ev.at - last.end_at <= BATTLE_GAP_SECS
+        {
+            last.end_at = ev.at;
+            let entry = last.mons.entry(ev.personality).or_insert((0, ev.nickname.clone(), ev.species_name.clone()));
+            entry.0 += ev.damage;
+            continue;
         }
         let mut mons = HashMap::new();
         mons.insert(ev.personality, (ev.damage, ev.nickname.clone(), ev.species_name.clone()));
@@ -4528,11 +4528,7 @@ pub fn run_summary_markdown(conn_str: &str, run_id: u32) -> Result<String, Strin
     let total_zones = enc_rows.len();
     let total_caught_enc: usize = enc_rows.iter().filter(|r| r.get::<_, bool>(4)).count();
     let total_shinies: usize = enc_rows.iter().filter(|r| r.get::<_, bool>(5)).count();
-    let catch_pct = if total_zones > 0 {
-        (total_caught_enc * 100 / total_zones) as u32
-    } else {
-        0
-    };
+    let catch_pct = (total_caught_enc * 100).checked_div(total_zones).unwrap_or(0) as u32;
 
     // Deaths
     let dead_rows = client

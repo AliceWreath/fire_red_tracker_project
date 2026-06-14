@@ -1170,20 +1170,20 @@ impl BroadcastLoop {
                     .collect();
 
                 // Push clause-enforcement warnings from the tracker as inject-style toasts.
-                if let Some(gs) = state {
-                    if !gs.warnings.is_empty() {
-                        let now_ms = std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .map(|d| d.as_millis())
-                            .unwrap_or(0);
-                        let mut queue = slots[i].injection_events.lock_or_recover();
-                        for (j, warn) in gs.warnings.iter().enumerate() {
-                            queue.push_back(serde_json::json!({
-                                "type":  "clause_warning",
-                                "label": warn,
-                                "at":    now_ms + j as u128,
-                            }));
-                        }
+                if let Some(gs) = state
+                    && !gs.warnings.is_empty()
+                {
+                    let now_ms = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_millis())
+                        .unwrap_or(0);
+                    let mut queue = slots[i].injection_events.lock_or_recover();
+                    for (j, warn) in gs.warnings.iter().enumerate() {
+                        queue.push_back(serde_json::json!({
+                            "type":  "clause_warning",
+                            "label": warn,
+                            "at":    now_ms + j as u128,
+                        }));
                     }
                 }
 
@@ -2156,7 +2156,7 @@ async fn api_give_item(
         .lock_or_recover()
         .push_back(ClientMessage::GiveItem { item_id, quantity });
     let rom = fire_red_rom_buffer::get_rom();
-    let item_name = fire_red_party_monitor::get_item_string_from_id(&rom, item_id);
+    let item_name = fire_red_party_monitor::get_item_string_from_id(rom, item_id);
     slot.injection_events
         .lock_or_recover()
         .push_back(serde_json::json!({
@@ -2282,7 +2282,7 @@ async fn api_take_item(
         .lock_or_recover()
         .push_back(ClientMessage::TakeItem { item_id, quantity });
     let rom = fire_red_rom_buffer::get_rom();
-    let item_name = fire_red_party_monitor::get_item_string_from_id(&rom, item_id);
+    let item_name = fire_red_party_monitor::get_item_string_from_id(rom, item_id);
     slot.injection_events
         .lock_or_recover()
         .push_back(serde_json::json!({
@@ -2671,7 +2671,7 @@ async fn api_change_held_item(
         format!("Removed party[{party_position}] held item")
     } else {
         let rom = fire_red_rom_buffer::get_rom();
-        let item_name = fire_red_party_monitor::get_item_string_from_id(&rom, item_id);
+        let item_name = fire_red_party_monitor::get_item_string_from_id(rom, item_id);
         format!("party[{party_position}] now holds {item_name}")
     };
     slot.injection_events
@@ -3900,10 +3900,10 @@ async fn api_run_luck(
 /// - `hp` — current HP
 /// - `max_hp` — max HP
 /// - `status` — `none` | `sleep` | `freeze` | `paralyze` | `poison` | `burn`
-///              (default: `none`)
+///   (default: `none`)
 /// - `ball` — `pokeball` | `greatball` | `ultraball` | `masterball` |
-///            `safariball` | `netball` | `nestball` | `repeatball` |
-///            `timerball` | `diveball` | `premierball` (default: `pokeball`)
+///   `safariball` | `netball` | `nestball` | `repeatball` |
+///   `timerball` | `diveball` | `premierball` (default: `pokeball`)
 async fn api_catch_rate(
     Query(params): Query<std::collections::HashMap<String, String>>,
 ) -> axum::Json<serde_json::Value> {

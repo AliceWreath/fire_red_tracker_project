@@ -1974,9 +1974,12 @@ pub(crate) fn compute_change_gender(
         decrypted
     } else {
         let mut r = [0u8; 48];
-        for t in 0..4 {
-            let old_pos = SUBSTRUCTURE_ORDER[old_mod24][t] as usize;
-            let new_pos = SUBSTRUCTURE_ORDER[new_mod24][t] as usize;
+        for (&old_pos, &new_pos) in SUBSTRUCTURE_ORDER[old_mod24]
+            .iter()
+            .zip(SUBSTRUCTURE_ORDER[new_mod24].iter())
+        {
+            let old_pos = old_pos as usize;
+            let new_pos = new_pos as usize;
             r[new_pos * 12..new_pos * 12 + 12]
                 .copy_from_slice(&decrypted[old_pos * 12..old_pos * 12 + 12]);
         }
@@ -2475,9 +2478,12 @@ pub(crate) fn compute_change_nature(
         decrypted
     } else {
         let mut r = [0u8; 48];
-        for t in 0..4 {
-            let old_pos = SUBSTRUCTURE_ORDER[old_mod24][t] as usize;
-            let new_pos = SUBSTRUCTURE_ORDER[new_mod24][t] as usize;
+        for (&old_pos, &new_pos) in SUBSTRUCTURE_ORDER[old_mod24]
+            .iter()
+            .zip(SUBSTRUCTURE_ORDER[new_mod24].iter())
+        {
+            let old_pos = old_pos as usize;
+            let new_pos = new_pos as usize;
             r[new_pos * 12..new_pos * 12 + 12]
                 .copy_from_slice(&decrypted[old_pos * 12..old_pos * 12 + 12]);
         }
