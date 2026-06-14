@@ -55,7 +55,7 @@ use colored::Colorize;
 
 use fire_red_loop::*;
 use fire_red_states::*;
-use game::{check_for_dead_pokemon, check_for_new_pokemon, check_for_run_over, fill_party_list, game_is_loaded, is_shiny, map_state_from_ewram};
+use game::{check_for_dead_pokemon, check_for_new_pokemon, check_for_run_over, fill_party_list, game_is_loaded, is_shiny, map_state_from_ewram, check_for_new_trainer_battles};
 #[cfg(feature = "dev-tools")]
 use game::{scan_for_balls_pocket, scan_for_security_key};
 use gui::{WindowInfo, PARTY_WINDOW};
@@ -406,6 +406,9 @@ fn main() {
             // None = "uninitialized"; check_for_new_badges adopts existing
             // badges silently on the first call with this sentinel value.
             let mut last_badge_mask: Option<u8> = None;
+            // None = "uninitialized"; check_for_new_trainer_battles adopts
+            // existing flags silently on the first call.
+            let mut last_trainer_flags: Option<Vec<u8>> = None;
             // Track the last player name to detect save-file switches mid-session.
             let mut last_player_name   = String::new();
 
@@ -444,9 +447,10 @@ fn main() {
                     *thread_encounters.lock_or_recover() =
                         fire_red_pokemon_data::WildPokemonHeader::default();
                     *thread_party.lock_or_recover() = Vec::new();
-                    state_initialized = false;
-                    player_name_set   = false;
-                    last_badge_mask   = None;
+                    state_initialized   = false;
+                    player_name_set     = false;
+                    last_badge_mask     = None;
+                    last_trainer_flags  = None;
                     current_state = FireRedState { map_group_id: 0xFF, map_name_id: 0xFF };
                     enc_tracker.reset();
                     std::thread::sleep(std::time::Duration::from_millis(500));
@@ -551,8 +555,9 @@ fn main() {
 
                 if thread_run_changed.swap(false, Ordering::AcqRel) {
                     enc_tracker.reset();
-                    last_badge_mask = None;
-                    player_name_set = false;
+                    last_badge_mask    = None;
+                    last_trainer_flags = None;
+                    player_name_set    = false;
                 }
 
                 if state_initialized {
@@ -561,7 +566,8 @@ fn main() {
                     if !drained.is_empty() {
                         thread_warnings.lock_or_recover().extend(drained);
                     }
-                    last_badge_mask = game::check_for_new_badges(last_badge_mask, livesplit_split_on_badges, livesplit_split_on_clear);
+                    last_badge_mask    = game::check_for_new_badges(last_badge_mask, livesplit_split_on_badges, livesplit_split_on_clear);
+                    last_trainer_flags = check_for_new_trainer_battles(last_trainer_flags);
                 }
 
                 if last_bag_refresh.elapsed() >= std::time::Duration::from_secs(2) {

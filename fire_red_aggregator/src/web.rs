@@ -1100,6 +1100,7 @@ const COMPARE_HTML:      &str = include_str!("compare.html");
 const ITEMS_HTML:        &str = include_str!("items.html");
 const MOVES_HTML:        &str = include_str!("moves.html");
 const MOBILE_HTML:       &str = include_str!("mobile.html");
+const TRAINERS_HTML:     &str = include_str!("trainers.html");
 const TIMELINE_HTML:     &str = include_str!("timeline.html");
 const SPECIES_HTML:      &str = include_str!("species.html");
 
@@ -1641,6 +1642,23 @@ async fn api_species_stats(State(state): State<WebState>) -> axum::Json<serde_js
     let conn = require_db!(state);
     let result = tokio::task::spawn_blocking(move || {
         fire_red_database::species_stats(&conn)
+    }).await;
+    axum::Json(result.unwrap_or_else(|_| serde_json::json!({ "error": "Task panicked" })))
+}
+
+/// `GET /trainers` and `GET /run/:id/trainers` — trainer battle log page.
+async fn serve_trainers(State(state): State<WebState>) -> Html<String> {
+    Html(apply_page(TRAINERS_HTML, state.testing))
+}
+
+/// `GET /api/run/:id/trainers` — trainer battle log JSON for a run.
+async fn api_run_trainers(
+    State(state): State<WebState>,
+    Path(run_id): Path<u32>,
+) -> axum::Json<serde_json::Value> {
+    let conn = require_db!(state);
+    let result = tokio::task::spawn_blocking(move || {
+        fire_red_database::get_trainer_defeats_json(&conn, run_id)
     }).await;
     axum::Json(result.unwrap_or_else(|_| serde_json::json!({ "error": "Task panicked" })))
 }
@@ -2742,6 +2760,9 @@ pub fn run(live_slots: SharedSlots, port: u16, db_conn: Option<String>, testing:
             .route("/timeline", get(serve_timeline))
             .route("/species", get(serve_species))
             .route("/api/species/stats", get(api_species_stats))
+            .route("/trainers", get(serve_trainers))
+            .route("/run/:id/trainers", get(serve_trainers))
+            .route("/api/run/:id/trainers", get(api_run_trainers))
             .route("/about", get(serve_about))
             .route("/compare", get(serve_compare))
             .with_state(web_state);

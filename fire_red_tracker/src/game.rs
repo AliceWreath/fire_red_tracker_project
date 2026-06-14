@@ -781,6 +781,87 @@ pub fn check_for_new_badges(last_mask: Option<u8>, split_on_badges: bool, split_
     Some(current_mask)
 }
 
+/// Byte offset within the flags array where the trainer flag range starts (flag 0x100 ÷ 8).
+const TRAINER_FLAGS_BYTE_START: usize = 0x100 / 8; // 32
+
+/// Number of bytes covering flags 0x100–0x3DF (last flag 0x3DF ÷ 8 = 123; 123 − 32 + 1 = 92).
+const TRAINER_FLAGS_BYTE_COUNT: usize = 0x3DF / 8 - TRAINER_FLAGS_BYTE_START + 1; // 92
+
+/// Reads the SaveBlock1 flags slice covering trainer flags (0x100–0x3DF).
+///
+/// Returns `None` if IWRAM/EWRAM is not ready or SaveBlock1 pointer is invalid.
+fn read_trainer_flag_bytes() -> Option<Vec<u8>> {
+    let iwram = fire_red_memory::get_iwram();
+    let ewram = fire_red_memory::get_ewram();
+    let addrs = fire_red_rom_buffer::get_rom_addresses();
+    let sb1        = read_save_block1_ptr(&iwram, &ewram)?;
+    let flags_base = (sb1 - EWRAM_BASE) + addrs.flags_offset;
+    let byte_start = flags_base + TRAINER_FLAGS_BYTE_START;
+    let byte_end   = byte_start + TRAINER_FLAGS_BYTE_COUNT;
+    if ewram.len() < byte_end { return None; }
+    Some(ewram[byte_start..byte_end].to_vec())
+}
+
+/// Returns a human-readable label for a trainer flag index.
+///
+/// Named entries can be added by looking up `FLAG_TRAINER_*` constants in the
+/// pokefirered decompilation at `include/constants/flags.h`. Unknown flags fall
+/// back to `"Trainer 0x###"`.
+fn trainer_name_for_flag(flag: u16) -> String {
+    // Named constants can be added here once empirically confirmed, e.g.:
+    //   0x14C => "Brock".to_string(),
+    format!("Trainer 0x{flag:03X}")
+}
+
+/// Scans the trainer flag range (0x100–0x3DF) for newly-set bits and records
+/// each defeat in the `trainer_battles` table.
+///
+/// Pass `None` on the first call (or after a reset) to silently adopt existing
+/// flags as the baseline — identical to the pattern used by `check_for_new_badges`.
+/// Returns `Some(current_bytes)` to be stored for the next call.
+pub fn check_for_new_trainer_battles(last_flags: Option<Vec<u8>>) -> Option<Vec<u8>> {
+    let current = read_trainer_flag_bytes()?;
+
+    let last = match last_flags {
+        None    => return Some(current), // silent adoption on first call
+        Some(v) => v,
+    };
+    if current.len() != last.len() { return Some(current); }
+
+    let player    = fire_red_loop::get_trainer_name();
+    let location  = map_state_from_ewram()
+        .map(|s| {
+            let n = fire_red_loop::get_area_name_for(s.map_group_id, s.map_name_id);
+            if n.is_empty() { format!("{}\u{B7}{}", s.map_group_id, s.map_name_id) }
+            else            { n.to_string() }
+        })
+        .unwrap_or_default();
+    let timestamp = fire_red_database::unix_now();
+
+    for (byte_idx, (&new_byte, &old_byte)) in current.iter().zip(last.iter()).enumerate() {
+        let newly_set = new_byte & !old_byte;
+        if newly_set == 0 { continue; }
+        for bit in 0u32..8 {
+            if (newly_set >> bit) & 1 == 0 { continue; }
+            let flag = ((TRAINER_FLAGS_BYTE_START + byte_idx) * 8 + bit as usize) as u16;
+            let name = trainer_name_for_flag(flag);
+            match fire_red_database::record_trainer_defeat(fire_red_database::TrainerDefeat {
+                player_name:  player.clone(),
+                flag_index:   flag as u32,
+                trainer_name: name,
+                location:     location.clone(),
+                defeated_at:  timestamp,
+            }) {
+                Ok(true)  => tracing::info!("Trainer defeated (flag=0x{flag:03X}) at {location}"),
+                Ok(false) => {}
+                Err(e)    => tracing::warn!("Failed to record trainer defeat (flag=0x{flag:03X}): {e}"),
+            }
+        }
+    }
+
+    Some(current)
+}
+
 /// Pure logic for [`give_item`]: searches `pocket` for a slot to write to and
 /// builds the 4-byte encrypted payload.
 ///

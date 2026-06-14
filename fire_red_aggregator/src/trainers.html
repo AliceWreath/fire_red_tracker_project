@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<!-- THEME_SLOT -->
+<title>Trainer Log — FireRed Nuzlocke</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body {
+    background: #0f0f0f;
+    font-family: 'Segoe UI', Tahoma, sans-serif;
+    color: #e0e0e0;
+    min-height: 100vh;
+}
+#root { max-width: 900px; margin: 0 auto; padding: 16px; }
+.page-header {
+    display: flex; align-items: center; gap: 12px;
+    padding-bottom: 12px; border-bottom: 1px solid rgba(255,255,255,0.1);
+    margin-bottom: 20px;
+}
+.page-title { font-size: 20px; font-weight: bold; color: #fff; }
+.run-selector { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+.run-selector select {
+    background: #1a1a2e; border: 1px solid rgba(255,255,255,0.15);
+    color: #e0e0e0; border-radius: 5px; padding: 4px 8px; font-size: 13px;
+}
+.error { padding: 16px; background: rgba(80,20,20,0.4); border-radius: 6px; color: #e06060; }
+.empty { text-align: center; color: #555; padding: 40px; font-size: 14px; }
+.loading { color: #888; font-size: 13px; padding: 20px; }
+.back-link { font-size: 12px; color: #5090e0; text-decoration: none; margin-left: auto; }
+.back-link:hover { text-decoration: underline; }
+.counter { font-size: 12px; color: #888; margin-bottom: 12px; }
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th {
+    text-align: left; color: #888; font-size: 11px; font-weight: 600;
+    text-transform: uppercase; letter-spacing: 0.4px;
+    padding: 5px 8px; border-bottom: 1px solid rgba(255,255,255,0.08);
+}
+td { padding: 6px 8px; border-bottom: 1px solid rgba(255,255,255,0.04); }
+tr:last-child td { border-bottom: none; }
+tr:hover td { background: rgba(255,255,255,0.03); }
+.flag-chip {
+    display: inline-block; font-size: 10px; font-family: monospace;
+    background: rgba(80,120,200,0.18); border: 1px solid rgba(80,120,200,0.3);
+    border-radius: 4px; padding: 1px 5px; color: #89b4e8;
+}
+.loc { color: #b0b0b0; }
+.time { color: #666; font-size: 11px; white-space: nowrap; }
+.player { font-size: 11px; color: #aaa; }
+</style>
+</head>
+<body>
+<div id="root">
+  <div class="page-header">
+    <div class="page-title">Trainer Battle Log</div>
+    <div class="run-selector">
+      Run:&nbsp;<select id="run-select"></select>
+    </div>
+    <a class="back-link" href="/history">← History</a>
+  </div>
+  <div id="content"><div class="loading">Loading…</div></div>
+</div>
+<script>
+const API_BASE = location.origin;
+
+function runIdFromUrl() {
+    const m = location.pathname.match(/\/run\/(\d+)\/trainers/);
+    if (m) return parseInt(m[1]);
+    return parseInt(new URLSearchParams(location.search).get('run') || '0') || null;
+}
+
+let currentRunId = runIdFromUrl();
+
+function populateSelector(runs) {
+    const sel = document.getElementById('run-select');
+    const prev = sel.value;
+    sel.innerHTML = '';
+    runs.forEach(r => {
+        const opt = document.createElement('option');
+        opt.value = r.run_id;
+        opt.textContent = `#${r.run_id} ${r.player_name}`;
+        sel.appendChild(opt);
+    });
+    if (currentRunId) sel.value = currentRunId;
+    else if (!sel.value && runs.length) { sel.value = runs[runs.length-1].run_id; currentRunId = parseInt(sel.value); }
+    if (sel.value !== prev) loadTrainers();
+}
+
+function loadTrainers() {
+    currentRunId = parseInt(document.getElementById('run-select').value) || currentRunId;
+    if (!currentRunId) { document.getElementById('content').innerHTML = '<div class="empty">No run selected.</div>'; return; }
+    document.getElementById('content').innerHTML = '<div class="loading">Loading…</div>';
+    fetch(`${API_BASE}/api/run/${currentRunId}/trainers`)
+        .then(r => r.json())
+        .then(renderTrainers)
+        .catch(e => { document.getElementById('content').innerHTML = `<div class="error">Error: ${e}</div>`; });
+}
+
+function renderTrainers(data) {
+    const el = document.getElementById('content');
+    if (data.error) { el.innerHTML = `<div class="error">${data.error}</div>`; return; }
+    if (!Array.isArray(data) || data.length === 0) { el.innerHTML = '<div class="empty">No trainer battles recorded for this run.</div>'; return; }
+    el.innerHTML = `<div class="counter">${data.length} trainer${data.length === 1 ? '' : 's'} defeated</div>` + `
+    <table>
+      <thead><tr>
+        <th>#</th><th>Trainer</th><th>Location</th><th>Player</th><th>Time</th>
+      </tr></thead>
+      <tbody>
+        ${data.map((r, i) => `<tr>
+          <td>${i + 1}</td>
+          <td>${escHtml(r.trainer_name)} <span class="flag-chip">0x${r.flag_index.toString(16).toUpperCase().padStart(3,'0')}</span></td>
+          <td class="loc">${escHtml(r.location) || '—'}</td>
+          <td class="player">${escHtml(r.player_name)}</td>
+          <td class="time">${escHtml(r.defeated_at_human)}</td>
+        </tr>`).join('')}
+      </tbody>
+    </table>`;
+}
+
+function escHtml(s) {
+    return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+document.getElementById('run-select').addEventListener('change', loadTrainers);
+
+fetch(`${API_BASE}/api/runs`)
+    .then(r => r.json())
+    .then(d => { if (d.runs) populateSelector(d.runs); else loadTrainers(); })
+    .catch(() => loadTrainers());
+</script>
+</body>
+</html>
+<!-- __VERSION__ -->

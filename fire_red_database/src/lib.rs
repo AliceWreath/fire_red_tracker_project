@@ -285,6 +285,21 @@ pub struct CaughtPokemon {
     pub gender:        u8,
 }
 
+/// A defeated trainer — stored once per run/player/flag combination.
+#[derive(Clone, Debug)]
+pub struct TrainerDefeat {
+    /// Player who beat this trainer.
+    pub player_name:  String,
+    /// SaveBlock1 flag index for this trainer (range 0x100–0x3DF).
+    pub flag_index:   u32,
+    /// Human-readable trainer label, e.g. "Trainer 0x1A3" or a named entry.
+    pub trainer_name: String,
+    /// Location string at the moment of defeat.
+    pub location:     String,
+    /// Unix timestamp of the defeat.
+    pub defeated_at:  u64,
+}
+
 // ---------------------------------------------------------------------------
 // Storage
 // ---------------------------------------------------------------------------
@@ -325,7 +340,7 @@ fn db() -> &'static Mutex<DbState> {
 /// `initialize` has already been called.
 /// Increment this whenever a new migration or data-repair statement is added.
 /// `initialize` skips all SQL when the DB already records this version.
-const SCHEMA_VERSION: &str = "10";
+const SCHEMA_VERSION: &str = "11";
 
 pub fn initialize(connection_string: &str) -> Result<(), String> {
     // Accept bare `host/dbname` strings — prepend the scheme so callers don't have to.
@@ -577,6 +592,18 @@ pub fn initialize(connection_string: &str) -> Result<(), String> {
         -- Migration v10: death cause analysis — enemy species / move at time of death.
         ALTER TABLE dead_pokemon ADD COLUMN IF NOT EXISTS killed_by_species TEXT;
         ALTER TABLE dead_pokemon ADD COLUMN IF NOT EXISTS killed_by_move TEXT;
+
+        -- Migration v11: trainer battle log — one row per defeated trainer flag per run/player.
+        CREATE TABLE IF NOT EXISTS trainer_battles (
+            id           SERIAL  PRIMARY KEY,
+            run_id       INTEGER NOT NULL REFERENCES runs(id),
+            player_name  TEXT    NOT NULL,
+            flag_index   INTEGER NOT NULL,
+            trainer_name TEXT    NOT NULL,
+            location     TEXT    NOT NULL DEFAULT '',
+            defeated_at  BIGINT  NOT NULL,
+            UNIQUE (run_id, player_name, flag_index)
+        );
     ").map_err(|e| format!("Failed to create database schema: {e}"))?;
 
     // Record the schema version so future startups can skip all migrations.
@@ -1100,6 +1127,64 @@ pub fn record_event(event: EventKind<'_>) -> Result<(), postgres::Error> {
         ],
     )?;
     Ok(())
+}
+
+/// Records a defeated trainer in the `trainer_battles` table for the active run.
+///
+/// No-op if no run is currently active or if this flag has already been recorded
+/// (`ON CONFLICT DO NOTHING` on `(run_id, player_name, flag_index)`).
+/// Returns `Ok(true)` when a new row was inserted.
+pub fn record_trainer_defeat(defeat: TrainerDefeat) -> Result<bool, postgres::Error> {
+    let mut state = db().lock_or_recover();
+    let run_id = match state.run_id {
+        Some(id) => id,
+        None     => return Ok(false),
+    };
+    let player = pg_safe(&state.current_player);
+    let n = state.client.execute(
+        "INSERT INTO trainer_battles (run_id, player_name, flag_index, trainer_name, location, defeated_at)
+         VALUES ($1, $2, $3, $4, $5, $6)
+         ON CONFLICT (run_id, player_name, flag_index) DO NOTHING",
+        &[
+            &(run_id as i32),
+            &player,
+            &(defeat.flag_index as i32),
+            &defeat.trainer_name,
+            &defeat.location,
+            &(defeat.defeated_at as i64),
+        ],
+    )?;
+    Ok(n > 0)
+}
+
+/// Returns all trainer defeats for a run as a JSON array, ordered by time.
+///
+/// Each entry has: `player_name`, `flag_index`, `trainer_name`, `location`,
+/// `defeated_at` (unix seconds), `defeated_at_human` (formatted string).
+pub fn get_trainer_defeats_json(conn_str: &str, run_id: u32) -> serde_json::Value {
+    let Ok(mut client) = postgres::Client::connect(conn_str, NoTls) else {
+        return serde_json::json!({ "error": "database connection failed" });
+    };
+    let rows = match client.query(
+        "SELECT player_name, flag_index, trainer_name, location, defeated_at
+         FROM trainer_battles WHERE run_id = $1 ORDER BY defeated_at ASC",
+        &[&(run_id as i32)],
+    ) {
+        Ok(r)  => r,
+        Err(e) => return serde_json::json!({ "error": e.to_string() }),
+    };
+    let entries: Vec<serde_json::Value> = rows.iter().map(|row| {
+        let defeated_at = row.get::<_, i64>(4) as u64;
+        serde_json::json!({
+            "player_name":     row.get::<_, String>(0),
+            "flag_index":      row.get::<_, i32>(1),
+            "trainer_name":    row.get::<_, String>(2),
+            "location":        row.get::<_, String>(3),
+            "defeated_at":     defeated_at,
+            "defeated_at_human": format_timestamp(defeated_at),
+        })
+    }).collect();
+    serde_json::json!(entries)
 }
 
 /// Records a Pokemon as caught in the active run.
