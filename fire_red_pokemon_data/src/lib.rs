@@ -23,11 +23,11 @@
 //! The `FFI` types exist for interop with C/C++ callers. Most Rust code should
 //! use the plain (non-suffix) types.
 
-use std::alloc::{alloc, dealloc, Layout};
+use fire_red_get_values::{read_u8, read_u16, read_u32};
+use std::alloc::{Layout, alloc, dealloc};
 use std::ffi::{c_uchar, c_uint, c_ushort};
 use std::marker::PhantomData;
 use std::sync::OnceLock;
-use fire_red_get_values::{read_u16, read_u8, read_u32};
 
 // ---------------------------------------------------------------------------
 // Global cache
@@ -215,13 +215,13 @@ impl WildPokemonHeaderROM {
     pub fn fill_header(buffer: &[u8], offset: usize) -> Self {
         // layout: u8 map_group, u8 map_num, u16 filler, then four u32 pointers
         WildPokemonHeaderROM {
-            map_group:                    read_u8(buffer, offset),
-            map_num:                      read_u8(buffer, offset + 1),
-            filler:                       Default::default(),
-            land_mon_encounters_rom_ptr:   read_u32(buffer, offset + 4)  & 0x07FFFFFF,
-            water_mon_encounters_rom_ptr:  read_u32(buffer, offset + 8)  & 0x07FFFFFF,
+            map_group: read_u8(buffer, offset),
+            map_num: read_u8(buffer, offset + 1),
+            filler: Default::default(),
+            land_mon_encounters_rom_ptr: read_u32(buffer, offset + 4) & 0x07FFFFFF,
+            water_mon_encounters_rom_ptr: read_u32(buffer, offset + 8) & 0x07FFFFFF,
             rock_smash_encounters_rom_ptr: read_u32(buffer, offset + 12) & 0x07FFFFFF,
-            fishing_encounters_rom_ptr:    read_u32(buffer, offset + 16) & 0x07FFFFFF,
+            fishing_encounters_rom_ptr: read_u32(buffer, offset + 16) & 0x07FFFFFF,
         }
     }
 }
@@ -231,7 +231,7 @@ impl WildPokemonInfoROM {
     pub fn fill_pokemon_info(buffer: &[u8], offset: usize) -> Self {
         // layout: u8 encounter_rate, u8[3] pad, u32 ptr
         WildPokemonInfoROM {
-            encounter_rate:            read_u8(buffer, offset),
+            encounter_rate: read_u8(buffer, offset),
             wild_pokemon_list_rom_ptr: read_u32(buffer, offset + 4) & 0x07FFFFFF,
         }
     }
@@ -291,7 +291,7 @@ impl WildPokemon {
         let mon = WildPokemon {
             min_level: read_u8(buffer, offset),
             max_level: read_u8(buffer, offset + 1),
-            species:   read_u16(buffer, offset + 2),
+            species: read_u16(buffer, offset + 2),
         };
         // Known malformed-entry sentinel.
         if mon.min_level == 0x15 && mon.max_level == 0 {
@@ -326,7 +326,7 @@ impl WildPokemonHeader {
     pub fn fill_head(header_rom: &WildPokemonHeaderROM, buffer: &[u8]) -> Self {
         let mut header = WildPokemonHeader {
             map_group: header_rom.map_group,
-            map_num:   header_rom.map_num,
+            map_num: header_rom.map_num,
             ..Default::default()
         };
 
@@ -337,10 +337,22 @@ impl WildPokemonHeader {
             }
         };
 
-        fill(header_rom.land_mon_encounters_rom_ptr,    &mut header.land_mon_encounters);
-        fill(header_rom.water_mon_encounters_rom_ptr,  &mut header.water_mon_encounters);
-        fill(header_rom.rock_smash_encounters_rom_ptr, &mut header.rock_smash_encounters);
-        fill(header_rom.fishing_encounters_rom_ptr,    &mut header.fishing_encounters);
+        fill(
+            header_rom.land_mon_encounters_rom_ptr,
+            &mut header.land_mon_encounters,
+        );
+        fill(
+            header_rom.water_mon_encounters_rom_ptr,
+            &mut header.water_mon_encounters,
+        );
+        fill(
+            header_rom.rock_smash_encounters_rom_ptr,
+            &mut header.rock_smash_encounters,
+        );
+        fill(
+            header_rom.fishing_encounters_rom_ptr,
+            &mut header.fishing_encounters,
+        );
 
         header
     }
@@ -360,7 +372,7 @@ impl WildPokemonHeaderFFI {
     pub fn fill_head(header_rom: &WildPokemonHeaderROM, buffer: &[u8]) -> Self {
         let mut header = WildPokemonHeaderFFI {
             map_group: header_rom.map_group,
-            map_num:   header_rom.map_num,
+            map_num: header_rom.map_num,
             ..Default::default()
         };
 
@@ -372,10 +384,22 @@ impl WildPokemonHeaderFFI {
             }
         };
 
-        fill(header_rom.land_mon_encounters_rom_ptr,    &mut header.land_mon_encounters);
-        fill(header_rom.water_mon_encounters_rom_ptr,  &mut header.water_mon_encounters);
-        fill(header_rom.rock_smash_encounters_rom_ptr, &mut header.rock_smash_encounters);
-        fill(header_rom.fishing_encounters_rom_ptr,    &mut header.fishing_encounters);
+        fill(
+            header_rom.land_mon_encounters_rom_ptr,
+            &mut header.land_mon_encounters,
+        );
+        fill(
+            header_rom.water_mon_encounters_rom_ptr,
+            &mut header.water_mon_encounters,
+        );
+        fill(
+            header_rom.rock_smash_encounters_rom_ptr,
+            &mut header.rock_smash_encounters,
+        );
+        fill(
+            header_rom.fishing_encounters_rom_ptr,
+            &mut header.fishing_encounters,
+        );
 
         header
     }
@@ -440,12 +464,10 @@ unsafe fn alloc_wild_pokemon_info_ffi(
 
     unsafe {
         (*ptr).encounter_rate = encounter_rate;
-        (*ptr).pokemon_count  = n;
+        (*ptr).pokemon_count = n;
     }
 
-    let pokemon_ptr = unsafe {
-        &(*ptr).wild_pokemon_list as *const _ as *mut WildPokemon
-    };
+    let pokemon_ptr = unsafe { &(*ptr).wild_pokemon_list as *const _ as *mut WildPokemon };
     for (i, mon) in list.iter().enumerate() {
         unsafe { pokemon_ptr.add(i).write(*mon) };
     }
@@ -479,16 +501,20 @@ unsafe fn dealloc_wild_pokemon_info_ffi(ptr: *mut WildPokemonInfoFFI) {
 /// # Safety
 ///
 /// `ptr` must be a valid pointer allocated by [`alloc_wild_pokemon_info_ffi`].
-pub unsafe fn get_wild_pokemon_vector_from_ptr_ffi(ptr: *mut WildPokemonInfoFFI) -> Vec<WildPokemon> {
+pub unsafe fn get_wild_pokemon_vector_from_ptr_ffi(
+    ptr: *mut WildPokemonInfoFFI,
+) -> Vec<WildPokemon> {
     if ptr.is_null() {
         tracing::warn!("get_wild_pokemon_vector_from_ptr_ffi: null pointer");
         return Vec::new();
     }
 
-    let count       = unsafe { (*ptr).pokemon_count };
+    let count = unsafe { (*ptr).pokemon_count };
     let pokemon_ptr = unsafe { &(*ptr).wild_pokemon_list as *const _ as *const WildPokemon };
 
-    (0..count).map(|i| unsafe { pokemon_ptr.add(i).read() }).collect()
+    (0..count)
+        .map(|i| unsafe { pokemon_ptr.add(i).read() })
+        .collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -503,9 +529,7 @@ pub fn get_all_pokemon_headers_from_rom(buffer: &[u8], offset: usize) -> Vec<Wil
     let mut headers = Vec::new();
     let mut index = 0;
 
-    while offset + index + 2 <= buffer.len()
-        && read_u16(buffer, offset + index) != 0xFFFF
-    {
+    while offset + index + 2 <= buffer.len() && read_u16(buffer, offset + index) != 0xFFFF {
         if offset + index >= buffer.len() {
             tracing::error!("Overran ROM buffer while reading pokemon headers.");
             break;
@@ -535,7 +559,9 @@ pub fn fill_static_pokemon_header_list(buffer: &[u8], offset: usize) {
 ///
 /// Panics if [`fill_static_pokemon_header_list`] has not been called first.
 pub fn get_pokemon_header_list() -> &'static Vec<WildPokemonHeaderROM> {
-    WILD_POKEMON_HEADERS.get().expect("wild pokemon header list not initialized — call fill_static_pokemon_header_list first")
+    WILD_POKEMON_HEADERS.get().expect(
+        "wild pokemon header list not initialized — call fill_static_pokemon_header_list first",
+    )
 }
 
 #[cfg(test)]
@@ -567,10 +593,10 @@ mod tests {
         // ROM pointers have the 0x08000000 bank byte stripped (mask 0x07FFFFFF).
         let buf = header_buf(1, 0, 0x0812_3456, 0x0800_0001, 0, 0);
         let h = WildPokemonHeaderROM::fill_header(&buf, 0);
-        assert_eq!(h.land_mon_encounters_rom_ptr,  0x0012_3456);
+        assert_eq!(h.land_mon_encounters_rom_ptr, 0x0012_3456);
         assert_eq!(h.water_mon_encounters_rom_ptr, 0x0000_0001);
         assert_eq!(h.rock_smash_encounters_rom_ptr, 0);
-        assert_eq!(h.fishing_encounters_rom_ptr,    0);
+        assert_eq!(h.fishing_encounters_rom_ptr, 0);
     }
 
     #[test]
@@ -618,7 +644,10 @@ mod tests {
     fn fill_wild_pokemon_sentinel_returns_default() {
         // Known malformed-entry sentinel: min_level=0x15, max_level=0.
         let buf = [0x15u8, 0x00, 0x01, 0x00];
-        assert_eq!(WildPokemon::fill_wild_pokemon(&buf, 0), WildPokemon::default());
+        assert_eq!(
+            WildPokemon::fill_wild_pokemon(&buf, 0),
+            WildPokemon::default()
+        );
     }
 
     #[test]

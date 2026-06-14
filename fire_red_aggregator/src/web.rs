@@ -10,19 +10,21 @@
 //! separate HTTP sprite endpoint or browser caching issues exist.
 
 use crate::app::sort_gifts_by_caught_at;
-use crate::client::{MonitorSlot, SharedSlots, PngSpriteCache, encode_png};
-use fire_red_states::{is_shiny, ClientMessage, GameState, LockOrRecover, MAX_NATIONAL_DEX_FIRERED};
+use crate::client::{MonitorSlot, PngSpriteCache, SharedSlots, encode_png};
 use axum::{
+    Router,
     extract::{ConnectInfo, Path, Query, State},
-    http::{header, StatusCode},
+    http::{StatusCode, header},
     response::{Html, IntoResponse},
     routing::{delete, get, post},
-    Router,
 };
-use std::net::SocketAddr;
 use fire_red_database::{CaughtPokemon, DeadPokemon};
+use fire_red_states::{
+    ClientMessage, GameState, LockOrRecover, MAX_NATIONAL_DEX_FIRERED, is_shiny,
+};
 use futures_util::{SinkExt, StreamExt};
 use std::collections::{HashMap, HashSet};
+use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::sync::watch;
@@ -36,216 +38,216 @@ use fire_red_states::base64_encode;
 
 #[derive(serde::Serialize, Clone)]
 struct RunSummaryDto {
-    run_id:      u32,
+    run_id: u32,
     player_name: String,
-    started_at:  String,
-    ended_at:    Option<String>,
-    deaths:      usize,
-    caught:      usize,
+    started_at: String,
+    ended_at: Option<String>,
+    deaths: usize,
+    caught: usize,
 }
 
 #[derive(serde::Serialize, Clone)]
 struct DbEncounterDto {
-    species_name:   String,
-    level:          u8,
-    caught:         bool,
-    is_shiny:       bool,
+    species_name: String,
+    level: u8,
+    caught: bool,
+    is_shiny: bool,
     encountered_at: String,
-    area:           String,
-    sprite:         Option<String>,
-    map_group:      u8,
-    map_name:       u8,
+    area: String,
+    sprite: Option<String>,
+    map_group: u8,
+    map_name: u8,
 }
 
 #[derive(serde::Serialize, Clone)]
 struct SlotDto {
-    label:               String,
-    connected:           bool,
-    db_connected:        bool,
-    active_run_id:       Option<u32>,
-    run_summary:         Option<RunSummaryDto>,
-    db_encounters:       Vec<DbEncounterDto>,
-    badges:              Vec<bool>,
-    next_gym:            Option<GymDto>,
-    party:               Vec<MemberDto>,
-    encounters:          Vec<EncounterGroupDto>,
-    dead:                Vec<DeadMonDto>,
-    caught:              Vec<CaughtMonDto>,
-    box_pokemon:         Vec<BoxMonDto>,
+    label: String,
+    connected: bool,
+    db_connected: bool,
+    active_run_id: Option<u32>,
+    run_summary: Option<RunSummaryDto>,
+    db_encounters: Vec<DbEncounterDto>,
+    badges: Vec<bool>,
+    next_gym: Option<GymDto>,
+    party: Vec<MemberDto>,
+    encounters: Vec<EncounterGroupDto>,
+    dead: Vec<DeadMonDto>,
+    caught: Vec<CaughtMonDto>,
+    box_pokemon: Vec<BoxMonDto>,
     /// map_group of the current wild-encounter zone (0 if no encounter area).
-    current_map_group:   u8,
+    current_map_group: u8,
     /// map_name of the current wild-encounter zone (0 if no encounter area).
-    current_map_name:    u8,
+    current_map_name: u8,
     /// Human-readable name for the current zone, empty when not in a wild area.
-    current_zone_name:   String,
+    current_zone_name: String,
     /// Encounters from the most recently completed run, for cross-run hints.
     prev_run_encounters: Vec<DbEncounterDto>,
     /// Elite 4 + Champion defeat flags: indices 0–4 = Lorelei, Bruno, Agatha, Lance, Blue.
-    e4_progress:         Vec<bool>,
+    e4_progress: Vec<bool>,
     /// True when all 8 badges and all 5 Elite 4 members (incl. Champion) are defeated.
-    game_cleared:        bool,
+    game_cleared: bool,
     /// Injection events (give/take item, make shiny, etc.) queued since the last
     /// tick. Drained on every broadcast; alerts.html shows toasts for each entry.
-    injection_events:    Vec<serde_json::Value>,
+    injection_events: Vec<serde_json::Value>,
 }
 
 #[derive(serde::Serialize, Clone)]
 struct DeadMonDto {
-    nickname:      String,
-    species_name:  String,
-    level:         u8,
-    nature:        String,
-    shiny:         bool,
-    soul_link:     bool,
-    died_at:       String,
-    gender:        u8,
-    max_hp:        u16,
-    attack:        u16,
-    defense:       u16,
-    speed:         u16,
-    sp_attack:     u16,
-    sp_defense:    u16,
-    iv_hp:         u8,
-    iv_atk:        u8,
-    iv_def:        u8,
-    iv_spe:        u8,
-    iv_spa:        u8,
-    iv_spd:        u8,
-    ev_hp:         u8,
-    ev_atk:        u8,
-    ev_def:        u8,
-    ev_spe:        u8,
-    ev_spa:        u8,
-    ev_spd:        u8,
-    sprite:        Option<String>,
-    killed_by:     Option<String>,
+    nickname: String,
+    species_name: String,
+    level: u8,
+    nature: String,
+    shiny: bool,
+    soul_link: bool,
+    died_at: String,
+    gender: u8,
+    max_hp: u16,
+    attack: u16,
+    defense: u16,
+    speed: u16,
+    sp_attack: u16,
+    sp_defense: u16,
+    iv_hp: u8,
+    iv_atk: u8,
+    iv_def: u8,
+    iv_spe: u8,
+    iv_spa: u8,
+    iv_spd: u8,
+    ev_hp: u8,
+    ev_atk: u8,
+    ev_def: u8,
+    ev_spe: u8,
+    ev_spa: u8,
+    ev_spd: u8,
+    sprite: Option<String>,
+    killed_by: Option<String>,
 }
 
 #[derive(serde::Serialize, Clone)]
 struct CaughtMonDto {
-    nickname:      String,
-    species_name:  String,
-    level:         u8,
-    nature:        String,
-    shiny:         bool,
-    caught_at:         String,
+    nickname: String,
+    species_name: String,
+    level: u8,
+    nature: String,
+    shiny: bool,
+    caught_at: String,
     met_location_name: String,
-    gender:            u8,
-    iv_hp:             u8,
-    iv_atk:        u8,
-    iv_def:        u8,
-    iv_spe:        u8,
-    iv_spa:        u8,
-    iv_spd:        u8,
-    sprite:        Option<String>,
+    gender: u8,
+    iv_hp: u8,
+    iv_atk: u8,
+    iv_def: u8,
+    iv_spe: u8,
+    iv_spa: u8,
+    iv_spd: u8,
+    sprite: Option<String>,
     /// GBA personality value — exposed so the override manager can identify mons.
-    personality:   u32,
+    personality: u32,
     /// True when this Pokémon has a death record or is a soul-link casualty.
-    dead:          bool,
+    dead: bool,
 }
 
 #[derive(serde::Serialize, Clone)]
 struct BoxMonDto {
-    box_index:    u8,
-    slot_index:   u8,
+    box_index: u8,
+    slot_index: u8,
     species_name: String,
-    nickname:     String,
-    is_shiny:     bool,
-    nature:       String,
-    is_egg:       bool,
-    iv_hp:        u8,
-    iv_atk:       u8,
-    iv_def:       u8,
-    iv_spe:       u8,
-    iv_spa:       u8,
-    iv_spd:       u8,
+    nickname: String,
+    is_shiny: bool,
+    nature: String,
+    is_egg: bool,
+    iv_hp: u8,
+    iv_atk: u8,
+    iv_def: u8,
+    iv_spe: u8,
+    iv_spa: u8,
+    iv_spd: u8,
     /// `0` = male, `1` = female, `2` = genderless.
-    gender:       u8,
-    sprite:       Option<String>,
+    gender: u8,
+    sprite: Option<String>,
 }
 
 #[derive(serde::Serialize, Clone)]
 struct EncounterGroupDto {
     label: String,
-    mons:  Vec<EncounterMonDto>,
+    mons: Vec<EncounterMonDto>,
 }
 
 #[derive(serde::Serialize, Clone)]
 struct EncounterMonDto {
     min_level: u8,
     max_level: u8,
-    sprite:    Option<String>,
+    sprite: Option<String>,
 }
 
 #[derive(serde::Serialize, Clone)]
 struct GymDto {
-    leader:    String,
-    city:      String,
+    leader: String,
+    city: String,
     max_level: u8,
     /// Primary type ID of the gym leader / Elite 4 member (Gen III ID, 0–16).
     /// Used by overlay pages to pre-highlight relevant matchups.
-    type_id:   u8,
+    type_id: u8,
 }
 
 #[derive(serde::Serialize, Clone)]
 struct SoulLinkPartnerDto {
     nickname: String,
-    player:   String,
+    player: String,
 }
 
 #[derive(serde::Serialize, Clone)]
 struct MemberDto {
-    nickname:          String,
-    species_name:      String,
-    level:             u8,
-    hp:                u16,
-    max_hp:            u16,
-    exp:               u32,
-    nature:            String,
-    shiny:             bool,
-    dead:              bool,
-    soul_link_kill:    bool,
+    nickname: String,
+    species_name: String,
+    level: u8,
+    hp: u16,
+    max_hp: u16,
+    exp: u32,
+    nature: String,
+    shiny: bool,
+    dead: bool,
+    soul_link_kill: bool,
     soul_link_partner: Option<SoulLinkPartnerDto>,
-    died_at:           Option<String>,
-    attack:            u16,
-    defense:           u16,
-    speed:             u16,
-    sp_attack:         u16,
-    sp_defense:        u16,
+    died_at: Option<String>,
+    attack: u16,
+    defense: u16,
+    speed: u16,
+    sp_attack: u16,
+    sp_defense: u16,
     /// `0` = male, `1` = female, `2` = genderless.
-    gender:            u8,
-    ability:           String,
-    held_item:         String,
-    held_item_id:      u16,
-    growth_rate:       String,
-    ev_hp:             u8,
-    ev_atk:            u8,
-    ev_def:            u8,
-    ev_spe:            u8,
-    ev_spa:            u8,
-    ev_spd:            u8,
-    iv_hp:             u8,
-    iv_atk:            u8,
-    iv_def:            u8,
-    iv_spe:            u8,
-    iv_spa:            u8,
-    iv_spd:            u8,
+    gender: u8,
+    ability: String,
+    held_item: String,
+    held_item_id: u16,
+    growth_rate: String,
+    ev_hp: u8,
+    ev_atk: u8,
+    ev_def: u8,
+    ev_spe: u8,
+    ev_spa: u8,
+    ev_spd: u8,
+    iv_hp: u8,
+    iv_atk: u8,
+    iv_def: u8,
+    iv_spe: u8,
+    iv_spa: u8,
+    iv_spd: u8,
     /// Base64 PNG data URI for the sprite, e.g. `data:image/png;base64,...`.
     /// `None` while the sprite is still in transit from the tracker server.
-    sprite:            Option<String>,
+    sprite: Option<String>,
     /// Unique personality value — used by the overlay to detect death transitions.
-    personality:       u32,
+    personality: u32,
     /// Status condition bitmask (Gen III encoding):
     /// bits 0-2 = sleep turns, bit 3 = PSN, bit 4 = BRN, bit 5 = FRZ, bit 6 = PAR, bit 7 = TOX.
-    status:            u32,
+    status: u32,
     /// Current move names (empty string for empty slots).
-    moves:             [String; 4],
+    moves: [String; 4],
     /// Current PP for each move slot.
-    pp:                [u8; 4],
+    pp: [u8; 4],
     /// Gen III type ID for the species' first type (0=Normal … 16=Dark).
-    type1:             u8,
+    type1: u8,
     /// Gen III type ID for the species' second type; equals `type1` for mono-type species.
-    type2:             u8,
+    type2: u8,
 }
 
 // ---------------------------------------------------------------------------
@@ -253,19 +255,19 @@ struct MemberDto {
 // ---------------------------------------------------------------------------
 
 struct SlotCache {
-    caught:           Vec<CaughtPokemon>,
-    encounters:       Vec<fire_red_database::Encounter>,
-    prev_encounters:  Vec<fire_red_database::Encounter>,
-    last_refresh:     Instant,
+    caught: Vec<CaughtPokemon>,
+    encounters: Vec<fire_red_database::Encounter>,
+    prev_encounters: Vec<fire_red_database::Encounter>,
+    last_refresh: Instant,
 }
 
 impl SlotCache {
     fn new() -> Self {
         Self {
-            caught:          Vec::new(),
-            encounters:      Vec::new(),
+            caught: Vec::new(),
+            encounters: Vec::new(),
             prev_encounters: Vec::new(),
-            last_refresh:    Instant::now()
+            last_refresh: Instant::now()
                 .checked_sub(Duration::from_secs(60))
                 .unwrap_or_else(Instant::now),
         }
@@ -276,42 +278,42 @@ impl SlotCache {
 /// Returns 0 (Normal) for unrecognised names such as the post-game Champion rematch.
 fn leader_type_id(leader: &str) -> u8 {
     match leader {
-        "Brock"     => 5,  // Rock
-        "Misty"     => 10, // Water
+        "Brock" => 5,      // Rock
+        "Misty" => 10,     // Water
         "Lt. Surge" => 12, // Electric
-        "Erika"     => 11, // Grass
-        "Koga"      => 3,  // Poison
-        "Sabrina"   => 13, // Psychic
-        "Blaine"    => 9,  // Fire
-        "Giovanni"  => 4,  // Ground
-        "Lorelei"   => 14, // Ice
-        "Bruno"     => 1,  // Fighting
-        "Agatha"    => 7,  // Ghost
-        "Lance"     => 15, // Dragon
-        "Blue"      => 0,  // Normal (mixed team)
-        _           => 0,
+        "Erika" => 11,     // Grass
+        "Koga" => 3,       // Poison
+        "Sabrina" => 13,   // Psychic
+        "Blaine" => 9,     // Fire
+        "Giovanni" => 4,   // Ground
+        "Lorelei" => 14,   // Ice
+        "Bruno" => 1,      // Fighting
+        "Agatha" => 7,     // Ghost
+        "Lance" => 15,     // Dragon
+        "Blue" => 0,       // Normal (mixed team)
+        _ => 0,
     }
 }
 
 struct BroadcastLoop {
-    live_slots:           SharedSlots,
-    caches:               Vec<SlotCache>,
+    live_slots: SharedSlots,
+    caches: Vec<SlotCache>,
     soul_link_propagated: HashSet<(usize, u32)>,
     /// Manual soul-link overrides for the current run (personality → partner_personality).
     /// Refreshed alongside the caught cache; consulted before automatic met_location pairing.
-    soul_link_overrides:  HashMap<u32, u32>,
-    last_json:            String,
-    sprites:              PngSpriteCache,
+    soul_link_overrides: HashMap<u32, u32>,
+    last_json: String,
+    sprites: PngSpriteCache,
 }
 
 impl BroadcastLoop {
     fn new(live_slots: SharedSlots, sprites: PngSpriteCache) -> Self {
         Self {
             live_slots,
-            caches:               Vec::new(),
+            caches: Vec::new(),
             soul_link_propagated: HashSet::new(),
-            soul_link_overrides:  HashMap::new(),
-            last_json:            String::new(),
+            soul_link_overrides: HashMap::new(),
+            last_json: String::new(),
             sprites,
         }
     }
@@ -328,7 +330,9 @@ impl BroadcastLoop {
             for p in &gs.party {
                 let s = p.box_mon.secure.growth.species;
                 let shiny = is_shiny(p.box_mon.personality, p.box_mon.ot_id);
-                if s == 0 || s > MAX_NATIONAL_DEX_FIRERED { continue; }
+                if s == 0 || s > MAX_NATIONAL_DEX_FIRERED {
+                    continue;
+                }
                 if !known.contains(&s) && !cache.contains_key(&(s, false)) {
                     needed.push(s);
                     known.insert(s);
@@ -340,13 +344,18 @@ impl BroadcastLoop {
 
             // Encounter sprites (normal variant only)
             let enc = &gs.encounters;
-            let all_enc = enc.land_mon_encounters.wild_pokemon_list.iter()
+            let all_enc = enc
+                .land_mon_encounters
+                .wild_pokemon_list
+                .iter()
                 .chain(enc.water_mon_encounters.wild_pokemon_list.iter())
                 .chain(enc.rock_smash_encounters.wild_pokemon_list.iter())
                 .chain(enc.fishing_encounters.wild_pokemon_list.iter());
             for w in all_enc {
                 let s = w.species;
-                if s == 0 || s > MAX_NATIONAL_DEX_FIRERED { continue; }
+                if s == 0 || s > MAX_NATIONAL_DEX_FIRERED {
+                    continue;
+                }
                 if !known.contains(&s) && !cache.contains_key(&(s, false)) {
                     needed.push(s);
                     known.insert(s);
@@ -370,18 +379,23 @@ impl BroadcastLoop {
     fn drain_sprites(&mut self, slots: &[Arc<MonitorSlot>]) {
         for slot in slots {
             let mut sc = slot.sprite_cache.lock_or_recover();
-            if sc.is_none() { *sc = Some(self.sprites.clone()); }
+            if sc.is_none() {
+                *sc = Some(self.sprites.clone());
+            }
             drop(sc);
 
             let mut pending = slot.pending_textures.lock_or_recover();
-            if pending.is_empty() { continue; }
+            if pending.is_empty() {
+                continue;
+            }
             let drained: Vec<_> = pending.drain(..).collect();
             drop(pending);
             let mut cache = self.sprites.lock_or_recover();
             for pt in drained {
                 let key = (pt.species, pt.shiny);
                 if let std::collections::hash_map::Entry::Vacant(e) = cache.entry(key)
-                    && let Some(png) = encode_png(&pt.pixels, pt.width, pt.height) {
+                    && let Some(png) = encode_png(&pt.pixels, pt.width, pt.height)
+                {
                     e.insert(png);
                 }
             }
@@ -392,9 +406,9 @@ impl BroadcastLoop {
     /// if the sprite has been received and encoded, or `None` otherwise.
     fn sprite_uri(&self, species: u16, shiny: bool) -> Option<String> {
         let cache = self.sprites.lock_or_recover();
-        cache.get(&(species, shiny)).map(|png| {
-            format!("data:image/png;base64,{}", base64_encode(png))
-        })
+        cache
+            .get(&(species, shiny))
+            .map(|png| format!("data:image/png;base64,{}", base64_encode(png)))
     }
 
     /// Propagates soul-link deaths across slots (DB-persisted and live) and
@@ -411,7 +425,9 @@ impl BroadcastLoop {
         // and the live detection loop. Gift Pokémon (met_location = 0) are
         // soul-linked by receipt order (caught_at) instead of by location —
         // matching the pairing used in soul_link_kill_candidates and update().
-        let sorted_gifts: Vec<Vec<&CaughtPokemon>> = self.caches.iter()
+        let sorted_gifts: Vec<Vec<&CaughtPokemon>> = self
+            .caches
+            .iter()
             .map(|c| sort_gifts_by_caught_at(&c.caught))
             .collect();
 
@@ -433,10 +449,14 @@ impl BroadcastLoop {
                 } else {
                     None
                 };
-                if met_loc == 0 && gift_idx.is_none() { continue; }
+                if met_loc == 0 && gift_idx.is_none() {
+                    continue;
+                }
 
                 for j in 0..n {
-                    if j == i { continue; }
+                    if j == i {
+                        continue;
+                    }
                     // Check for a manual override first; fall back to automatic
                     // met_location / receipt-order pairing if none is set.
                     let partner = if let Some(&override_p) = self.soul_link_overrides.get(&dead_p) {
@@ -458,7 +478,7 @@ impl BroadcastLoop {
                     };
                     if let Some(p) = partner {
                         let key = (j, p.personality);
-                        let already_dead       = all_dead[j].contains_key(&p.personality);
+                        let already_dead = all_dead[j].contains_key(&p.personality);
                         let already_propagated = self.soul_link_propagated.contains(&key);
                         if !already_dead && !already_propagated {
                             // Some(_) = run_id known and DB responded (new or pre-existing row).
@@ -482,22 +502,33 @@ impl BroadcastLoop {
         for i in 0..n {
             let Some(gs_i) = &states[i].1 else { continue };
             for p_i in &gs_i.party {
-                if p_i.hp != 0 { continue; }
+                if p_i.hp != 0 {
+                    continue;
+                }
                 let met_i = p_i.box_mon.secure.misc.met_location;
                 for j in 0..n {
-                    if j == i { continue; }
+                    if j == i {
+                        continue;
+                    }
                     let personality_i = p_i.box_mon.personality;
                     if let Some(&override_p) = self.soul_link_overrides.get(&personality_i) {
                         // Manual override supersedes met_location pairing — mirrors DB path.
                         let Some(gs_j) = &states[j].1 else { continue };
-                        if let Some(partner) = gs_j.party.iter().find(|p| p.box_mon.personality == override_p) {
+                        if let Some(partner) = gs_j
+                            .party
+                            .iter()
+                            .find(|p| p.box_mon.personality == override_p)
+                        {
                             live_soul_link_dead[j].insert(partner.box_mon.personality);
                         }
                     } else if met_i == 0 {
                         // Gift Pokémon: pair by receipt order — matches DB path.
-                        let Some(idx) = sorted_gifts[i].iter()
+                        let Some(idx) = sorted_gifts[i]
+                            .iter()
                             .position(|c| c.personality == personality_i)
-                            else { continue };
+                        else {
+                            continue;
+                        };
                         if let Some(partner) = sorted_gifts[j].get(idx) {
                             live_soul_link_dead[j].insert(partner.personality);
                         }
@@ -525,175 +556,204 @@ impl BroadcastLoop {
         states: &[(String, Option<GameState>)],
     ) -> Vec<MemberDto> {
         let n = states.len();
-        gs.party.iter().map(|p| {
-            let personality    = p.box_mon.personality;
-            let ot_id          = p.box_mon.ot_id;
-            let shiny          = is_shiny(personality, ot_id);
-            let met            = p.box_mon.secure.misc.met_location;
-            let species        = p.box_mon.secure.growth.species;
-            let is_soul_link   = soul_link_dead.contains(&personality);
-            let dead_record    = dead_records.get(&personality);
-            let dead           = dead_record.is_some() || p.hp == 0 || is_soul_link;
+        gs.party
+            .iter()
+            .map(|p| {
+                let personality = p.box_mon.personality;
+                let ot_id = p.box_mon.ot_id;
+                let shiny = is_shiny(personality, ot_id);
+                let met = p.box_mon.secure.misc.met_location;
+                let species = p.box_mon.secure.growth.species;
+                let is_soul_link = soul_link_dead.contains(&personality);
+                let dead_record = dead_records.get(&personality);
+                let dead = dead_record.is_some() || p.hp == 0 || is_soul_link;
 
-            // A manual override supersedes met_location pairing entirely.
-            // Without one, fall back to the original location-match logic.
-            let soul_link_partner = if let Some(&override_p) = self.soul_link_overrides.get(&personality) {
-                let mut found = None;
-                'outer: for (j, (player_j, state_j)) in states.iter().enumerate().take(n) {
-                    if j == slot_idx { continue; }
-                    if let Some(gs_j) = state_j
-                        && let Some(p_j) = gs_j.party.iter().find(|p| p.box_mon.personality == override_p) {
-                        found = Some(SoulLinkPartnerDto {
-                            nickname: p_j.get_nickname_string(),
-                            player:   player_j.clone(),
-                        });
-                        break 'outer;
-                    }
-                    // Partner may be dead or in-box; fall back to the caught cache.
-                    if let Some(c) = self.caches[j].caught.iter().find(|c| c.personality == override_p) {
-                        found = Some(SoulLinkPartnerDto {
-                            nickname: c.nickname.clone(),
-                            player:   player_j.clone(),
-                        });
-                        break 'outer;
-                    }
-                }
-                found
-            } else if met == 0 {
-                None
-            } else {
-                let mut found = None;
-                'outer: for (j, (player_j, state_j)) in states.iter().enumerate().take(n) {
-                    if j == slot_idx { continue; }
-                    if let Some(gs_j) = state_j {
-                        for p_j in &gs_j.party {
-                            if p_j.box_mon.secure.misc.met_location == met {
+                // A manual override supersedes met_location pairing entirely.
+                // Without one, fall back to the original location-match logic.
+                let soul_link_partner =
+                    if let Some(&override_p) = self.soul_link_overrides.get(&personality) {
+                        let mut found = None;
+                        'outer: for (j, (player_j, state_j)) in states.iter().enumerate().take(n) {
+                            if j == slot_idx {
+                                continue;
+                            }
+                            if let Some(gs_j) = state_j
+                                && let Some(p_j) = gs_j
+                                    .party
+                                    .iter()
+                                    .find(|p| p.box_mon.personality == override_p)
+                            {
                                 found = Some(SoulLinkPartnerDto {
                                     nickname: p_j.get_nickname_string(),
-                                    player:   player_j.clone(),
+                                    player: player_j.clone(),
+                                });
+                                break 'outer;
+                            }
+                            // Partner may be dead or in-box; fall back to the caught cache.
+                            if let Some(c) = self.caches[j]
+                                .caught
+                                .iter()
+                                .find(|c| c.personality == override_p)
+                            {
+                                found = Some(SoulLinkPartnerDto {
+                                    nickname: c.nickname.clone(),
+                                    player: player_j.clone(),
                                 });
                                 break 'outer;
                             }
                         }
-                    }
+                        found
+                    } else if met == 0 {
+                        None
+                    } else {
+                        let mut found = None;
+                        'outer: for (j, (player_j, state_j)) in states.iter().enumerate().take(n) {
+                            if j == slot_idx {
+                                continue;
+                            }
+                            if let Some(gs_j) = state_j {
+                                for p_j in &gs_j.party {
+                                    if p_j.box_mon.secure.misc.met_location == met {
+                                        found = Some(SoulLinkPartnerDto {
+                                            nickname: p_j.get_nickname_string(),
+                                            player: player_j.clone(),
+                                        });
+                                        break 'outer;
+                                    }
+                                }
+                            }
+                        }
+                        found
+                    };
+
+                let (died_at, soul_link_kill, attack, defense, speed, sp_attack, sp_defense) =
+                    if let Some(r) = dead_record {
+                        (
+                            Some(fire_red_database::format_timestamp(r.died_at)),
+                            r.is_soul_link_death,
+                            r.attack,
+                            r.defense,
+                            r.speed,
+                            r.sp_attack,
+                            r.sp_defense,
+                        )
+                    } else {
+                        (
+                            None,
+                            false,
+                            p.attack,
+                            p.defense,
+                            p.speed,
+                            p.sp_attack,
+                            p.sp_defense,
+                        )
+                    };
+
+                let sprite = self.sprite_uri(species, shiny);
+                let (type1, type2) = fire_red_party_monitor::species_type_static(species);
+
+                MemberDto {
+                    nickname: p.get_nickname_string(),
+                    species_name: p.box_mon.secure.growth.species_string.clone(),
+                    level: p.level,
+                    hp: p.hp,
+                    max_hp: p.max_hp,
+                    exp: p.box_mon.secure.growth.experience,
+                    nature: fire_red_database::nature_name(personality).to_string(),
+                    shiny,
+                    dead,
+                    soul_link_kill,
+                    soul_link_partner,
+                    died_at,
+                    attack,
+                    defense,
+                    speed,
+                    sp_attack,
+                    sp_defense,
+                    gender: p.box_mon.gender,
+                    ability: p.box_mon.ability_string.clone(),
+                    held_item: p.box_mon.secure.growth.held_item_string.clone(),
+                    held_item_id: p.box_mon.secure.growth.held_item,
+                    growth_rate: p.box_mon.secure.growth.growth_rate_string.clone(),
+                    iv_hp: p.box_mon.secure.misc.iv_egg_ability.hp_iv,
+                    iv_atk: p.box_mon.secure.misc.iv_egg_ability.attack_iv,
+                    iv_def: p.box_mon.secure.misc.iv_egg_ability.defense_iv,
+                    iv_spe: p.box_mon.secure.misc.iv_egg_ability.speed_iv,
+                    iv_spa: p.box_mon.secure.misc.iv_egg_ability.sp_attack_iv,
+                    iv_spd: p.box_mon.secure.misc.iv_egg_ability.sp_def_iv,
+                    ev_hp: p.box_mon.secure.ev_condition.hp_ev,
+                    ev_atk: p.box_mon.secure.ev_condition.attack_ev,
+                    ev_def: p.box_mon.secure.ev_condition.defense_ev,
+                    ev_spe: p.box_mon.secure.ev_condition.speed_ev,
+                    ev_spa: p.box_mon.secure.ev_condition.sp_attack_ev,
+                    ev_spd: p.box_mon.secure.ev_condition.sp_defense_ev,
+                    sprite,
+                    personality,
+                    status: p.status,
+                    moves: {
+                        let m = &p.box_mon.secure.attack.moves;
+                        [
+                            fire_red_database::move_name(m[0]).to_string(),
+                            fire_red_database::move_name(m[1]).to_string(),
+                            fire_red_database::move_name(m[2]).to_string(),
+                            fire_red_database::move_name(m[3]).to_string(),
+                        ]
+                    },
+                    pp: p.box_mon.secure.attack.pp,
+                    type1,
+                    type2,
                 }
-                found
-            };
-
-            let (died_at, soul_link_kill, attack, defense, speed, sp_attack, sp_defense) =
-                if let Some(r) = dead_record {
-                    (
-                        Some(fire_red_database::format_timestamp(r.died_at)),
-                        r.is_soul_link_death,
-                        r.attack, r.defense, r.speed, r.sp_attack, r.sp_defense,
-                    )
-                } else {
-                    (
-                        None, false,
-                        p.attack, p.defense, p.speed, p.sp_attack, p.sp_defense,
-                    )
-                };
-
-            let sprite = self.sprite_uri(species, shiny);
-            let (type1, type2) = fire_red_party_monitor::species_type_static(species);
-
-            MemberDto {
-                nickname:          p.get_nickname_string(),
-                species_name:      p.box_mon.secure.growth.species_string.clone(),
-                level:             p.level,
-                hp:                p.hp,
-                max_hp:            p.max_hp,
-                exp:               p.box_mon.secure.growth.experience,
-                nature:            fire_red_database::nature_name(personality).to_string(),
-                shiny,
-                dead,
-                soul_link_kill,
-                soul_link_partner,
-                died_at,
-                attack,
-                defense,
-                speed,
-                sp_attack,
-                sp_defense,
-                gender:            p.box_mon.gender,
-                ability:           p.box_mon.ability_string.clone(),
-                held_item:         p.box_mon.secure.growth.held_item_string.clone(),
-                held_item_id:      p.box_mon.secure.growth.held_item,
-                growth_rate:       p.box_mon.secure.growth.growth_rate_string.clone(),
-                iv_hp:             p.box_mon.secure.misc.iv_egg_ability.hp_iv,
-                iv_atk:            p.box_mon.secure.misc.iv_egg_ability.attack_iv,
-                iv_def:            p.box_mon.secure.misc.iv_egg_ability.defense_iv,
-                iv_spe:            p.box_mon.secure.misc.iv_egg_ability.speed_iv,
-                iv_spa:            p.box_mon.secure.misc.iv_egg_ability.sp_attack_iv,
-                iv_spd:            p.box_mon.secure.misc.iv_egg_ability.sp_def_iv,
-                ev_hp:             p.box_mon.secure.ev_condition.hp_ev,
-                ev_atk:            p.box_mon.secure.ev_condition.attack_ev,
-                ev_def:            p.box_mon.secure.ev_condition.defense_ev,
-                ev_spe:            p.box_mon.secure.ev_condition.speed_ev,
-                ev_spa:            p.box_mon.secure.ev_condition.sp_attack_ev,
-                ev_spd:            p.box_mon.secure.ev_condition.sp_defense_ev,
-                sprite,
-                personality,
-                status:            p.status,
-                moves: {
-                    let m = &p.box_mon.secure.attack.moves;
-                    [
-                        fire_red_database::move_name(m[0]).to_string(),
-                        fire_red_database::move_name(m[1]).to_string(),
-                        fire_red_database::move_name(m[2]).to_string(),
-                        fire_red_database::move_name(m[3]).to_string(),
-                    ]
-                },
-                pp:    p.box_mon.secure.attack.pp,
-                type1,
-                type2,
-            }
-        }).collect()
+            })
+            .collect()
     }
 
     /// Builds the dead-mon DTO list for one slot, sorted newest-first.
     fn build_dead_dto(&self, dead_records: &HashMap<u32, DeadPokemon>) -> Vec<DeadMonDto> {
         let mut dead_sorted: Vec<&DeadPokemon> = dead_records.values().collect();
         dead_sorted.sort_by_key(|b| std::cmp::Reverse(b.died_at));
-        dead_sorted.iter().map(|dp| DeadMonDto {
-            nickname:     dp.nickname.clone(),
-            species_name: dp.species_name.clone(),
-            level:        dp.level,
-            nature:       dp.nature.clone(),
-            shiny:        dp.is_shiny,
-            soul_link:    dp.is_soul_link_death,
-            gender:       dp.gender,
-            died_at:      fire_red_database::format_timestamp(dp.died_at),
-            max_hp:       dp.max_hp,
-            attack:       dp.attack,
-            defense:      dp.defense,
-            speed:        dp.speed,
-            sp_attack:    dp.sp_attack,
-            sp_defense:   dp.sp_defense,
-            iv_hp:        dp.ivs.hp,
-            iv_atk:       dp.ivs.attack,
-            iv_def:       dp.ivs.defense,
-            iv_spe:       dp.ivs.speed,
-            iv_spa:       dp.ivs.sp_attack,
-            iv_spd:       dp.ivs.sp_defense,
-            ev_hp:        dp.evs.hp,
-            ev_atk:       dp.evs.attack,
-            ev_def:       dp.evs.defense,
-            ev_spe:       dp.evs.speed,
-            ev_spa:       dp.evs.sp_attack,
-            ev_spd:       dp.evs.sp_defense,
-            sprite:       self.sprite_uri(dp.species, dp.is_shiny),
-            killed_by:    dp.killed_by_species.clone(),
-        }).collect()
+        dead_sorted
+            .iter()
+            .map(|dp| DeadMonDto {
+                nickname: dp.nickname.clone(),
+                species_name: dp.species_name.clone(),
+                level: dp.level,
+                nature: dp.nature.clone(),
+                shiny: dp.is_shiny,
+                soul_link: dp.is_soul_link_death,
+                gender: dp.gender,
+                died_at: fire_red_database::format_timestamp(dp.died_at),
+                max_hp: dp.max_hp,
+                attack: dp.attack,
+                defense: dp.defense,
+                speed: dp.speed,
+                sp_attack: dp.sp_attack,
+                sp_defense: dp.sp_defense,
+                iv_hp: dp.ivs.hp,
+                iv_atk: dp.ivs.attack,
+                iv_def: dp.ivs.defense,
+                iv_spe: dp.ivs.speed,
+                iv_spa: dp.ivs.sp_attack,
+                iv_spd: dp.ivs.sp_defense,
+                ev_hp: dp.evs.hp,
+                ev_atk: dp.evs.attack,
+                ev_def: dp.evs.defense,
+                ev_spe: dp.evs.speed,
+                ev_spa: dp.evs.sp_attack,
+                ev_spd: dp.evs.sp_defense,
+                sprite: self.sprite_uri(dp.species, dp.is_shiny),
+                killed_by: dp.killed_by_species.clone(),
+            })
+            .collect()
     }
 
     /// Runs one tick: refreshes DB caches, propagates soul-link deaths, and
     /// returns a JSON string if the state has changed since the last tick.
     fn tick(&mut self) -> Option<String> {
-        let slots: Vec<Arc<MonitorSlot>> =
-            self.live_slots.lock_or_recover().clone();
+        let slots: Vec<Arc<MonitorSlot>> = self.live_slots.lock_or_recover().clone();
         let n = slots.len();
-        while self.caches.len() < n { self.caches.push(SlotCache::new()); }
+        while self.caches.len() < n {
+            self.caches.push(SlotCache::new());
+        }
 
         // Collect live states
         let states: Vec<(String, Option<GameState>)> = slots
@@ -712,7 +772,10 @@ impl BroadcastLoop {
         // If the tracker confirmed a run change, mark the DB reader dirty so
         // sync_player re-queries even though the player name hasn't changed.
         for slot in &slots {
-            if slot.run_changed.swap(false, std::sync::atomic::Ordering::AcqRel) {
+            if slot
+                .run_changed
+                .swap(false, std::sync::atomic::Ordering::AcqRel)
+            {
                 if let Some(db) = &slot.db {
                     db.mark_dirty();
                 }
@@ -734,12 +797,13 @@ impl BroadcastLoop {
         for i in 0..n {
             let stale = now.duration_since(self.caches[i].last_refresh) >= Duration::from_secs(1);
             if (run_id_changed[i] || stale)
-                && let Some(db) = &slots[i].db {
+                && let Some(db) = &slots[i].db
+            {
                 let label = &states[i].0;
-                self.caches[i].caught           = db.list_caught(label);
-                self.caches[i].encounters       = db.list_encounters(label);
-                self.caches[i].prev_encounters  = db.list_prev_run_encounters(label);
-                self.caches[i].last_refresh     = now;
+                self.caches[i].caught = db.list_caught(label);
+                self.caches[i].encounters = db.list_encounters(label);
+                self.caches[i].prev_encounters = db.list_prev_run_encounters(label);
+                self.caches[i].last_refresh = now;
                 // Overrides are run-wide; load once from the first slot that has a DB.
                 // The map is cleared on run_id change below, so this stays consistent.
                 if i == 0 || self.soul_link_overrides.is_empty() {
@@ -751,7 +815,9 @@ impl BroadcastLoop {
         // Dead records (fresh every tick), filtered per player by name.
         let all_dead: Vec<HashMap<u32, DeadPokemon>> = (0..n)
             .map(|i| {
-                slots[i].db.as_ref()
+                slots[i]
+                    .db
+                    .as_ref()
                     .map(|db| db.list_dead_with_records(&states[i].0))
                     .unwrap_or_default()
             })
@@ -771,28 +837,44 @@ impl BroadcastLoop {
                 let mut needed: Vec<u16> = Vec::new();
                 for dp in all_dead[i].values() {
                     let s = dp.species;
-                    if s > 0 && s <= MAX_NATIONAL_DEX_FIRERED && !known.contains(&s) && !cache.contains_key(&(s, dp.is_shiny)) {
+                    if s > 0
+                        && s <= MAX_NATIONAL_DEX_FIRERED
+                        && !known.contains(&s)
+                        && !cache.contains_key(&(s, dp.is_shiny))
+                    {
                         needed.push(s);
                         known.insert(s);
                     }
                 }
                 for cp in &self.caches[i].caught {
                     let s = cp.species;
-                    if s > 0 && s <= MAX_NATIONAL_DEX_FIRERED && !known.contains(&s) && !cache.contains_key(&(s, cp.is_shiny)) {
+                    if s > 0
+                        && s <= MAX_NATIONAL_DEX_FIRERED
+                        && !known.contains(&s)
+                        && !cache.contains_key(&(s, cp.is_shiny))
+                    {
                         needed.push(s);
                         known.insert(s);
                     }
                 }
                 for enc in &self.caches[i].encounters {
                     let s = enc.species;
-                    if s > 0 && s <= MAX_NATIONAL_DEX_FIRERED && !known.contains(&s) && !cache.contains_key(&(s, false)) {
+                    if s > 0
+                        && s <= MAX_NATIONAL_DEX_FIRERED
+                        && !known.contains(&s)
+                        && !cache.contains_key(&(s, false))
+                    {
                         needed.push(s);
                         known.insert(s);
                     }
                 }
                 for be in &all_box[i] {
                     let s = be.species;
-                    if s > 0 && s <= MAX_NATIONAL_DEX_FIRERED && !known.contains(&s) && !cache.contains_key(&(s, be.is_shiny)) {
+                    if s > 0
+                        && s <= MAX_NATIONAL_DEX_FIRERED
+                        && !known.contains(&s)
+                        && !cache.contains_key(&(s, be.is_shiny))
+                    {
                         needed.push(s);
                         known.insert(s);
                     }
@@ -815,183 +897,235 @@ impl BroadcastLoop {
         // Slots with no preference sort last; ties break alphabetically by name.
         let mut display_order: Vec<usize> = (0..n).collect();
         display_order.sort_by(|&i, &j| {
-            let pi = states[i].1.as_ref().and_then(|gs| gs.preferred_player)
-                .map(u32::from).unwrap_or(u32::MAX);
-            let pj = states[j].1.as_ref().and_then(|gs| gs.preferred_player)
-                .map(u32::from).unwrap_or(u32::MAX);
+            let pi = states[i]
+                .1
+                .as_ref()
+                .and_then(|gs| gs.preferred_player)
+                .map(u32::from)
+                .unwrap_or(u32::MAX);
+            let pj = states[j]
+                .1
+                .as_ref()
+                .and_then(|gs| gs.preferred_player)
+                .map(u32::from)
+                .unwrap_or(u32::MAX);
             pi.cmp(&pj)
                 .then_with(|| states[i].0.to_lowercase().cmp(&states[j].0.to_lowercase()))
         });
 
         // Build JSON payload
-        let slots_dto: Vec<SlotDto> = display_order.iter().copied()
+        let slots_dto: Vec<SlotDto> = display_order
+            .iter()
+            .copied()
             .map(|i| {
                 let (label, state) = &states[i];
-                let dead_records   = &all_dead[i];
+                let dead_records = &all_dead[i];
                 let soul_link_dead = &live_soul_link_dead[i];
-                let db_connected   = slots[i].db.is_some();
-                let active_run_id  = slots[i].db.as_ref().and_then(|db| db.active_run_id());
+                let db_connected = slots[i].db.is_some();
+                let active_run_id = slots[i].db.as_ref().and_then(|db| db.active_run_id());
 
-                let run_summary = slots[i].db.as_ref().and_then(|db| db.run_summary())
-                    .map(|(run_id, player_name, started_at, ended_at, deaths, caught)| RunSummaryDto {
+                let run_summary = slots[i].db.as_ref().and_then(|db| db.run_summary()).map(
+                    |(run_id, player_name, started_at, ended_at, deaths, caught)| RunSummaryDto {
                         run_id,
                         player_name,
-                        started_at:  fire_red_database::format_timestamp(started_at),
-                        ended_at:    ended_at.map(fire_red_database::format_timestamp),
+                        started_at: fire_red_database::format_timestamp(started_at),
+                        ended_at: ended_at.map(fire_red_database::format_timestamp),
                         deaths,
                         caught,
-                    });
+                    },
+                );
 
-                let db_encounters: Vec<DbEncounterDto> = self.caches[i].encounters.iter()
+                let db_encounters: Vec<DbEncounterDto> = self.caches[i]
+                    .encounters
+                    .iter()
                     .map(|enc| DbEncounterDto {
-                        species_name:   enc.species_name.clone(),
-                        level:          enc.level,
-                        caught:         enc.caught,
-                        is_shiny:       enc.is_shiny,
+                        species_name: enc.species_name.clone(),
+                        level: enc.level,
+                        caught: enc.caught,
+                        is_shiny: enc.is_shiny,
                         encountered_at: fire_red_database::format_timestamp(enc.encountered_at),
                         area: {
-                            let n = fire_red_location_names::map_area_name(enc.map_group, enc.map_name);
+                            let n =
+                                fire_red_location_names::map_area_name(enc.map_group, enc.map_name);
                             if n.is_empty() {
                                 format!("{}\u{B7}{}", enc.map_group, enc.map_name)
                             } else {
                                 n.to_string()
                             }
                         },
-                        sprite:    self.sprite_uri(enc.species, enc.is_shiny),
+                        sprite: self.sprite_uri(enc.species, enc.is_shiny),
                         map_group: enc.map_group,
-                        map_name:  enc.map_name,
+                        map_name: enc.map_name,
                     })
                     .collect();
 
-                let (connected, badges, next_gym, e4_progress, game_cleared, party, encounters) = match state {
-                    None => (false, vec![false; 8], None, vec![false; 5], false, vec![], vec![]),
-                    Some(gs) => {
-                        let badges: Vec<bool> = gs
-                            .badge_state
-                            .as_ref()
-                            .map(|b| b.badges.to_vec())
-                            .unwrap_or_else(|| vec![false; 8]);
+                let (connected, badges, next_gym, e4_progress, game_cleared, party, encounters) =
+                    match state {
+                        None => (
+                            false,
+                            vec![false; 8],
+                            None,
+                            vec![false; 5],
+                            false,
+                            vec![],
+                            vec![],
+                        ),
+                        Some(gs) => {
+                            let badges: Vec<bool> = gs
+                                .badge_state
+                                .as_ref()
+                                .map(|b| b.badges.to_vec())
+                                .unwrap_or_else(|| vec![false; 8]);
 
-                        let next_gym = gs
-                            .badge_state
-                            .as_ref()
-                            .and_then(|b| b.next_gym.as_ref())
-                            .map(|g| GymDto {
-                                leader:    g.leader.clone(),
-                                city:      g.city.clone(),
-                                max_level: g.max_level,
-                                type_id:   leader_type_id(&g.leader),
-                            });
+                            let next_gym = gs
+                                .badge_state
+                                .as_ref()
+                                .and_then(|b| b.next_gym.as_ref())
+                                .map(|g| GymDto {
+                                    leader: g.leader.clone(),
+                                    city: g.city.clone(),
+                                    max_level: g.max_level,
+                                    type_id: leader_type_id(&g.leader),
+                                });
 
-                        let e4_progress: Vec<bool> = gs
-                            .badge_state
-                            .as_ref()
-                            .map(|b| b.e4.to_vec())
-                            .unwrap_or_else(|| vec![false; 5]);
+                            let e4_progress: Vec<bool> = gs
+                                .badge_state
+                                .as_ref()
+                                .map(|b| b.e4.to_vec())
+                                .unwrap_or_else(|| vec![false; 5]);
 
-                        let game_cleared = gs
-                            .badge_state
-                            .as_ref()
-                            .map(|b| b.game_complete())
-                            .unwrap_or(false);
+                            let game_cleared = gs
+                                .badge_state
+                                .as_ref()
+                                .map(|b| b.game_complete())
+                                .unwrap_or(false);
 
-                        let party = self.build_party_dto(i, gs, dead_records, soul_link_dead, &states);
+                            let party =
+                                self.build_party_dto(i, gs, dead_records, soul_link_dead, &states);
 
-                        // Build encounter groups (skip empty ones)
-                        let enc = &gs.encounters;
-                        let mut encounters: Vec<EncounterGroupDto> = Vec::new();
+                            // Build encounter groups (skip empty ones)
+                            let enc = &gs.encounters;
+                            let mut encounters: Vec<EncounterGroupDto> = Vec::new();
 
-                        let land: Vec<EncounterMonDto> = enc.land_mon_encounters
-                            .wild_pokemon_list.iter()
-                            .filter(|w| w.species > 0 && w.species <= MAX_NATIONAL_DEX_FIRERED)
-                            .map(|w| EncounterMonDto {
-                                min_level: w.min_level,
-                                max_level: w.max_level,
-                                sprite:    self.sprite_uri(w.species, false),
-                            })
-                            .collect();
-                        if !land.is_empty() {
-                            encounters.push(EncounterGroupDto { label: "Land".into(), mons: land });
+                            let land: Vec<EncounterMonDto> = enc
+                                .land_mon_encounters
+                                .wild_pokemon_list
+                                .iter()
+                                .filter(|w| w.species > 0 && w.species <= MAX_NATIONAL_DEX_FIRERED)
+                                .map(|w| EncounterMonDto {
+                                    min_level: w.min_level,
+                                    max_level: w.max_level,
+                                    sprite: self.sprite_uri(w.species, false),
+                                })
+                                .collect();
+                            if !land.is_empty() {
+                                encounters.push(EncounterGroupDto {
+                                    label: "Land".into(),
+                                    mons: land,
+                                });
+                            }
+
+                            let water_fish: Vec<EncounterMonDto> = enc
+                                .water_mon_encounters
+                                .wild_pokemon_list
+                                .iter()
+                                .chain(enc.fishing_encounters.wild_pokemon_list.iter())
+                                .filter(|w| w.species > 0 && w.species <= MAX_NATIONAL_DEX_FIRERED)
+                                .map(|w| EncounterMonDto {
+                                    min_level: w.min_level,
+                                    max_level: w.max_level,
+                                    sprite: self.sprite_uri(w.species, false),
+                                })
+                                .collect();
+                            if !water_fish.is_empty() {
+                                encounters.push(EncounterGroupDto {
+                                    label: "Water / Fishing".into(),
+                                    mons: water_fish,
+                                });
+                            }
+
+                            let rock: Vec<EncounterMonDto> = enc
+                                .rock_smash_encounters
+                                .wild_pokemon_list
+                                .iter()
+                                .filter(|w| w.species > 0 && w.species <= MAX_NATIONAL_DEX_FIRERED)
+                                .map(|w| EncounterMonDto {
+                                    min_level: w.min_level,
+                                    max_level: w.max_level,
+                                    sprite: self.sprite_uri(w.species, false),
+                                })
+                                .collect();
+                            if !rock.is_empty() {
+                                encounters.push(EncounterGroupDto {
+                                    label: "Rock Smash".into(),
+                                    mons: rock,
+                                });
+                            }
+
+                            (
+                                true,
+                                badges,
+                                next_gym,
+                                e4_progress,
+                                game_cleared,
+                                party,
+                                encounters,
+                            )
                         }
-
-                        let water_fish: Vec<EncounterMonDto> = enc.water_mon_encounters
-                            .wild_pokemon_list.iter()
-                            .chain(enc.fishing_encounters.wild_pokemon_list.iter())
-                            .filter(|w| w.species > 0 && w.species <= MAX_NATIONAL_DEX_FIRERED)
-                            .map(|w| EncounterMonDto {
-                                min_level: w.min_level,
-                                max_level: w.max_level,
-                                sprite:    self.sprite_uri(w.species, false),
-                            })
-                            .collect();
-                        if !water_fish.is_empty() {
-                            encounters.push(EncounterGroupDto { label: "Water / Fishing".into(), mons: water_fish });
-                        }
-
-                        let rock: Vec<EncounterMonDto> = enc.rock_smash_encounters
-                            .wild_pokemon_list.iter()
-                            .filter(|w| w.species > 0 && w.species <= MAX_NATIONAL_DEX_FIRERED)
-                            .map(|w| EncounterMonDto {
-                                min_level: w.min_level,
-                                max_level: w.max_level,
-                                sprite:    self.sprite_uri(w.species, false),
-                            })
-                            .collect();
-                        if !rock.is_empty() {
-                            encounters.push(EncounterGroupDto { label: "Rock Smash".into(), mons: rock });
-                        }
-
-                        (true, badges, next_gym, e4_progress, game_cleared, party, encounters)
-                    }
-                };
+                    };
 
                 // dead_records and caches are already filtered by player_name in
                 // list_dead_with_records / list_caught, so no further filtering needed.
                 let dead = self.build_dead_dto(dead_records);
 
-                let caught: Vec<CaughtMonDto> = self.caches[i].caught.iter()
+                let caught: Vec<CaughtMonDto> = self.caches[i]
+                    .caught
+                    .iter()
                     .rev()
                     .map(|cp| CaughtMonDto {
-                    nickname:     cp.nickname.clone(),
-                    species_name: cp.species_name.clone(),
-                    level:        cp.level,
-                    nature:       cp.nature.clone(),
-                    shiny:        cp.is_shiny,
-                    caught_at:         fire_red_database::format_timestamp(cp.caught_at),
-                    met_location_name: if cp.location_name.is_empty() {
-                        fire_red_location_names::location_name(cp.met_location).to_string()
-                    } else {
-                        cp.location_name.clone()
-                    },
-                    gender:            cp.gender,
-                    iv_hp:        cp.ivs.hp,
-                    iv_atk:       cp.ivs.attack,
-                    iv_def:       cp.ivs.defense,
-                    iv_spe:       cp.ivs.speed,
-                    iv_spa:       cp.ivs.sp_attack,
-                    iv_spd:       cp.ivs.sp_defense,
-                    sprite:       self.sprite_uri(cp.species, cp.is_shiny),
-                    personality:  cp.personality,
-                    dead:         dead_records.contains_key(&cp.personality) || soul_link_dead.contains(&cp.personality),
-                }).collect();
+                        nickname: cp.nickname.clone(),
+                        species_name: cp.species_name.clone(),
+                        level: cp.level,
+                        nature: cp.nature.clone(),
+                        shiny: cp.is_shiny,
+                        caught_at: fire_red_database::format_timestamp(cp.caught_at),
+                        met_location_name: if cp.location_name.is_empty() {
+                            fire_red_location_names::location_name(cp.met_location).to_string()
+                        } else {
+                            cp.location_name.clone()
+                        },
+                        gender: cp.gender,
+                        iv_hp: cp.ivs.hp,
+                        iv_atk: cp.ivs.attack,
+                        iv_def: cp.ivs.defense,
+                        iv_spe: cp.ivs.speed,
+                        iv_spa: cp.ivs.sp_attack,
+                        iv_spd: cp.ivs.sp_defense,
+                        sprite: self.sprite_uri(cp.species, cp.is_shiny),
+                        personality: cp.personality,
+                        dead: dead_records.contains_key(&cp.personality)
+                            || soul_link_dead.contains(&cp.personality),
+                    })
+                    .collect();
 
-                let box_pokemon: Vec<BoxMonDto> = all_box[i].iter()
+                let box_pokemon: Vec<BoxMonDto> = all_box[i]
+                    .iter()
                     .map(|be| BoxMonDto {
-                        box_index:    be.box_index,
-                        slot_index:   be.slot_index,
+                        box_index: be.box_index,
+                        slot_index: be.slot_index,
                         species_name: be.species_name.clone(),
-                        nickname:     be.nickname.clone(),
-                        is_shiny:     be.is_shiny,
-                        nature:       be.nature.clone(),
-                        is_egg:       be.is_egg,
-                        gender:       be.gender,
-                        iv_hp:        be.iv_hp,
-                        iv_atk:       be.iv_atk,
-                        iv_def:       be.iv_def,
-                        iv_spe:       be.iv_spe,
-                        iv_spa:       be.iv_spa,
-                        iv_spd:       be.iv_spd,
-                        sprite:       self.sprite_uri(be.species, be.is_shiny),
+                        nickname: be.nickname.clone(),
+                        is_shiny: be.is_shiny,
+                        nature: be.nature.clone(),
+                        is_egg: be.is_egg,
+                        gender: be.gender,
+                        iv_hp: be.iv_hp,
+                        iv_atk: be.iv_atk,
+                        iv_def: be.iv_def,
+                        iv_spe: be.iv_spe,
+                        iv_spa: be.iv_spa,
+                        iv_spd: be.iv_spd,
+                        sprite: self.sprite_uri(be.species, be.is_shiny),
                     })
                     .collect();
 
@@ -1004,29 +1138,34 @@ impl BroadcastLoop {
                 };
                 let current_zone_name = match state {
                     Some(gs) if !gs.zone_name.is_empty() => gs.zone_name.clone(),
-                    _ => fire_red_location_names::map_area_name(current_map_group, current_map_name)
-                        .to_string(),
+                    _ => {
+                        fire_red_location_names::map_area_name(current_map_group, current_map_name)
+                            .to_string()
+                    }
                 };
 
                 // Encounters from the previous completed run for cross-run hints
-                let prev_run_encounters: Vec<DbEncounterDto> = self.caches[i].prev_encounters.iter()
+                let prev_run_encounters: Vec<DbEncounterDto> = self.caches[i]
+                    .prev_encounters
+                    .iter()
                     .map(|enc| DbEncounterDto {
-                        species_name:   enc.species_name.clone(),
-                        level:          enc.level,
-                        caught:         enc.caught,
-                        is_shiny:       enc.is_shiny,
+                        species_name: enc.species_name.clone(),
+                        level: enc.level,
+                        caught: enc.caught,
+                        is_shiny: enc.is_shiny,
                         encountered_at: fire_red_database::format_timestamp(enc.encountered_at),
                         area: {
-                            let n = fire_red_location_names::map_area_name(enc.map_group, enc.map_name);
+                            let n =
+                                fire_red_location_names::map_area_name(enc.map_group, enc.map_name);
                             if n.is_empty() {
                                 format!("{}\u{B7}{}", enc.map_group, enc.map_name)
                             } else {
                                 n.to_string()
                             }
                         },
-                        sprite:    self.sprite_uri(enc.species, enc.is_shiny),
+                        sprite: self.sprite_uri(enc.species, enc.is_shiny),
                         map_group: enc.map_group,
-                        map_name:  enc.map_name,
+                        map_name: enc.map_name,
                     })
                     .collect();
 
@@ -1048,9 +1187,33 @@ impl BroadcastLoop {
                     }
                 }
 
-                let injection_events: Vec<serde_json::Value> =
-                    slots[i].injection_events.lock_or_recover().drain(..).collect();
-                SlotDto { label: label.clone(), connected, db_connected, active_run_id, run_summary, db_encounters, badges, next_gym, party, encounters, dead, caught, box_pokemon, current_map_group, current_map_name, current_zone_name, prev_run_encounters, e4_progress, game_cleared, injection_events }
+                let injection_events: Vec<serde_json::Value> = slots[i]
+                    .injection_events
+                    .lock_or_recover()
+                    .drain(..)
+                    .collect();
+                SlotDto {
+                    label: label.clone(),
+                    connected,
+                    db_connected,
+                    active_run_id,
+                    run_summary,
+                    db_encounters,
+                    badges,
+                    next_gym,
+                    party,
+                    encounters,
+                    dead,
+                    caught,
+                    box_pokemon,
+                    current_map_group,
+                    current_map_name,
+                    current_zone_name,
+                    prev_run_encounters,
+                    e4_progress,
+                    game_cleared,
+                    injection_events,
+                }
             })
             .collect();
 
@@ -1069,10 +1232,10 @@ impl BroadcastLoop {
 
 #[derive(Clone)]
 struct WebState {
-    tx:               watch::Sender<String>,
-    live_slots:       SharedSlots,
-    db_conn:          Option<String>,
-    testing:          bool,
+    tx: watch::Sender<String>,
+    live_slots: SharedSlots,
+    db_conn: Option<String>,
+    testing: bool,
     allow_injections: bool,
 }
 
@@ -1080,29 +1243,29 @@ struct WebState {
 // Axum handlers
 // ---------------------------------------------------------------------------
 
-const OVERLAY_HTML:      &str = include_str!("overlay.html");
-const FOCUSED_HTML:      &str = include_str!("focused.html");
-const DBVIEWER_HTML:     &str = include_str!("db.html");
-const HISTORY_HTML:      &str = include_str!("history.html");
-const ALERTS_HTML:       &str = include_str!("alerts.html");
-const ROUTES_HTML:       &str = include_str!("routes.html");
-const PARTY_PLAIN_HTML:  &str = include_str!("party_plain.html");
-const CMD_HTML:          &str = include_str!("cmd.html");
-const DBQUERY_HTML:      &str = include_str!("dbquery.html");
-const RUNSTATS_HTML:     &str = include_str!("run_stats.html");
-const SHINY_HTML:        &str = include_str!("shiny.html");
-const MEMORIAL_HTML:     &str = include_str!("memorial.html");
-const SOULLINK_HTML:     &str = include_str!("soullink.html");
+const OVERLAY_HTML: &str = include_str!("overlay.html");
+const FOCUSED_HTML: &str = include_str!("focused.html");
+const DBVIEWER_HTML: &str = include_str!("db.html");
+const HISTORY_HTML: &str = include_str!("history.html");
+const ALERTS_HTML: &str = include_str!("alerts.html");
+const ROUTES_HTML: &str = include_str!("routes.html");
+const PARTY_PLAIN_HTML: &str = include_str!("party_plain.html");
+const CMD_HTML: &str = include_str!("cmd.html");
+const DBQUERY_HTML: &str = include_str!("dbquery.html");
+const RUNSTATS_HTML: &str = include_str!("run_stats.html");
+const SHINY_HTML: &str = include_str!("shiny.html");
+const MEMORIAL_HTML: &str = include_str!("memorial.html");
+const SOULLINK_HTML: &str = include_str!("soullink.html");
 const SOULLINK_MANAGE_HTML: &str = include_str!("soullink_manage.html");
-const TYPES_HTML:        &str = include_str!("types.html");
-const ABOUT_HTML:        &str = include_str!("about.html");
-const COMPARE_HTML:      &str = include_str!("compare.html");
-const ITEMS_HTML:        &str = include_str!("items.html");
-const MOVES_HTML:        &str = include_str!("moves.html");
-const MOBILE_HTML:       &str = include_str!("mobile.html");
-const TRAINERS_HTML:     &str = include_str!("trainers.html");
-const TIMELINE_HTML:     &str = include_str!("timeline.html");
-const SPECIES_HTML:      &str = include_str!("species.html");
+const TYPES_HTML: &str = include_str!("types.html");
+const ABOUT_HTML: &str = include_str!("about.html");
+const COMPARE_HTML: &str = include_str!("compare.html");
+const ITEMS_HTML: &str = include_str!("items.html");
+const MOVES_HTML: &str = include_str!("moves.html");
+const MOBILE_HTML: &str = include_str!("mobile.html");
+const TRAINERS_HTML: &str = include_str!("trainers.html");
+const TIMELINE_HTML: &str = include_str!("timeline.html");
+const SPECIES_HTML: &str = include_str!("species.html");
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -1142,12 +1305,13 @@ fn apply_page_with_theme(html: &str, testing: bool, theme: Option<&str>) -> Stri
     let html = match theme {
         None | Some("dark") | Some("") => html.replace("<!-- THEME_SLOT -->", ""),
         Some(t) => {
-            let all_safe = t.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
+            let all_safe = t
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
             let within_len = t.len() <= 32;
             if all_safe && within_len {
-                let injection = format!(
-                    r#"<script>document.documentElement.dataset.theme="{t}"</script>"#
-                );
+                let injection =
+                    format!(r#"<script>document.documentElement.dataset.theme="{t}"</script>"#);
                 html.replace("<!-- THEME_SLOT -->", &injection)
             } else {
                 // Invalid theme — fall back to default (dark) silently.
@@ -1163,20 +1327,33 @@ fn apply_page_with_theme(html: &str, testing: bool, theme: Option<&str>) -> Stri
     }
 }
 
-async fn serve_html(State(state): State<WebState>, Query(params): Query<HashMap<String, String>>) -> Html<String> {
+async fn serve_html(
+    State(state): State<WebState>,
+    Query(params): Query<HashMap<String, String>>,
+) -> Html<String> {
     let theme = params.get("theme").map(String::as_str);
     Html(apply_page_with_theme(OVERLAY_HTML, state.testing, theme))
 }
 
-async fn serve_focused(State(state): State<WebState>, Query(params): Query<HashMap<String, String>>) -> Html<String> {
+async fn serve_focused(
+    State(state): State<WebState>,
+    Query(params): Query<HashMap<String, String>>,
+) -> Html<String> {
     let theme = params.get("theme").map(String::as_str);
     Html(apply_page_with_theme(FOCUSED_HTML, state.testing, theme))
 }
 
-async fn serve_party(State(state): State<WebState>, Query(params): Query<HashMap<String, String>>) -> Html<String> {
+async fn serve_party(
+    State(state): State<WebState>,
+    Query(params): Query<HashMap<String, String>>,
+) -> Html<String> {
     let theme = params.get("theme").map(String::as_str);
     if params.contains_key("plain-view") {
-        Html(apply_page_with_theme(PARTY_PLAIN_HTML, state.testing, theme))
+        Html(apply_page_with_theme(
+            PARTY_PLAIN_HTML,
+            state.testing,
+            theme,
+        ))
     } else {
         Html(apply_page_with_theme(FOCUSED_HTML, state.testing, theme))
     }
@@ -1201,7 +1378,7 @@ async fn serve_routes(State(state): State<WebState>) -> Html<String> {
 async fn serve_db_json(State(state): State<WebState>) -> axum::Json<serde_json::Value> {
     let conn = match state.db_conn {
         Some(s) => s,
-        None    => return axum::Json(serde_json::json!({ "error": "No database configured" })),
+        None => return axum::Json(serde_json::json!({ "error": "No database configured" })),
     };
     let result = tokio::task::spawn_blocking(move || fire_red_database::dump_all(&conn)).await;
     axum::Json(result.unwrap_or_else(|e| {
@@ -1215,16 +1392,27 @@ async fn clear_db(
     Query(params): Query<std::collections::HashMap<String, String>>,
 ) -> impl IntoResponse {
     if params.get("confirm").map(String::as_str) != Some("true") {
-        return (StatusCode::BAD_REQUEST, "Add ?confirm=true to confirm database wipe".to_string());
+        return (
+            StatusCode::BAD_REQUEST,
+            "Add ?confirm=true to confirm database wipe".to_string(),
+        );
     }
     let conn = match state.db_conn {
         Some(s) => s,
-        None    => return (StatusCode::SERVICE_UNAVAILABLE, "No database configured".to_string()),
+        None => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "No database configured".to_string(),
+            );
+        }
     };
     match tokio::task::spawn_blocking(move || fire_red_database::clear_all_records(&conn)).await {
         Ok(Ok(())) => (StatusCode::OK, "ok".to_string()),
         Ok(Err(e)) => (StatusCode::INTERNAL_SERVER_ERROR, e),
-        Err(_)     => (StatusCode::INTERNAL_SERVER_ERROR, "Task panicked".to_string()),
+        Err(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Task panicked".to_string(),
+        ),
     }
 }
 
@@ -1232,24 +1420,26 @@ async fn clear_db(
 /// payload the WebSocket would push on the next tick.
 async fn api_state(State(state): State<WebState>) -> impl IntoResponse {
     let json = state.tx.borrow().clone();
-    let body = if json.is_empty() { "[]".to_string() } else { json };
+    let body = if json.is_empty() {
+        "[]".to_string()
+    } else {
+        json
+    };
     ([(header::CONTENT_TYPE, "application/json")], body)
 }
 
 /// Returns a single slot object by zero-based index, or 404 if out of range.
-async fn api_slot(
-    State(state): State<WebState>,
-    Path(index): Path<usize>,
-) -> impl IntoResponse {
+async fn api_slot(State(state): State<WebState>, Path(index): Path<usize>) -> impl IntoResponse {
     let json = state.tx.borrow().clone();
-    let slots: serde_json::Value = serde_json::from_str(&json)
-        .unwrap_or(serde_json::Value::Array(vec![]));
+    let slots: serde_json::Value =
+        serde_json::from_str(&json).unwrap_or(serde_json::Value::Array(vec![]));
     match slots.get(index) {
         Some(slot) => (
             StatusCode::OK,
             [(header::CONTENT_TYPE, "application/json")],
             slot.to_string(),
-        ).into_response(),
+        )
+            .into_response(),
         None => (StatusCode::NOT_FOUND, "slot index out of range").into_response(),
     }
 }
@@ -1270,11 +1460,11 @@ async fn api_slot_odds(
     let slots = state.live_slots.lock_or_recover().clone();
     let slot = match slots.get(index) {
         Some(s) => s.clone(),
-        None    => return axum::Json(serde_json::json!({ "error": "slot index out of range" })),
+        None => return axum::Json(serde_json::json!({ "error": "slot index out of range" })),
     };
     let gs = match slot.state.lock_or_recover().clone() {
         Some(gs) => gs,
-        None     => return axum::Json(serde_json::json!({ "error": "slot not connected" })),
+        None => return axum::Json(serde_json::json!({ "error": "slot not connected" })),
     };
     let h = &gs.encounters;
     let make_list = |info: &fire_red_pokemon_data::WildPokemonInfo| -> serde_json::Value {
@@ -1303,24 +1493,23 @@ async fn api_slot_odds(
 /// Returns a plain-text one-line summary of a tracker slot, suitable for chat
 /// bots or stream commands. Format: `"<Player> — <HP>/<MaxHP> — <MapName>"`.
 /// Returns `"Slot <n> not found"` or `"Slot <n> not connected"` on error.
-async fn api_bot_summary(
-    State(state): State<WebState>,
-    Path(index): Path<usize>,
-) -> String {
+async fn api_bot_summary(State(state): State<WebState>, Path(index): Path<usize>) -> String {
     let slots = state.live_slots.lock_or_recover().clone();
     let slot = match slots.get(index) {
         Some(s) => s.clone(),
-        None    => return format!("Slot {index} not found"),
+        None => return format!("Slot {index} not found"),
     };
     let gs = match slot.state.lock_or_recover().clone() {
         Some(gs) => gs,
-        None     => return format!("Slot {index} not connected"),
+        None => return format!("Slot {index} not connected"),
     };
     let player = &gs.player_name;
-    let map    = if gs.zone_name.is_empty() { "Unknown location" } else { &gs.zone_name };
-    let (hp, max_hp) = gs.party.first()
-        .map(|p| (p.hp, p.max_hp))
-        .unwrap_or((0, 0));
+    let map = if gs.zone_name.is_empty() {
+        "Unknown location"
+    } else {
+        &gs.zone_name
+    };
+    let (hp, max_hp) = gs.party.first().map(|p| (p.hp, p.max_hp)).unwrap_or((0, 0));
     format!("{player} — {hp}/{max_hp} HP — {map}")
 }
 
@@ -1341,21 +1530,48 @@ async fn ws_handler(
 /// not render, reducing per-tick payload size for narrow views.
 fn filter_slots_json(json: &str, show: &str) -> String {
     let strip: &[&str] = match show {
-        "box"       => &["party", "encounters", "dead", "caught", "db_encounters", "prev_run_encounters"],
-        "dead"      => &["encounters", "box_pokemon", "caught", "prev_run_encounters"],
-        "caught"    => &["encounters", "box_pokemon", "dead", "prev_run_encounters"],
-        "memorial"  => &["encounters", "box_pokemon", "caught", "prev_run_encounters", "db_encounters"],
-        "soullink"  => &["encounters", "box_pokemon", "db_encounters", "prev_run_encounters"],
+        "box" => &[
+            "party",
+            "encounters",
+            "dead",
+            "caught",
+            "db_encounters",
+            "prev_run_encounters",
+        ],
+        "dead" => &["encounters", "box_pokemon", "caught", "prev_run_encounters"],
+        "caught" => &["encounters", "box_pokemon", "dead", "prev_run_encounters"],
+        "memorial" => &[
+            "encounters",
+            "box_pokemon",
+            "caught",
+            "prev_run_encounters",
+            "db_encounters",
+        ],
+        "soullink" => &[
+            "encounters",
+            "box_pokemon",
+            "db_encounters",
+            "prev_run_encounters",
+        ],
         // types page only needs party (with type fields), badge state, and next_gym.
-        "types"     => &["encounters", "box_pokemon", "dead", "caught", "db_encounters", "prev_run_encounters"],
-        _           => return json.to_owned(),
+        "types" => &[
+            "encounters",
+            "box_pokemon",
+            "dead",
+            "caught",
+            "db_encounters",
+            "prev_run_encounters",
+        ],
+        _ => return json.to_owned(),
     };
     let Ok(mut slots) = serde_json::from_str::<Vec<serde_json::Value>>(json) else {
         return json.to_owned();
     };
     for slot in &mut slots {
         if let Some(obj) = slot.as_object_mut() {
-            for key in strip { obj.remove(*key); }
+            for key in strip {
+                obj.remove(*key);
+            }
         }
     }
     serde_json::to_string(&slots).unwrap_or_else(|_| json.to_owned())
@@ -1375,7 +1591,7 @@ async fn handle_socket(
         if !current.is_empty() {
             let msg = match &show {
                 Some(s) => filter_slots_json(&current, s),
-                None    => current,
+                None => current,
             };
             if ws_tx
                 .send(axum::extract::ws::Message::Text(msg))
@@ -1401,9 +1617,7 @@ async fn handle_socket(
                 if let Some(msg) = msg {
                     let slots = live_slots.lock_or_recover().clone();
                     for slot in &slots {
-                        slot.command_queue
-                            .lock_or_recover()
-                            .push_back(msg.clone());
+                        slot.command_queue.lock_or_recover().push_back(msg.clone());
                     }
                 }
             }
@@ -1412,13 +1626,19 @@ async fn handle_socket(
 
     // Push state updates whenever the broadcast channel changes.
     loop {
-        if rx.changed().await.is_err() { break; }
+        if rx.changed().await.is_err() {
+            break;
+        }
         let raw = rx.borrow_and_update().clone();
         let msg = match &show {
             Some(s) => filter_slots_json(&raw, s),
-            None    => raw,
+            None => raw,
         };
-        if ws_tx.send(axum::extract::ws::Message::Text(msg)).await.is_err() {
+        if ws_tx
+            .send(axum::extract::ws::Message::Text(msg))
+            .await
+            .is_err()
+        {
             break;
         }
     }
@@ -1448,7 +1668,10 @@ async fn serve_soullink(State(state): State<WebState>) -> Html<String> {
     Html(apply_page(SOULLINK_HTML, state.testing))
 }
 
-async fn serve_types_page(State(state): State<WebState>, Query(params): Query<HashMap<String, String>>) -> Html<String> {
+async fn serve_types_page(
+    State(state): State<WebState>,
+    Query(params): Query<HashMap<String, String>>,
+) -> Html<String> {
     let theme = params.get("theme").map(String::as_str);
     Html(apply_page_with_theme(TYPES_HTML, state.testing, theme))
 }
@@ -1463,9 +1686,8 @@ async fn api_run_stats(
     Path(run_id): Path<u32>,
 ) -> axum::Json<serde_json::Value> {
     let conn = require_db!(state);
-    let result = tokio::task::spawn_blocking(move || {
-        fire_red_database::run_stats(&conn, run_id)
-    }).await;
+    let result =
+        tokio::task::spawn_blocking(move || fire_red_database::run_stats(&conn, run_id)).await;
     axum::Json(result.unwrap_or_else(|_| serde_json::json!({ "error": "Task panicked" })))
 }
 
@@ -1475,9 +1697,8 @@ async fn api_run_route_stats(
     Path(run_id): Path<u32>,
 ) -> axum::Json<serde_json::Value> {
     let conn = require_db!(state);
-    let result = tokio::task::spawn_blocking(move || {
-        fire_red_database::route_stats(&conn, run_id)
-    }).await;
+    let result =
+        tokio::task::spawn_blocking(move || fire_red_database::route_stats(&conn, run_id)).await;
     axum::Json(result.unwrap_or_else(|_| serde_json::json!({ "error": "Task panicked" })))
 }
 
@@ -1495,26 +1716,39 @@ async fn api_run_export(
     use axum::response::IntoResponse;
     let conn = match state.db_conn {
         Some(s) => s,
-        None    => return axum::Json(serde_json::json!({ "error": "No database configured" })).into_response(),
+        None => {
+            return axum::Json(serde_json::json!({ "error": "No database configured" }))
+                .into_response();
+        }
     };
     if params.get("format").map(|s| s.as_str()) == Some("csv") {
-        let result = tokio::task::spawn_blocking(move || {
-            fire_red_database::export_run_csv(&conn, run_id)
-        }).await;
+        let result =
+            tokio::task::spawn_blocking(move || fire_red_database::export_run_csv(&conn, run_id))
+                .await;
         match result {
-            Ok(Ok(csv))  => (
-                [("content-type", "text/csv"),
-                 ("content-disposition", &format!("attachment; filename=\"run_{run_id}.csv\""))],
+            Ok(Ok(csv)) => (
+                [
+                    ("content-type", "text/csv"),
+                    (
+                        "content-disposition",
+                        &format!("attachment; filename=\"run_{run_id}.csv\""),
+                    ),
+                ],
                 csv,
-            ).into_response(),
-            Ok(Err(e))   => (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
-            Err(_)       => (axum::http::StatusCode::INTERNAL_SERVER_ERROR, "Task panicked").into_response(),
+            )
+                .into_response(),
+            Ok(Err(e)) => (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+            Err(_) => (
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                "Task panicked",
+            )
+                .into_response(),
         }
     } else {
-        let result = tokio::task::spawn_blocking(move || {
-            fire_red_database::export_run(&conn, run_id)
-        }).await;
-        axum::Json(result.unwrap_or_else(|_| serde_json::json!({ "error": "Task panicked" }))).into_response()
+        let result =
+            tokio::task::spawn_blocking(move || fire_red_database::export_run(&conn, run_id)).await;
+        axum::Json(result.unwrap_or_else(|_| serde_json::json!({ "error": "Task panicked" })))
+            .into_response()
     }
 }
 
@@ -1527,9 +1761,9 @@ async fn api_run_route_odds(
     Path(run_id): Path<u32>,
 ) -> axum::Json<serde_json::Value> {
     let conn = require_db!(state);
-    let result = tokio::task::spawn_blocking(move || {
-        fire_red_database::route_odds_json(&conn, run_id)
-    }).await;
+    let result =
+        tokio::task::spawn_blocking(move || fire_red_database::route_odds_json(&conn, run_id))
+            .await;
     axum::Json(result.unwrap_or_else(|_| serde_json::json!({ "error": "Task panicked" })))
 }
 
@@ -1539,9 +1773,9 @@ async fn api_run_webhook_log(
     Path(run_id): Path<u32>,
 ) -> axum::Json<serde_json::Value> {
     let conn = require_db!(state);
-    let result = tokio::task::spawn_blocking(move || {
-        fire_red_database::get_webhook_log_json(&conn, run_id)
-    }).await;
+    let result =
+        tokio::task::spawn_blocking(move || fire_red_database::get_webhook_log_json(&conn, run_id))
+            .await;
     axum::Json(result.unwrap_or_else(|_| serde_json::json!({ "error": "Task panicked" })))
 }
 
@@ -1553,7 +1787,8 @@ async fn api_run_soul_link_overrides(
     let conn = require_db!(state);
     let result = tokio::task::spawn_blocking(move || {
         fire_red_database::soul_link_overrides_json(&conn, run_id)
-    }).await;
+    })
+    .await;
     axum::Json(result.unwrap_or_else(|_| serde_json::json!({ "error": "Task panicked" })))
 }
 
@@ -1567,17 +1802,35 @@ async fn api_set_soul_link_override(
     axum::Json(body): axum::Json<serde_json::Value>,
 ) -> axum::Json<serde_json::Value> {
     let conn = require_db!(state);
-    let personality = match body["personality"].as_u64().and_then(|v| u32::try_from(v).ok()) {
+    let personality = match body["personality"]
+        .as_u64()
+        .and_then(|v| u32::try_from(v).ok())
+    {
         Some(v) => v,
-        None    => return axum::Json(serde_json::json!({ "error": "Missing or invalid 'personality'" })),
+        None => {
+            return axum::Json(serde_json::json!({ "error": "Missing or invalid 'personality'" }));
+        }
     };
-    let partner_personality = match body["partner_personality"].as_u64().and_then(|v| u32::try_from(v).ok()) {
+    let partner_personality = match body["partner_personality"]
+        .as_u64()
+        .and_then(|v| u32::try_from(v).ok())
+    {
         Some(v) => v,
-        None    => return axum::Json(serde_json::json!({ "error": "Missing or invalid 'partner_personality'" })),
+        None => {
+            return axum::Json(
+                serde_json::json!({ "error": "Missing or invalid 'partner_personality'" }),
+            );
+        }
     };
     let result = tokio::task::spawn_blocking(move || {
-        fire_red_database::set_soul_link_override_by_run(&conn, run_id, personality, partner_personality)
-    }).await;
+        fire_red_database::set_soul_link_override_by_run(
+            &conn,
+            run_id,
+            personality,
+            partner_personality,
+        )
+    })
+    .await;
     axum::Json(result.unwrap_or_else(|_| serde_json::json!({ "error": "Task panicked" })))
 }
 
@@ -1588,12 +1841,13 @@ async fn api_clear_soul_link_override(
 ) -> axum::Json<serde_json::Value> {
     let conn = require_db!(state);
     let p = match u32::try_from(personality) {
-        Ok(v)  => v,
+        Ok(v) => v,
         Err(_) => return axum::Json(serde_json::json!({ "error": "personality out of range" })),
     };
     let result = tokio::task::spawn_blocking(move || {
         fire_red_database::clear_soul_link_override_by_run(&conn, run_id, p)
-    }).await;
+    })
+    .await;
     axum::Json(result.unwrap_or_else(|_| serde_json::json!({ "error": "Task panicked" })))
 }
 
@@ -1640,9 +1894,7 @@ async fn serve_species(State(state): State<WebState>) -> Html<String> {
 /// `GET /api/species/stats` — cross-run per-species survival statistics JSON.
 async fn api_species_stats(State(state): State<WebState>) -> axum::Json<serde_json::Value> {
     let conn = require_db!(state);
-    let result = tokio::task::spawn_blocking(move || {
-        fire_red_database::species_stats(&conn)
-    }).await;
+    let result = tokio::task::spawn_blocking(move || fire_red_database::species_stats(&conn)).await;
     axum::Json(result.unwrap_or_else(|_| serde_json::json!({ "error": "Task panicked" })))
 }
 
@@ -1659,7 +1911,8 @@ async fn api_run_trainers(
     let conn = require_db!(state);
     let result = tokio::task::spawn_blocking(move || {
         fire_red_database::get_trainer_defeats_json(&conn, run_id)
-    }).await;
+    })
+    .await;
     axum::Json(result.unwrap_or_else(|_| serde_json::json!({ "error": "Task panicked" })))
 }
 
@@ -1671,7 +1924,7 @@ async fn api_bag(
     let slots = state.live_slots.lock_or_recover().clone();
     let slot = match slots.get(index) {
         Some(s) => s.clone(),
-        None    => return axum::Json(serde_json::json!({ "error": "slot index out of range" })),
+        None => return axum::Json(serde_json::json!({ "error": "slot index out of range" })),
     };
     match slot.bag_data.lock_or_recover().clone() {
         Some(pockets) => axum::Json(serde_json::json!({
@@ -1690,9 +1943,8 @@ async fn api_shiny_stats(
     Path(run_id): Path<u32>,
 ) -> axum::Json<serde_json::Value> {
     let conn = require_db!(state);
-    let result = tokio::task::spawn_blocking(move || {
-        fire_red_database::shiny_stats(&conn, run_id)
-    }).await;
+    let result =
+        tokio::task::spawn_blocking(move || fire_red_database::shiny_stats(&conn, run_id)).await;
     axum::Json(result.unwrap_or_else(|_| serde_json::json!({ "error": "Task panicked" })))
 }
 
@@ -1706,27 +1958,35 @@ async fn api_shiny_stats(
 /// - `404 Not Found`           — no run is currently active.
 /// - `503 Service Unavailable` — no database configured.
 /// - `500 Internal Server Error` — DB connection or query failure.
-async fn api_active_timeline(
-    State(state): State<WebState>,
-) -> impl IntoResponse {
+async fn api_active_timeline(State(state): State<WebState>) -> impl IntoResponse {
     let Some(conn) = state.db_conn else {
-        return (StatusCode::SERVICE_UNAVAILABLE,
-                axum::Json(serde_json::json!({ "error": "No database configured" }))).into_response();
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            axum::Json(serde_json::json!({ "error": "No database configured" })),
+        )
+            .into_response();
     };
-    let result = tokio::task::spawn_blocking(move || {
-        fire_red_database::active_run_timeline_json(&conn)
-    }).await
-    .unwrap_or_else(|_| Err(fire_red_database::EventsError::QueryFailed("Task panicked".into())));
+    let result =
+        tokio::task::spawn_blocking(move || fire_red_database::active_run_timeline_json(&conn))
+            .await
+            .unwrap_or_else(|_| {
+                Err(fire_red_database::EventsError::QueryFailed(
+                    "Task panicked".into(),
+                ))
+            });
 
     match result {
-        Ok(body) =>
-            (StatusCode::OK, axum::Json(body)).into_response(),
-        Err(fire_red_database::EventsError::NoActiveRun) =>
-            (StatusCode::NOT_FOUND,
-             axum::Json(serde_json::json!({ "error": "no active run" }))).into_response(),
-        Err(e) =>
-            (StatusCode::INTERNAL_SERVER_ERROR,
-             axum::Json(serde_json::json!({ "error": e.to_string() }))).into_response(),
+        Ok(body) => (StatusCode::OK, axum::Json(body)).into_response(),
+        Err(fire_red_database::EventsError::NoActiveRun) => (
+            StatusCode::NOT_FOUND,
+            axum::Json(serde_json::json!({ "error": "no active run" })),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            axum::Json(serde_json::json!({ "error": e.to_string() })),
+        )
+            .into_response(),
     }
 }
 
@@ -1741,31 +2001,36 @@ async fn api_run_events(
     Path(run_id): Path<u32>,
 ) -> impl IntoResponse {
     let Some(conn) = state.db_conn else {
-        return (StatusCode::SERVICE_UNAVAILABLE,
-                axum::Json(serde_json::json!({ "error": "No database configured" }))).into_response();
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            axum::Json(serde_json::json!({ "error": "No database configured" })),
+        )
+            .into_response();
     };
-    let result = tokio::task::spawn_blocking(move || {
-        fire_red_database::list_events_json(&conn, run_id)
-    }).await
-    .unwrap_or_else(|_| Err(fire_red_database::EventsError::QueryFailed("Task panicked".into())));
+    let result =
+        tokio::task::spawn_blocking(move || fire_red_database::list_events_json(&conn, run_id))
+            .await
+            .unwrap_or_else(|_| {
+                Err(fire_red_database::EventsError::QueryFailed(
+                    "Task panicked".into(),
+                ))
+            });
 
     match result {
-        Ok(body) =>
-            (StatusCode::OK, axum::Json(body)).into_response(),
-        Err(e) =>
-            (StatusCode::INTERNAL_SERVER_ERROR,
-             axum::Json(serde_json::json!({ "error": e.to_string() }))).into_response(),
+        Ok(body) => (StatusCode::OK, axum::Json(body)).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            axum::Json(serde_json::json!({ "error": e.to_string() })),
+        )
+            .into_response(),
     }
 }
 
 /// `GET /api/runs` — summary list of all runs (id, player, dates, deaths, catches, encounters).
-async fn api_runs(
-    State(state): State<WebState>,
-) -> axum::Json<serde_json::Value> {
+async fn api_runs(State(state): State<WebState>) -> axum::Json<serde_json::Value> {
     let conn = require_db!(state);
-    let result = tokio::task::spawn_blocking(move || {
-        fire_red_database::list_all_runs_json(&conn)
-    }).await;
+    let result =
+        tokio::task::spawn_blocking(move || fire_red_database::list_all_runs_json(&conn)).await;
     axum::Json(result.unwrap_or_else(|_| serde_json::json!({ "error": "Task panicked" })))
 }
 
@@ -1778,9 +2043,8 @@ async fn api_run_import(
     axum::Json(body): axum::Json<serde_json::Value>,
 ) -> axum::Json<serde_json::Value> {
     let conn = require_db!(state);
-    let result = tokio::task::spawn_blocking(move || {
-        fire_red_database::import_run(&conn, &body)
-    }).await;
+    let result =
+        tokio::task::spawn_blocking(move || fire_red_database::import_run(&conn, &body)).await;
     axum::Json(result.unwrap_or_else(|_| serde_json::json!({ "error": "Task panicked" })))
 }
 
@@ -1812,21 +2076,35 @@ async fn api_give_item(
     axum::Json(body): axum::Json<serde_json::Value>,
 ) -> impl IntoResponse {
     if !state.allow_injections {
-        return (StatusCode::FORBIDDEN, "injection commands are disabled".to_string());
+        return (
+            StatusCode::FORBIDDEN,
+            "injection commands are disabled".to_string(),
+        );
     }
     let slots = state.live_slots.lock_or_recover().clone();
     let slot = match slots.get(index) {
         Some(s) => s.clone(),
-        None    => return (StatusCode::NOT_FOUND, "slot index out of range".to_string()),
+        None => return (StatusCode::NOT_FOUND, "slot index out of range".to_string()),
     };
     if slot.state.lock_or_recover().is_none() {
-        return (StatusCode::SERVICE_UNAVAILABLE, "slot not connected".to_string());
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "slot not connected".to_string(),
+        );
     }
     let item_id = match body["item_id"].as_u64().and_then(|v| u16::try_from(v).ok()) {
         Some(v) if v > 0 => v,
-        _ => return (StatusCode::BAD_REQUEST, "item_id must be a positive u16".to_string()),
+        _ => {
+            return (
+                StatusCode::BAD_REQUEST,
+                "item_id must be a positive u16".to_string(),
+            );
+        }
     };
-    let quantity = match body["quantity"].as_u64().and_then(|v| u16::try_from(v).ok()) {
+    let quantity = match body["quantity"]
+        .as_u64()
+        .and_then(|v| u16::try_from(v).ok())
+    {
         Some(v) if v > 0 && v <= 99 => v,
         _ => return (StatusCode::BAD_REQUEST, "quantity must be 1–99".to_string()),
     };
@@ -1835,11 +2113,16 @@ async fn api_give_item(
         .push_back(ClientMessage::GiveItem { item_id, quantity });
     let rom = fire_red_rom_buffer::get_rom();
     let item_name = fire_red_party_monitor::get_item_string_from_id(&rom, item_id);
-    slot.injection_events.lock_or_recover().push_back(serde_json::json!({
-        "at": now_secs(), "kind": "give_item",
-        "label": format!("Gave {quantity}× {item_name}"),
-    }));
-    (StatusCode::OK, format!("queued give_item item_id={item_id} quantity={quantity} for slot {index}"))
+    slot.injection_events
+        .lock_or_recover()
+        .push_back(serde_json::json!({
+            "at": now_secs(), "kind": "give_item",
+            "label": format!("Gave {quantity}× {item_name}"),
+        }));
+    (
+        StatusCode::OK,
+        format!("queued give_item item_id={item_id} quantity={quantity} for slot {index}"),
+    )
 }
 
 /// `POST /api/slot/:index/make_shiny` — make a party Pokémon shiny in-memory.
@@ -1856,28 +2139,47 @@ async fn api_make_shiny(
     axum::Json(body): axum::Json<serde_json::Value>,
 ) -> impl IntoResponse {
     if !state.allow_injections {
-        return (StatusCode::FORBIDDEN, "injection commands are disabled".to_string());
+        return (
+            StatusCode::FORBIDDEN,
+            "injection commands are disabled".to_string(),
+        );
     }
     let slots = state.live_slots.lock_or_recover().clone();
     let slot = match slots.get(index) {
         Some(s) => s.clone(),
-        None    => return (StatusCode::NOT_FOUND, "slot index out of range".to_string()),
+        None => return (StatusCode::NOT_FOUND, "slot index out of range".to_string()),
     };
     if slot.state.lock_or_recover().is_none() {
-        return (StatusCode::SERVICE_UNAVAILABLE, "slot not connected".to_string());
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "slot not connected".to_string(),
+        );
     }
-    let party_position = match body["party_position"].as_u64().and_then(|v| u8::try_from(v).ok()) {
+    let party_position = match body["party_position"]
+        .as_u64()
+        .and_then(|v| u8::try_from(v).ok())
+    {
         Some(v) if v < 6 => v,
-        _ => return (StatusCode::BAD_REQUEST, "party_position must be 0–5".to_string()),
+        _ => {
+            return (
+                StatusCode::BAD_REQUEST,
+                "party_position must be 0–5".to_string(),
+            );
+        }
     };
     slot.command_queue
         .lock_or_recover()
         .push_back(ClientMessage::MakeShiny { party_position });
-    slot.injection_events.lock_or_recover().push_back(serde_json::json!({
-        "at": now_secs(), "kind": "make_shiny",
-        "label": format!("Made party[{party_position}] shiny"),
-    }));
-    (StatusCode::OK, format!("queued make_shiny party_position={party_position} for slot {index}"))
+    slot.injection_events
+        .lock_or_recover()
+        .push_back(serde_json::json!({
+            "at": now_secs(), "kind": "make_shiny",
+            "label": format!("Made party[{party_position}] shiny"),
+        }));
+    (
+        StatusCode::OK,
+        format!("queued make_shiny party_position={party_position} for slot {index}"),
+    )
 }
 
 /// `POST /api/slot/:index/take_item` — remove an item from the player's bag.
@@ -1900,21 +2202,35 @@ async fn api_take_item(
     axum::Json(body): axum::Json<serde_json::Value>,
 ) -> impl IntoResponse {
     if !state.allow_injections {
-        return (StatusCode::FORBIDDEN, "injection commands are disabled".to_string());
+        return (
+            StatusCode::FORBIDDEN,
+            "injection commands are disabled".to_string(),
+        );
     }
     let slots = state.live_slots.lock_or_recover().clone();
     let slot = match slots.get(index) {
         Some(s) => s.clone(),
-        None    => return (StatusCode::NOT_FOUND, "slot index out of range".to_string()),
+        None => return (StatusCode::NOT_FOUND, "slot index out of range".to_string()),
     };
     if slot.state.lock_or_recover().is_none() {
-        return (StatusCode::SERVICE_UNAVAILABLE, "slot not connected".to_string());
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "slot not connected".to_string(),
+        );
     }
     let item_id = match body["item_id"].as_u64().and_then(|v| u16::try_from(v).ok()) {
         Some(v) if v > 0 => v,
-        _ => return (StatusCode::BAD_REQUEST, "item_id must be a positive u16".to_string()),
+        _ => {
+            return (
+                StatusCode::BAD_REQUEST,
+                "item_id must be a positive u16".to_string(),
+            );
+        }
     };
-    let quantity = match body["quantity"].as_u64().and_then(|v| u16::try_from(v).ok()) {
+    let quantity = match body["quantity"]
+        .as_u64()
+        .and_then(|v| u16::try_from(v).ok())
+    {
         Some(v) if v > 0 && v <= 99 => v,
         _ => return (StatusCode::BAD_REQUEST, "quantity must be 1–99".to_string()),
     };
@@ -1923,11 +2239,16 @@ async fn api_take_item(
         .push_back(ClientMessage::TakeItem { item_id, quantity });
     let rom = fire_red_rom_buffer::get_rom();
     let item_name = fire_red_party_monitor::get_item_string_from_id(&rom, item_id);
-    slot.injection_events.lock_or_recover().push_back(serde_json::json!({
-        "at": now_secs(), "kind": "take_item",
-        "label": format!("Took {quantity}× {item_name}"),
-    }));
-    (StatusCode::OK, format!("queued take_item item_id={item_id} quantity={quantity} for slot {index}"))
+    slot.injection_events
+        .lock_or_recover()
+        .push_back(serde_json::json!({
+            "at": now_secs(), "kind": "take_item",
+            "label": format!("Took {quantity}× {item_name}"),
+        }));
+    (
+        StatusCode::OK,
+        format!("queued take_item item_id={item_id} quantity={quantity} for slot {index}"),
+    )
 }
 
 /// `POST /api/slot/:index/change_species` — change a party Pokémon's species.
@@ -1950,32 +2271,64 @@ async fn api_change_species(
     axum::Json(body): axum::Json<serde_json::Value>,
 ) -> impl IntoResponse {
     if !state.allow_injections {
-        return (StatusCode::FORBIDDEN, "injection commands are disabled".to_string());
+        return (
+            StatusCode::FORBIDDEN,
+            "injection commands are disabled".to_string(),
+        );
     }
     let slots = state.live_slots.lock_or_recover().clone();
     let slot = match slots.get(index) {
         Some(s) => s.clone(),
-        None    => return (StatusCode::NOT_FOUND, "slot index out of range".to_string()),
+        None => return (StatusCode::NOT_FOUND, "slot index out of range".to_string()),
     };
     if slot.state.lock_or_recover().is_none() {
-        return (StatusCode::SERVICE_UNAVAILABLE, "slot not connected".to_string());
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "slot not connected".to_string(),
+        );
     }
-    let party_position = match body["party_position"].as_u64().and_then(|v| u8::try_from(v).ok()) {
+    let party_position = match body["party_position"]
+        .as_u64()
+        .and_then(|v| u8::try_from(v).ok())
+    {
         Some(v) if v < 6 => v,
-        _ => return (StatusCode::BAD_REQUEST, "party_position must be 0–5".to_string()),
+        _ => {
+            return (
+                StatusCode::BAD_REQUEST,
+                "party_position must be 0–5".to_string(),
+            );
+        }
     };
-    let new_species = match body["new_species"].as_u64().and_then(|v| u16::try_from(v).ok()) {
+    let new_species = match body["new_species"]
+        .as_u64()
+        .and_then(|v| u16::try_from(v).ok())
+    {
         Some(v) if v > 0 && v <= 386 => v,
-        _ => return (StatusCode::BAD_REQUEST, "new_species must be 1–386".to_string()),
+        _ => {
+            return (
+                StatusCode::BAD_REQUEST,
+                "new_species must be 1–386".to_string(),
+            );
+        }
     };
     slot.command_queue
         .lock_or_recover()
-        .push_back(ClientMessage::ChangeSpecies { party_position, new_species });
-    slot.injection_events.lock_or_recover().push_back(serde_json::json!({
-        "at": now_secs(), "kind": "change_species",
-        "label": format!("Changed party[{party_position}] to species #{new_species}"),
-    }));
-    (StatusCode::OK, format!("queued change_species party_position={party_position} new_species={new_species} for slot {index}"))
+        .push_back(ClientMessage::ChangeSpecies {
+            party_position,
+            new_species,
+        });
+    slot.injection_events
+        .lock_or_recover()
+        .push_back(serde_json::json!({
+            "at": now_secs(), "kind": "change_species",
+            "label": format!("Changed party[{party_position}] to species #{new_species}"),
+        }));
+    (
+        StatusCode::OK,
+        format!(
+            "queued change_species party_position={party_position} new_species={new_species} for slot {index}"
+        ),
+    )
 }
 
 /// `POST /api/slot/:index/change_ability` — switch a party Pokémon's ability slot.
@@ -1998,33 +2351,69 @@ async fn api_change_ability(
     axum::Json(body): axum::Json<serde_json::Value>,
 ) -> impl IntoResponse {
     if !state.allow_injections {
-        return (StatusCode::FORBIDDEN, "injection commands are disabled".to_string());
+        return (
+            StatusCode::FORBIDDEN,
+            "injection commands are disabled".to_string(),
+        );
     }
     let slots = state.live_slots.lock_or_recover().clone();
     let slot = match slots.get(index) {
         Some(s) => s.clone(),
-        None    => return (StatusCode::NOT_FOUND, "slot index out of range".to_string()),
+        None => return (StatusCode::NOT_FOUND, "slot index out of range".to_string()),
     };
     if slot.state.lock_or_recover().is_none() {
-        return (StatusCode::SERVICE_UNAVAILABLE, "slot not connected".to_string());
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "slot not connected".to_string(),
+        );
     }
-    let party_position = match body["party_position"].as_u64().and_then(|v| u8::try_from(v).ok()) {
+    let party_position = match body["party_position"]
+        .as_u64()
+        .and_then(|v| u8::try_from(v).ok())
+    {
         Some(v) if v < 6 => v,
-        _ => return (StatusCode::BAD_REQUEST, "party_position must be 0–5".to_string()),
+        _ => {
+            return (
+                StatusCode::BAD_REQUEST,
+                "party_position must be 0–5".to_string(),
+            );
+        }
     };
-    let ability_slot = match body["ability_slot"].as_u64().and_then(|v| u8::try_from(v).ok()) {
+    let ability_slot = match body["ability_slot"]
+        .as_u64()
+        .and_then(|v| u8::try_from(v).ok())
+    {
         Some(v) if v <= 1 => v,
-        _ => return (StatusCode::BAD_REQUEST, "ability_slot must be 0 or 1".to_string()),
+        _ => {
+            return (
+                StatusCode::BAD_REQUEST,
+                "ability_slot must be 0 or 1".to_string(),
+            );
+        }
     };
     slot.command_queue
         .lock_or_recover()
-        .push_back(ClientMessage::ChangeAbility { party_position, ability_slot });
-    let ability_label = if ability_slot == 0 { "primary" } else { "secondary" };
-    slot.injection_events.lock_or_recover().push_back(serde_json::json!({
-        "at": now_secs(), "kind": "change_ability",
-        "label": format!("Party[{party_position}] → {ability_label} ability"),
-    }));
-    (StatusCode::OK, format!("queued change_ability party_position={party_position} ability_slot={ability_slot} for slot {index}"))
+        .push_back(ClientMessage::ChangeAbility {
+            party_position,
+            ability_slot,
+        });
+    let ability_label = if ability_slot == 0 {
+        "primary"
+    } else {
+        "secondary"
+    };
+    slot.injection_events
+        .lock_or_recover()
+        .push_back(serde_json::json!({
+            "at": now_secs(), "kind": "change_ability",
+            "label": format!("Party[{party_position}] → {ability_label} ability"),
+        }));
+    (
+        StatusCode::OK,
+        format!(
+            "queued change_ability party_position={party_position} ability_slot={ability_slot} for slot {index}"
+        ),
+    )
 }
 
 /// `POST /api/slot/:index/change_gender` — change the gender of a party Pokémon.
@@ -2049,33 +2438,65 @@ async fn api_change_gender(
     axum::Json(body): axum::Json<serde_json::Value>,
 ) -> impl IntoResponse {
     if !state.allow_injections {
-        return (StatusCode::FORBIDDEN, "injection commands are disabled".to_string());
+        return (
+            StatusCode::FORBIDDEN,
+            "injection commands are disabled".to_string(),
+        );
     }
     let slots = state.live_slots.lock_or_recover().clone();
     let slot = match slots.get(index) {
         Some(s) => s.clone(),
-        None    => return (StatusCode::NOT_FOUND, "slot index out of range".to_string()),
+        None => return (StatusCode::NOT_FOUND, "slot index out of range".to_string()),
     };
     if slot.state.lock_or_recover().is_none() {
-        return (StatusCode::SERVICE_UNAVAILABLE, "slot not connected".to_string());
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "slot not connected".to_string(),
+        );
     }
-    let party_position = match body["party_position"].as_u64().and_then(|v| u8::try_from(v).ok()) {
+    let party_position = match body["party_position"]
+        .as_u64()
+        .and_then(|v| u8::try_from(v).ok())
+    {
         Some(v) if v < 6 => v,
-        _ => return (StatusCode::BAD_REQUEST, "party_position must be 0–5".to_string()),
+        _ => {
+            return (
+                StatusCode::BAD_REQUEST,
+                "party_position must be 0–5".to_string(),
+            );
+        }
     };
-    let target_gender = match body["target_gender"].as_u64().and_then(|v| u8::try_from(v).ok()) {
+    let target_gender = match body["target_gender"]
+        .as_u64()
+        .and_then(|v| u8::try_from(v).ok())
+    {
         Some(v) if v <= 1 => v,
-        _ => return (StatusCode::BAD_REQUEST, "target_gender must be 0 (male) or 1 (female)".to_string()),
+        _ => {
+            return (
+                StatusCode::BAD_REQUEST,
+                "target_gender must be 0 (male) or 1 (female)".to_string(),
+            );
+        }
     };
     slot.command_queue
         .lock_or_recover()
-        .push_back(ClientMessage::ChangeGender { party_position, target_gender });
+        .push_back(ClientMessage::ChangeGender {
+            party_position,
+            target_gender,
+        });
     let gender_label = if target_gender == 0 { "male" } else { "female" };
-    slot.injection_events.lock_or_recover().push_back(serde_json::json!({
-        "at": now_secs(), "kind": "change_gender",
-        "label": format!("Party[{party_position}] → {gender_label}"),
-    }));
-    (StatusCode::OK, format!("queued change_gender party_position={party_position} target_gender={target_gender} for slot {index}"))
+    slot.injection_events
+        .lock_or_recover()
+        .push_back(serde_json::json!({
+            "at": now_secs(), "kind": "change_gender",
+            "label": format!("Party[{party_position}] → {gender_label}"),
+        }));
+    (
+        StatusCode::OK,
+        format!(
+            "queued change_gender party_position={party_position} target_gender={target_gender} for slot {index}"
+        ),
+    )
 }
 
 /// `POST /api/slot/:index/change_nickname` — rename a party Pokémon.
@@ -2091,32 +2512,59 @@ async fn api_change_nickname(
     axum::Json(body): axum::Json<serde_json::Value>,
 ) -> impl IntoResponse {
     if !state.allow_injections {
-        return (StatusCode::FORBIDDEN, "injection commands are disabled".to_string());
+        return (
+            StatusCode::FORBIDDEN,
+            "injection commands are disabled".to_string(),
+        );
     }
     let slots = state.live_slots.lock_or_recover().clone();
     let slot = match slots.get(index) {
         Some(s) => s.clone(),
-        None    => return (StatusCode::NOT_FOUND, "slot index out of range".to_string()),
+        None => return (StatusCode::NOT_FOUND, "slot index out of range".to_string()),
     };
     if slot.state.lock_or_recover().is_none() {
-        return (StatusCode::SERVICE_UNAVAILABLE, "slot not connected".to_string());
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "slot not connected".to_string(),
+        );
     }
-    let party_position = match body["party_position"].as_u64().and_then(|v| u8::try_from(v).ok()) {
+    let party_position = match body["party_position"]
+        .as_u64()
+        .and_then(|v| u8::try_from(v).ok())
+    {
         Some(v) if v < 6 => v,
-        _ => return (StatusCode::BAD_REQUEST, "party_position must be 0–5".to_string()),
+        _ => {
+            return (
+                StatusCode::BAD_REQUEST,
+                "party_position must be 0–5".to_string(),
+            );
+        }
     };
     let nickname = match body["nickname"].as_str() {
         Some(s) if !s.is_empty() => s.to_string(),
-        _ => return (StatusCode::BAD_REQUEST, "nickname must be a non-empty string".to_string()),
+        _ => {
+            return (
+                StatusCode::BAD_REQUEST,
+                "nickname must be a non-empty string".to_string(),
+            );
+        }
     };
     slot.command_queue
         .lock_or_recover()
-        .push_back(ClientMessage::ChangeNickname { party_position, nickname: nickname.clone() });
-    slot.injection_events.lock_or_recover().push_back(serde_json::json!({
-        "at": now_secs(), "kind": "change_nickname",
-        "label": format!("Renamed party[{party_position}] to \"{nickname}\""),
-    }));
-    (StatusCode::OK, format!("queued change_nickname party_position={party_position} for slot {index}"))
+        .push_back(ClientMessage::ChangeNickname {
+            party_position,
+            nickname: nickname.clone(),
+        });
+    slot.injection_events
+        .lock_or_recover()
+        .push_back(serde_json::json!({
+            "at": now_secs(), "kind": "change_nickname",
+            "label": format!("Renamed party[{party_position}] to \"{nickname}\""),
+        }));
+    (
+        StatusCode::OK,
+        format!("queued change_nickname party_position={party_position} for slot {index}"),
+    )
 }
 
 /// `POST /api/slot/:index/change_held_item` — set the held item of a party Pokémon.
@@ -2132,27 +2580,49 @@ async fn api_change_held_item(
     axum::Json(body): axum::Json<serde_json::Value>,
 ) -> impl IntoResponse {
     if !state.allow_injections {
-        return (StatusCode::FORBIDDEN, "injection commands are disabled".to_string());
+        return (
+            StatusCode::FORBIDDEN,
+            "injection commands are disabled".to_string(),
+        );
     }
     let slots = state.live_slots.lock_or_recover().clone();
     let slot = match slots.get(index) {
         Some(s) => s.clone(),
-        None    => return (StatusCode::NOT_FOUND, "slot index out of range".to_string()),
+        None => return (StatusCode::NOT_FOUND, "slot index out of range".to_string()),
     };
     if slot.state.lock_or_recover().is_none() {
-        return (StatusCode::SERVICE_UNAVAILABLE, "slot not connected".to_string());
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "slot not connected".to_string(),
+        );
     }
-    let party_position = match body["party_position"].as_u64().and_then(|v| u8::try_from(v).ok()) {
+    let party_position = match body["party_position"]
+        .as_u64()
+        .and_then(|v| u8::try_from(v).ok())
+    {
         Some(v) if v < 6 => v,
-        _ => return (StatusCode::BAD_REQUEST, "party_position must be 0–5".to_string()),
+        _ => {
+            return (
+                StatusCode::BAD_REQUEST,
+                "party_position must be 0–5".to_string(),
+            );
+        }
     };
     let item_id = match body["item_id"].as_u64().and_then(|v| u16::try_from(v).ok()) {
         Some(v) => v,
-        None    => return (StatusCode::BAD_REQUEST, "item_id must be a u16 (0 = remove)".to_string()),
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                "item_id must be a u16 (0 = remove)".to_string(),
+            );
+        }
     };
     slot.command_queue
         .lock_or_recover()
-        .push_back(ClientMessage::ChangeHeldItem { party_position, item_id });
+        .push_back(ClientMessage::ChangeHeldItem {
+            party_position,
+            item_id,
+        });
     let label = if item_id == 0 {
         format!("Removed party[{party_position}] held item")
     } else {
@@ -2160,10 +2630,17 @@ async fn api_change_held_item(
         let item_name = fire_red_party_monitor::get_item_string_from_id(&rom, item_id);
         format!("party[{party_position}] now holds {item_name}")
     };
-    slot.injection_events.lock_or_recover().push_back(serde_json::json!({
-        "at": now_secs(), "kind": "change_held_item", "label": label,
-    }));
-    (StatusCode::OK, format!("queued change_held_item party_position={party_position} item_id={item_id} for slot {index}"))
+    slot.injection_events
+        .lock_or_recover()
+        .push_back(serde_json::json!({
+            "at": now_secs(), "kind": "change_held_item", "label": label,
+        }));
+    (
+        StatusCode::OK,
+        format!(
+            "queued change_held_item party_position={party_position} item_id={item_id} for slot {index}"
+        ),
+    )
 }
 
 /// `POST /api/slot/:index/cure_status` — clear the status condition of a party Pokémon.
@@ -2179,28 +2656,47 @@ async fn api_cure_status(
     axum::Json(body): axum::Json<serde_json::Value>,
 ) -> impl IntoResponse {
     if !state.allow_injections {
-        return (StatusCode::FORBIDDEN, "injection commands are disabled".to_string());
+        return (
+            StatusCode::FORBIDDEN,
+            "injection commands are disabled".to_string(),
+        );
     }
     let slots = state.live_slots.lock_or_recover().clone();
     let slot = match slots.get(index) {
         Some(s) => s.clone(),
-        None    => return (StatusCode::NOT_FOUND, "slot index out of range".to_string()),
+        None => return (StatusCode::NOT_FOUND, "slot index out of range".to_string()),
     };
     if slot.state.lock_or_recover().is_none() {
-        return (StatusCode::SERVICE_UNAVAILABLE, "slot not connected".to_string());
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "slot not connected".to_string(),
+        );
     }
-    let party_position = match body["party_position"].as_u64().and_then(|v| u8::try_from(v).ok()) {
+    let party_position = match body["party_position"]
+        .as_u64()
+        .and_then(|v| u8::try_from(v).ok())
+    {
         Some(v) if v < 6 => v,
-        _ => return (StatusCode::BAD_REQUEST, "party_position must be 0–5".to_string()),
+        _ => {
+            return (
+                StatusCode::BAD_REQUEST,
+                "party_position must be 0–5".to_string(),
+            );
+        }
     };
     slot.command_queue
         .lock_or_recover()
         .push_back(ClientMessage::CureStatus { party_position });
-    slot.injection_events.lock_or_recover().push_back(serde_json::json!({
-        "at": now_secs(), "kind": "cure_status",
-        "label": format!("Cured party[{party_position}] status"),
-    }));
-    (StatusCode::OK, format!("queued cure_status party_position={party_position} for slot {index}"))
+    slot.injection_events
+        .lock_or_recover()
+        .push_back(serde_json::json!({
+            "at": now_secs(), "kind": "cure_status",
+            "label": format!("Cured party[{party_position}] status"),
+        }));
+    (
+        StatusCode::OK,
+        format!("queued cure_status party_position={party_position} for slot {index}"),
+    )
 }
 
 /// `POST /api/slot/:index/change_nature` — change the nature of a party Pokémon.
@@ -2223,39 +2719,61 @@ async fn api_change_nature(
     axum::Json(body): axum::Json<serde_json::Value>,
 ) -> impl IntoResponse {
     if !state.allow_injections {
-        return (StatusCode::FORBIDDEN, "injection commands are disabled".to_string());
+        return (
+            StatusCode::FORBIDDEN,
+            "injection commands are disabled".to_string(),
+        );
     }
     let slots = state.live_slots.lock_or_recover().clone();
     let slot = match slots.get(index) {
         Some(s) => s.clone(),
-        None    => return (StatusCode::NOT_FOUND, "slot index out of range".to_string()),
+        None => return (StatusCode::NOT_FOUND, "slot index out of range".to_string()),
     };
     if slot.state.lock_or_recover().is_none() {
-        return (StatusCode::SERVICE_UNAVAILABLE, "slot not connected".to_string());
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "slot not connected".to_string(),
+        );
     }
-    let party_position = match body["party_position"].as_u64().and_then(|v| u8::try_from(v).ok()) {
+    let party_position = match body["party_position"]
+        .as_u64()
+        .and_then(|v| u8::try_from(v).ok())
+    {
         Some(v) if v < 6 => v,
-        _ => return (StatusCode::BAD_REQUEST, "party_position must be 0–5".to_string()),
+        _ => {
+            return (
+                StatusCode::BAD_REQUEST,
+                "party_position must be 0–5".to_string(),
+            );
+        }
     };
     let nature = match body["nature"].as_u64().and_then(|v| u8::try_from(v).ok()) {
         Some(v) if v <= 24 => v,
         _ => return (StatusCode::BAD_REQUEST, "nature must be 0–24".to_string()),
     };
     const NATURE_NAMES: [&str; 25] = [
-        "Hardy", "Lonely", "Brave", "Adamant", "Naughty",
-        "Bold", "Docile", "Relaxed", "Impish", "Lax",
-        "Timid", "Hasty", "Serious", "Jolly", "Naive",
-        "Modest", "Mild", "Quiet", "Bashful", "Rash",
-        "Calm", "Gentle", "Sassy", "Careful", "Quirky",
+        "Hardy", "Lonely", "Brave", "Adamant", "Naughty", "Bold", "Docile", "Relaxed", "Impish",
+        "Lax", "Timid", "Hasty", "Serious", "Jolly", "Naive", "Modest", "Mild", "Quiet", "Bashful",
+        "Rash", "Calm", "Gentle", "Sassy", "Careful", "Quirky",
     ];
     slot.command_queue
         .lock_or_recover()
-        .push_back(ClientMessage::ChangeNature { party_position, target_nature: nature });
-    slot.injection_events.lock_or_recover().push_back(serde_json::json!({
-        "at": now_secs(), "kind": "change_nature",
-        "label": format!("Party[{party_position}] → {} nature", NATURE_NAMES[nature as usize]),
-    }));
-    (StatusCode::OK, format!("queued change_nature party_position={party_position} nature={nature} for slot {index}"))
+        .push_back(ClientMessage::ChangeNature {
+            party_position,
+            target_nature: nature,
+        });
+    slot.injection_events
+        .lock_or_recover()
+        .push_back(serde_json::json!({
+            "at": now_secs(), "kind": "change_nature",
+            "label": format!("Party[{party_position}] → {} nature", NATURE_NAMES[nature as usize]),
+        }));
+    (
+        StatusCode::OK,
+        format!(
+            "queued change_nature party_position={party_position} nature={nature} for slot {index}"
+        ),
+    )
 }
 
 /// `POST /api/slot/:index/restore_pp` — restore all move PP to current maximums.
@@ -2271,28 +2789,47 @@ async fn api_restore_pp(
     axum::Json(body): axum::Json<serde_json::Value>,
 ) -> impl IntoResponse {
     if !state.allow_injections {
-        return (StatusCode::FORBIDDEN, "injection commands are disabled".to_string());
+        return (
+            StatusCode::FORBIDDEN,
+            "injection commands are disabled".to_string(),
+        );
     }
     let slots = state.live_slots.lock_or_recover().clone();
     let slot = match slots.get(index) {
         Some(s) => s.clone(),
-        None    => return (StatusCode::NOT_FOUND, "slot index out of range".to_string()),
+        None => return (StatusCode::NOT_FOUND, "slot index out of range".to_string()),
     };
     if slot.state.lock_or_recover().is_none() {
-        return (StatusCode::SERVICE_UNAVAILABLE, "slot not connected".to_string());
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "slot not connected".to_string(),
+        );
     }
-    let party_position = match body["party_position"].as_u64().and_then(|v| u8::try_from(v).ok()) {
+    let party_position = match body["party_position"]
+        .as_u64()
+        .and_then(|v| u8::try_from(v).ok())
+    {
         Some(v) if v < 6 => v,
-        _ => return (StatusCode::BAD_REQUEST, "party_position must be 0–5".to_string()),
+        _ => {
+            return (
+                StatusCode::BAD_REQUEST,
+                "party_position must be 0–5".to_string(),
+            );
+        }
     };
     slot.command_queue
         .lock_or_recover()
         .push_back(ClientMessage::RestorePp { party_position });
-    slot.injection_events.lock_or_recover().push_back(serde_json::json!({
-        "at": now_secs(), "kind": "restore_pp",
-        "label": format!("Restored party[{party_position}] PP"),
-    }));
-    (StatusCode::OK, format!("queued restore_pp party_position={party_position} for slot {index}"))
+    slot.injection_events
+        .lock_or_recover()
+        .push_back(serde_json::json!({
+            "at": now_secs(), "kind": "restore_pp",
+            "label": format!("Restored party[{party_position}] PP"),
+        }));
+    (
+        StatusCode::OK,
+        format!("queued restore_pp party_position={party_position} for slot {index}"),
+    )
 }
 
 /// `POST /api/slot/:index/set_friendship` — set the friendship (happiness) byte.
@@ -2307,32 +2844,64 @@ async fn api_set_friendship(
     axum::Json(body): axum::Json<serde_json::Value>,
 ) -> impl IntoResponse {
     if !state.allow_injections {
-        return (StatusCode::FORBIDDEN, "injection commands are disabled".to_string());
+        return (
+            StatusCode::FORBIDDEN,
+            "injection commands are disabled".to_string(),
+        );
     }
     let slots = state.live_slots.lock_or_recover().clone();
     let slot = match slots.get(index) {
         Some(s) => s.clone(),
-        None    => return (StatusCode::NOT_FOUND, "slot index out of range".to_string()),
+        None => return (StatusCode::NOT_FOUND, "slot index out of range".to_string()),
     };
     if slot.state.lock_or_recover().is_none() {
-        return (StatusCode::SERVICE_UNAVAILABLE, "slot not connected".to_string());
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "slot not connected".to_string(),
+        );
     }
-    let party_position = match body["party_position"].as_u64().and_then(|v| u8::try_from(v).ok()) {
+    let party_position = match body["party_position"]
+        .as_u64()
+        .and_then(|v| u8::try_from(v).ok())
+    {
         Some(v) if v < 6 => v,
-        _ => return (StatusCode::BAD_REQUEST, "party_position must be 0–5".to_string()),
+        _ => {
+            return (
+                StatusCode::BAD_REQUEST,
+                "party_position must be 0–5".to_string(),
+            );
+        }
     };
-    let friendship = match body["friendship"].as_u64().and_then(|v| u8::try_from(v).ok()) {
+    let friendship = match body["friendship"]
+        .as_u64()
+        .and_then(|v| u8::try_from(v).ok())
+    {
         Some(v) => v,
-        None    => return (StatusCode::BAD_REQUEST, "friendship must be 0–255".to_string()),
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                "friendship must be 0–255".to_string(),
+            );
+        }
     };
     slot.command_queue
         .lock_or_recover()
-        .push_back(ClientMessage::SetFriendship { party_position, friendship });
-    slot.injection_events.lock_or_recover().push_back(serde_json::json!({
-        "at": now_secs(), "kind": "set_friendship",
-        "label": format!("party[{party_position}] friendship → {friendship}"),
-    }));
-    (StatusCode::OK, format!("queued set_friendship party_position={party_position} friendship={friendship} for slot {index}"))
+        .push_back(ClientMessage::SetFriendship {
+            party_position,
+            friendship,
+        });
+    slot.injection_events
+        .lock_or_recover()
+        .push_back(serde_json::json!({
+            "at": now_secs(), "kind": "set_friendship",
+            "label": format!("party[{party_position}] friendship → {friendship}"),
+        }));
+    (
+        StatusCode::OK,
+        format!(
+            "queued set_friendship party_position={party_position} friendship={friendship} for slot {index}"
+        ),
+    )
 }
 
 /// `POST /api/slot/:index/change_move` — replace a move slot.
@@ -2347,19 +2916,33 @@ async fn api_change_move(
     axum::Json(body): axum::Json<serde_json::Value>,
 ) -> impl IntoResponse {
     if !state.allow_injections {
-        return (StatusCode::FORBIDDEN, "injection commands are disabled".to_string());
+        return (
+            StatusCode::FORBIDDEN,
+            "injection commands are disabled".to_string(),
+        );
     }
     let slots = state.live_slots.lock_or_recover().clone();
     let slot = match slots.get(index) {
         Some(s) => s.clone(),
-        None    => return (StatusCode::NOT_FOUND, "slot index out of range".to_string()),
+        None => return (StatusCode::NOT_FOUND, "slot index out of range".to_string()),
     };
     if slot.state.lock_or_recover().is_none() {
-        return (StatusCode::SERVICE_UNAVAILABLE, "slot not connected".to_string());
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "slot not connected".to_string(),
+        );
     }
-    let party_position = match body["party_position"].as_u64().and_then(|v| u8::try_from(v).ok()) {
+    let party_position = match body["party_position"]
+        .as_u64()
+        .and_then(|v| u8::try_from(v).ok())
+    {
         Some(v) if v < 6 => v,
-        _ => return (StatusCode::BAD_REQUEST, "party_position must be 0–5".to_string()),
+        _ => {
+            return (
+                StatusCode::BAD_REQUEST,
+                "party_position must be 0–5".to_string(),
+            );
+        }
     };
     let move_slot = match body["slot"].as_u64().and_then(|v| u8::try_from(v).ok()) {
         Some(v) if v <= 3 => v,
@@ -2367,28 +2950,43 @@ async fn api_change_move(
     };
     let move_id = match body["move_id"].as_u64().and_then(|v| u16::try_from(v).ok()) {
         Some(v) => v,
-        None    => return (StatusCode::BAD_REQUEST, "move_id must be a u16".to_string()),
+        None => return (StatusCode::BAD_REQUEST, "move_id must be a u16".to_string()),
     };
     slot.command_queue
         .lock_or_recover()
-        .push_back(ClientMessage::ChangeMove { party_position, slot: move_slot, move_id });
+        .push_back(ClientMessage::ChangeMove {
+            party_position,
+            slot: move_slot,
+            move_id,
+        });
     let label = if move_id == 0 {
         format!("Cleared party[{party_position}] move slot {move_slot}")
     } else {
         format!("party[{party_position}] move {move_slot} → move_id {move_id}")
     };
-    slot.injection_events.lock_or_recover().push_back(serde_json::json!({
-        "at": now_secs(), "kind": "change_move", "label": label,
-    }));
-    (StatusCode::OK, format!("queued change_move party_position={party_position} slot={move_slot} move_id={move_id} for slot {index}"))
+    slot.injection_events
+        .lock_or_recover()
+        .push_back(serde_json::json!({
+            "at": now_secs(), "kind": "change_move", "label": label,
+        }));
+    (
+        StatusCode::OK,
+        format!(
+            "queued change_move party_position={party_position} slot={move_slot} move_id={move_id} for slot {index}"
+        ),
+    )
 }
 
 /// Shared stat-field parser for IV/EV handlers — extracts `hp/atk/def/spd/spa/spdef`
 /// from a JSON body, returning an error string on the first missing or invalid field.
 fn parse_six_stats(body: &serde_json::Value) -> Result<(u8, u8, u8, u8, u8, u8), String> {
     let mut vals = [0u8; 6];
-    for (i, key) in ["hp", "atk", "def", "spd", "spa", "spdef"].iter().enumerate() {
-        vals[i] = body[key].as_u64()
+    for (i, key) in ["hp", "atk", "def", "spd", "spa", "spdef"]
+        .iter()
+        .enumerate()
+    {
+        vals[i] = body[key]
+            .as_u64()
             .and_then(|v| u8::try_from(v).ok())
             .ok_or_else(|| format!("{key} must be 0–255"))?;
     }
@@ -2406,32 +3004,59 @@ async fn api_set_ivs(
     axum::Json(body): axum::Json<serde_json::Value>,
 ) -> impl IntoResponse {
     if !state.allow_injections {
-        return (StatusCode::FORBIDDEN, "injection commands are disabled".to_string());
+        return (
+            StatusCode::FORBIDDEN,
+            "injection commands are disabled".to_string(),
+        );
     }
     let slots = state.live_slots.lock_or_recover().clone();
     let slot = match slots.get(index) {
         Some(s) => s.clone(),
-        None    => return (StatusCode::NOT_FOUND, "slot index out of range".to_string()),
+        None => return (StatusCode::NOT_FOUND, "slot index out of range".to_string()),
     };
     if slot.state.lock_or_recover().is_none() {
-        return (StatusCode::SERVICE_UNAVAILABLE, "slot not connected".to_string());
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "slot not connected".to_string(),
+        );
     }
-    let party_position = match body["party_position"].as_u64().and_then(|v| u8::try_from(v).ok()) {
+    let party_position = match body["party_position"]
+        .as_u64()
+        .and_then(|v| u8::try_from(v).ok())
+    {
         Some(v) if v < 6 => v,
-        _ => return (StatusCode::BAD_REQUEST, "party_position must be 0–5".to_string()),
+        _ => {
+            return (
+                StatusCode::BAD_REQUEST,
+                "party_position must be 0–5".to_string(),
+            );
+        }
     };
     let (hp, atk, def, spd, spa, spdef) = match parse_six_stats(&body) {
-        Ok(v)  => v,
+        Ok(v) => v,
         Err(e) => return (StatusCode::BAD_REQUEST, e),
     };
-    slot.command_queue.lock_or_recover().push_back(
-        ClientMessage::SetIvs { party_position, hp, atk, def, spd, spa, spdef },
-    );
-    slot.injection_events.lock_or_recover().push_back(serde_json::json!({
-        "at": now_secs(), "kind": "set_ivs",
-        "label": format!("party[{party_position}] IVs → {hp}/{atk}/{def}/{spd}/{spa}/{spdef}"),
-    }));
-    (StatusCode::OK, format!("queued set_ivs party_position={party_position} for slot {index}"))
+    slot.command_queue
+        .lock_or_recover()
+        .push_back(ClientMessage::SetIvs {
+            party_position,
+            hp,
+            atk,
+            def,
+            spd,
+            spa,
+            spdef,
+        });
+    slot.injection_events
+        .lock_or_recover()
+        .push_back(serde_json::json!({
+            "at": now_secs(), "kind": "set_ivs",
+            "label": format!("party[{party_position}] IVs → {hp}/{atk}/{def}/{spd}/{spa}/{spdef}"),
+        }));
+    (
+        StatusCode::OK,
+        format!("queued set_ivs party_position={party_position} for slot {index}"),
+    )
 }
 
 /// `POST /api/slot/:index/increase_ivs` — add to each IV, clamping at 31.
@@ -2444,32 +3069,57 @@ async fn api_increase_ivs(
     axum::Json(body): axum::Json<serde_json::Value>,
 ) -> impl IntoResponse {
     if !state.allow_injections {
-        return (StatusCode::FORBIDDEN, "injection commands are disabled".to_string());
+        return (
+            StatusCode::FORBIDDEN,
+            "injection commands are disabled".to_string(),
+        );
     }
     let slots = state.live_slots.lock_or_recover().clone();
     let slot = match slots.get(index) {
         Some(s) => s.clone(),
-        None    => return (StatusCode::NOT_FOUND, "slot index out of range".to_string()),
+        None => return (StatusCode::NOT_FOUND, "slot index out of range".to_string()),
     };
     if slot.state.lock_or_recover().is_none() {
-        return (StatusCode::SERVICE_UNAVAILABLE, "slot not connected".to_string());
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "slot not connected".to_string(),
+        );
     }
-    let party_position = match body["party_position"].as_u64().and_then(|v| u8::try_from(v).ok()) {
+    let party_position = match body["party_position"]
+        .as_u64()
+        .and_then(|v| u8::try_from(v).ok())
+    {
         Some(v) if v < 6 => v,
-        _ => return (StatusCode::BAD_REQUEST, "party_position must be 0–5".to_string()),
+        _ => {
+            return (
+                StatusCode::BAD_REQUEST,
+                "party_position must be 0–5".to_string(),
+            );
+        }
     };
     let (hp, atk, def, spd, spa, spdef) = match parse_six_stats(&body) {
-        Ok(v)  => v,
+        Ok(v) => v,
         Err(e) => return (StatusCode::BAD_REQUEST, e),
     };
-    slot.command_queue.lock_or_recover().push_back(
-        ClientMessage::IncreaseIvs { party_position, hp, atk, def, spd, spa, spdef },
-    );
+    slot.command_queue
+        .lock_or_recover()
+        .push_back(ClientMessage::IncreaseIvs {
+            party_position,
+            hp,
+            atk,
+            def,
+            spd,
+            spa,
+            spdef,
+        });
     slot.injection_events.lock_or_recover().push_back(serde_json::json!({
         "at": now_secs(), "kind": "increase_ivs",
         "label": format!("party[{party_position}] IVs +{hp}/+{atk}/+{def}/+{spd}/+{spa}/+{spdef}"),
     }));
-    (StatusCode::OK, format!("queued increase_ivs party_position={party_position} for slot {index}"))
+    (
+        StatusCode::OK,
+        format!("queued increase_ivs party_position={party_position} for slot {index}"),
+    )
 }
 
 /// `POST /api/slot/:index/set_evs` — set all six EVs of a party Pokémon.
@@ -2483,32 +3133,59 @@ async fn api_set_evs(
     axum::Json(body): axum::Json<serde_json::Value>,
 ) -> impl IntoResponse {
     if !state.allow_injections {
-        return (StatusCode::FORBIDDEN, "injection commands are disabled".to_string());
+        return (
+            StatusCode::FORBIDDEN,
+            "injection commands are disabled".to_string(),
+        );
     }
     let slots = state.live_slots.lock_or_recover().clone();
     let slot = match slots.get(index) {
         Some(s) => s.clone(),
-        None    => return (StatusCode::NOT_FOUND, "slot index out of range".to_string()),
+        None => return (StatusCode::NOT_FOUND, "slot index out of range".to_string()),
     };
     if slot.state.lock_or_recover().is_none() {
-        return (StatusCode::SERVICE_UNAVAILABLE, "slot not connected".to_string());
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "slot not connected".to_string(),
+        );
     }
-    let party_position = match body["party_position"].as_u64().and_then(|v| u8::try_from(v).ok()) {
+    let party_position = match body["party_position"]
+        .as_u64()
+        .and_then(|v| u8::try_from(v).ok())
+    {
         Some(v) if v < 6 => v,
-        _ => return (StatusCode::BAD_REQUEST, "party_position must be 0–5".to_string()),
+        _ => {
+            return (
+                StatusCode::BAD_REQUEST,
+                "party_position must be 0–5".to_string(),
+            );
+        }
     };
     let (hp, atk, def, spd, spa, spdef) = match parse_six_stats(&body) {
-        Ok(v)  => v,
+        Ok(v) => v,
         Err(e) => return (StatusCode::BAD_REQUEST, e),
     };
-    slot.command_queue.lock_or_recover().push_back(
-        ClientMessage::SetEvs { party_position, hp, atk, def, spd, spa, spdef },
-    );
-    slot.injection_events.lock_or_recover().push_back(serde_json::json!({
-        "at": now_secs(), "kind": "set_evs",
-        "label": format!("party[{party_position}] EVs → {hp}/{atk}/{def}/{spd}/{spa}/{spdef}"),
-    }));
-    (StatusCode::OK, format!("queued set_evs party_position={party_position} for slot {index}"))
+    slot.command_queue
+        .lock_or_recover()
+        .push_back(ClientMessage::SetEvs {
+            party_position,
+            hp,
+            atk,
+            def,
+            spd,
+            spa,
+            spdef,
+        });
+    slot.injection_events
+        .lock_or_recover()
+        .push_back(serde_json::json!({
+            "at": now_secs(), "kind": "set_evs",
+            "label": format!("party[{party_position}] EVs → {hp}/{atk}/{def}/{spd}/{spa}/{spdef}"),
+        }));
+    (
+        StatusCode::OK,
+        format!("queued set_evs party_position={party_position} for slot {index}"),
+    )
 }
 
 /// `POST /api/slot/:index/increase_evs` — add to each EV, clamping at 255.
@@ -2521,32 +3198,57 @@ async fn api_increase_evs(
     axum::Json(body): axum::Json<serde_json::Value>,
 ) -> impl IntoResponse {
     if !state.allow_injections {
-        return (StatusCode::FORBIDDEN, "injection commands are disabled".to_string());
+        return (
+            StatusCode::FORBIDDEN,
+            "injection commands are disabled".to_string(),
+        );
     }
     let slots = state.live_slots.lock_or_recover().clone();
     let slot = match slots.get(index) {
         Some(s) => s.clone(),
-        None    => return (StatusCode::NOT_FOUND, "slot index out of range".to_string()),
+        None => return (StatusCode::NOT_FOUND, "slot index out of range".to_string()),
     };
     if slot.state.lock_or_recover().is_none() {
-        return (StatusCode::SERVICE_UNAVAILABLE, "slot not connected".to_string());
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "slot not connected".to_string(),
+        );
     }
-    let party_position = match body["party_position"].as_u64().and_then(|v| u8::try_from(v).ok()) {
+    let party_position = match body["party_position"]
+        .as_u64()
+        .and_then(|v| u8::try_from(v).ok())
+    {
         Some(v) if v < 6 => v,
-        _ => return (StatusCode::BAD_REQUEST, "party_position must be 0–5".to_string()),
+        _ => {
+            return (
+                StatusCode::BAD_REQUEST,
+                "party_position must be 0–5".to_string(),
+            );
+        }
     };
     let (hp, atk, def, spd, spa, spdef) = match parse_six_stats(&body) {
-        Ok(v)  => v,
+        Ok(v) => v,
         Err(e) => return (StatusCode::BAD_REQUEST, e),
     };
-    slot.command_queue.lock_or_recover().push_back(
-        ClientMessage::IncreaseEvs { party_position, hp, atk, def, spd, spa, spdef },
-    );
+    slot.command_queue
+        .lock_or_recover()
+        .push_back(ClientMessage::IncreaseEvs {
+            party_position,
+            hp,
+            atk,
+            def,
+            spd,
+            spa,
+            spdef,
+        });
     slot.injection_events.lock_or_recover().push_back(serde_json::json!({
         "at": now_secs(), "kind": "increase_evs",
         "label": format!("party[{party_position}] EVs +{hp}/+{atk}/+{def}/+{spd}/+{spa}/+{spdef}"),
     }));
-    (StatusCode::OK, format!("queued increase_evs party_position={party_position} for slot {index}"))
+    (
+        StatusCode::OK,
+        format!("queued increase_evs party_position={party_position} for slot {index}"),
+    )
 }
 
 /// `POST /api/slot/:index/restore_hp` — restore a party Pokémon's current HP to maximum.
@@ -2561,28 +3263,47 @@ async fn api_restore_hp(
     axum::Json(body): axum::Json<serde_json::Value>,
 ) -> impl IntoResponse {
     if !state.allow_injections {
-        return (StatusCode::FORBIDDEN, "injection commands are disabled".to_string());
+        return (
+            StatusCode::FORBIDDEN,
+            "injection commands are disabled".to_string(),
+        );
     }
     let slots = state.live_slots.lock_or_recover().clone();
     let slot = match slots.get(index) {
         Some(s) => s.clone(),
-        None    => return (StatusCode::NOT_FOUND, "slot index out of range".to_string()),
+        None => return (StatusCode::NOT_FOUND, "slot index out of range".to_string()),
     };
     if slot.state.lock_or_recover().is_none() {
-        return (StatusCode::SERVICE_UNAVAILABLE, "slot not connected".to_string());
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "slot not connected".to_string(),
+        );
     }
-    let party_position = match body["party_position"].as_u64().and_then(|v| u8::try_from(v).ok()) {
+    let party_position = match body["party_position"]
+        .as_u64()
+        .and_then(|v| u8::try_from(v).ok())
+    {
         Some(v) if v < 6 => v,
-        _ => return (StatusCode::BAD_REQUEST, "party_position must be 0–5".to_string()),
+        _ => {
+            return (
+                StatusCode::BAD_REQUEST,
+                "party_position must be 0–5".to_string(),
+            );
+        }
     };
     slot.command_queue
         .lock_or_recover()
         .push_back(ClientMessage::RestoreHp { party_position });
-    slot.injection_events.lock_or_recover().push_back(serde_json::json!({
-        "at": now_secs(), "kind": "restore_hp",
-        "label": format!("Restored party[{party_position}] HP to full"),
-    }));
-    (StatusCode::OK, format!("queued restore_hp party_position={party_position} for slot {index}"))
+    slot.injection_events
+        .lock_or_recover()
+        .push_back(serde_json::json!({
+            "at": now_secs(), "kind": "restore_hp",
+            "label": format!("Restored party[{party_position}] HP to full"),
+        }));
+    (
+        StatusCode::OK,
+        format!("queued restore_hp party_position={party_position} for slot {index}"),
+    )
 }
 
 /// `POST /api/slot/:index/heal_party` — restore HP and cure status for the whole party.
@@ -2597,22 +3318,35 @@ async fn api_heal_party(
     Path(index): Path<usize>,
 ) -> impl IntoResponse {
     if !state.allow_injections {
-        return (StatusCode::FORBIDDEN, "injection commands are disabled".to_string());
+        return (
+            StatusCode::FORBIDDEN,
+            "injection commands are disabled".to_string(),
+        );
     }
     let slots = state.live_slots.lock_or_recover().clone();
     let slot = match slots.get(index) {
         Some(s) => s.clone(),
-        None    => return (StatusCode::NOT_FOUND, "slot index out of range".to_string()),
+        None => return (StatusCode::NOT_FOUND, "slot index out of range".to_string()),
     };
     if slot.state.lock_or_recover().is_none() {
-        return (StatusCode::SERVICE_UNAVAILABLE, "slot not connected".to_string());
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "slot not connected".to_string(),
+        );
     }
-    slot.command_queue.lock_or_recover().push_back(ClientMessage::HealParty);
-    slot.injection_events.lock_or_recover().push_back(serde_json::json!({
-        "at": now_secs(), "kind": "heal_party",
-        "label": "Full party heal (HP + status)",
-    }));
-    (StatusCode::OK, format!("queued heal_party for slot {index}"))
+    slot.command_queue
+        .lock_or_recover()
+        .push_back(ClientMessage::HealParty);
+    slot.injection_events
+        .lock_or_recover()
+        .push_back(serde_json::json!({
+            "at": now_secs(), "kind": "heal_party",
+            "label": "Full party heal (HP + status)",
+        }));
+    (
+        StatusCode::OK,
+        format!("queued heal_party for slot {index}"),
+    )
 }
 
 /// `POST /api/slot/:index/set_exp` — set the experience points of a party Pokémon.
@@ -2625,30 +3359,54 @@ async fn api_set_exp(
     axum::Json(body): axum::Json<serde_json::Value>,
 ) -> impl IntoResponse {
     if !state.allow_injections {
-        return (StatusCode::FORBIDDEN, "injection commands are disabled".to_string());
+        return (
+            StatusCode::FORBIDDEN,
+            "injection commands are disabled".to_string(),
+        );
     }
     let slots = state.live_slots.lock_or_recover().clone();
     let slot = match slots.get(index) {
         Some(s) => s.clone(),
-        None    => return (StatusCode::NOT_FOUND, "slot index out of range".to_string()),
+        None => return (StatusCode::NOT_FOUND, "slot index out of range".to_string()),
     };
     if slot.state.lock_or_recover().is_none() {
-        return (StatusCode::SERVICE_UNAVAILABLE, "slot not connected".to_string());
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "slot not connected".to_string(),
+        );
     }
-    let party_position = match body["party_position"].as_u64().and_then(|v| u8::try_from(v).ok()) {
+    let party_position = match body["party_position"]
+        .as_u64()
+        .and_then(|v| u8::try_from(v).ok())
+    {
         Some(v) if v < 6 => v,
-        _ => return (StatusCode::BAD_REQUEST, "party_position must be 0–5".to_string()),
+        _ => {
+            return (
+                StatusCode::BAD_REQUEST,
+                "party_position must be 0–5".to_string(),
+            );
+        }
     };
     let exp = match body["exp"].as_u64().and_then(|v| u32::try_from(v).ok()) {
         Some(v) => v,
         None => return (StatusCode::BAD_REQUEST, "exp must be a u32".to_string()),
     };
-    slot.command_queue.lock_or_recover().push_back(ClientMessage::SetExp { party_position, exp });
-    slot.injection_events.lock_or_recover().push_back(serde_json::json!({
-        "at": now_secs(), "kind": "set_exp",
-        "label": format!("party[{party_position}] exp → {exp}"),
-    }));
-    (StatusCode::OK, format!("queued set_exp party_position={party_position} exp={exp} for slot {index}"))
+    slot.command_queue
+        .lock_or_recover()
+        .push_back(ClientMessage::SetExp {
+            party_position,
+            exp,
+        });
+    slot.injection_events
+        .lock_or_recover()
+        .push_back(serde_json::json!({
+            "at": now_secs(), "kind": "set_exp",
+            "label": format!("party[{party_position}] exp → {exp}"),
+        }));
+    (
+        StatusCode::OK,
+        format!("queued set_exp party_position={party_position} exp={exp} for slot {index}"),
+    )
 }
 
 /// `POST /api/slot/:index/set_level` — set the level of a party Pokémon (1–100).
@@ -2662,30 +3420,54 @@ async fn api_set_level(
     axum::Json(body): axum::Json<serde_json::Value>,
 ) -> impl IntoResponse {
     if !state.allow_injections {
-        return (StatusCode::FORBIDDEN, "injection commands are disabled".to_string());
+        return (
+            StatusCode::FORBIDDEN,
+            "injection commands are disabled".to_string(),
+        );
     }
     let slots = state.live_slots.lock_or_recover().clone();
     let slot = match slots.get(index) {
         Some(s) => s.clone(),
-        None    => return (StatusCode::NOT_FOUND, "slot index out of range".to_string()),
+        None => return (StatusCode::NOT_FOUND, "slot index out of range".to_string()),
     };
     if slot.state.lock_or_recover().is_none() {
-        return (StatusCode::SERVICE_UNAVAILABLE, "slot not connected".to_string());
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "slot not connected".to_string(),
+        );
     }
-    let party_position = match body["party_position"].as_u64().and_then(|v| u8::try_from(v).ok()) {
+    let party_position = match body["party_position"]
+        .as_u64()
+        .and_then(|v| u8::try_from(v).ok())
+    {
         Some(v) if v < 6 => v,
-        _ => return (StatusCode::BAD_REQUEST, "party_position must be 0–5".to_string()),
+        _ => {
+            return (
+                StatusCode::BAD_REQUEST,
+                "party_position must be 0–5".to_string(),
+            );
+        }
     };
     let level = match body["level"].as_u64().and_then(|v| u8::try_from(v).ok()) {
         Some(v) if (1..=100).contains(&v) => v,
         _ => return (StatusCode::BAD_REQUEST, "level must be 1–100".to_string()),
     };
-    slot.command_queue.lock_or_recover().push_back(ClientMessage::SetLevel { party_position, level });
-    slot.injection_events.lock_or_recover().push_back(serde_json::json!({
-        "at": now_secs(), "kind": "set_level",
-        "label": format!("party[{party_position}] → level {level}"),
-    }));
-    (StatusCode::OK, format!("queued set_level party_position={party_position} level={level} for slot {index}"))
+    slot.command_queue
+        .lock_or_recover()
+        .push_back(ClientMessage::SetLevel {
+            party_position,
+            level,
+        });
+    slot.injection_events
+        .lock_or_recover()
+        .push_back(serde_json::json!({
+            "at": now_secs(), "kind": "set_level",
+            "label": format!("party[{party_position}] → level {level}"),
+        }));
+    (
+        StatusCode::OK,
+        format!("queued set_level party_position={party_position} level={level} for slot {index}"),
+    )
 }
 
 /// `POST /api/slot/:index/learn_move` — add a move to the first empty move slot.
@@ -2698,30 +3480,61 @@ async fn api_learn_move(
     axum::Json(body): axum::Json<serde_json::Value>,
 ) -> impl IntoResponse {
     if !state.allow_injections {
-        return (StatusCode::FORBIDDEN, "injection commands are disabled".to_string());
+        return (
+            StatusCode::FORBIDDEN,
+            "injection commands are disabled".to_string(),
+        );
     }
     let slots = state.live_slots.lock_or_recover().clone();
     let slot = match slots.get(index) {
         Some(s) => s.clone(),
-        None    => return (StatusCode::NOT_FOUND, "slot index out of range".to_string()),
+        None => return (StatusCode::NOT_FOUND, "slot index out of range".to_string()),
     };
     if slot.state.lock_or_recover().is_none() {
-        return (StatusCode::SERVICE_UNAVAILABLE, "slot not connected".to_string());
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "slot not connected".to_string(),
+        );
     }
-    let party_position = match body["party_position"].as_u64().and_then(|v| u8::try_from(v).ok()) {
+    let party_position = match body["party_position"]
+        .as_u64()
+        .and_then(|v| u8::try_from(v).ok())
+    {
         Some(v) if v < 6 => v,
-        _ => return (StatusCode::BAD_REQUEST, "party_position must be 0–5".to_string()),
+        _ => {
+            return (
+                StatusCode::BAD_REQUEST,
+                "party_position must be 0–5".to_string(),
+            );
+        }
     };
     let move_id = match body["move_id"].as_u64().and_then(|v| u16::try_from(v).ok()) {
         Some(v) if v > 0 => v,
-        _ => return (StatusCode::BAD_REQUEST, "move_id must be a non-zero u16".to_string()),
+        _ => {
+            return (
+                StatusCode::BAD_REQUEST,
+                "move_id must be a non-zero u16".to_string(),
+            );
+        }
     };
-    slot.command_queue.lock_or_recover().push_back(ClientMessage::LearnMove { party_position, move_id });
-    slot.injection_events.lock_or_recover().push_back(serde_json::json!({
-        "at": now_secs(), "kind": "learn_move",
-        "label": format!("party[{party_position}] learn move_id={move_id}"),
-    }));
-    (StatusCode::OK, format!("queued learn_move party_position={party_position} move_id={move_id} for slot {index}"))
+    slot.command_queue
+        .lock_or_recover()
+        .push_back(ClientMessage::LearnMove {
+            party_position,
+            move_id,
+        });
+    slot.injection_events
+        .lock_or_recover()
+        .push_back(serde_json::json!({
+            "at": now_secs(), "kind": "learn_move",
+            "label": format!("party[{party_position}] learn move_id={move_id}"),
+        }));
+    (
+        StatusCode::OK,
+        format!(
+            "queued learn_move party_position={party_position} move_id={move_id} for slot {index}"
+        ),
+    )
 }
 
 /// `POST /api/slot/:index/forget_move` — clear a move slot and compact.
@@ -2734,30 +3547,56 @@ async fn api_forget_move(
     axum::Json(body): axum::Json<serde_json::Value>,
 ) -> impl IntoResponse {
     if !state.allow_injections {
-        return (StatusCode::FORBIDDEN, "injection commands are disabled".to_string());
+        return (
+            StatusCode::FORBIDDEN,
+            "injection commands are disabled".to_string(),
+        );
     }
     let slots = state.live_slots.lock_or_recover().clone();
     let slot = match slots.get(index) {
         Some(s) => s.clone(),
-        None    => return (StatusCode::NOT_FOUND, "slot index out of range".to_string()),
+        None => return (StatusCode::NOT_FOUND, "slot index out of range".to_string()),
     };
     if slot.state.lock_or_recover().is_none() {
-        return (StatusCode::SERVICE_UNAVAILABLE, "slot not connected".to_string());
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "slot not connected".to_string(),
+        );
     }
-    let party_position = match body["party_position"].as_u64().and_then(|v| u8::try_from(v).ok()) {
+    let party_position = match body["party_position"]
+        .as_u64()
+        .and_then(|v| u8::try_from(v).ok())
+    {
         Some(v) if v < 6 => v,
-        _ => return (StatusCode::BAD_REQUEST, "party_position must be 0–5".to_string()),
+        _ => {
+            return (
+                StatusCode::BAD_REQUEST,
+                "party_position must be 0–5".to_string(),
+            );
+        }
     };
     let move_slot = match body["slot"].as_u64().and_then(|v| u8::try_from(v).ok()) {
         Some(v) if v < 4 => v,
         _ => return (StatusCode::BAD_REQUEST, "slot must be 0–3".to_string()),
     };
-    slot.command_queue.lock_or_recover().push_back(ClientMessage::ForgetMove { party_position, slot: move_slot });
-    slot.injection_events.lock_or_recover().push_back(serde_json::json!({
-        "at": now_secs(), "kind": "forget_move",
-        "label": format!("party[{party_position}] forget slot {move_slot}"),
-    }));
-    (StatusCode::OK, format!("queued forget_move party_position={party_position} slot={move_slot} for slot {index}"))
+    slot.command_queue
+        .lock_or_recover()
+        .push_back(ClientMessage::ForgetMove {
+            party_position,
+            slot: move_slot,
+        });
+    slot.injection_events
+        .lock_or_recover()
+        .push_back(serde_json::json!({
+            "at": now_secs(), "kind": "forget_move",
+            "label": format!("party[{party_position}] forget slot {move_slot}"),
+        }));
+    (
+        StatusCode::OK,
+        format!(
+            "queued forget_move party_position={party_position} slot={move_slot} for slot {index}"
+        ),
+    )
 }
 
 /// `POST /api/slot/:index/set_pokerus` — infect a party Pokémon with Pokérus.
@@ -2770,33 +3609,51 @@ async fn api_set_pokerus(
     axum::Json(body): axum::Json<serde_json::Value>,
 ) -> impl IntoResponse {
     if !state.allow_injections {
-        return (StatusCode::FORBIDDEN, "injection commands are disabled".to_string());
+        return (
+            StatusCode::FORBIDDEN,
+            "injection commands are disabled".to_string(),
+        );
     }
     let slots = state.live_slots.lock_or_recover().clone();
     let slot = match slots.get(index) {
         Some(s) => s.clone(),
-        None    => return (StatusCode::NOT_FOUND, "slot index out of range".to_string()),
+        None => return (StatusCode::NOT_FOUND, "slot index out of range".to_string()),
     };
     if slot.state.lock_or_recover().is_none() {
-        return (StatusCode::SERVICE_UNAVAILABLE, "slot not connected".to_string());
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "slot not connected".to_string(),
+        );
     }
-    let party_position = match body["party_position"].as_u64().and_then(|v| u8::try_from(v).ok()) {
+    let party_position = match body["party_position"]
+        .as_u64()
+        .and_then(|v| u8::try_from(v).ok())
+    {
         Some(v) if v < 6 => v,
-        _ => return (StatusCode::BAD_REQUEST, "party_position must be 0–5".to_string()),
+        _ => {
+            return (
+                StatusCode::BAD_REQUEST,
+                "party_position must be 0–5".to_string(),
+            );
+        }
     };
-    slot.command_queue.lock_or_recover().push_back(ClientMessage::SetPokerus { party_position });
-    slot.injection_events.lock_or_recover().push_back(serde_json::json!({
-        "at": now_secs(), "kind": "set_pokerus",
-        "label": format!("party[{party_position}] infected with Pokérus"),
-    }));
-    (StatusCode::OK, format!("queued set_pokerus party_position={party_position} for slot {index}"))
+    slot.command_queue
+        .lock_or_recover()
+        .push_back(ClientMessage::SetPokerus { party_position });
+    slot.injection_events
+        .lock_or_recover()
+        .push_back(serde_json::json!({
+            "at": now_secs(), "kind": "set_pokerus",
+            "label": format!("party[{party_position}] infected with Pokérus"),
+        }));
+    (
+        StatusCode::OK,
+        format!("queued set_pokerus party_position={party_position} for slot {index}"),
+    )
 }
 
 /// Broadcasts `end_run` or `new_run` to all connected tracker slots.
-async fn api_command(
-    State(state): State<WebState>,
-    Path(cmd): Path<String>,
-) -> impl IntoResponse {
+async fn api_command(State(state): State<WebState>, Path(cmd): Path<String>) -> impl IntoResponse {
     let msg = match cmd.as_str() {
         "end_run" => ClientMessage::EndRun,
         "new_run" => ClientMessage::NewRun,
@@ -2805,11 +3662,12 @@ async fn api_command(
     let slots = state.live_slots.lock_or_recover().clone();
     let count = slots.len();
     for slot in &slots {
-        slot.command_queue
-            .lock_or_recover()
-            .push_back(msg.clone());
+        slot.command_queue.lock_or_recover().push_back(msg.clone());
     }
-    (StatusCode::OK, format!("Command '{cmd}' sent to {count} slot(s)"))
+    (
+        StatusCode::OK,
+        format!("Command '{cmd}' sent to {count} slot(s)"),
+    )
 }
 
 /// Runs arbitrary SQL against the database and returns results as JSON.
@@ -2821,12 +3679,14 @@ async fn api_db_query(
     axum::Json(body): axum::Json<serde_json::Value>,
 ) -> axum::Json<serde_json::Value> {
     if !addr.ip().is_loopback() {
-        return axum::Json(serde_json::json!({ "error": "Forbidden: endpoint only available on localhost" }));
+        return axum::Json(
+            serde_json::json!({ "error": "Forbidden: endpoint only available on localhost" }),
+        );
     }
     let conn = require_db!(state);
     let sql = match body["sql"].as_str() {
         Some(s) => s.to_string(),
-        None    => return axum::Json(serde_json::json!({ "error": "Missing 'sql' field" })),
+        None => return axum::Json(serde_json::json!({ "error": "Missing 'sql' field" })),
     };
     let result = tokio::task::spawn_blocking(move || fire_red_database::run_sql(&conn, &sql)).await;
     axum::Json(result.unwrap_or_else(|_| serde_json::json!({ "error": "Task panicked" })))
@@ -2836,7 +3696,13 @@ async fn api_db_query(
 // Entry point
 // ---------------------------------------------------------------------------
 
-pub fn run(live_slots: SharedSlots, port: u16, db_conn: Option<String>, testing: bool, allow_injections: bool) {
+pub fn run(
+    live_slots: SharedSlots,
+    port: u16,
+    db_conn: Option<String>,
+    testing: bool,
+    allow_injections: bool,
+) {
     let sprites: PngSpriteCache = Arc::new(Mutex::new(HashMap::new()));
 
     // Wire the shared sprite cache into any already-connected slots and keep
@@ -2849,9 +3715,9 @@ pub fn run(live_slots: SharedSlots, port: u16, db_conn: Option<String>, testing:
     }
 
     let (tx, _rx) = watch::channel::<String>(String::new());
-    let tx_bg        = tx.clone();
+    let tx_bg = tx.clone();
     let sprites_loop = sprites.clone();
-    let loop_slots   = live_slots.clone();
+    let loop_slots = live_slots.clone();
 
     std::thread::spawn(move || {
         let mut bloop = BroadcastLoop::new(loop_slots, sprites_loop);
@@ -2863,7 +3729,13 @@ pub fn run(live_slots: SharedSlots, port: u16, db_conn: Option<String>, testing:
         }
     });
 
-    let web_state = WebState { tx, live_slots, db_conn, testing, allow_injections };
+    let web_state = WebState {
+        tx,
+        live_slots,
+        db_conn,
+        testing,
+        allow_injections,
+    };
 
     let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
     rt.block_on(async move {
@@ -2884,8 +3756,14 @@ pub fn run(live_slots: SharedSlots, port: u16, db_conn: Option<String>, testing:
             .route("/api/slot/:index/change_ability", post(api_change_ability))
             .route("/api/slot/:index/change_gender", post(api_change_gender))
             .route("/api/slot/:index/make_shiny", post(api_make_shiny))
-            .route("/api/slot/:index/change_nickname", post(api_change_nickname))
-            .route("/api/slot/:index/change_held_item", post(api_change_held_item))
+            .route(
+                "/api/slot/:index/change_nickname",
+                post(api_change_nickname),
+            )
+            .route(
+                "/api/slot/:index/change_held_item",
+                post(api_change_held_item),
+            )
             .route("/api/slot/:index/cure_status", post(api_cure_status))
             .route("/api/slot/:index/change_nature", post(api_change_nature))
             .route("/api/slot/:index/restore_pp", post(api_restore_pp))
@@ -2905,19 +3783,28 @@ pub fn run(live_slots: SharedSlots, port: u16, db_conn: Option<String>, testing:
             .route("/api/bot/:index", get(api_bot_summary))
             .route("/api/command/:cmd", post(api_command))
             .route("/api/db/query", post(api_db_query))
-            .route("/api/runs",            get(api_runs))
-            .route("/api/run/import",      post(api_run_import))
-            .route("/api/run/:id/stats",        get(api_run_stats))
-            .route("/api/run/:id/route_stats",   get(api_run_route_stats))
-            .route("/api/run/:id/route_odds",    get(api_run_route_odds))
-            .route("/api/run/:id/webhook_log",   get(api_run_webhook_log))
-            .route("/api/run/:id/soul_link/overrides",          get(api_run_soul_link_overrides))
-            .route("/api/run/:id/soul_link/override",           post(api_set_soul_link_override))
-            .route("/api/run/:id/soul_link/override/:personality", delete(api_clear_soul_link_override))
-            .route("/api/run/:id/shiny",         get(api_shiny_stats))
-            .route("/api/run/:id/export",  get(api_run_export))
-            .route("/api/run/:id/events",  get(api_run_events))
-            .route("/api/timeline",        get(api_active_timeline))
+            .route("/api/runs", get(api_runs))
+            .route("/api/run/import", post(api_run_import))
+            .route("/api/run/:id/stats", get(api_run_stats))
+            .route("/api/run/:id/route_stats", get(api_run_route_stats))
+            .route("/api/run/:id/route_odds", get(api_run_route_odds))
+            .route("/api/run/:id/webhook_log", get(api_run_webhook_log))
+            .route(
+                "/api/run/:id/soul_link/overrides",
+                get(api_run_soul_link_overrides),
+            )
+            .route(
+                "/api/run/:id/soul_link/override",
+                post(api_set_soul_link_override),
+            )
+            .route(
+                "/api/run/:id/soul_link/override/:personality",
+                delete(api_clear_soul_link_override),
+            )
+            .route("/api/run/:id/shiny", get(api_shiny_stats))
+            .route("/api/run/:id/export", get(api_run_export))
+            .route("/api/run/:id/events", get(api_run_events))
+            .route("/api/timeline", get(api_active_timeline))
             .route("/history", get(serve_history))
             .route("/shiny", get(serve_shiny))
             .route("/memorial", get(serve_memorial))
@@ -2959,7 +3846,9 @@ pub fn run(live_slots: SharedSlots, port: u16, db_conn: Option<String>, testing:
         if let Err(e) = axum::serve(
             listener,
             app.into_make_service_with_connect_info::<SocketAddr>(),
-        ).await {
+        )
+        .await
+        {
             tracing::error!("WebSocket server error: {e}");
         }
     });
@@ -2973,7 +3862,8 @@ pub fn run(live_slots: SharedSlots, port: u16, db_conn: Option<String>, testing:
 mod tests {
     use super::*;
 
-    const SAMPLE_HTML: &str = r#"<!DOCTYPE html><html><head><!-- THEME_SLOT --></head><body>__VERSION__</body></html>"#;
+    const SAMPLE_HTML: &str =
+        r#"<!DOCTYPE html><html><head><!-- THEME_SLOT --></head><body>__VERSION__</body></html>"#;
 
     #[test]
     fn apply_page_replaces_version() {
@@ -2985,7 +3875,10 @@ mod tests {
     #[test]
     fn apply_page_no_theme_removes_slot() {
         let out = apply_page(SAMPLE_HTML, false);
-        assert!(!out.contains("<!-- THEME_SLOT -->"), "theme slot should be removed");
+        assert!(
+            !out.contains("<!-- THEME_SLOT -->"),
+            "theme slot should be removed"
+        );
         assert!(!out.contains("data-theme"), "no theme attr expected");
     }
 
@@ -3000,7 +3893,10 @@ mod tests {
     fn apply_page_with_theme_light_injects_attr() {
         let out = apply_page_with_theme(SAMPLE_HTML, false, Some("light"));
         assert!(!out.contains("<!-- THEME_SLOT -->"));
-        assert!(out.contains(r#"dataset.theme="light""#), "light theme not injected: {out}");
+        assert!(
+            out.contains(r#"dataset.theme="light""#),
+            "light theme not injected: {out}"
+        );
     }
 
     #[test]
@@ -3009,21 +3905,33 @@ mod tests {
         // rather than being stripped and concatenated, which would produce confusing output.
         let out = apply_page_with_theme(SAMPLE_HTML, false, Some("light<script>alert(1)</script>"));
         assert!(!out.contains("<script>alert"), "XSS not sanitized");
-        assert!(!out.contains("lightscript"), "stripped-and-concatenated theme should not appear");
-        assert!(!out.contains("data-theme"), "rejected theme should not inject any attribute");
+        assert!(
+            !out.contains("lightscript"),
+            "stripped-and-concatenated theme should not appear"
+        );
+        assert!(
+            !out.contains("data-theme"),
+            "rejected theme should not inject any attribute"
+        );
     }
 
     #[test]
     fn apply_page_with_theme_rejects_oversized_input() {
         let long = "a".repeat(33);
         let out = apply_page_with_theme(SAMPLE_HTML, false, Some(&long));
-        assert!(!out.contains("data-theme"), "theme longer than 32 chars should be rejected");
+        assert!(
+            !out.contains("data-theme"),
+            "theme longer than 32 chars should be rejected"
+        );
     }
 
     #[test]
     fn apply_page_with_theme_accepts_hyphen_and_underscore() {
         let out = apply_page_with_theme(SAMPLE_HTML, false, Some("my_custom-theme"));
-        assert!(out.contains(r#"dataset.theme="my_custom-theme""#), "valid theme with - and _ rejected");
+        assert!(
+            out.contains(r#"dataset.theme="my_custom-theme""#),
+            "valid theme with - and _ rejected"
+        );
     }
 
     #[test]

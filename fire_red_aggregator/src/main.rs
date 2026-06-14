@@ -24,7 +24,6 @@ use fire_red_states::LockOrRecover;
 use std::net::TcpListener;
 use std::sync::{Arc, Mutex};
 
-
 // ---------------------------------------------------------------------------
 // CLI definition
 // ---------------------------------------------------------------------------
@@ -91,7 +90,10 @@ fn do_update() {
             println!("Already up to date (v{}).", v);
         }
         Ok(self_update::Status::Updated(v)) => {
-            println!("Updated to v{}. Restart the aggregator to use the new version.", v);
+            println!(
+                "Updated to v{}. Restart the aggregator to use the new version.",
+                v
+            );
         }
         Err(e) => {
             tracing::error!("Update failed: {}", e);
@@ -115,7 +117,9 @@ fn main() {
         return;
     }
 
-    let config_path = cli.config.as_deref()
+    let config_path = cli
+        .config
+        .as_deref()
         .map(std::path::PathBuf::from)
         .unwrap_or_else(config::default_config_path);
 
@@ -124,27 +128,30 @@ fn main() {
         return;
     }
 
-    let cfg     = config::load_or_prompt(&config_path);
+    let cfg = config::load_or_prompt(&config_path);
     let cfg_ref = cfg.clone();
 
     // test section: applied on top of base config, below explicit CLI flags.
     let use_test = cli.test || cfg.default_test;
-    let test_ov  = if use_test { cfg.test.clone() } else { None };
-    let test     = test_ov.as_ref();
+    let test_ov = if use_test { cfg.test.clone() } else { None };
+    let test = test_ov.as_ref();
     if use_test {
         println!("Test mode active — using [test] config overrides.");
     }
 
     // Priority: base config → [test] overrides → explicit CLI flags.
     // DB URL normalization (postgresql:// prefix) is handled inside initialize().
-    let db = cli.db
+    let db = cli
+        .db
         .or_else(|| test.and_then(|t| t.db.clone()))
         .or(cfg.db);
 
-    let listen_port = cli.listen_port
+    let listen_port = cli
+        .listen_port
         .or_else(|| test.and_then(|t| t.listen_port))
         .unwrap_or(cfg.listen_port);
-    let ws_port = cli.ws_port
+    let ws_port = cli
+        .ws_port
         .or_else(|| test.and_then(|t| t.ws_port))
         .or(cfg.ws_port);
     // --no-injections overrides allow_injections = true in config; config false always wins.
@@ -154,26 +161,29 @@ fn main() {
     let shared_slots: SharedSlots = Arc::new(std::sync::Mutex::new(Vec::new()));
 
     // TCP listener — accepts incoming tracker connections.
-    let listener = TcpListener::bind(format!("0.0.0.0:{}", listen_port))
-        .unwrap_or_else(|e| {
-            tracing::error!("Failed to bind port {}: {}", listen_port, e);
-            std::process::exit(1);
-        });
-    tracing::info!("Aggregator listening on port {} for tracker connections.", listen_port);
+    let listener = TcpListener::bind(format!("0.0.0.0:{}", listen_port)).unwrap_or_else(|e| {
+        tracing::error!("Failed to bind port {}: {}", listen_port, e);
+        std::process::exit(1);
+    });
+    tracing::info!(
+        "Aggregator listening on port {} for tracker connections.",
+        listen_port
+    );
 
     let listener_slots = shared_slots.clone();
-    let listener_db    = db.clone();
+    let listener_db = db.clone();
     std::thread::spawn(move || {
         for stream in listener.incoming() {
             let stream = match stream {
-                Ok(s)  => s,
+                Ok(s) => s,
                 Err(e) => {
                     tracing::warn!("Accept error: {}", e);
                     std::thread::sleep(std::time::Duration::from_millis(100));
                     continue;
                 }
             };
-            let peer = stream.peer_addr()
+            let peer = stream
+                .peer_addr()
                 .map(|a| a.to_string())
                 .unwrap_or_else(|_| "unknown".to_string());
             tracing::info!("Tracker connected from {}", peer);
@@ -181,14 +191,16 @@ fn main() {
             // Reuse the first disconnected slot, or create a new one.
             let slot_arc = {
                 let mut slots = listener_slots.lock_or_recover();
-                let reuse = slots.iter().find(|s| {
-                    s.state.lock_or_recover().is_none()
-                }).cloned();
+                let reuse = slots
+                    .iter()
+                    .find(|s| s.state.lock_or_recover().is_none())
+                    .cloned();
                 if let Some(s) = reuse {
                     // Reset stale per-connection state before handing to a new tracker.
                     s.known_species.lock_or_recover().clear();
                     s.command_queue.lock_or_recover().clear();
-                    s.run_changed.store(false, std::sync::atomic::Ordering::Relaxed);
+                    s.run_changed
+                        .store(false, std::sync::atomic::Ordering::Relaxed);
                     s
                 } else {
                     let idx = slots.len();
@@ -198,26 +210,38 @@ fn main() {
                 }
             };
 
-            let state        = slot_arc.state.clone();
-            let pending      = slot_arc.pending_textures.clone();
-            let known        = slot_arc.known_species.clone();
-            let tex_queue    = slot_arc.texture_request_queue.clone();
-            let label        = slot_arc.label.clone();
+            let state = slot_arc.state.clone();
+            let pending = slot_arc.pending_textures.clone();
+            let known = slot_arc.known_species.clone();
+            let tex_queue = slot_arc.texture_request_queue.clone();
+            let label = slot_arc.label.clone();
             let sprite_cache = slot_arc.sprite_cache.clone();
-            let bag_data     = slot_arc.bag_data.clone();
-            let cmd_queue    = slot_arc.command_queue.clone();
-            let run_chg      = slot_arc.run_changed.clone();
-            let box_data     = slot_arc.box_data.clone();
+            let bag_data = slot_arc.bag_data.clone();
+            let cmd_queue = slot_arc.command_queue.clone();
+            let run_chg = slot_arc.run_changed.clone();
+            let box_data = slot_arc.box_data.clone();
 
             std::thread::spawn(move || {
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     handle_tracker_connection(
-                        stream, state.clone(), pending, known, tex_queue,
-                        label, sprite_cache, cmd_queue, run_chg, box_data, bag_data,
+                        stream,
+                        state.clone(),
+                        pending,
+                        known,
+                        tex_queue,
+                        label,
+                        sprite_cache,
+                        cmd_queue,
+                        run_chg,
+                        box_data,
+                        bag_data,
                     );
                 }));
                 if result.is_err() {
-                    tracing::error!("Tracker thread for {} panicked — clearing slot state.", peer);
+                    tracing::error!(
+                        "Tracker thread for {} panicked — clearing slot state.",
+                        peer
+                    );
                     *state.lock_or_recover() = None;
                 }
                 tracing::info!("Tracker from {} disconnected.", peer);
@@ -261,7 +285,15 @@ fn main() {
         if let Err(e) = eframe::run_native(
             "Fire Red Aggregator",
             options,
-            Box::new(move |cc| Ok(Box::new(AggregatorApp::new(cc, shared_slots, config_path, &cfg_ref, update_available)))),
+            Box::new(move |cc| {
+                Ok(Box::new(AggregatorApp::new(
+                    cc,
+                    shared_slots,
+                    config_path,
+                    &cfg_ref,
+                    update_available,
+                )))
+            }),
         ) {
             tracing::error!("GUI exited with error: {e}");
         }

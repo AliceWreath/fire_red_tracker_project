@@ -20,8 +20,7 @@ enum Cmd {
     Shutdown,
 }
 
-static SENDER: OnceLock<std::sync::Mutex<Option<std::sync::mpsc::Sender<Cmd>>>> =
-    OnceLock::new();
+static SENDER: OnceLock<std::sync::Mutex<Option<std::sync::mpsc::Sender<Cmd>>>> = OnceLock::new();
 
 /// Initialise the LiveSplit background thread.
 ///
@@ -41,7 +40,7 @@ pub fn init(host: Option<String>, port: u16) {
         for cmd in rx {
             match cmd {
                 Cmd::Shutdown => break,
-                Cmd::Split    => {
+                Cmd::Split => {
                     // Lazily connect / reconnect.
                     if stream.is_none() {
                         match TcpStream::connect(&addr) {
@@ -52,7 +51,9 @@ pub fn init(host: Option<String>, port: u16) {
                                 tracing::info!("LiveSplit connected: {addr}");
                             }
                             Err(e) => {
-                                tracing::warn!("LiveSplit connect failed ({addr}): {e}; retry in {backoff:?}");
+                                tracing::warn!(
+                                    "LiveSplit connect failed ({addr}): {e}; retry in {backoff:?}"
+                                );
                                 std::thread::sleep(backoff);
                                 backoff = (backoff * 2).min(Duration::from_secs(60));
                                 continue;
@@ -77,19 +78,19 @@ pub fn init(host: Option<String>, port: u16) {
 
 /// Send a split signal if the module is initialised.
 pub fn split() {
-    if let Some(slot) = SENDER.get() {
-        if let Some(tx) = slot.lock().unwrap_or_else(|p| p.into_inner()).as_ref() {
-            let _ = tx.send(Cmd::Split);
-        }
+    if let Some(slot) = SENDER.get()
+        && let Some(tx) = slot.lock().unwrap_or_else(|p| p.into_inner()).as_ref()
+    {
+        let _ = tx.send(Cmd::Split);
     }
 }
 
 /// Shut down the background thread cleanly.
 #[allow(dead_code)]
 pub fn shutdown() {
-    if let Some(slot) = SENDER.get() {
-        if let Some(tx) = slot.lock().unwrap_or_else(|p| p.into_inner()).as_ref() {
-            let _ = tx.send(Cmd::Shutdown);
-        }
+    if let Some(slot) = SENDER.get()
+        && let Some(tx) = slot.lock().unwrap_or_else(|p| p.into_inner()).as_ref()
+    {
+        let _ = tx.send(Cmd::Shutdown);
     }
 }

@@ -55,11 +55,14 @@ use colored::Colorize;
 
 use fire_red_loop::*;
 use fire_red_states::*;
-use game::{check_for_dead_pokemon, check_for_new_pokemon, check_for_run_over, fill_party_list, game_is_loaded, is_shiny, map_state_from_ewram, check_for_new_trainer_battles};
+use game::{
+    check_for_dead_pokemon, check_for_new_pokemon, check_for_new_trainer_battles,
+    check_for_run_over, fill_party_list, game_is_loaded, is_shiny, map_state_from_ewram,
+};
 #[cfg(feature = "dev-tools")]
 use game::{scan_for_balls_pocket, scan_for_security_key};
-use gui::{WindowInfo, PARTY_WINDOW};
-use server::{handle_client, RomSpriteCache};
+use gui::{PARTY_WINDOW, WindowInfo};
+use server::{RomSpriteCache, handle_client};
 use std::collections::HashMap;
 use std::net::TcpStream;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -83,9 +86,9 @@ const FORCE_PARTY_CHECK_INTERVAL: u64 = 1;
 /// periodic 1-second force-check. Returns `true` if a wipe was detected so
 /// the caller can stop the encounter tracker.
 fn handle_party_events(
-    thread_party:        &Arc<Mutex<Vec<fire_red_party_monitor::Pokemon>>>,
-    enc_tracker:         &mut encounter::EncounterTracker,
-    thread_wipe_signal:  &Arc<std::sync::atomic::AtomicBool>,
+    thread_party: &Arc<Mutex<Vec<fire_red_party_monitor::Pokemon>>>,
+    enc_tracker: &mut encounter::EncounterTracker,
+    thread_wipe_signal: &Arc<std::sync::atomic::AtomicBool>,
 ) -> bool {
     check_for_new_pokemon(thread_party);
     check_for_dead_pokemon(thread_party, enc_tracker.run_tracking_active());
@@ -108,26 +111,26 @@ fn build_box_entries() -> Vec<BoxEntry> {
         .into_iter()
         .map(|(box_idx, slot_idx, mon)| {
             let personality = mon.personality;
-            let ot_id       = mon.ot_id;
-            let iv          = &mon.secure.misc.iv_egg_ability;
+            let ot_id = mon.ot_id;
+            let iv = &mon.secure.misc.iv_egg_ability;
             BoxEntry {
-                box_index:    box_idx,
-                slot_index:   slot_idx,
-                species:      mon.secure.growth.species,
+                box_index: box_idx,
+                slot_index: slot_idx,
+                species: mon.secure.growth.species,
                 species_name: mon.secure.growth.species_string.clone(),
-                nickname:     mon.nickname_string.clone(),
+                nickname: mon.nickname_string.clone(),
                 personality,
                 ot_id,
-                is_shiny:     is_shiny(personality, ot_id),
-                nature:       fire_red_database::nature_name(personality).to_string(),
-                iv_hp:        iv.hp_iv,
-                iv_atk:       iv.attack_iv,
-                iv_def:       iv.defense_iv,
-                iv_spe:       iv.speed_iv,
-                iv_spa:       iv.sp_attack_iv,
-                iv_spd:       iv.sp_def_iv,
-                is_egg:       iv.egg != 0,
-                gender:       mon.gender,
+                is_shiny: is_shiny(personality, ot_id),
+                nature: fire_red_database::nature_name(personality).to_string(),
+                iv_hp: iv.hp_iv,
+                iv_atk: iv.attack_iv,
+                iv_def: iv.defense_iv,
+                iv_spe: iv.speed_iv,
+                iv_spa: iv.sp_attack_iv,
+                iv_spd: iv.sp_def_iv,
+                is_egg: iv.egg != 0,
+                gender: mon.gender,
             }
         })
         .collect()
@@ -138,7 +141,7 @@ fn build_box_entries() -> Vec<BoxEntry> {
 // ---------------------------------------------------------------------------
 
 static MAIN_THREAD_HANDLE: Mutex<Option<std::thread::JoinHandle<()>>> = Mutex::new(None);
-static NET_THREAD_HANDLE:  Mutex<Option<std::thread::JoinHandle<()>>> = Mutex::new(None);
+static NET_THREAD_HANDLE: Mutex<Option<std::thread::JoinHandle<()>>> = Mutex::new(None);
 
 /// Set to `false` by the Ctrl-C handler to trigger a clean shutdown.
 static RUNNING: AtomicBool = AtomicBool::new(true);
@@ -167,7 +170,10 @@ fn do_update() {
             println!("Already up to date (v{}).", v);
         }
         Ok(self_update::Status::Updated(v)) => {
-            println!("Updated to v{}. Restart the tracker to use the new version.", v);
+            println!(
+                "Updated to v{}. Restart the tracker to use the new version.",
+                v
+            );
         }
         Err(e) => {
             tracing::error!("Update failed: {}", e);
@@ -194,7 +200,9 @@ fn main() {
     tracing::info!("FireRed Tracker v{}", env!("CARGO_PKG_VERSION"));
 
     // Load config (prompts on first run), then overlay any CLI overrides.
-    let config_path = cli.config.as_deref()
+    let config_path = cli
+        .config
+        .as_deref()
         .map(std::path::PathBuf::from)
         .unwrap_or_else(config::default_config_path);
 
@@ -203,8 +211,8 @@ fn main() {
         return;
     }
 
-    let cfg             = config::load_or_prompt(&config_path);
-    let cfg_gui         = cfg.clone();
+    let cfg = config::load_or_prompt(&config_path);
+    let cfg_gui = cfg.clone();
     let config_path_gui = config_path.clone();
 
     // Validate config early so misconfigurations surface before any threads start.
@@ -219,12 +227,14 @@ fn main() {
 
     // test section: applied on top of base config, below explicit CLI flags.
     let use_test = cli.test || cfg.default_test;
-    let test_ov  = if use_test { cfg.test.clone() } else { None };
-    let test     = test_ov.as_ref();
+    let test_ov = if use_test { cfg.test.clone() } else { None };
+    let test = test_ov.as_ref();
     if use_test {
         if cli.run_id.is_some() {
-            tracing::error!("--run-id and test mode are mutually exclusive \
-                       (test mode always starts a new run; drop --run-id or disable test mode).");
+            tracing::error!(
+                "--run-id and test mode are mutually exclusive \
+                       (test mode always starts a new run; drop --run-id or disable test mode)."
+            );
             std::process::exit(1);
         }
         println!("Test mode active — using [test] config overrides and starting a new run.");
@@ -235,17 +245,20 @@ fn main() {
         Some(Command::Connect { host, port }) => Mode::Connected { host, port },
         None => match cfg.mode {
             config::ConfigMode::Standalone => Mode::Standalone,
-            config::ConfigMode::Connected  => Mode::Connected {
-                host: test.and_then(|t| t.aggregator_host.clone())
+            config::ConfigMode::Connected => Mode::Connected {
+                host: test
+                    .and_then(|t| t.aggregator_host.clone())
                     .unwrap_or_else(|| cfg.aggregator_host.clone()),
-                port: test.and_then(|t| t.aggregator_port)
+                port: test
+                    .and_then(|t| t.aggregator_port)
                     .unwrap_or(cfg.aggregator_port),
             },
         },
     };
 
     // Priority: base config → [test] overrides → explicit CLI flags.
-    let db_conn = cli.db
+    let db_conn = cli
+        .db
         .or_else(|| test.and_then(|t| t.db.clone()))
         .unwrap_or(cfg.db);
     if let Err(e) = fire_red_database::initialize(&db_conn) {
@@ -269,7 +282,8 @@ fn main() {
                 let marker = if active == Some(*id) { " <active>" } else { "" };
                 println!(
                     "{:<5} {:<12} {:<26} {}{}",
-                    id, name,
+                    id,
+                    name,
                     fire_red_database::format_timestamp(*started_at),
                     dead_count,
                     marker,
@@ -284,16 +298,20 @@ fn main() {
     // test mode implies --new-run so test sessions never pollute production history.
     let new_run = cli.new_run || use_test;
     match (cli.run_id, new_run) {
-        (Some(id), _) => {
-            match fire_red_database::resume_run(id) {
-                Ok(true)  => println!("Resuming run #{}.", id),
-                Ok(false) => {
-                    tracing::error!("run #{} not found. Use --list-runs to see available runs.", id);
-                    std::process::exit(1);
-                }
-                Err(e) => { tracing::error!("{e}"); std::process::exit(1); }
+        (Some(id), _) => match fire_red_database::resume_run(id) {
+            Ok(true) => println!("Resuming run #{}.", id),
+            Ok(false) => {
+                tracing::error!(
+                    "run #{} not found. Use --list-runs to see available runs.",
+                    id
+                );
+                std::process::exit(1);
             }
-        }
+            Err(e) => {
+                tracing::error!("{e}");
+                std::process::exit(1);
+            }
+        },
         (None, true) => {
             let id = fire_red_database::new_run("Unknown").unwrap_or_else(|e| {
                 tracing::error!("{e}");
@@ -311,55 +329,58 @@ fn main() {
     }
 
     webhook::init(cfg.webhooks.clone(), cfg.obs.clone());
-    livesplit::init(cfg.livesplit_host.clone(), cfg.livesplit_port.unwrap_or(16834));
+    livesplit::init(
+        cfg.livesplit_host.clone(),
+        cfg.livesplit_port.unwrap_or(16834),
+    );
     discord::init(cfg.discord_client_id);
 
-    let is_clean            = cfg.clean || cli.clean;
-    let poll_ms             = Arc::new(AtomicU64::new(cfg.poll_ms.clamp(20, 2000)));
-    let rom_path            = cli.rom.unwrap_or(cfg.rom);
-    let dupes_clause          = cfg.dupes_clause;
+    let is_clean = cfg.clean || cli.clean;
+    let poll_ms = Arc::new(AtomicU64::new(cfg.poll_ms.clamp(20, 2000)));
+    let rom_path = cli.rom.unwrap_or(cfg.rom);
+    let dupes_clause = cfg.dupes_clause;
     let allow_species_repeats = cfg.allow_species_repeats;
-    let run_start_balls       = cfg.run_start_balls.unwrap_or(5) as u32;
+    let run_start_balls = cfg.run_start_balls.unwrap_or(5) as u32;
     let livesplit_split_on_badges = cfg.livesplit_split_on_badges;
-    let livesplit_split_on_clear  = cfg.livesplit_split_on_clear;
+    let livesplit_split_on_clear = cfg.livesplit_split_on_clear;
     #[cfg(feature = "dev-tools")]
-    let do_scan_balls   = cli.scan_balls_pocket;
+    let do_scan_balls = cli.scan_balls_pocket;
     #[cfg(feature = "dev-tools")]
     let do_scan_sec_key = cli.scan_security_key;
-    let preferred_player = cli.preferred_player
+    let preferred_player = cli
+        .preferred_player
         .or_else(|| test.and_then(|t| t.preferred_player))
         .or(cfg.preferred_player);
 
-    let game_loaded:  Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
-    let run_changed:  Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
-    let wipe_signal:  Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
+    let game_loaded: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
+    let run_changed: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
+    let wipe_signal: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
 
     let shared_party: Arc<Mutex<Vec<fire_red_party_monitor::Pokemon>>> =
         Arc::new(Mutex::new(Vec::new()));
-    let shared_encounters: Arc<Mutex<fire_red_pokemon_data::WildPokemonHeader>> =
-        Arc::new(Mutex::new(fire_red_pokemon_data::WildPokemonHeader::default()));
-    let shared_box: Arc<Mutex<Vec<BoxEntry>>> =
-        Arc::new(Mutex::new(Vec::new()));
-    let shared_bag: Arc<Mutex<Option<fire_red_states::BagPockets>>> =
-        Arc::new(Mutex::new(None));
+    let shared_encounters: Arc<Mutex<fire_red_pokemon_data::WildPokemonHeader>> = Arc::new(
+        Mutex::new(fire_red_pokemon_data::WildPokemonHeader::default()),
+    );
+    let shared_box: Arc<Mutex<Vec<BoxEntry>>> = Arc::new(Mutex::new(Vec::new()));
+    let shared_bag: Arc<Mutex<Option<fire_red_states::BagPockets>>> = Arc::new(Mutex::new(None));
     let shared_warnings: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
     let sprite_cache: RomSpriteCache = Arc::new(Mutex::new(HashMap::new()));
 
     // ── Game-polling thread (both modes) ──────────────────────────────────────
     {
-        let thread_party       = shared_party.clone();
-        let thread_encounters  = shared_encounters.clone();
-        let thread_box         = shared_box.clone();
-        let thread_bag         = shared_bag.clone();
+        let thread_party = shared_party.clone();
+        let thread_encounters = shared_encounters.clone();
+        let thread_box = shared_box.clone();
+        let thread_bag = shared_bag.clone();
         let thread_game_loaded = game_loaded.clone();
         let thread_run_changed = run_changed.clone();
         let thread_wipe_signal = wipe_signal.clone();
-        let thread_warnings    = shared_warnings.clone();
-        let thread_poll_ms     = poll_ms.clone();
+        let thread_warnings = shared_warnings.clone();
+        let thread_poll_ms = poll_ms.clone();
 
         let main_thread = std::thread::spawn(move || {
             match start_loop(rom_path.as_str(), is_clean) {
-                0    => tracing::info!("Monitor loop started."),
+                0 => tracing::info!("Monitor loop started."),
                 code => {
                     tracing::error!("Failed to start monitor loop (code {}).", code);
                     std::process::exit(1);
@@ -369,7 +390,9 @@ fn main() {
             tracing::info!("Waiting for initial map state...");
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
             loop {
-                if map_state_from_ewram().is_some() { break; }
+                if map_state_from_ewram().is_some() {
+                    break;
+                }
                 if std::time::Instant::now() > deadline {
                     tracing::warn!("Map state did not populate within 5 seconds.");
                     break;
@@ -389,20 +412,21 @@ fn main() {
                 std::process::exit(0);
             }
 
-            let initial_state = map_state_from_ewram()
-                .unwrap_or(FireRedState { map_group_id: 0, map_name_id: 0 });
+            let initial_state = map_state_from_ewram().unwrap_or(FireRedState {
+                map_group_id: 0,
+                map_name_id: 0,
+            });
 
-            *thread_encounters.lock_or_recover() =
-                get_area_pokemon_id_for_state(&initial_state);
+            *thread_encounters.lock_or_recover() = get_area_pokemon_id_for_state(&initial_state);
 
-            let mut current_state      = initial_state;
-            let mut old_party_size     = get_party_size();
+            let mut current_state = initial_state;
+            let mut old_party_size = get_party_size();
             let mut last_party_refresh = std::time::Instant::now();
-            let mut last_bag_refresh   = std::time::Instant::now()
+            let mut last_bag_refresh = std::time::Instant::now()
                 .checked_sub(std::time::Duration::from_secs(10))
                 .unwrap_or_else(std::time::Instant::now);
-            let mut state_initialized  = false;
-            let mut enc_tracker        = encounter::EncounterTracker::new();
+            let mut state_initialized = false;
+            let mut enc_tracker = encounter::EncounterTracker::new();
             // None = "uninitialized"; check_for_new_badges adopts existing
             // badges silently on the first call with this sentinel value.
             let mut last_badge_mask: Option<u8> = None;
@@ -410,7 +434,7 @@ fn main() {
             // existing flags silently on the first call.
             let mut last_trainer_flags: Option<Vec<u8>> = None;
             // Track the last player name to detect save-file switches mid-session.
-            let mut last_player_name   = String::new();
+            let mut last_player_name = String::new();
 
             // Set player name before the startup party scan so records written
             // to caught_pokemon have the correct player attribution. The trainer
@@ -447,11 +471,14 @@ fn main() {
                     *thread_encounters.lock_or_recover() =
                         fire_red_pokemon_data::WildPokemonHeader::default();
                     *thread_party.lock_or_recover() = Vec::new();
-                    state_initialized   = false;
-                    player_name_set     = false;
-                    last_badge_mask     = None;
-                    last_trainer_flags  = None;
-                    current_state = FireRedState { map_group_id: 0xFF, map_name_id: 0xFF };
+                    state_initialized = false;
+                    player_name_set = false;
+                    last_badge_mask = None;
+                    last_trainer_flags = None;
+                    current_state = FireRedState {
+                        map_group_id: 0xFF,
+                        map_name_id: 0xFF,
+                    };
                     enc_tracker.reset();
                     std::thread::sleep(std::time::Duration::from_millis(500));
                     continue;
@@ -469,7 +496,8 @@ fn main() {
                                 "player name changed from '{}' to '{}' after reload — \
                                  possible save-file switch. Death/encounter records may now \
                                  belong to a different run.",
-                                last_player_name, name
+                                last_player_name,
+                                name
                             );
                         }
                         last_player_name = name.clone();
@@ -483,12 +511,10 @@ fn main() {
                     }
                 }
 
-                let state      = map_state_from_ewram().unwrap_or(current_state);
+                let state = map_state_from_ewram().unwrap_or(current_state);
                 let party_size = get_party_size();
 
-                if !state_initialized
-                    && (state.map_group_id != 0 || state.map_name_id != 0)
-                {
+                if !state_initialized && (state.map_group_id != 0 || state.map_name_id != 0) {
                     state_initialized = true;
                     current_state = state;
                     *thread_encounters.lock_or_recover() =
@@ -500,18 +526,22 @@ fn main() {
                     *thread_encounters.lock_or_recover() =
                         get_area_pokemon_id_for_state(&current_state);
                     let zone = fire_red_loop::get_area_name_for(
-                        current_state.map_group_id, current_state.map_name_id,
+                        current_state.map_group_id,
+                        current_state.map_name_id,
                     );
                     let zone_str = if zone.is_empty() {
-                        format!("{}\u{B7}{}", current_state.map_group_id, current_state.map_name_id)
+                        format!(
+                            "{}\u{B7}{}",
+                            current_state.map_group_id, current_state.map_name_id
+                        )
                     } else {
                         zone.to_string()
                     };
                     discord::update(discord::Presence {
-                        details:     zone_str,
-                        state:       format!("Party: {}", party_size),
+                        details: zone_str,
+                        state: format!("Party: {}", party_size),
                         large_image: "pokeball",
-                        large_text:  fire_red_loop::get_trainer_name(),
+                        large_text: fire_red_loop::get_trainer_name(),
                     });
                 }
 
@@ -530,18 +560,22 @@ fn main() {
                     // Presence update: party size changed (catch, death, trade, etc).
                     if state_initialized {
                         let zone = fire_red_loop::get_area_name_for(
-                            current_state.map_group_id, current_state.map_name_id,
+                            current_state.map_group_id,
+                            current_state.map_name_id,
                         );
                         let zone_str = if zone.is_empty() {
-                            format!("{}\u{B7}{}", current_state.map_group_id, current_state.map_name_id)
+                            format!(
+                                "{}\u{B7}{}",
+                                current_state.map_group_id, current_state.map_name_id
+                            )
                         } else {
                             zone.to_string()
                         };
                         discord::update(discord::Presence {
-                            details:     zone_str,
-                            state:       format!("Party: {}", party_size),
+                            details: zone_str,
+                            state: format!("Party: {}", party_size),
                             large_image: "pokeball",
-                            large_text:  fire_red_loop::get_trainer_name(),
+                            large_text: fire_red_loop::get_trainer_name(),
                         });
                     }
                 }
@@ -555,18 +589,28 @@ fn main() {
 
                 if thread_run_changed.swap(false, Ordering::AcqRel) {
                     enc_tracker.reset();
-                    last_badge_mask    = None;
+                    last_badge_mask = None;
                     last_trainer_flags = None;
-                    player_name_set    = false;
+                    player_name_set = false;
                 }
 
                 if state_initialized {
-                    enc_tracker.tick(current_state, &thread_party, dupes_clause, allow_species_repeats, run_start_balls);
+                    enc_tracker.tick(
+                        current_state,
+                        &thread_party,
+                        dupes_clause,
+                        allow_species_repeats,
+                        run_start_balls,
+                    );
                     let drained = enc_tracker.drain_warnings();
                     if !drained.is_empty() {
                         thread_warnings.lock_or_recover().extend(drained);
                     }
-                    last_badge_mask    = game::check_for_new_badges(last_badge_mask, livesplit_split_on_badges, livesplit_split_on_clear);
+                    last_badge_mask = game::check_for_new_badges(
+                        last_badge_mask,
+                        livesplit_split_on_badges,
+                        livesplit_split_on_clear,
+                    );
                     last_trainer_flags = check_for_new_trainer_battles(last_trainer_flags);
                 }
 
@@ -575,7 +619,9 @@ fn main() {
                     last_bag_refresh = std::time::Instant::now();
                 }
 
-                std::thread::sleep(std::time::Duration::from_millis(thread_poll_ms.load(Ordering::Relaxed)));
+                std::thread::sleep(std::time::Duration::from_millis(
+                    thread_poll_ms.load(Ordering::Relaxed),
+                ));
             }
         });
 
@@ -584,8 +630,8 @@ fn main() {
 
     // ── Config hot-reload thread ──────────────────────────────────────────────
     {
-        let reload_path  = config_path.clone();
-        let reload_ms    = poll_ms.clone();
+        let reload_path = config_path.clone();
+        let reload_ms = poll_ms.clone();
         std::thread::spawn(move || {
             let mut last_mtime = std::fs::metadata(&reload_path)
                 .and_then(|m| m.modified())
@@ -595,13 +641,17 @@ fn main() {
                 let current_mtime = std::fs::metadata(&reload_path)
                     .and_then(|m| m.modified())
                     .ok();
-                if current_mtime == last_mtime || current_mtime.is_none() { continue; }
+                if current_mtime == last_mtime || current_mtime.is_none() {
+                    continue;
+                }
                 last_mtime = current_mtime;
                 match config::try_load_config(&reload_path) {
                     Some(new_cfg) => {
                         let errors = config::validate_config(&new_cfg);
                         if !errors.is_empty() {
-                            for e in &errors { tracing::warn!("Hot-reload config error: {e}"); }
+                            for e in &errors {
+                                tracing::warn!("Hot-reload config error: {e}");
+                            }
                             continue;
                         }
                         webhook::reinit(new_cfg.webhooks.clone(), new_cfg.obs.clone());
@@ -616,16 +666,16 @@ fn main() {
 
     // ── Connected mode: dial out to the aggregator ────────────────────────────
     if let Mode::Connected { host, port } = &mode {
-        let addr              = format!("{}:{}", host, port);
-        let net_party         = shared_party.clone();
-        let net_encounters    = shared_encounters.clone();
-        let net_box           = shared_box.clone();
-        let net_bag           = shared_bag.clone();
-        let net_cache         = sprite_cache.clone();
-        let net_loaded        = game_loaded.clone();
-        let net_run_changed   = run_changed.clone();
-        let net_wipe_signal   = wipe_signal.clone();
-        let net_warnings      = shared_warnings.clone();
+        let addr = format!("{}:{}", host, port);
+        let net_party = shared_party.clone();
+        let net_encounters = shared_encounters.clone();
+        let net_box = shared_box.clone();
+        let net_bag = shared_bag.clone();
+        let net_cache = sprite_cache.clone();
+        let net_loaded = game_loaded.clone();
+        let net_run_changed = run_changed.clone();
+        let net_wipe_signal = wipe_signal.clone();
+        let net_warnings = shared_warnings.clone();
 
         let net_thread = std::thread::spawn(move || {
             let mut delay_secs: u64 = 5;
@@ -659,12 +709,18 @@ fn main() {
 
         *NET_THREAD_HANDLE.lock_or_recover() = Some(net_thread);
 
-        println!("{}", "***** Connected mode — no GUI. Press Ctrl-C to exit. *****".green().bold());
+        println!(
+            "{}",
+            "***** Connected mode — no GUI. Press Ctrl-C to exit. *****"
+                .green()
+                .bold()
+        );
         ctrlc::set_handler(|| {
             RUNNING.store(false, Ordering::Release);
             println!("\nShutting down...");
             std::process::exit(0);
-        }).expect("Error setting Ctrl-C handler.");
+        })
+        .expect("Error setting Ctrl-C handler.");
         while RUNNING.load(Ordering::Acquire) {
             std::thread::sleep(std::time::Duration::from_millis(100));
         }

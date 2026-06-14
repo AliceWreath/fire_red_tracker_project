@@ -90,29 +90,31 @@ impl PlayerData {
         trainer_name.copy_from_slice(&buffer[offset..offset + PLAYER_NAME_LENGTH + 1]);
         offset += PLAYER_NAME_LENGTH + 1;
 
-        let trainer_name_string = fire_red_text::gba_string_to_ascii(
-            &trainer_name,
-            PLAYER_NAME_LENGTH,
-            0,
-        )
-        .trim_matches('\0')
-        .trim_ascii()
-        .to_string();
+        let trainer_name_string =
+            fire_red_text::gba_string_to_ascii(&trainer_name, PLAYER_NAME_LENGTH, 0)
+                .trim_matches('\0')
+                .trim_ascii()
+                .to_string();
 
         // Rival name is not yet located in SaveBlock2 — placeholder for now.
         let rival_name = [0u8; PLAYER_NAME_LENGTH + 1];
         let rival_name_string = String::from("not implemented yet");
 
-        let trainer_gender          = read_u8(buffer, offset); offset += 1;
-        let special_save_warp_flags = read_u8(buffer, offset); offset += 1;
+        let trainer_gender = read_u8(buffer, offset);
+        offset += 1;
+        let special_save_warp_flags = read_u8(buffer, offset);
+        offset += 1;
 
         let mut player_trainer_id = [0u8; TRAINER_ID_LENGTH];
         player_trainer_id.copy_from_slice(&buffer[offset..offset + TRAINER_ID_LENGTH]);
         offset += TRAINER_ID_LENGTH;
 
-        let player_time_hours    = read_u16(buffer, offset); offset += 2;
-        let player_time_minutes  = read_u8(buffer, offset);  offset += 1;
-        let player_time_seconds  = read_u8(buffer, offset);  offset += 1;
+        let player_time_hours = read_u16(buffer, offset);
+        offset += 2;
+        let player_time_minutes = read_u8(buffer, offset);
+        offset += 1;
+        let player_time_seconds = read_u8(buffer, offset);
+        offset += 1;
         let player_time_v_blanks = read_u8(buffer, offset);
 
         Some(PlayerData {

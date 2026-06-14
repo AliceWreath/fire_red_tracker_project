@@ -1,13 +1,13 @@
 //! # FireRed Image Data
-//! 
+//!
 //! Extracts and decodes pokemon front sprites from a FireRed ROM into RGBA
 //! [`ImageBuffer`]s ready for upload to the GPU.
-//! 
+//!
 //! ## GBA graphics pipeline
-//! 
+//!
 //! FireRed stores sprites and palettes as LZ77-compressed blobs. The decoding
 //! pipeline is:
-//! 
+//!
 //! 1. **Locate** the sprite / palette pointer via the ROM's indirection tables
 //!    ([`read_sprite_pointer`] / [`read_entity_pointer`]).
 //! 2. **Decompress** the blob with [`decompress_lz77`].
@@ -16,7 +16,7 @@
 //! 4. **Resolved palette** entires from 15-bit BGR555 to 8-bit-per-channel RGBA
 //!    with [`decode_palette`]
 //! 5. **Assemble** the final [`ImageBuffer`] in [`get_pokemon_sprite`]
-//! 
+//!
 //! All pokemon front sprites in FireRed are 64x64 pixles (8x8 tiles of 8x8 pixels each),
 //! stored in 4bpp tiled format with a 16-color palette.
 use image::{ImageBuffer, Rgba};
@@ -26,21 +26,21 @@ use image::{ImageBuffer, Rgba};
 // ---------------------------------------------------------------------------
 
 /// Base address of the GBA ROM in teh cartridge address space.
-/// 
+///
 /// All ROM pointers stored in the file are absolute GBA addresses; subtracting
 /// this constant converts them to byte offsets usable for direct slice indexing.
 const ROM_BASE: u32 = 0x08000000;
 
 /// Byte offset within the ROM where the front-sprite pointer table pointer is stored.
-/// 
-/// Dereferencing this yields the address of the table that maps species indices 
+///
+/// Dereferencing this yields the address of the table that maps species indices
 /// to compressed sprite data pointers (8 bytes per entry).
 const FRONT_SPRITE_TABLE_PTR: u32 = 0x128;
 
 /// Byte offset within the ROM where the normal palette pointer table pointer is stored
-/// 
+///
 /// Each entry in the resolved table points to a compressed 16-color BGR555 palette.
-const PALETTE_TABLE_PTR: u32 = 0x130; 
+const PALETTE_TABLE_PTR: u32 = 0x130;
 
 /// Byte offset within the ROM where the shiny palette pointer table pointer is stored.
 ///
@@ -58,20 +58,20 @@ const BACK_SPRITE_TABLE_PTR: u32 = 0x12C;
 // ---------------------------------------------------------------------------
 
 /// Reads a species-specific data pointer from one of the ROM's indirect tables.
-/// 
+///
 /// The ROM uses a two-level indirection scheme: a fixed header offset holds a
 /// pointer to a table, and each table entry (8 bytes wide) holds a pointer to
 /// the actual data. This function handles both dereferences.
-/// 
+///
 /// # Arguments
 /// * `rom`                  - Full ROM byte slice.
 /// * `table_header`         - Byte offset of the table-pointer slot (e.g. [`PALETTE_TABLE_PTR`])
 /// * `species`              - National pokedex number (0-based index into the table).
 /// * `label`                - Human-readable name used in error messages (e.g. "palette")
-/// 
+///
 /// # Returns
 /// ROM byte offset (i.e. GBA pointer minus [`ROM_BASE`]) of the data for `species`
-/// 
+///
 /// # Errors
 /// Returns an error if any pointer is missing, out of ROM bounds, or outside
 /// the valid cartridge address range `[ROM_BASE, 0x09000000)`
@@ -99,10 +99,10 @@ fn read_entity_pointer(
 
 /// Reads a single table pointer from `header_offset` in the ROM and converts it
 /// to a ROM byte offset.
-/// 
+///
 /// Returns `None` (and prints a diagnostic) if the stored value is outside the
 /// valid cartridge range `[ROM_BASE, 0x09000000)`.
-/// 
+///
 /// # Arguments
 /// * `rom`                     - Full ROM byte slice.
 /// * `header_offset`           - Byte offset of the 4-byte little-endian pointer slot.
@@ -112,7 +112,8 @@ fn read_table_pointer(rom: &[u8], header_offset: u32) -> Option<u32> {
     if !(ROM_BASE..0x09000000).contains(&raw) {
         tracing::warn!(
             "invalid table pointer at {:#X}: {:#010X}",
-            header_offset, raw
+            header_offset,
+            raw
         );
         return None;
     }
@@ -170,17 +171,17 @@ fn read_back_sprite_pointer(rom: &[u8], species: u16) -> Result<u32, Box<dyn std
 // ---------------------------------------------------------------------------
 
 /// Decompress a GBA LZ77 (BIOS type 0x10) blob from the ROM.
-/// 
+///
 /// The GBA BIOS LZ77 format uses an 8-byte header followed by flag bytes that
-/// control groups of 8 tokens. Each token is either a literal byte or a 
+/// control groups of 8 tokens. Each token is either a literal byte or a
 /// back-reference into already-decoded output.
-/// 
+///
 /// ## Header layout
 /// | Bytes | Meaning
 /// |-------|-------------------------------------------|
 /// | 0     | `0x10` - compression type identifier      |
 /// | 1-3   | Decompressed size (little-endian 24-bit)  |
-/// 
+///
 /// ## Token encoding
 /// For each flag byte, bits are tested from MSB to LSB:
 /// - **0** - Literal: copy the next byte to output
@@ -188,11 +189,11 @@ fn read_back_sprite_pointer(rom: &[u8], species: u16) -> Result<u32, Box<dyn std
 ///     - `length   = (b0 >> 4) + 3`
 ///     - `disp     =` ((b0 & 0xF) << 8) | b1`
 ///     - Copy `length` bytes from `output[len - disp - 1..]`
-/// 
+///
 /// # Arguments
 /// * `rom`                     - Full ROM byte slice.
 /// * `offset`                  - Byte offset of the compressed data (must start with `0x10`)
-/// 
+///
 /// # Errors
 /// Returns an error if the data does not start with `0x10`, if the input is
 /// truncated, or if a back-reference points before the start of the output.
@@ -256,21 +257,21 @@ pub fn decompress_lz77(rom: &[u8], offset: usize) -> Result<Vec<u8>, Box<dyn std
 // ---------------------------------------------------------------------------
 
 /// Decodes GBA 4bpp tiled graphics into a flat array of palette indices.
-/// 
+///
 /// GBA sprites are stored in 8x8-pixel tiles, each tile taking 32 bytes
 /// (64 pixels x 4 bits). within each tile byte, the **low nibble** is the
 /// left pixel and the **high nibble** is the right pixel. Tiles are laid out
 /// left-to-right, top-to-bottom
-/// 
+///
 /// The output is a row-major flat array of palette indices with dimensions
 /// `(width_tiles * 8) x (height_tiles * 8)`. Palette index 0 is treated as
 /// transparent by [`decode_palette`].
-/// 
+///
 /// # Arguments
 /// * `data`                - Decompressed 4bpp tile data (as returned by [`decompress_lz77`])
 /// * `width_tiles`         - Sprite width in 8-pixel tiles (e.g. `8` for 64 px wide).
 /// * `height_tiles`        - Sprite height in 8-pixel tiles (e.g. `8` for 64 px tall).
-/// 
+///
 /// # Errors
 /// Returns an error if `data` is shorter than the `width_tiles * height_tiles * 32`
 /// byte requred to fill the sprite.
@@ -318,27 +319,27 @@ pub fn decode_4bpp_tiles(
 // ---------------------------------------------------------------------------
 
 /// Decodes a 16-color GBA BGR555 palette into a `Vec` of `[R, G, B, A]` bytes.
-/// 
+///
 /// GBA palettes store each color as a little-endian 16-bit value:
 /// - Bits 4-0  : red             (0-31)
 /// - Bits 9-5  : green           (0-31)
 /// - Bits 14-10: blue            (0-31)
 /// - Bit 15: unused
-/// 
+///
 /// Each 5-bit channel is expanded to 8 bits using the formula
 /// `value8 = (value5 << 3) | (value5 >> 2)`, which preserves full-scale
 /// white (`0x1F` -> `0xFF`) and black (`0x00` -> `0x00`).
-/// 
+///
 /// Palette index 0 is always the **transparent** color and gets alpha `0`;
 /// all other entries get alpha `255`.
-/// 
+///
 /// # Arguments
 /// * `rom`                 - Byte slice containing the palette data (may be the
 ///   full ROM or a decompressed palette blob; `offset`
 ///   selects the start).
 /// * `offset`              - Byte offset of the first palette entry within `rom`
-/// 
-/// # Errors 
+///
+/// # Errors
 /// Returns an error if fewer than 32 bytes are available at `offset`
 /// (16 colors x 2 bytes each)
 pub fn decode_palette(
@@ -370,24 +371,24 @@ pub fn decode_palette(
 // ---------------------------------------------------------------------------
 
 /// Returns the front sprite of a pokemon as a 64x64 RGBA [`ImageBuffer`].
-/// 
+///
 /// Orchestrates teh full decode pipeline for one species:
 /// 1. Resolves the sprite and palette pointers from the ROM's indirection tables.
 /// 2. Decompresses both blobs with LZ77
 /// 3. Decodes the 4bpp tile data into a flat palette-index array.
 /// 4. Resolves each palette index to an RGBA color and write it into the image.
-/// 
+///
 /// The `shiny` flag selects between the normal and alternate (shiny) palette
 /// table; the sprite geometry is identical for both variants.
-/// 
+///
 /// # Arguments
 /// * `rom`                     - Full ROM byte slice.
 /// * `species`                 - National pokedex number (1-386 for FireRed)
 /// * `shiny`                   - `true` to use the shiny palette.
-/// 
+///
 /// # Errors
 /// Propagates any error from pointer resolution, decompression, or tile decoding.
-/// 
+///
 /// # Performance notes
 /// [`decode_palette`] is called once per pixel (64x64 = 4096 times). For
 /// bulk sprite generation, consider decoding the palette once outside the pixel
@@ -449,9 +450,9 @@ pub fn get_pokemon_back_sprite(
         read_entity_pointer(rom, PALETTE_TABLE_PTR, species, "palette")? as usize
     };
 
-    let sprite_data  = decompress_lz77(rom, sprite_offset)?;
+    let sprite_data = decompress_lz77(rom, sprite_offset)?;
     let palette_data = decompress_lz77(rom, palette_offset)?;
-    let pixels       = decode_4bpp_tiles(&sprite_data, 8, 8)?;
+    let pixels = decode_4bpp_tiles(&sprite_data, 8, 8)?;
 
     let palette = decode_palette(&palette_data, 0)?;
     let mut img = ImageBuffer::new(64, 64);
@@ -539,15 +540,15 @@ mod tests {
         // Tile (tx,ty) data starts at [(ty*2 + tx) * 32].
         // row=0, col=0 of each tile maps to the tile's top-left pixel.
         let mut data = vec![0u8; 128];
-        data[0]  = 0xAB; // tile(0,0): pixel[0]=0xB,  pixel[1]=0xA
+        data[0] = 0xAB; // tile(0,0): pixel[0]=0xB,  pixel[1]=0xA
         data[32] = 0xCD; // tile(1,0): pixel[8]=0xD,  pixel[9]=0xC
         data[64] = 0xEF; // tile(0,1): pixel[128]=0xF, pixel[129]=0xE  (y=8 → offset=8*16)
         data[96] = 0x12; // tile(1,1): pixel[136]=0x2, pixel[137]=0x1  (y=8,x=8)
         let pixels = decode_4bpp_tiles(&data, 2, 2).unwrap();
-        assert_eq!(pixels[0],   0xB);
-        assert_eq!(pixels[1],   0xA);
-        assert_eq!(pixels[8],   0xD);
-        assert_eq!(pixels[9],   0xC);
+        assert_eq!(pixels[0], 0xB);
+        assert_eq!(pixels[1], 0xA);
+        assert_eq!(pixels[8], 0xD);
+        assert_eq!(pixels[9], 0xC);
         assert_eq!(pixels[128], 0xF);
         assert_eq!(pixels[129], 0xE);
         assert_eq!(pixels[136], 0x2);
@@ -674,19 +675,17 @@ mod tests {
         // flags=0x40: bit7=0 (literal 0xAA), bit6=1 (back-ref).
         // back-ref b0=0x00, b1=0x00 → length=3, disp=0 → copies output[0] three times.
         let data = vec![0x10, 0x04, 0x00, 0x00, 0x40, 0xAA, 0x00, 0x00];
-        assert_eq!(decompress_lz77(&data, 0).unwrap(), vec![0xAA, 0xAA, 0xAA, 0xAA]);
+        assert_eq!(
+            decompress_lz77(&data, 0).unwrap(),
+            vec![0xAA, 0xAA, 0xAA, 0xAA]
+        );
     }
 
     #[test]
     fn lz77_back_reference_with_nonzero_displacement() {
         // flags=0x10: bits 7-5=0 (literals A,B,C), bit4=1 (back-ref), bits 3-0=0.
         // back-ref b0=0x00, b1=0x02 → length=3, disp=2 → start=3-2-1=0 → copies "ABC".
-        let data = vec![
-            0x10, 0x06, 0x00, 0x00,
-            0x10,
-            b'A', b'B', b'C',
-            0x00, 0x02,
-        ];
+        let data = vec![0x10, 0x06, 0x00, 0x00, 0x10, b'A', b'B', b'C', 0x00, 0x02];
         assert_eq!(
             decompress_lz77(&data, 0).unwrap(),
             vec![b'A', b'B', b'C', b'A', b'B', b'C'],

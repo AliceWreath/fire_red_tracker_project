@@ -6,12 +6,12 @@
 use crate::config::{TrackerConfig, save_config};
 use crate::game::is_shiny;
 use crate::textures::{
-    PARTY_IMAGE_SIZE, ENCOUNTER_IMAGE_SIZE,
-    PendingTexture, load_texture, load_texture_back, load_texture_normal, make_placeholder,
+    ENCOUNTER_IMAGE_SIZE, PARTY_IMAGE_SIZE, PendingTexture, load_texture, load_texture_back,
+    load_texture_normal, make_placeholder,
 };
-use fire_red_states::SpriteVariant;
-use fire_red_states::MAX_NATIONAL_DEX_FIRERED;
 use fire_red_states::LockOrRecover;
+use fire_red_states::MAX_NATIONAL_DEX_FIRERED;
+use fire_red_states::SpriteVariant;
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -23,100 +23,135 @@ pub const PARTY_WINDOW: (f32, f32) = (400.0, 800.0);
 pub const ENCOUNTER_WINDOW: (f32, f32) = (600.0, 400.0);
 
 struct SettingsDraft {
-    rom:              String,
-    db:               String,
-    clean:            bool,
-    mode:             crate::config::ConfigMode,
-    aggregator_host:  String,
-    aggregator_port:  String,
+    rom: String,
+    db: String,
+    clean: bool,
+    mode: crate::config::ConfigMode,
+    aggregator_host: String,
+    aggregator_port: String,
     preferred_player: String,
     // Run / polling
-    poll_ms:          String,
-    dupes_clause:     crate::config::DupesClauseMode,
-    allow_species_repeats:  bool,
-    run_start_balls:  String,
+    poll_ms: String,
+    dupes_clause: crate::config::DupesClauseMode,
+    allow_species_repeats: bool,
+    run_start_balls: String,
     // Test mode
-    default_test:     bool,
-    test_db:          String,
-    test_agg_host:    String,
-    test_agg_port:    String,
-    test_player:      String,
+    default_test: bool,
+    test_db: String,
+    test_agg_host: String,
+    test_agg_port: String,
+    test_player: String,
     // OBS clip trigger
-    obs_host:         String,
-    obs_port:         String,
-    obs_password:     String,
-    obs_clip_death:   bool,
-    obs_clip_shiny:   bool,
-    obs_clip_wipe:    bool,
-    obs_clip_badge:   bool,
+    obs_host: String,
+    obs_port: String,
+    obs_password: String,
+    obs_clip_death: bool,
+    obs_clip_shiny: bool,
+    obs_clip_wipe: bool,
+    obs_clip_badge: bool,
     // Webhook URL and template fields
-    death_url:         String,
+    death_url: String,
     death_url_enabled: bool,
-    death_template:    String,
-    catch_url:         String,
+    death_template: String,
+    catch_url: String,
     catch_url_enabled: bool,
-    catch_template:    String,
-    shiny_url:         String,
+    catch_template: String,
+    shiny_url: String,
     shiny_url_enabled: bool,
-    shiny_template:    String,
-    wipe_url:          String,
-    wipe_url_enabled:  bool,
-    wipe_template:     String,
-    badge_url:         String,
+    shiny_template: String,
+    wipe_url: String,
+    wipe_url_enabled: bool,
+    wipe_template: String,
+    badge_url: String,
     badge_url_enabled: bool,
-    badge_template:    String,
-    nickname_url:         String,
+    badge_template: String,
+    nickname_url: String,
     nickname_url_enabled: bool,
-    nickname_template:    String,
+    nickname_template: String,
 }
 
 impl SettingsDraft {
     fn from_config(cfg: &TrackerConfig) -> Self {
         let wh = &cfg.webhooks;
         Self {
-            rom:              cfg.rom.clone(),
-            db:               cfg.db.trim_start_matches("postgresql://").trim_start_matches("postgres://").to_string(),
-            clean:            cfg.clean,
-            mode:             cfg.mode.clone(),
-            aggregator_host:  cfg.aggregator_host.clone(),
-            aggregator_port:  cfg.aggregator_port.to_string(),
-            preferred_player: cfg.preferred_player.map(|n| n.to_string()).unwrap_or_default(),
-            poll_ms:          if cfg.poll_ms == 100 { String::new() } else { cfg.poll_ms.to_string() },
-            dupes_clause:     cfg.dupes_clause,
-            allow_species_repeats:  cfg.allow_species_repeats,
-            run_start_balls:  cfg.run_start_balls.map(|n| n.to_string()).unwrap_or_default(),
-            default_test:     cfg.default_test,
-            test_db:       cfg.test.as_ref().and_then(|t| t.db.as_ref())
-                               .map(|s| s.trim_start_matches("postgresql://").trim_start_matches("postgres://").to_string())
-                               .unwrap_or_default(),
-            test_agg_host: cfg.test.as_ref().and_then(|t| t.aggregator_host.clone()).unwrap_or_default(),
-            test_agg_port: cfg.test.as_ref().and_then(|t| t.aggregator_port).map(|p| p.to_string()).unwrap_or_default(),
-            test_player:   cfg.test.as_ref().and_then(|t| t.preferred_player).map(|n| n.to_string()).unwrap_or_default(),
-            obs_host:      cfg.obs.host.clone(),
-            obs_port:      cfg.obs.port.to_string(),
-            obs_password:  cfg.obs.password.clone().unwrap_or_default(),
+            rom: cfg.rom.clone(),
+            db: cfg
+                .db
+                .trim_start_matches("postgresql://")
+                .trim_start_matches("postgres://")
+                .to_string(),
+            clean: cfg.clean,
+            mode: cfg.mode.clone(),
+            aggregator_host: cfg.aggregator_host.clone(),
+            aggregator_port: cfg.aggregator_port.to_string(),
+            preferred_player: cfg
+                .preferred_player
+                .map(|n| n.to_string())
+                .unwrap_or_default(),
+            poll_ms: if cfg.poll_ms == 100 {
+                String::new()
+            } else {
+                cfg.poll_ms.to_string()
+            },
+            dupes_clause: cfg.dupes_clause,
+            allow_species_repeats: cfg.allow_species_repeats,
+            run_start_balls: cfg
+                .run_start_balls
+                .map(|n| n.to_string())
+                .unwrap_or_default(),
+            default_test: cfg.default_test,
+            test_db: cfg
+                .test
+                .as_ref()
+                .and_then(|t| t.db.as_ref())
+                .map(|s| {
+                    s.trim_start_matches("postgresql://")
+                        .trim_start_matches("postgres://")
+                        .to_string()
+                })
+                .unwrap_or_default(),
+            test_agg_host: cfg
+                .test
+                .as_ref()
+                .and_then(|t| t.aggregator_host.clone())
+                .unwrap_or_default(),
+            test_agg_port: cfg
+                .test
+                .as_ref()
+                .and_then(|t| t.aggregator_port)
+                .map(|p| p.to_string())
+                .unwrap_or_default(),
+            test_player: cfg
+                .test
+                .as_ref()
+                .and_then(|t| t.preferred_player)
+                .map(|n| n.to_string())
+                .unwrap_or_default(),
+            obs_host: cfg.obs.host.clone(),
+            obs_port: cfg.obs.port.to_string(),
+            obs_password: cfg.obs.password.clone().unwrap_or_default(),
             obs_clip_death: cfg.obs.clip_on_death,
             obs_clip_shiny: cfg.obs.clip_on_shiny,
-            obs_clip_wipe:  cfg.obs.clip_on_wipe,
+            obs_clip_wipe: cfg.obs.clip_on_wipe,
             obs_clip_badge: cfg.obs.clip_on_badge,
-            death_url:         wh.death_url.clone().unwrap_or_default(),
+            death_url: wh.death_url.clone().unwrap_or_default(),
             death_url_enabled: wh.death_url.is_some(),
-            death_template:    wh.death_template.clone().unwrap_or_default(),
-            catch_url:         wh.catch_url.clone().unwrap_or_default(),
+            death_template: wh.death_template.clone().unwrap_or_default(),
+            catch_url: wh.catch_url.clone().unwrap_or_default(),
             catch_url_enabled: wh.catch_url.is_some(),
-            catch_template:    wh.catch_template.clone().unwrap_or_default(),
-            shiny_url:         wh.shiny_url.clone().unwrap_or_default(),
+            catch_template: wh.catch_template.clone().unwrap_or_default(),
+            shiny_url: wh.shiny_url.clone().unwrap_or_default(),
             shiny_url_enabled: wh.shiny_url.is_some(),
-            shiny_template:    wh.shiny_template.clone().unwrap_or_default(),
-            wipe_url:          wh.wipe_url.clone().unwrap_or_default(),
-            wipe_url_enabled:  wh.wipe_url.is_some(),
-            wipe_template:     wh.wipe_template.clone().unwrap_or_default(),
-            badge_url:         wh.badge_url.clone().unwrap_or_default(),
+            shiny_template: wh.shiny_template.clone().unwrap_or_default(),
+            wipe_url: wh.wipe_url.clone().unwrap_or_default(),
+            wipe_url_enabled: wh.wipe_url.is_some(),
+            wipe_template: wh.wipe_template.clone().unwrap_or_default(),
+            badge_url: wh.badge_url.clone().unwrap_or_default(),
             badge_url_enabled: wh.badge_url.is_some(),
-            badge_template:    wh.badge_template.clone().unwrap_or_default(),
-            nickname_url:         wh.nickname_url.clone().unwrap_or_default(),
+            badge_template: wh.badge_template.clone().unwrap_or_default(),
+            nickname_url: wh.nickname_url.clone().unwrap_or_default(),
             nickname_url_enabled: wh.nickname_url.is_some(),
-            nickname_template:    wh.nickname_template.clone().unwrap_or_default(),
+            nickname_template: wh.nickname_template.clone().unwrap_or_default(),
         }
     }
 }
@@ -140,10 +175,10 @@ pub struct WindowInfo {
     /// Queue of texture request batches produced by the GUI and consumed by
     /// the network writer thread. `None` in standalone/server mode.
     pub texture_request_queue: Option<Arc<Mutex<VecDeque<Vec<u16>>>>>,
-    pub config_path:   PathBuf,
+    pub config_path: PathBuf,
     pub settings_open: bool,
-    pub about_open:    bool,
-    settings:          SettingsDraft,
+    pub about_open: bool,
+    settings: SettingsDraft,
     /// Latest release version string if a newer version is available, set by the
     /// background update-check thread.
     pub update_available: Arc<Mutex<Option<String>>>,
@@ -173,7 +208,7 @@ impl WindowInfo {
             texture_request_queue,
             config_path,
             settings_open: false,
-            about_open:    false,
+            about_open: false,
             settings: SettingsDraft::from_config(config),
             update_available,
             title_set: false,
@@ -194,9 +229,10 @@ impl eframe::App for WindowInfo {
         if !self.title_set
             && let Some(v) = &*self.update_available.lock_or_recover()
         {
-            ctx.send_viewport_cmd(egui::ViewportCommand::Title(
-                format!("Tracker — v{} available", v.trim_start_matches('v')),
-            ));
+            ctx.send_viewport_cmd(egui::ViewportCommand::Title(format!(
+                "Tracker — v{} available",
+                v.trim_start_matches('v')
+            )));
             self.title_set = true;
         }
 
@@ -209,7 +245,7 @@ impl eframe::App for WindowInfo {
                 let palette = if pt.shiny { "shiny" } else { "normal" };
                 let key = match pt.variant {
                     SpriteVariant::Front => format!("pokemon_{}_{}", pt.species, palette),
-                    SpriteVariant::Back  => format!("pokemon_{}_{}_back", pt.species, palette),
+                    SpriteVariant::Back => format!("pokemon_{}_{}_back", pt.species, palette),
                 };
                 let image = egui::ColorImage::from_rgba_unmultiplied(
                     [pt.width as usize, pt.height as usize],
@@ -222,26 +258,41 @@ impl eframe::App for WindowInfo {
 
         // ── 2. Load / request missing textures ───────────────────────────────
         {
-            let list           = self.party_list.lock_or_recover().clone();
+            let list = self.party_list.lock_or_recover().clone();
             let encounter_list = self.encounter_list.lock_or_recover();
             let mut needed: Vec<u16> = Vec::new();
 
             // Encounter sprites are always the normal (non-shiny) palette.
-            let all_encounter_mons = encounter_list.land_mon_encounters.wild_pokemon_list.iter()
+            let all_encounter_mons = encounter_list
+                .land_mon_encounters
+                .wild_pokemon_list
+                .iter()
                 .chain(encounter_list.water_mon_encounters.wild_pokemon_list.iter())
-                .chain(encounter_list.rock_smash_encounters.wild_pokemon_list.iter())
+                .chain(
+                    encounter_list
+                        .rock_smash_encounters
+                        .wild_pokemon_list
+                        .iter(),
+                )
                 .chain(encounter_list.fishing_encounters.wild_pokemon_list.iter());
 
             for mon in all_encounter_mons {
-                if mon.species == 0 || mon.species > MAX_NATIONAL_DEX_FIRERED { continue; }
+                if mon.species == 0 || mon.species > MAX_NATIONAL_DEX_FIRERED {
+                    continue;
+                }
                 let key = format!("pokemon_{}_normal", mon.species);
-                if self.textures.contains_key(&key) { continue; }
+                if self.textures.contains_key(&key) {
+                    continue;
+                }
                 if self.texture_request_queue.is_some() {
                     let known = self.known_species.lock_or_recover();
-                    if !known.contains(&mon.species) { needed.push(mon.species); }
+                    if !known.contains(&mon.species) {
+                        needed.push(mon.species);
+                    }
                 } else {
-                    let texture = load_texture_normal(ctx, fire_red_rom_buffer::get_rom(), mon.species)
-                        .unwrap_or_else(|_| make_placeholder(ctx, mon.species));
+                    let texture =
+                        load_texture_normal(ctx, fire_red_rom_buffer::get_rom(), mon.species)
+                            .unwrap_or_else(|_| make_placeholder(ctx, mon.species));
                     self.textures.insert(key, texture);
                 }
             }
@@ -251,27 +302,45 @@ impl eframe::App for WindowInfo {
             // Party sprites use the shiny variant when applicable.
             let missing_party: Vec<(u16, u32, u32)> = list
                 .iter()
-                .map(|p| (p.box_mon.secure.growth.species, p.box_mon.personality, p.box_mon.ot_id))
+                .map(|p| {
+                    (
+                        p.box_mon.secure.growth.species,
+                        p.box_mon.personality,
+                        p.box_mon.ot_id,
+                    )
+                })
                 .filter(|(species, personality, ot_id)| {
                     let key = format!(
                         "pokemon_{}_{}",
                         species,
-                        if is_shiny(*personality, *ot_id) { "shiny" } else { "normal" },
+                        if is_shiny(*personality, *ot_id) {
+                            "shiny"
+                        } else {
+                            "normal"
+                        },
                     );
                     !self.textures.contains_key(&key)
                 })
                 .collect();
 
             for (species, personality, ot_id) in missing_party {
-                if species == 0 || species > MAX_NATIONAL_DEX_FIRERED { continue; }
+                if species == 0 || species > MAX_NATIONAL_DEX_FIRERED {
+                    continue;
+                }
                 let key = format!(
                     "pokemon_{}_{}",
                     species,
-                    if is_shiny(personality, ot_id) { "shiny" } else { "normal" },
+                    if is_shiny(personality, ot_id) {
+                        "shiny"
+                    } else {
+                        "normal"
+                    },
                 );
                 if self.texture_request_queue.is_some() {
                     let known = self.known_species.lock_or_recover();
-                    if !known.contains(&species) { needed.push(species); }
+                    if !known.contains(&species) {
+                        needed.push(species);
+                    }
                 } else {
                     let rom = fire_red_rom_buffer::get_rom();
                     let texture = load_texture(ctx, rom, species, personality, ot_id)
@@ -281,9 +350,14 @@ impl eframe::App for WindowInfo {
                     let back_key = format!(
                         "pokemon_{}_{}_back",
                         species,
-                        if is_shiny(personality, ot_id) { "shiny" } else { "normal" },
+                        if is_shiny(personality, ot_id) {
+                            "shiny"
+                        } else {
+                            "normal"
+                        },
                     );
-                    if let std::collections::hash_map::Entry::Vacant(e) = self.textures.entry(back_key)
+                    if let std::collections::hash_map::Entry::Vacant(e) =
+                        self.textures.entry(back_key)
                         && let Ok(tex) = load_texture_back(ctx, rom, species, personality, ot_id)
                     {
                         e.insert(tex);
@@ -309,7 +383,7 @@ impl eframe::App for WindowInfo {
         // ── 4. Encounters child viewport ──────────────────────────────────────
         if self.encounters_open {
             let encounter_list = self.encounter_list.clone();
-            let textures       = &self.textures;
+            let textures = &self.textures;
 
             ctx.show_viewport_immediate(
                 egui::ViewportId::from_hash_of("encounters_window"),
@@ -328,7 +402,10 @@ impl eframe::App for WindowInfo {
                                     let key = format!("pokemon_{}_normal", mon.species);
                                     if let Some(tex) = textures.get(&key) {
                                         ui.add(egui::Image::new(tex).fit_to_exact_size(
-                                            egui::vec2(ENCOUNTER_IMAGE_SIZE.0, ENCOUNTER_IMAGE_SIZE.1),
+                                            egui::vec2(
+                                                ENCOUNTER_IMAGE_SIZE.0,
+                                                ENCOUNTER_IMAGE_SIZE.1,
+                                            ),
                                         ));
                                     }
                                 }
@@ -337,13 +414,19 @@ impl eframe::App for WindowInfo {
                             ui.separator();
                             ui.heading("Water Encounters");
                             ui.horizontal(|ui| {
-                                for mon in enc.water_mon_encounters.wild_pokemon_list.iter()
+                                for mon in enc
+                                    .water_mon_encounters
+                                    .wild_pokemon_list
+                                    .iter()
                                     .chain(enc.fishing_encounters.wild_pokemon_list.iter())
                                 {
                                     let key = format!("pokemon_{}_normal", mon.species);
                                     if let Some(tex) = textures.get(&key) {
                                         ui.add(egui::Image::new(tex).fit_to_exact_size(
-                                            egui::vec2(ENCOUNTER_IMAGE_SIZE.0, ENCOUNTER_IMAGE_SIZE.1),
+                                            egui::vec2(
+                                                ENCOUNTER_IMAGE_SIZE.0,
+                                                ENCOUNTER_IMAGE_SIZE.1,
+                                            ),
                                         ));
                                     }
                                 }
@@ -358,44 +441,83 @@ impl eframe::App for WindowInfo {
 
 fn nature_mods(nature: &str) -> Option<(&'static str, &'static str)> {
     match nature {
-        "Lonely"  => Some(("Atk", "Def")), "Brave"   => Some(("Atk", "Spe")),
-        "Adamant" => Some(("Atk", "SpA")), "Naughty" => Some(("Atk", "SpD")),
-        "Bold"    => Some(("Def", "Atk")), "Relaxed" => Some(("Def", "Spe")),
-        "Impish"  => Some(("Def", "SpA")), "Lax"     => Some(("Def", "SpD")),
-        "Timid"   => Some(("Spe", "Atk")), "Hasty"   => Some(("Spe", "Def")),
-        "Jolly"   => Some(("Spe", "SpA")), "Naive"   => Some(("Spe", "SpD")),
-        "Modest"  => Some(("SpA", "Atk")), "Mild"    => Some(("SpA", "Def")),
-        "Quiet"   => Some(("SpA", "Spe")), "Rash"    => Some(("SpA", "SpD")),
-        "Calm"    => Some(("SpD", "Atk")), "Gentle"  => Some(("SpD", "Def")),
-        "Sassy"   => Some(("SpD", "Spe")), "Careful" => Some(("SpD", "SpA")),
-        _         => None,
+        "Lonely" => Some(("Atk", "Def")),
+        "Brave" => Some(("Atk", "Spe")),
+        "Adamant" => Some(("Atk", "SpA")),
+        "Naughty" => Some(("Atk", "SpD")),
+        "Bold" => Some(("Def", "Atk")),
+        "Relaxed" => Some(("Def", "Spe")),
+        "Impish" => Some(("Def", "SpA")),
+        "Lax" => Some(("Def", "SpD")),
+        "Timid" => Some(("Spe", "Atk")),
+        "Hasty" => Some(("Spe", "Def")),
+        "Jolly" => Some(("Spe", "SpA")),
+        "Naive" => Some(("Spe", "SpD")),
+        "Modest" => Some(("SpA", "Atk")),
+        "Mild" => Some(("SpA", "Def")),
+        "Quiet" => Some(("SpA", "Spe")),
+        "Rash" => Some(("SpA", "SpD")),
+        "Calm" => Some(("SpD", "Atk")),
+        "Gentle" => Some(("SpD", "Def")),
+        "Sassy" => Some(("SpD", "Spe")),
+        "Careful" => Some(("SpD", "SpA")),
+        _ => None,
     }
 }
 
 #[allow(clippy::too_many_arguments)]
 fn stat_row_job(
     nature: &str,
-    hp: u16, atk: u16, def: u16, spe: u16, spa: u16, spd: u16,
+    hp: u16,
+    atk: u16,
+    def: u16,
+    spe: u16,
+    spa: u16,
+    spd: u16,
     base: egui::Color32,
     size: f32,
 ) -> egui::text::LayoutJob {
-    let mods    = nature_mods(nature);
+    let mods = nature_mods(nature);
     let up_stat = mods.map(|(u, _)| u);
     let dn_stat = mods.map(|(_, d)| d);
     let stat_col = |label: &str| {
-        if up_stat == Some(label)  { egui::Color32::from_rgb(255, 153, 204) }
-        else if dn_stat == Some(label) { egui::Color32::from_rgb(158, 200, 255) }
-        else { base }
+        if up_stat == Some(label) {
+            egui::Color32::from_rgb(255, 153, 204)
+        } else if dn_stat == Some(label) {
+            egui::Color32::from_rgb(158, 200, 255)
+        } else {
+            base
+        }
     };
     let sep = egui::text::TextFormat {
-        color: base, font_id: egui::FontId::proportional(size), ..Default::default()
+        color: base,
+        font_id: egui::FontId::proportional(size),
+        ..Default::default()
     };
     let mut job = egui::text::LayoutJob::default();
-    for (i, (label, val)) in [("HP", hp), ("Atk", atk), ("Def", def), ("Spe", spe), ("SpA", spa), ("SpD", spd)].iter().enumerate() {
-        if i > 0 { job.append(" | ", 0.0, sep.clone()); }
-        job.append(&format!("{} {}", label, val), 0.0, egui::text::TextFormat {
-            color: stat_col(label), font_id: egui::FontId::proportional(size), ..Default::default()
-        });
+    for (i, (label, val)) in [
+        ("HP", hp),
+        ("Atk", atk),
+        ("Def", def),
+        ("Spe", spe),
+        ("SpA", spa),
+        ("SpD", spd),
+    ]
+    .iter()
+    .enumerate()
+    {
+        if i > 0 {
+            job.append(" | ", 0.0, sep.clone());
+        }
+        job.append(
+            &format!("{} {}", label, val),
+            0.0,
+            egui::text::TextFormat {
+                color: stat_col(label),
+                font_id: egui::FontId::proportional(size),
+                ..Default::default()
+            },
+        );
     }
     job
 }
@@ -405,13 +527,15 @@ fn gender_label(gender: u8) -> (&'static str, egui::Color32) {
     match gender {
         0 => ("♂", egui::Color32::from_rgb(100, 160, 255)),
         1 => ("♀", egui::Color32::from_rgb(255, 130, 180)),
-        _ => ("",  egui::Color32::TRANSPARENT),
+        _ => ("", egui::Color32::TRANSPARENT),
     }
 }
 
 impl WindowInfo {
     fn draw_settings(&mut self, ui: &mut egui::Ui) {
-        use crate::config::{ConfigMode, DupesClauseMode, ObsConfig, TrackerTestOverrides, WebhookConfig};
+        use crate::config::{
+            ConfigMode, DupesClauseMode, ObsConfig, TrackerTestOverrides, WebhookConfig,
+        };
         let s = &mut self.settings;
 
         egui::ScrollArea::vertical().id_salt("settings_scroll").max_height(500.0).show(ui, |ui| {
@@ -643,68 +767,193 @@ impl WindowInfo {
         }); // ScrollArea
 
         ui.add_space(8.0);
-        let rom_ok    = !s.rom.trim().is_empty();
-        let port_ok   = s.mode != ConfigMode::Connected || s.aggregator_port.parse::<u16>().map(|p| p > 0).unwrap_or(false);
-        let player_parse: Option<u8> = s.preferred_player.trim().parse().ok().filter(|&n: &u8| n >= 1);
+        let rom_ok = !s.rom.trim().is_empty();
+        let port_ok = s.mode != ConfigMode::Connected
+            || s.aggregator_port
+                .parse::<u16>()
+                .map(|p| p > 0)
+                .unwrap_or(false);
+        let player_parse: Option<u8> = s
+            .preferred_player
+            .trim()
+            .parse()
+            .ok()
+            .filter(|&n: &u8| n >= 1);
         let player_ok = s.preferred_player.trim().is_empty() || player_parse.is_some();
         ui.horizontal(|ui| {
-            let saved = ui.add_enabled(rom_ok && port_ok && player_ok, egui::Button::new("Save")).clicked();
+            let saved = ui
+                .add_enabled(rom_ok && port_ok && player_ok, egui::Button::new("Save"))
+                .clicked();
             if !rom_ok {
-                ui.label(egui::RichText::new("ROM path is required").color(egui::Color32::from_rgb(220, 80, 80)).small());
+                ui.label(
+                    egui::RichText::new("ROM path is required")
+                        .color(egui::Color32::from_rgb(220, 80, 80))
+                        .small(),
+                );
             } else if !port_ok {
-                ui.label(egui::RichText::new("Invalid port").color(egui::Color32::from_rgb(220, 80, 80)).small());
+                ui.label(
+                    egui::RichText::new("Invalid port")
+                        .color(egui::Color32::from_rgb(220, 80, 80))
+                        .small(),
+                );
             } else if !player_ok {
-                ui.label(egui::RichText::new("Player number must be 1 or higher").color(egui::Color32::from_rgb(220, 80, 80)).small());
+                ui.label(
+                    egui::RichText::new("Player number must be 1 or higher")
+                        .color(egui::Color32::from_rgb(220, 80, 80))
+                        .small(),
+                );
             }
             if saved {
                 let db_raw = s.db.trim().to_string();
-                let db = if db_raw.starts_with("postgresql://") || db_raw.starts_with("postgres://") { db_raw } else { format!("postgresql://{}", db_raw) };
+                let db = if db_raw.starts_with("postgresql://") || db_raw.starts_with("postgres://")
+                {
+                    db_raw
+                } else {
+                    format!("postgresql://{}", db_raw)
+                };
                 let test_db_raw = s.test_db.trim().to_string();
                 let test = {
                     let t = TrackerTestOverrides {
-                        db: if test_db_raw.is_empty() { None } else if test_db_raw.starts_with("postgresql://") || test_db_raw.starts_with("postgres://") {
+                        db: if test_db_raw.is_empty() {
+                            None
+                        } else if test_db_raw.starts_with("postgresql://")
+                            || test_db_raw.starts_with("postgres://")
+                        {
                             Some(test_db_raw)
                         } else {
                             Some(format!("postgresql://{}", test_db_raw))
                         },
-                        aggregator_host:  if s.test_agg_host.trim().is_empty() { None } else { Some(s.test_agg_host.trim().to_string()) },
-                        aggregator_port:  s.test_agg_port.trim().parse().ok().filter(|&p: &u16| p > 0),
-                        preferred_player: s.test_player.trim().parse().ok().filter(|&n: &u8| n >= 1),
+                        aggregator_host: if s.test_agg_host.trim().is_empty() {
+                            None
+                        } else {
+                            Some(s.test_agg_host.trim().to_string())
+                        },
+                        aggregator_port: s
+                            .test_agg_port
+                            .trim()
+                            .parse()
+                            .ok()
+                            .filter(|&p: &u16| p > 0),
+                        preferred_player: s
+                            .test_player
+                            .trim()
+                            .parse()
+                            .ok()
+                            .filter(|&n: &u8| n >= 1),
                     };
-                    if t.db.is_none() && t.aggregator_host.is_none() && t.aggregator_port.is_none() && t.preferred_player.is_none() { None } else { Some(t) }
+                    if t.db.is_none()
+                        && t.aggregator_host.is_none()
+                        && t.aggregator_port.is_none()
+                        && t.preferred_player.is_none()
+                    {
+                        None
+                    } else {
+                        Some(t)
+                    }
                 };
                 let cfg = TrackerConfig {
-                    rom:              s.rom.trim().to_string(),
+                    rom: s.rom.trim().to_string(),
                     db,
-                    clean:            s.clean,
-                    mode:             s.mode.clone(),
-                    aggregator_host:  s.aggregator_host.trim().to_string(),
-                    aggregator_port:  s.aggregator_port.parse().unwrap_or(7878),
+                    clean: s.clean,
+                    mode: s.mode.clone(),
+                    aggregator_host: s.aggregator_host.trim().to_string(),
+                    aggregator_port: s.aggregator_port.parse().unwrap_or(7878),
                     preferred_player: player_parse,
-                    default_test:     s.default_test,
+                    default_test: s.default_test,
                     test,
-                    poll_ms: if s.poll_ms.trim().is_empty() { 100 } else { s.poll_ms.trim().parse::<u64>().unwrap_or(100).clamp(20, 2000) },
+                    poll_ms: if s.poll_ms.trim().is_empty() {
+                        100
+                    } else {
+                        s.poll_ms
+                            .trim()
+                            .parse::<u64>()
+                            .unwrap_or(100)
+                            .clamp(20, 2000)
+                    },
                     webhooks: WebhookConfig {
-                        death_url:      if s.death_url_enabled    && !s.death_url.trim().is_empty()    { Some(s.death_url.trim().to_string())    } else { None },
-                        death_template: if s.death_url_enabled    && !s.death_template.trim().is_empty()    { Some(s.death_template.trim().to_string())    } else { None },
-                        catch_url:      if s.catch_url_enabled    && !s.catch_url.trim().is_empty()    { Some(s.catch_url.trim().to_string())    } else { None },
-                        catch_template: if s.catch_url_enabled    && !s.catch_template.trim().is_empty()    { Some(s.catch_template.trim().to_string())    } else { None },
-                        shiny_url:      if s.shiny_url_enabled    && !s.shiny_url.trim().is_empty()    { Some(s.shiny_url.trim().to_string())    } else { None },
-                        shiny_template: if s.shiny_url_enabled    && !s.shiny_template.trim().is_empty()    { Some(s.shiny_template.trim().to_string())    } else { None },
-                        wipe_url:       if s.wipe_url_enabled     && !s.wipe_url.trim().is_empty()     { Some(s.wipe_url.trim().to_string())     } else { None },
-                        wipe_template:  if s.wipe_url_enabled     && !s.wipe_template.trim().is_empty()     { Some(s.wipe_template.trim().to_string())     } else { None },
-                        badge_url:      if s.badge_url_enabled    && !s.badge_url.trim().is_empty()    { Some(s.badge_url.trim().to_string())    } else { None },
-                        badge_template: if s.badge_url_enabled    && !s.badge_template.trim().is_empty()    { Some(s.badge_template.trim().to_string())    } else { None },
-                        nickname_url:      if s.nickname_url_enabled && !s.nickname_url.trim().is_empty() { Some(s.nickname_url.trim().to_string()) } else { None },
-                        nickname_template: if s.nickname_url_enabled && !s.nickname_template.trim().is_empty() { Some(s.nickname_template.trim().to_string()) } else { None },
+                        death_url: if s.death_url_enabled && !s.death_url.trim().is_empty() {
+                            Some(s.death_url.trim().to_string())
+                        } else {
+                            None
+                        },
+                        death_template: if s.death_url_enabled
+                            && !s.death_template.trim().is_empty()
+                        {
+                            Some(s.death_template.trim().to_string())
+                        } else {
+                            None
+                        },
+                        catch_url: if s.catch_url_enabled && !s.catch_url.trim().is_empty() {
+                            Some(s.catch_url.trim().to_string())
+                        } else {
+                            None
+                        },
+                        catch_template: if s.catch_url_enabled
+                            && !s.catch_template.trim().is_empty()
+                        {
+                            Some(s.catch_template.trim().to_string())
+                        } else {
+                            None
+                        },
+                        shiny_url: if s.shiny_url_enabled && !s.shiny_url.trim().is_empty() {
+                            Some(s.shiny_url.trim().to_string())
+                        } else {
+                            None
+                        },
+                        shiny_template: if s.shiny_url_enabled
+                            && !s.shiny_template.trim().is_empty()
+                        {
+                            Some(s.shiny_template.trim().to_string())
+                        } else {
+                            None
+                        },
+                        wipe_url: if s.wipe_url_enabled && !s.wipe_url.trim().is_empty() {
+                            Some(s.wipe_url.trim().to_string())
+                        } else {
+                            None
+                        },
+                        wipe_template: if s.wipe_url_enabled && !s.wipe_template.trim().is_empty() {
+                            Some(s.wipe_template.trim().to_string())
+                        } else {
+                            None
+                        },
+                        badge_url: if s.badge_url_enabled && !s.badge_url.trim().is_empty() {
+                            Some(s.badge_url.trim().to_string())
+                        } else {
+                            None
+                        },
+                        badge_template: if s.badge_url_enabled
+                            && !s.badge_template.trim().is_empty()
+                        {
+                            Some(s.badge_template.trim().to_string())
+                        } else {
+                            None
+                        },
+                        nickname_url: if s.nickname_url_enabled && !s.nickname_url.trim().is_empty()
+                        {
+                            Some(s.nickname_url.trim().to_string())
+                        } else {
+                            None
+                        },
+                        nickname_template: if s.nickname_url_enabled
+                            && !s.nickname_template.trim().is_empty()
+                        {
+                            Some(s.nickname_template.trim().to_string())
+                        } else {
+                            None
+                        },
                     },
                     obs: ObsConfig {
-                        host:          s.obs_host.trim().to_string(),
-                        port:          s.obs_port.trim().parse().unwrap_or(4455),
-                        password:      if s.obs_password.trim().is_empty() { None } else { Some(s.obs_password.trim().to_string()) },
+                        host: s.obs_host.trim().to_string(),
+                        port: s.obs_port.trim().parse().unwrap_or(4455),
+                        password: if s.obs_password.trim().is_empty() {
+                            None
+                        } else {
+                            Some(s.obs_password.trim().to_string())
+                        },
                         clip_on_death: s.obs_clip_death,
                         clip_on_shiny: s.obs_clip_shiny,
-                        clip_on_wipe:  s.obs_clip_wipe,
+                        clip_on_wipe: s.obs_clip_wipe,
                         clip_on_badge: s.obs_clip_badge,
                     },
                     dupes_clause: s.dupes_clause,
@@ -764,7 +1013,9 @@ impl WindowInfo {
                 .collapsible(false)
                 .resizable(false)
                 .open(&mut open)
-                .show(ui.ctx(), |ui| { self.draw_settings(ui); });
+                .show(ui.ctx(), |ui| {
+                    self.draw_settings(ui);
+                });
             self.settings_open = open;
         }
 
@@ -774,7 +1025,9 @@ impl WindowInfo {
                 .collapsible(false)
                 .resizable(false)
                 .open(&mut open)
-                .show(ui.ctx(), |ui| { Self::draw_about(ui); });
+                .show(ui.ctx(), |ui| {
+                    Self::draw_about(ui);
+                });
             self.about_open = open;
         }
 
@@ -788,10 +1041,8 @@ impl WindowInfo {
                     } else {
                         egui::Color32::from_rgb(80, 80, 80)
                     };
-                    let (rect, _) = ui.allocate_exact_size(
-                        egui::vec2(14.0, 14.0),
-                        egui::Sense::hover(),
-                    );
+                    let (rect, _) =
+                        ui.allocate_exact_size(egui::vec2(14.0, 14.0), egui::Sense::hover());
                     ui.painter().circle_filled(rect.center(), 5.0, color);
                 }
             });
@@ -829,12 +1080,16 @@ impl WindowInfo {
             let dead = fire_red_database::is_dead(pokemon.box_mon.personality);
 
             ui.horizontal(|ui| {
-                let species     = pokemon.box_mon.secure.growth.species;
+                let species = pokemon.box_mon.secure.growth.species;
                 let personality = pokemon.box_mon.personality;
-                let ot_id       = pokemon.box_mon.ot_id;
-                let palette     = if is_shiny(personality, ot_id) { "shiny" } else { "normal" };
-                let front_key   = format!("pokemon_{}_{}", species, palette);
-                let back_key    = format!("pokemon_{}_{}_back", species, palette);
+                let ot_id = pokemon.box_mon.ot_id;
+                let palette = if is_shiny(personality, ot_id) {
+                    "shiny"
+                } else {
+                    "normal"
+                };
+                let front_key = format!("pokemon_{}_{}", species, palette);
+                let back_key = format!("pokemon_{}_{}_back", species, palette);
 
                 let tex_key = if show_back && self.textures.contains_key(&back_key) {
                     &back_key
@@ -859,9 +1114,8 @@ impl WindowInfo {
                     let (gender_sym, gender_color) = gender_label(pokemon.box_mon.gender);
 
                     if dead {
-                        let record = fire_red_database::get_dead_pokemon(
-                            pokemon.box_mon.personality,
-                        );
+                        let record =
+                            fire_red_database::get_dead_pokemon(pokemon.box_mon.personality);
                         ui.horizontal(|ui| {
                             ui.label(
                                 egui::RichText::new(pokemon.get_nickname_string())
@@ -896,7 +1150,17 @@ impl WindowInfo {
                                 ))
                                 .color(dim),
                             );
-                            ui.label(stat_row_job(&r.nature, r.max_hp, r.attack, r.defense, r.speed, r.sp_attack, r.sp_defense, dim, 11.0));
+                            ui.label(stat_row_job(
+                                &r.nature,
+                                r.max_hp,
+                                r.attack,
+                                r.defense,
+                                r.speed,
+                                r.sp_attack,
+                                r.sp_defense,
+                                dim,
+                                11.0,
+                            ));
                             ui.label(
                                 egui::RichText::new(format!(
                                     "Died: {}",
@@ -924,7 +1188,8 @@ impl WindowInfo {
                             }
                             ui.label(format!("Lvl: {}", pokemon.level));
                             if let Some(cap) = level_cap
-                                && pokemon.level >= cap {
+                                && pokemon.level >= cap
+                            {
                                 ui.label(
                                     egui::RichText::new("⚠ OVER CAP")
                                         .strong()
@@ -948,10 +1213,13 @@ impl WindowInfo {
                                     egui::Color32::WHITE
                                 };
                                 ui.label(
-                                    egui::RichText::new(format!("{}/{}", pokemon.hp, pokemon.max_hp))
-                                        .strong()
-                                        .size(18.0)
-                                        .color(color),
+                                    egui::RichText::new(format!(
+                                        "{}/{}",
+                                        pokemon.hp, pokemon.max_hp
+                                    ))
+                                    .strong()
+                                    .size(18.0)
+                                    .color(color),
                                 );
                             });
 
@@ -987,7 +1255,9 @@ impl WindowInfo {
         let member_types: Vec<(u8, u8)> = list
             .iter()
             .filter(|p| !fire_red_database::is_dead(p.box_mon.personality) && p.hp > 0)
-            .map(|p| fire_red_party_monitor::get_species_types(rom, p.box_mon.secure.growth.species))
+            .map(|p| {
+                fire_red_party_monitor::get_species_types(rom, p.box_mon.secure.growth.species)
+            })
             .collect();
 
         if !member_types.is_empty() {
@@ -998,7 +1268,11 @@ impl WindowInfo {
 
             // Team types
             ui.horizontal_wrapped(|ui| {
-                ui.label(egui::RichText::new("Types: ").size(11.0).color(egui::Color32::from_rgb(180, 180, 180)));
+                ui.label(
+                    egui::RichText::new("Types: ")
+                        .size(11.0)
+                        .color(egui::Color32::from_rgb(180, 180, 180)),
+                );
                 for &t in &cov.team_types {
                     ui.label(
                         egui::RichText::new(fire_red_party_monitor::type_name(t))
@@ -1011,7 +1285,11 @@ impl WindowInfo {
             // Weaknesses
             if !cov.team_weaknesses.is_empty() {
                 ui.horizontal_wrapped(|ui| {
-                    ui.label(egui::RichText::new("Weak to: ").size(11.0).color(egui::Color32::from_rgb(180, 180, 180)));
+                    ui.label(
+                        egui::RichText::new("Weak to: ")
+                            .size(11.0)
+                            .color(egui::Color32::from_rgb(180, 180, 180)),
+                    );
                     for &t in &cov.team_weaknesses {
                         ui.label(
                             egui::RichText::new(fire_red_party_monitor::type_name(t))
@@ -1028,7 +1306,11 @@ impl WindowInfo {
                 .collect();
             if !coverage_gaps.is_empty() {
                 ui.horizontal_wrapped(|ui| {
-                    ui.label(egui::RichText::new("No SE vs: ").size(11.0).color(egui::Color32::from_rgb(180, 180, 180)));
+                    ui.label(
+                        egui::RichText::new("No SE vs: ")
+                            .size(11.0)
+                            .color(egui::Color32::from_rgb(180, 180, 180)),
+                    );
                     for &t in &coverage_gaps {
                         ui.label(
                             egui::RichText::new(fire_red_party_monitor::type_name(t))

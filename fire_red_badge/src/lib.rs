@@ -81,7 +81,11 @@ const NUM_E4: usize = 5;
 /// snapshot buffer.
 #[inline]
 fn iwram_offset(addr: usize) -> usize {
-    debug_assert!(addr >= IWRAM_BASE, "address 0x{:08X} is below IWRAM_BASE", addr);
+    debug_assert!(
+        addr >= IWRAM_BASE,
+        "address 0x{:08X} is below IWRAM_BASE",
+        addr
+    );
     addr - IWRAM_BASE
 }
 
@@ -89,7 +93,11 @@ fn iwram_offset(addr: usize) -> usize {
 /// snapshot buffer.
 #[inline]
 fn ewram_offset(addr: usize) -> usize {
-    debug_assert!(addr >= EWRAM_BASE, "address 0x{:08X} is below EWRAM_BASE", addr);
+    debug_assert!(
+        addr >= EWRAM_BASE,
+        "address 0x{:08X} is below EWRAM_BASE",
+        addr
+    );
     addr - EWRAM_BASE
 }
 
@@ -196,14 +204,54 @@ pub struct BadgeStateFFI {
 /// Static table of all 8 Kanto gym leaders in order.
 fn gym_leaders() -> [GymInfo; NUM_BADGES] {
     [
-        GymInfo { leader: "Brock".into(),     city: "Pewter City".into(),     badge: "Boulder Badge".into(), max_level: 14 },
-        GymInfo { leader: "Misty".into(),     city: "Cerulean City".into(),   badge: "Cascade Badge".into(), max_level: 21 },
-        GymInfo { leader: "Lt. Surge".into(), city: "Vermilion City".into(),  badge: "Thunder Badge".into(), max_level: 24 },
-        GymInfo { leader: "Erika".into(),     city: "Celadon City".into(),    badge: "Rainbow Badge".into(), max_level: 29 },
-        GymInfo { leader: "Koga".into(),      city: "Fuchsia City".into(),    badge: "Soul Badge".into(),    max_level: 43 },
-        GymInfo { leader: "Sabrina".into(),   city: "Saffron City".into(),    badge: "Marsh Badge".into(),   max_level: 50 },
-        GymInfo { leader: "Blaine".into(),    city: "Cinnabar Island".into(), badge: "Volcano Badge".into(), max_level: 54 },
-        GymInfo { leader: "Giovanni".into(),  city: "Viridian City".into(),   badge: "Earth Badge".into(),   max_level: 55 },
+        GymInfo {
+            leader: "Brock".into(),
+            city: "Pewter City".into(),
+            badge: "Boulder Badge".into(),
+            max_level: 14,
+        },
+        GymInfo {
+            leader: "Misty".into(),
+            city: "Cerulean City".into(),
+            badge: "Cascade Badge".into(),
+            max_level: 21,
+        },
+        GymInfo {
+            leader: "Lt. Surge".into(),
+            city: "Vermilion City".into(),
+            badge: "Thunder Badge".into(),
+            max_level: 24,
+        },
+        GymInfo {
+            leader: "Erika".into(),
+            city: "Celadon City".into(),
+            badge: "Rainbow Badge".into(),
+            max_level: 29,
+        },
+        GymInfo {
+            leader: "Koga".into(),
+            city: "Fuchsia City".into(),
+            badge: "Soul Badge".into(),
+            max_level: 43,
+        },
+        GymInfo {
+            leader: "Sabrina".into(),
+            city: "Saffron City".into(),
+            badge: "Marsh Badge".into(),
+            max_level: 50,
+        },
+        GymInfo {
+            leader: "Blaine".into(),
+            city: "Cinnabar Island".into(),
+            badge: "Volcano Badge".into(),
+            max_level: 54,
+        },
+        GymInfo {
+            leader: "Giovanni".into(),
+            city: "Viridian City".into(),
+            badge: "Earth Badge".into(),
+            max_level: 55,
+        },
     ]
 }
 
@@ -211,11 +259,36 @@ fn gym_leaders() -> [GymInfo; NUM_BADGES] {
 /// The `badge` field is empty because no badge is awarded for these fights.
 fn e4_members() -> [GymInfo; NUM_E4] {
     [
-        GymInfo { leader: "Lorelei".into(), city: "Indigo Plateau".into(), badge: String::new(), max_level: 54 },
-        GymInfo { leader: "Bruno".into(),   city: "Indigo Plateau".into(), badge: String::new(), max_level: 58 },
-        GymInfo { leader: "Agatha".into(),  city: "Indigo Plateau".into(), badge: String::new(), max_level: 58 },
-        GymInfo { leader: "Lance".into(),   city: "Indigo Plateau".into(), badge: String::new(), max_level: 62 },
-        GymInfo { leader: "Blue".into(),    city: "Indigo Plateau".into(), badge: String::new(), max_level: 65 },
+        GymInfo {
+            leader: "Lorelei".into(),
+            city: "Indigo Plateau".into(),
+            badge: String::new(),
+            max_level: 54,
+        },
+        GymInfo {
+            leader: "Bruno".into(),
+            city: "Indigo Plateau".into(),
+            badge: String::new(),
+            max_level: 58,
+        },
+        GymInfo {
+            leader: "Agatha".into(),
+            city: "Indigo Plateau".into(),
+            badge: String::new(),
+            max_level: 58,
+        },
+        GymInfo {
+            leader: "Lance".into(),
+            city: "Indigo Plateau".into(),
+            badge: String::new(),
+            max_level: 62,
+        },
+        GymInfo {
+            leader: "Blue".into(),
+            city: "Indigo Plateau".into(),
+            badge: String::new(),
+            max_level: 65,
+        },
     ]
 }
 
@@ -229,7 +302,9 @@ fn e4_members() -> [GymInfo; NUM_E4] {
 /// [`badge_free_string`]. Returns a null pointer if the string contains
 /// interior null bytes (which should never happen for our data).
 fn to_c_string(s: &str) -> *mut c_char {
-    CString::new(s).map(|cs| cs.into_raw()).unwrap_or(std::ptr::null_mut())
+    CString::new(s)
+        .map(|cs| cs.into_raw())
+        .unwrap_or(std::ptr::null_mut())
 }
 
 // ---------------------------------------------------------------------------
@@ -275,16 +350,16 @@ pub fn read_badge_state() -> Option<BadgeState> {
     // Step 3: locate the two badge flag bytes.
     // Badge flags occupy bits 0–7 of the two bytes at
     // flags_array[badge_flag_start / 8].
-    let flags_base            = ewram_offset(save_block_base) + addrs.flags_offset;
-    let badge_byte_index      = addrs.badge_flag_start / 8;
+    let flags_base = ewram_offset(save_block_base) + addrs.flags_offset;
+    let badge_byte_index = addrs.badge_flag_start / 8;
     let flags_offset_in_ewram = flags_base + badge_byte_index;
 
     if ewram.len() < flags_offset_in_ewram + 2 {
         return None;
     }
 
-    let b0   = ewram[flags_offset_in_ewram];
-    let b1   = ewram[flags_offset_in_ewram + 1];
+    let b0 = ewram[flags_offset_in_ewram];
+    let b1 = ewram[flags_offset_in_ewram + 1];
     let both = (b0 as u16) | ((b1 as u16) << 8);
 
     // Step 4: extract one bit per badge.
@@ -314,8 +389,8 @@ pub fn read_badge_state() -> Option<BadgeState> {
 
         // Champion is tracked by the Hall of Fame entry flag (game_clear_flag).
         let gc_byte_idx = addrs.game_clear_flag / 8;
-        let gc_bit      = addrs.game_clear_flag % 8;
-        let gc_offset   = flags_base + gc_byte_idx;
+        let gc_bit = addrs.game_clear_flag % 8;
+        let gc_offset = flags_base + gc_byte_idx;
         if ewram.len() > gc_offset {
             e4[4] = (ewram[gc_offset] >> gc_bit) & 1 == 1;
         }
@@ -333,7 +408,11 @@ pub fn read_badge_state() -> Option<BadgeState> {
             .map(|i| gym_leaders()[i].clone())
     };
 
-    Some(BadgeState { badges, e4, next_gym })
+    Some(BadgeState {
+        badges,
+        e4,
+        next_gym,
+    })
 }
 
 /// Returns the name of badge N (0-indexed), or `"Unknown"` if out of range.
@@ -375,17 +454,22 @@ pub extern "C" fn badge_read_state() -> *mut BadgeStateFFI {
         return std::ptr::null_mut();
     };
 
-    let (has_next_gym, next_leader, next_city, next_badge, next_max_level) =
-        match &state.next_gym {
-            Some(gym) => (
-                1,
-                to_c_string(&gym.leader),
-                to_c_string(&gym.city),
-                to_c_string(&gym.badge),
-                gym.max_level,
-            ),
-            None => (0, std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut(), 0),
-        };
+    let (has_next_gym, next_leader, next_city, next_badge, next_max_level) = match &state.next_gym {
+        Some(gym) => (
+            1,
+            to_c_string(&gym.leader),
+            to_c_string(&gym.city),
+            to_c_string(&gym.badge),
+            gym.max_level,
+        ),
+        None => (
+            0,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            0,
+        ),
+    };
 
     let mut badges = [0u8; NUM_BADGES];
     for (i, &obtained) in state.badges.iter().enumerate() {
@@ -399,7 +483,7 @@ pub extern "C" fn badge_read_state() -> *mut BadgeStateFFI {
 
     let ffi = Box::new(BadgeStateFFI {
         badges,
-        badge_count:    state.count() as i32,
+        badge_count: state.count() as i32,
         has_next_gym,
         next_leader,
         next_city,
@@ -593,14 +677,14 @@ pub unsafe extern "C" fn badge_free_string(ptr: *mut c_char) {
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
- 
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::ffi::CStr;
- 
+
     // ── Helpers ──────────────────────────────────────────────────────────────
- 
+
     /// Constructs a heap-allocated [`BadgeStateFFI`] with the given badge
     /// flags and optional next-gym info, bypassing `fire_red_memory` so the
     /// FFI layer can be tested without a live RetroArch connection.
@@ -609,24 +693,29 @@ mod tests {
         next_gym: Option<(&str, &str, &str, u8)>,
     ) -> *mut BadgeStateFFI {
         let count = badge_flags.iter().filter(|&&b| b).count();
- 
+
         let mut badges = [0u8; NUM_BADGES];
         for (i, &b) in badge_flags.iter().enumerate() {
             badges[i] = b as u8;
         }
- 
-        let (has_next_gym, next_leader, next_city, next_badge, next_max_level) =
-            match next_gym {
-                Some((leader, city, badge, level)) => (
-                    1,
-                    to_c_string(leader),
-                    to_c_string(city),
-                    to_c_string(badge),
-                    level,
-                ),
-                None => (0, std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut(), 0),
-            };
- 
+
+        let (has_next_gym, next_leader, next_city, next_badge, next_max_level) = match next_gym {
+            Some((leader, city, badge, level)) => (
+                1,
+                to_c_string(leader),
+                to_c_string(city),
+                to_c_string(badge),
+                level,
+            ),
+            None => (
+                0,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                0,
+            ),
+        };
+
         Box::into_raw(Box::new(BadgeStateFFI {
             badges,
             badge_count: count as i32,
@@ -638,21 +727,26 @@ mod tests {
             e4_progress: [0u8; NUM_E4],
         }))
     }
- 
+
     /// Reads a `*const c_char` as a `&str`. Panics if null or invalid UTF-8.
     unsafe fn cstr(ptr: *const c_char) -> &'static str {
-        unsafe { CStr::from_ptr(ptr) }.to_str().expect("invalid UTF-8")
+        unsafe { CStr::from_ptr(ptr) }
+            .to_str()
+            .expect("invalid UTF-8")
     }
- 
+
     // ── badge_state_count ─────────────────────────────────────────────────────
- 
+
     #[test]
     fn test_count_zero_badges() {
-        let ptr = make_ffi_state([false; 8], Some(("Brock", "Pewter City", "Boulder Badge", 14)));
+        let ptr = make_ffi_state(
+            [false; 8],
+            Some(("Brock", "Pewter City", "Boulder Badge", 14)),
+        );
         assert_eq!(unsafe { badge_state_count(ptr) }, 0);
         unsafe { badge_state_free(ptr) };
     }
- 
+
     #[test]
     fn test_count_three_badges() {
         let flags = [true, true, true, false, false, false, false, false];
@@ -660,37 +754,61 @@ mod tests {
         assert_eq!(unsafe { badge_state_count(ptr) }, 3);
         unsafe { badge_state_free(ptr) };
     }
- 
+
     #[test]
     fn test_count_all_badges() {
         let ptr = make_ffi_state([true; 8], None);
         assert_eq!(unsafe { badge_state_count(ptr) }, 8);
         unsafe { badge_state_free(ptr) };
     }
- 
+
     #[test]
     fn test_count_null_returns_zero() {
         assert_eq!(unsafe { badge_state_count(std::ptr::null()) }, 0);
     }
- 
+
     // ── badge_state_get ───────────────────────────────────────────────────────
- 
+
     #[test]
     fn test_get_individual_badges() {
         // Only badges 0, 2, 4 obtained.
         let flags = [true, false, true, false, true, false, false, false];
         let ptr = make_ffi_state(flags, Some(("Misty", "Cerulean City", "Cascade Badge", 21)));
- 
-        assert_eq!(unsafe { badge_state_get(ptr, 0) }, 1, "badge 0 should be obtained");
-        assert_eq!(unsafe { badge_state_get(ptr, 1) }, 0, "badge 1 should not be obtained");
-        assert_eq!(unsafe { badge_state_get(ptr, 2) }, 1, "badge 2 should be obtained");
-        assert_eq!(unsafe { badge_state_get(ptr, 3) }, 0, "badge 3 should not be obtained");
-        assert_eq!(unsafe { badge_state_get(ptr, 4) }, 1, "badge 4 should be obtained");
-        assert_eq!(unsafe { badge_state_get(ptr, 5) }, 0, "badge 5 should not be obtained");
- 
+
+        assert_eq!(
+            unsafe { badge_state_get(ptr, 0) },
+            1,
+            "badge 0 should be obtained"
+        );
+        assert_eq!(
+            unsafe { badge_state_get(ptr, 1) },
+            0,
+            "badge 1 should not be obtained"
+        );
+        assert_eq!(
+            unsafe { badge_state_get(ptr, 2) },
+            1,
+            "badge 2 should be obtained"
+        );
+        assert_eq!(
+            unsafe { badge_state_get(ptr, 3) },
+            0,
+            "badge 3 should not be obtained"
+        );
+        assert_eq!(
+            unsafe { badge_state_get(ptr, 4) },
+            1,
+            "badge 4 should be obtained"
+        );
+        assert_eq!(
+            unsafe { badge_state_get(ptr, 5) },
+            0,
+            "badge 5 should not be obtained"
+        );
+
         unsafe { badge_state_free(ptr) };
     }
- 
+
     #[test]
     fn test_get_out_of_range_returns_zero() {
         let ptr = make_ffi_state([true; 8], None);
@@ -698,36 +816,39 @@ mod tests {
         assert_eq!(unsafe { badge_state_get(ptr, 999) }, 0);
         unsafe { badge_state_free(ptr) };
     }
- 
+
     #[test]
     fn test_get_null_returns_zero() {
         assert_eq!(unsafe { badge_state_get(std::ptr::null(), 0) }, 0);
     }
- 
+
     // ── badge_state_all_obtained ──────────────────────────────────────────────
- 
+
     #[test]
     fn test_all_obtained_true_when_full() {
         let ptr = make_ffi_state([true; 8], None);
         assert_eq!(unsafe { badge_state_all_obtained(ptr) }, 1);
         unsafe { badge_state_free(ptr) };
     }
- 
+
     #[test]
     fn test_all_obtained_false_when_partial() {
         let flags = [true, true, true, true, true, true, true, false];
-        let ptr = make_ffi_state(flags, Some(("Giovanni", "Viridian City", "Earth Badge", 55)));
+        let ptr = make_ffi_state(
+            flags,
+            Some(("Giovanni", "Viridian City", "Earth Badge", 55)),
+        );
         assert_eq!(unsafe { badge_state_all_obtained(ptr) }, 0);
         unsafe { badge_state_free(ptr) };
     }
- 
+
     #[test]
     fn test_all_obtained_null_returns_zero() {
         assert_eq!(unsafe { badge_state_all_obtained(std::ptr::null()) }, 0);
     }
- 
+
     // ── badge_get_name ────────────────────────────────────────────────────────
- 
+
     #[test]
     fn test_badge_names_all_indices() {
         let expected = [
@@ -743,44 +864,52 @@ mod tests {
         for (i, &name) in expected.iter().enumerate() {
             let ptr = badge_get_name(i);
             assert!(!ptr.is_null(), "badge_get_name({}) returned null", i);
-            assert_eq!(unsafe { cstr(ptr) }, name, "badge name mismatch at index {}", i);
+            assert_eq!(
+                unsafe { cstr(ptr) },
+                name,
+                "badge name mismatch at index {}",
+                i
+            );
             // Static strings must NOT be freed — we just verify the pointer is valid.
         }
     }
- 
+
     #[test]
     fn test_badge_name_out_of_range() {
         let ptr = badge_get_name(8);
         assert!(!ptr.is_null());
         assert_eq!(unsafe { cstr(ptr) }, "Unknown");
- 
+
         let ptr = badge_get_name(usize::MAX);
         assert!(!ptr.is_null());
         assert_eq!(unsafe { cstr(ptr) }, "Unknown");
     }
- 
+
     // ── badge_gym_leader / badge_gym_city ─────────────────────────────────────
- 
+
     #[test]
     fn test_gym_leader_and_city_with_next_gym() {
         let ptr = make_ffi_state(
             [false; 8],
             Some(("Brock", "Pewter City", "Boulder Badge", 14)),
         );
- 
+
         let leader = unsafe { badge_gym_leader(ptr) };
         assert!(!leader.is_null());
         assert_eq!(unsafe { CStr::from_ptr(leader).to_str().unwrap() }, "Brock");
         unsafe { badge_free_string(leader) };
- 
+
         let city = unsafe { badge_gym_city(ptr) };
         assert!(!city.is_null());
-        assert_eq!(unsafe { CStr::from_ptr(city).to_str().unwrap() }, "Pewter City");
+        assert_eq!(
+            unsafe { CStr::from_ptr(city).to_str().unwrap() },
+            "Pewter City"
+        );
         unsafe { badge_free_string(city) };
- 
+
         unsafe { badge_state_free(ptr) };
     }
- 
+
     #[test]
     fn test_gym_leader_null_when_all_badges_obtained() {
         let ptr = make_ffi_state([true; 8], None);
@@ -788,13 +917,13 @@ mod tests {
         assert!(unsafe { badge_gym_city(ptr) }.is_null());
         unsafe { badge_state_free(ptr) };
     }
- 
+
     #[test]
     fn test_gym_leader_null_on_null_ptr() {
         assert!(unsafe { badge_gym_leader(std::ptr::null()) }.is_null());
         assert!(unsafe { badge_gym_city(std::ptr::null()) }.is_null());
     }
- 
+
     /// Verify that `badge_gym_leader` returns an independent copy — mutating
     /// the returned string does not affect the struct's internal pointer.
     #[test]
@@ -803,22 +932,25 @@ mod tests {
             [false; 8],
             Some(("Brock", "Pewter City", "Boulder Badge", 14)),
         );
- 
+
         let copy1 = unsafe { badge_gym_leader(ptr) };
         let copy2 = unsafe { badge_gym_leader(ptr) };
- 
+
         assert!(!copy1.is_null());
         assert!(!copy2.is_null());
         // Two separate heap allocations — different pointers.
-        assert_ne!(copy1, copy2, "expected independent copies, got same pointer");
- 
+        assert_ne!(
+            copy1, copy2,
+            "expected independent copies, got same pointer"
+        );
+
         unsafe { badge_free_string(copy1) };
         unsafe { badge_free_string(copy2) };
         unsafe { badge_state_free(ptr) };
     }
- 
+
     // ── badge_gym_max_level ───────────────────────────────────────────────────
- 
+
     #[test]
     fn test_max_level_with_next_gym() {
         let ptr = make_ffi_state(
@@ -828,27 +960,27 @@ mod tests {
         assert_eq!(unsafe { badge_gym_max_level(ptr) }, 14);
         unsafe { badge_state_free(ptr) };
     }
- 
+
     #[test]
     fn test_max_level_zero_when_all_obtained() {
         let ptr = make_ffi_state([true; 8], None);
         assert_eq!(unsafe { badge_gym_max_level(ptr) }, 0);
         unsafe { badge_state_free(ptr) };
     }
- 
+
     #[test]
     fn test_max_level_null_returns_zero() {
         assert_eq!(unsafe { badge_gym_max_level(std::ptr::null()) }, 0);
     }
- 
+
     // ── badge_free_string ─────────────────────────────────────────────────────
- 
+
     #[test]
     fn test_free_string_null_is_noop() {
         // Should not panic or crash.
         unsafe { badge_free_string(std::ptr::null_mut()) };
     }
- 
+
     #[test]
     fn test_free_string_valid_pointer() {
         let ptr = to_c_string("test string");
@@ -856,15 +988,15 @@ mod tests {
         unsafe { badge_free_string(ptr) };
         // If we reach here without SIGABRT/SIGSEGV, the free was clean.
     }
- 
+
     // ── badge_state_free ──────────────────────────────────────────────────────
- 
+
     #[test]
     fn test_state_free_null_is_noop() {
         // Should not panic or crash.
         unsafe { badge_state_free(std::ptr::null_mut()) };
     }
- 
+
     #[test]
     fn test_state_free_with_gym_info() {
         // Ensures all string fields are freed without leaking or double-freeing.
@@ -875,15 +1007,15 @@ mod tests {
         unsafe { badge_state_free(ptr) };
         // Reaching here without AddressSanitizer complaints means the free was clean.
     }
- 
+
     #[test]
     fn test_state_free_no_gym_info() {
         let ptr = make_ffi_state([true; 8], None);
         unsafe { badge_state_free(ptr) };
     }
- 
+
     // ── BadgeState Rust API ───────────────────────────────────────────────────
- 
+
     #[test]
     fn test_badge_state_count_method() {
         let state = BadgeState {
@@ -896,7 +1028,11 @@ mod tests {
 
     #[test]
     fn test_badge_state_all_obtained_method() {
-        let full = BadgeState { badges: [true; 8], e4: [false; NUM_E4], next_gym: None };
+        let full = BadgeState {
+            badges: [true; 8],
+            e4: [false; NUM_E4],
+            next_gym: None,
+        };
         assert!(full.all_obtained());
 
         let partial = BadgeState {
@@ -909,10 +1045,18 @@ mod tests {
 
     #[test]
     fn test_game_complete() {
-        let complete = BadgeState { badges: [true; 8], e4: [true; NUM_E4], next_gym: None };
+        let complete = BadgeState {
+            badges: [true; 8],
+            e4: [true; NUM_E4],
+            next_gym: None,
+        };
         assert!(complete.game_complete());
 
-        let badges_only = BadgeState { badges: [true; 8], e4: [false; NUM_E4], next_gym: None };
+        let badges_only = BadgeState {
+            badges: [true; 8],
+            e4: [false; NUM_E4],
+            next_gym: None,
+        };
         assert!(!badges_only.game_complete());
 
         let partial_e4 = BadgeState {
@@ -922,7 +1066,7 @@ mod tests {
         };
         assert!(!partial_e4.game_complete());
     }
- 
+
     #[test]
     fn test_badge_state_default_is_empty() {
         let state = BadgeState::default();
@@ -930,28 +1074,32 @@ mod tests {
         assert!(!state.all_obtained());
         assert!(state.next_gym.is_none());
     }
- 
+
     // ── Gym leader table correctness ──────────────────────────────────────────
- 
+
     #[test]
     fn test_gym_leader_table_order_and_levels() {
         let leaders = gym_leaders();
         let expected = [
-            ("Brock",     14u8),
-            ("Misty",     21),
+            ("Brock", 14u8),
+            ("Misty", 21),
             ("Lt. Surge", 24),
-            ("Erika",     29),
-            ("Koga",      43),
-            ("Sabrina",   50),
-            ("Blaine",    54),
-            ("Giovanni",  55),
+            ("Erika", 29),
+            ("Koga", 43),
+            ("Sabrina", 50),
+            ("Blaine", 54),
+            ("Giovanni", 55),
         ];
         for (i, (name, level)) in expected.iter().enumerate() {
-            assert_eq!(leaders[i].leader, *name,  "leader mismatch at index {}", i);
-            assert_eq!(leaders[i].max_level, *level, "level mismatch at index {}", i);
+            assert_eq!(leaders[i].leader, *name, "leader mismatch at index {}", i);
+            assert_eq!(
+                leaders[i].max_level, *level,
+                "level mismatch at index {}",
+                i
+            );
         }
     }
- 
+
     #[test]
     fn test_gym_table_has_eight_entries() {
         assert_eq!(gym_leaders().len(), NUM_BADGES);
@@ -964,15 +1112,23 @@ mod tests {
         let members = e4_members();
         let expected = [
             ("Lorelei", 54u8),
-            ("Bruno",   58),
-            ("Agatha",  58),
-            ("Lance",   62),
-            ("Blue",    65),
+            ("Bruno", 58),
+            ("Agatha", 58),
+            ("Lance", 62),
+            ("Blue", 65),
         ];
         for (i, (name, level)) in expected.iter().enumerate() {
-            assert_eq!(members[i].leader, *name,  "E4 name mismatch at index {}", i);
-            assert_eq!(members[i].max_level, *level, "E4 level mismatch at index {}", i);
-            assert!(members[i].badge.is_empty(), "E4 badge should be empty at index {}", i);
+            assert_eq!(members[i].leader, *name, "E4 name mismatch at index {}", i);
+            assert_eq!(
+                members[i].max_level, *level,
+                "E4 level mismatch at index {}",
+                i
+            );
+            assert!(
+                members[i].badge.is_empty(),
+                "E4 badge should be empty at index {}",
+                i
+            );
         }
     }
 

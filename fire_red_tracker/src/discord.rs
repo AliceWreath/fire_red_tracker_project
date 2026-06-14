@@ -13,15 +13,15 @@ use std::sync::OnceLock;
 use std::time::Duration;
 
 // OP codes for the Discord IPC protocol.
-const OP_HANDSHAKE:  u32 = 0;
-const OP_FRAME:      u32 = 1;
-const OP_CLOSE:      u32 = 2;
+const OP_HANDSHAKE: u32 = 0;
+const OP_FRAME: u32 = 1;
+const OP_CLOSE: u32 = 2;
 
 pub struct Presence {
-    pub details:     String,
-    pub state:       String,
+    pub details: String,
+    pub state: String,
     pub large_image: &'static str,
-    pub large_text:  String,
+    pub large_text: String,
 }
 
 enum Cmd {
@@ -29,8 +29,7 @@ enum Cmd {
     Shutdown,
 }
 
-static SENDER: OnceLock<std::sync::Mutex<Option<std::sync::mpsc::Sender<Cmd>>>> =
-    OnceLock::new();
+static SENDER: OnceLock<std::sync::Mutex<Option<std::sync::mpsc::Sender<Cmd>>>> = OnceLock::new();
 
 /// Initialise the Discord RPC background thread.
 ///
@@ -50,9 +49,9 @@ pub fn init(client_id: Option<u64>) {
             let mut stream: Option<UnixStream> = None;
             for n in 0..10u8 {
                 let path = format!("/tmp/discord-ipc-{n}");
-                match UnixStream::connect(&path) {
-                    Ok(s) => { stream = Some(s); break; }
-                    Err(_) => {}
+                if let Ok(s) = UnixStream::connect(&path) {
+                    stream = Some(s);
+                    break;
                 }
             }
 
@@ -122,20 +121,20 @@ pub fn init(client_id: Option<u64>) {
 ///
 /// Returns immediately; the background thread handles the socket write.
 pub fn update(presence: Presence) {
-    if let Some(slot) = SENDER.get() {
-        if let Some(tx) = slot.lock().unwrap_or_else(|p| p.into_inner()).as_ref() {
-            let _ = tx.send(Cmd::Update(presence));
-        }
+    if let Some(slot) = SENDER.get()
+        && let Some(tx) = slot.lock().unwrap_or_else(|p| p.into_inner()).as_ref()
+    {
+        let _ = tx.send(Cmd::Update(presence));
     }
 }
 
 /// Shut down the background thread cleanly.
 #[allow(dead_code)]
 pub fn shutdown() {
-    if let Some(slot) = SENDER.get() {
-        if let Some(tx) = slot.lock().unwrap_or_else(|p| p.into_inner()).as_ref() {
-            let _ = tx.send(Cmd::Shutdown);
-        }
+    if let Some(slot) = SENDER.get()
+        && let Some(tx) = slot.lock().unwrap_or_else(|p| p.into_inner()).as_ref()
+    {
+        let _ = tx.send(Cmd::Shutdown);
     }
 }
 
@@ -158,13 +157,16 @@ fn send_packet(sock: &mut UnixStream, op: u32, body: &serde_json::Value) -> std:
 fn read_packet(sock: &mut UnixStream) -> std::io::Result<(u32, Vec<u8>)> {
     let mut header = [0u8; 8];
     sock.read_exact(&mut header)?;
-    let op  = u32::from_le_bytes(header[0..4].try_into().unwrap());
+    let op = u32::from_le_bytes(header[0..4].try_into().unwrap());
     let len = u32::from_le_bytes(header[4..8].try_into().unwrap()) as usize;
     let mut body = vec![0u8; len];
     sock.read_exact(&mut body)?;
     // Detect graceful close from Discord side.
     if op == OP_CLOSE {
-        return Err(std::io::Error::new(std::io::ErrorKind::ConnectionReset, "Discord closed"));
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::ConnectionReset,
+            "Discord closed",
+        ));
     }
     Ok((op, body))
 }

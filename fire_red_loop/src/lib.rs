@@ -31,18 +31,18 @@
 //! state — is read from the EWRAM/IWRAM snapshots maintained by
 //! `fire_red_memory`. No subsystem in this crate issues UDP calls directly.
 
+use fire_red_get_values::read_u32;
+use fire_red_map_data::{CurrentMapGroupAndName, MapHeader};
 use fire_red_party_monitor::*;
+use fire_red_pokemon_data::*;
 use fire_red_rom_buffer::*;
+use fire_red_scanner::{find_map_groups_table, find_wild_headers};
 use fire_red_states::LockOrRecover;
 use std::ffi::{CStr, CString, c_uchar};
 use std::os::raw::c_char;
 use std::os::raw::c_int;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
-use fire_red_pokemon_data::*;
-use fire_red_scanner::{find_wild_headers, find_map_groups_table};
-use fire_red_map_data::{CurrentMapGroupAndName, MapHeader};
-use fire_red_get_values::read_u32;
 
 // ---------------------------------------------------------------------------
 // State
@@ -185,11 +185,17 @@ pub fn start_loop(file_path: &str, _is_clean: bool) -> c_int {
 
     // Log the detected ROM revision so the user can confirm they loaded the
     // right ROM.  Detection happens inside fill_rom via fill_static_buffer.
-    tracing::info!("ROM revision: {:?}", fire_red_rom_buffer::get_rom_revision());
+    tracing::info!(
+        "ROM revision: {:?}",
+        fire_red_rom_buffer::get_rom_revision()
+    );
 
     // Build all ROM-derived caches that subsystems read at runtime.
     fill_static_pokemon_header_list(get_rom(), start_wild_header_offset);
-    fill_static_name_repo(get_rom(), fire_red_rom_buffer::get_rom_addresses().pokemon_names_addr);
+    fill_static_name_repo(
+        get_rom(),
+        fire_red_rom_buffer::get_rom_addresses().pokemon_names_addr,
+    );
 
     // Locate gMapGroupsAndMaps using one pair per distinct group from the wild
     // encounter headers. This is non-fatal: zone names fall back to the
@@ -250,7 +256,7 @@ pub fn start_loop(file_path: &str, _is_clean: bool) -> c_int {
                     .expect("STATE not initialized")
                     .lock_or_recover();
                 state.map_group_id = current_state.map_group_id;
-                state.map_name_id  = current_state.map_name_id;
+                state.map_name_id = current_state.map_name_id;
             } // MutexGuard dropped here
             std::thread::sleep(std::time::Duration::from_millis(SLEEP_DURATION));
         }
@@ -278,7 +284,8 @@ pub extern "C" fn stop_loop() {
 
     let mut handle_slot = THREAD_HANDLE.lock_or_recover();
     if let Some(handle) = handle_slot.take()
-        && let Err(e) = handle.join() {
+        && let Err(e) = handle.join()
+    {
         tracing::error!("Error joining map-polling thread: {:?}", e);
     }
 }
@@ -300,7 +307,7 @@ pub fn get_value() -> FireRedState {
     let state = mutex.lock_or_recover();
     FireRedState {
         map_group_id: state.map_group_id,
-        map_name_id:  state.map_name_id,
+        map_name_id: state.map_name_id,
     }
 }
 
@@ -505,10 +512,22 @@ pub fn get_area_pokemon_strings() -> AreaEncountersStringVectors {
             }
         };
 
-        push_names(&mut area.land,    &wild_header.land_mon_encounters.wild_pokemon_list);
-        push_names(&mut area.water,   &wild_header.water_mon_encounters.wild_pokemon_list);
-        push_names(&mut area.rock,    &wild_header.rock_smash_encounters.wild_pokemon_list);
-        push_names(&mut area.fishing, &wild_header.fishing_encounters.wild_pokemon_list);
+        push_names(
+            &mut area.land,
+            &wild_header.land_mon_encounters.wild_pokemon_list,
+        );
+        push_names(
+            &mut area.water,
+            &wild_header.water_mon_encounters.wild_pokemon_list,
+        );
+        push_names(
+            &mut area.rock,
+            &wild_header.rock_smash_encounters.wild_pokemon_list,
+        );
+        push_names(
+            &mut area.fishing,
+            &wild_header.fishing_encounters.wild_pokemon_list,
+        );
     }
 
     area
@@ -538,7 +557,7 @@ fn get_map_state_from_ewram() -> FireRedState {
 
     FireRedState {
         map_group_id: ewram[offset],
-        map_name_id:  ewram[offset + 1],
+        map_name_id: ewram[offset + 1],
     }
 }
 
@@ -588,10 +607,10 @@ impl std::fmt::Display for AreaEncountersStringVectors {
     /// non-empty category with a heading followed by one name per line.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let sections = [
-            ("grass encounters",      &self.land),
-            ("water encounters",      &self.water),
+            ("grass encounters", &self.land),
+            ("water encounters", &self.water),
             ("rock smash encounters", &self.rock),
-            ("fishing encounters",    &self.fishing),
+            ("fishing encounters", &self.fishing),
         ];
         for (heading, list) in &sections {
             if !list.is_empty() {
@@ -624,8 +643,8 @@ fn strings_to_string_array(strings: Vec<String>) -> StringArray {
         return StringArray::default();
     }
 
-    let len  = c_strs.len();
-    let cap  = c_strs.capacity();
+    let len = c_strs.len();
+    let cap = c_strs.capacity();
     let data = c_strs.as_mut_ptr();
     std::mem::forget(c_strs);
     StringArray { data, len, cap }
@@ -644,7 +663,9 @@ unsafe fn free_string_array(arr: StringArray) {
     let ptrs = unsafe { Vec::from_raw_parts(arr.data, arr.len, arr.cap) };
     for p in ptrs {
         if !p.is_null() {
-            unsafe { drop(CString::from_raw(p)); }
+            unsafe {
+                drop(CString::from_raw(p));
+            }
         }
     }
 }
@@ -663,10 +684,10 @@ unsafe fn free_string_array(arr: StringArray) {
 pub extern "C" fn get_area_pokemon_strings_ffi() -> *mut AreaEncountersStringArrays {
     let vecs = get_area_pokemon_strings();
     let arrays = Box::new(AreaEncountersStringArrays {
-        land:       strings_to_string_array(vecs.land),
-        water:      strings_to_string_array(vecs.water),
+        land: strings_to_string_array(vecs.land),
+        water: strings_to_string_array(vecs.water),
         rock_smash: strings_to_string_array(vecs.rock),
-        fishing:    strings_to_string_array(vecs.fishing),
+        fishing: strings_to_string_array(vecs.fishing),
     });
     Box::into_raw(arrays)
 }
@@ -684,10 +705,10 @@ pub unsafe extern "C" fn free_area_encounters_string_arrays(ptr: *mut AreaEncoun
         return;
     }
     unsafe {
-        let land       = std::ptr::read(&(*ptr).land);
-        let water      = std::ptr::read(&(*ptr).water);
+        let land = std::ptr::read(&(*ptr).land);
+        let water = std::ptr::read(&(*ptr).water);
         let rock_smash = std::ptr::read(&(*ptr).rock_smash);
-        let fishing    = std::ptr::read(&(*ptr).fishing);
+        let fishing = std::ptr::read(&(*ptr).fishing);
         free_string_array(land);
         free_string_array(water);
         free_string_array(rock_smash);
@@ -737,7 +758,9 @@ pub unsafe extern "C" fn free_wild_pokemon_header_ffi(ptr: *mut WildPokemonHeade
     if ptr.is_null() {
         return;
     }
-    unsafe { drop(Box::from_raw(ptr)); }
+    unsafe {
+        drop(Box::from_raw(ptr));
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -753,6 +776,6 @@ pub extern "C" fn c_get_current_map_position() -> CurrentMapGroupAndName {
     let state = get_value();
     CurrentMapGroupAndName {
         group: state.map_group_id,
-        name:  state.map_name_id,
+        name: state.map_name_id,
     }
 }

@@ -85,7 +85,11 @@ static THREAD_HANDLE: Mutex<Option<std::thread::JoinHandle<()>>> = Mutex::new(No
 /// snapshot buffer.
 #[inline]
 fn iwram_offset(addr: usize) -> usize {
-    debug_assert!(addr >= IWRAM_BASE, "address 0x{:08X} is below IWRAM_BASE", addr);
+    debug_assert!(
+        addr >= IWRAM_BASE,
+        "address 0x{:08X} is below IWRAM_BASE",
+        addr
+    );
     addr - IWRAM_BASE
 }
 
@@ -93,7 +97,11 @@ fn iwram_offset(addr: usize) -> usize {
 /// snapshot buffer.
 #[inline]
 fn ewram_offset(addr: usize) -> usize {
-    debug_assert!(addr >= EWRAM_BASE, "address 0x{:08X} is below EWRAM_BASE", addr);
+    debug_assert!(
+        addr >= EWRAM_BASE,
+        "address 0x{:08X} is below EWRAM_BASE",
+        addr
+    );
     addr - EWRAM_BASE
 }
 
@@ -131,7 +139,8 @@ pub fn end_loop() {
     RUNNING.store(false, Ordering::SeqCst);
     let mut handle_slot = THREAD_HANDLE.lock_or_recover();
     if let Some(handle) = handle_slot.take()
-        && let Err(e) = handle.join() {
+        && let Err(e) = handle.join()
+    {
         tracing::error!("Error joining box monitor thread: {:?}", e);
     }
 }
@@ -249,8 +258,7 @@ pub fn check_for_new_entry(entry: &BoxPokemon) -> Option<()> {
     if entry.secure.growth.species == 0 {
         return None;
     }
-    let mut storage = PokemonStorage::get_storage_list()
-        .lock_or_recover();
+    let mut storage = PokemonStorage::get_storage_list().lock_or_recover();
 
     if storage.species_set.contains(&entry.secure.growth.species) {
         return None;
@@ -272,16 +280,14 @@ pub fn check_for_new_entry(entry: &BoxPokemon) -> Option<()> {
 /// The signed difference in cache size after the sync (negative = removals,
 /// positive = additions, zero = no change).
 pub fn sync_storage(list: &[BoxPokemon]) -> isize {
-    let mut storage = PokemonStorage::get_storage_list()
-        .lock_or_recover();
+    let mut storage = PokemonStorage::get_storage_list().lock_or_recover();
     let initial_size = storage.species_set.len() as isize;
 
     if list.is_empty() {
         storage.entries.clear();
         storage.species_set.clear();
     } else {
-        let current_species: HashSet<u16> =
-            list.iter().map(|p| p.secure.growth.species).collect();
+        let current_species: HashSet<u16> = list.iter().map(|p| p.secure.growth.species).collect();
         storage
             .entries
             .retain(|p| current_species.contains(&p.secure.growth.species));
@@ -306,7 +312,7 @@ pub fn sync_storage(list: &[BoxPokemon]) -> isize {
 /// the caller can display or sort by box layout.
 pub fn get_box_entries_positioned() -> Vec<(u8, u8, BoxPokemon)> {
     let ewram = fire_red_memory::get_ewram();
-    let rom   = fire_red_rom_buffer::get_rom();
+    let rom = fire_red_rom_buffer::get_rom();
 
     let box_0_offset = match get_box_0_ewram_offset() {
         Some(offset) => offset,
@@ -322,13 +328,14 @@ pub fn get_box_entries_positioned() -> Vec<(u8, u8, BoxPokemon)> {
     let mut list = Vec::new();
 
     for slot in 0..TOTAL_SLOTS {
-        let box_index  = (slot / NUMBER_SLOTS) as u8;
+        let box_index = (slot / NUMBER_SLOTS) as u8;
         let slot_index = (slot % NUMBER_SLOTS) as u8;
         let slot_offset = slot * SLOT_SIZE;
         let slot_bytes = &box_data[slot_offset..slot_offset + SLOT_SIZE];
 
         if let Some(mon) = BoxPokemon::from_bytes(slot_bytes, rom)
-            && mon.checksum != 0 {
+            && mon.checksum != 0
+        {
             list.push((box_index, slot_index, mon));
         }
     }
@@ -368,7 +375,8 @@ pub fn get_box_entries_from_ram() -> Vec<BoxPokemon> {
         let slot_bytes = &box_data[slot_offset..slot_offset + SLOT_SIZE];
 
         if let Some(mon) = BoxPokemon::from_bytes(slot_bytes, rom)
-            && mon.checksum != 0 {
+            && mon.checksum != 0
+        {
             list.push(mon);
         }
     }
@@ -424,7 +432,10 @@ pub fn scan_for_pokemon(known_personality: u32) {
     let ewram = fire_red_memory::get_ewram();
     let target = known_personality.to_le_bytes();
 
-    tracing::info!("Scanning EWRAM snapshot for personality 0x{:08X}...", known_personality);
+    tracing::info!(
+        "Scanning EWRAM snapshot for personality 0x{:08X}...",
+        known_personality
+    );
 
     for (offset, window) in ewram.windows(4).enumerate() {
         if window == target {

@@ -4,11 +4,9 @@ use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 
 const NATURES: [&str; 25] = [
-    "Hardy",   "Lonely", "Brave",   "Adamant", "Naughty",
-    "Bold",    "Docile", "Relaxed", "Impish",  "Lax",
-    "Timid",   "Hasty",  "Serious", "Jolly",   "Naive",
-    "Modest",  "Mild",   "Quiet",   "Bashful", "Rash",
-    "Calm",    "Gentle", "Sassy",   "Careful", "Quirky",
+    "Hardy", "Lonely", "Brave", "Adamant", "Naughty", "Bold", "Docile", "Relaxed", "Impish", "Lax",
+    "Timid", "Hasty", "Serious", "Jolly", "Naive", "Modest", "Mild", "Quiet", "Bashful", "Rash",
+    "Calm", "Gentle", "Sassy", "Careful", "Quirky",
 ];
 
 pub fn nature_name(personality: u32) -> &'static str {
@@ -16,78 +14,361 @@ pub fn nature_name(personality: u32) -> &'static str {
 }
 
 const MOVES: [&str; 355] = [
-    "—",              // 0
-    "Pound",          "Karate Chop",    "Double Slap",    "Comet Punch",    "Mega Punch",     // 1–5
-    "Pay Day",        "Fire Punch",     "Ice Punch",      "Thunder Punch",  "Scratch",        // 6–10
-    "Vice Grip",      "Guillotine",     "Razor Wind",     "Swords Dance",   "Cut",            // 11–15
-    "Gust",           "Wing Attack",    "Whirlwind",      "Fly",            "Bind",           // 16–20
-    "Slam",           "Vine Whip",      "Stomp",          "Double Kick",    "Mega Kick",      // 21–25
-    "Jump Kick",      "Rolling Kick",   "Sand Attack",    "Headbutt",       "Horn Attack",    // 26–30
-    "Fury Attack",    "Horn Drill",     "Tackle",         "Body Slam",      "Wrap",           // 31–35
-    "Take Down",      "Thrash",         "Double-Edge",    "Tail Whip",      "Poison Sting",   // 36–40
-    "Twineedle",      "Pin Missile",    "Leer",           "Bite",           "Growl",          // 41–45
-    "Roar",           "Sing",           "Supersonic",     "Sonic Boom",     "Disable",        // 46–50
-    "Acid",           "Ember",          "Flamethrower",   "Mist",           "Water Gun",      // 51–55
-    "Hydro Pump",     "Surf",           "Ice Beam",       "Blizzard",       "Psybeam",        // 56–60
-    "Bubble Beam",    "Aurora Beam",    "Hyper Beam",     "Peck",           "Drill Peck",     // 61–65
-    "Submission",     "Low Kick",       "Counter",        "Seismic Toss",   "Strength",       // 66–70
-    "Absorb",         "Mega Drain",     "Leech Seed",     "Growth",         "Razor Leaf",     // 71–75
-    "Solar Beam",     "Poison Powder",  "Stun Spore",     "Sleep Powder",   "Petal Dance",    // 76–80
-    "String Shot",    "Dragon Rage",    "Fire Spin",      "Thunder Shock",  "Thunderbolt",    // 81–85
-    "Thunder Wave",   "Thunder",        "Rock Throw",     "Earthquake",     "Fissure",        // 86–90
-    "Dig",            "Toxic",          "Confusion",      "Psychic",        "Hypnosis",       // 91–95
-    "Meditate",       "Agility",        "Quick Attack",   "Rage",           "Teleport",       // 96–100
-    "Night Shade",    "Mimic",          "Screech",        "Double Team",    "Recover",        // 101–105
-    "Harden",         "Minimize",       "Smokescreen",    "Confuse Ray",    "Withdraw",       // 106–110
-    "Defense Curl",   "Barrier",        "Light Screen",   "Haze",           "Reflect",        // 111–115
-    "Focus Energy",   "Bide",           "Metronome",      "Mirror Move",    "Self-Destruct",  // 116–120
-    "Egg Bomb",       "Lick",           "Smog",           "Sludge",         "Bone Club",      // 121–125
-    "Fire Blast",     "Waterfall",      "Clamp",          "Swift",          "Skull Bash",     // 126–130
-    "Spike Cannon",   "Constrict",      "Amnesia",        "Kinesis",        "Soft-Boiled",    // 131–135
-    "High Jump Kick", "Glare",          "Dream Eater",    "Poison Gas",     "Barrage",        // 136–140
-    "Leech Life",     "Lovely Kiss",    "Sky Attack",     "Transform",      "Bubble",         // 141–145
-    "Dizzy Punch",    "Spore",          "Flash",          "Psywave",        "Splash",         // 146–150
-    "Acid Armor",     "Crabhammer",     "Explosion",      "Fury Swipes",    "Bonemerang",     // 151–155
-    "Rest",           "Rock Slide",     "Hyper Fang",     "Sharpen",        "Conversion",     // 156–160
-    "Tri Attack",     "Super Fang",     "Slash",          "Substitute",     "Struggle",       // 161–165
-    "Sketch",         "Triple Kick",    "Thief",          "Spider Web",     "Mind Reader",    // 166–170
-    "Nightmare",      "Flame Wheel",    "Snore",          "Curse",          "Flail",          // 171–175
-    "Conversion 2",   "Aeroblast",      "Cotton Spore",   "Reversal",       "Spite",          // 176–180
-    "Powder Snow",    "Protect",        "Mach Punch",     "Scary Face",     "Feint Attack",   // 181–185
-    "Sweet Kiss",     "Belly Drum",     "Sludge Bomb",    "Mud-Slap",       "Octazooka",      // 186–190
-    "Spikes",         "Zap Cannon",     "Foresight",      "Destiny Bond",   "Perish Song",    // 191–195
-    "Icy Wind",       "Detect",         "Bone Rush",      "Lock-On",        "Outrage",        // 196–200
-    "Sandstorm",      "Giga Drain",     "Endure",         "Charm",          "Rollout",        // 201–205
-    "False Swipe",    "Swagger",        "Milk Drink",     "Spark",          "Fury Cutter",    // 206–210
-    "Steel Wing",     "Mean Look",      "Attract",        "Sleep Talk",     "Heal Bell",      // 211–215
-    "Return",         "Present",        "Frustration",    "Safeguard",      "Pain Split",     // 216–220
-    "Sacred Fire",    "Magnitude",      "Dynamic Punch",  "Megahorn",       "Dragon Breath",  // 221–225
-    "Baton Pass",     "Encore",         "Pursuit",        "Rapid Spin",     "Sweet Scent",    // 226–230
-    "Iron Tail",      "Metal Claw",     "Vital Throw",    "Morning Sun",    "Synthesis",      // 231–235
-    "Moonlight",      "Hidden Power",   "Cross Chop",     "Twister",        "Rain Dance",     // 236–240
-    "Sunny Day",      "Crunch",         "Mirror Coat",    "Psych Up",       "Extreme Speed",  // 241–245
-    "Ancient Power",  "Shadow Ball",    "Future Sight",   "Rock Smash",     "Whirlpool",      // 246–250
-    "Beat Up",        "Fake Out",       "Uproar",         "Stockpile",      "Spit Up",        // 251–255
-    "Swallow",        "Heat Wave",      "Hail",           "Torment",        "Flatter",        // 256–260
-    "Will-O-Wisp",    "Memento",        "Facade",         "Focus Punch",    "Smelling Salts", // 261–265
-    "Follow Me",      "Nature Power",   "Charge",         "Taunt",          "Helping Hand",   // 266–270
-    "Trick",          "Role Play",      "Wish",           "Assist",         "Ingrain",        // 271–275
-    "Superpower",     "Magic Coat",     "Recycle",        "Revenge",        "Brick Break",    // 276–280
-    "Yawn",           "Knock Off",      "Endeavor",       "Eruption",       "Skill Swap",     // 281–285
-    "Imprison",       "Refresh",        "Grudge",         "Snatch",         "Secret Power",   // 286–290
-    "Dive",           "Arm Thrust",     "Camouflage",     "Tail Glow",      "Luster Purge",   // 291–295
-    "Mist Ball",      "Feather Dance",  "Teeter Dance",   "Blaze Kick",     "Mud Sport",      // 296–300
-    "Ice Ball",       "Needle Arm",     "Slack Off",      "Hyper Voice",    "Poison Fang",    // 301–305
-    "Crush Claw",     "Blast Burn",     "Hydro Cannon",   "Meteor Mash",    "Astonish",       // 306–310
-    "Weather Ball",   "Aromatherapy",   "Fake Tears",     "Air Cutter",     "Overheat",       // 311–315
-    "Odor Sleuth",    "Rock Tomb",      "Silver Wind",    "Metal Sound",    "Grass Whistle",  // 316–320
-    "Tickle",         "Cosmic Power",   "Water Spout",    "Signal Beam",    "Shadow Punch",   // 321–325
-    "Extrasensory",   "Sky Uppercut",   "Sand Tomb",      "Sheer Cold",     "Muddy Water",    // 326–330
-    "Bullet Seed",    "Aerial Ace",     "Icicle Spear",   "Iron Defense",   "Block",          // 331–335
-    "Howl",           "Dragon Claw",    "Frenzy Plant",   "Bulk Up",        "Bounce",         // 336–340
-    "Mud Shot",       "Poison Tail",    "Covet",          "Volt Tackle",    "Magical Leaf",   // 341–345
-    "Water Sport",    "Calm Mind",      "Leaf Blade",     "Dragon Dance",   "Rock Blast",     // 346–350
-    "Shock Wave",     "Water Pulse",    "Doom Desire",    "Psycho Boost",                     // 351–354
+    "—", // 0
+    "Pound",
+    "Karate Chop",
+    "Double Slap",
+    "Comet Punch",
+    "Mega Punch", // 1–5
+    "Pay Day",
+    "Fire Punch",
+    "Ice Punch",
+    "Thunder Punch",
+    "Scratch", // 6–10
+    "Vice Grip",
+    "Guillotine",
+    "Razor Wind",
+    "Swords Dance",
+    "Cut", // 11–15
+    "Gust",
+    "Wing Attack",
+    "Whirlwind",
+    "Fly",
+    "Bind", // 16–20
+    "Slam",
+    "Vine Whip",
+    "Stomp",
+    "Double Kick",
+    "Mega Kick", // 21–25
+    "Jump Kick",
+    "Rolling Kick",
+    "Sand Attack",
+    "Headbutt",
+    "Horn Attack", // 26–30
+    "Fury Attack",
+    "Horn Drill",
+    "Tackle",
+    "Body Slam",
+    "Wrap", // 31–35
+    "Take Down",
+    "Thrash",
+    "Double-Edge",
+    "Tail Whip",
+    "Poison Sting", // 36–40
+    "Twineedle",
+    "Pin Missile",
+    "Leer",
+    "Bite",
+    "Growl", // 41–45
+    "Roar",
+    "Sing",
+    "Supersonic",
+    "Sonic Boom",
+    "Disable", // 46–50
+    "Acid",
+    "Ember",
+    "Flamethrower",
+    "Mist",
+    "Water Gun", // 51–55
+    "Hydro Pump",
+    "Surf",
+    "Ice Beam",
+    "Blizzard",
+    "Psybeam", // 56–60
+    "Bubble Beam",
+    "Aurora Beam",
+    "Hyper Beam",
+    "Peck",
+    "Drill Peck", // 61–65
+    "Submission",
+    "Low Kick",
+    "Counter",
+    "Seismic Toss",
+    "Strength", // 66–70
+    "Absorb",
+    "Mega Drain",
+    "Leech Seed",
+    "Growth",
+    "Razor Leaf", // 71–75
+    "Solar Beam",
+    "Poison Powder",
+    "Stun Spore",
+    "Sleep Powder",
+    "Petal Dance", // 76–80
+    "String Shot",
+    "Dragon Rage",
+    "Fire Spin",
+    "Thunder Shock",
+    "Thunderbolt", // 81–85
+    "Thunder Wave",
+    "Thunder",
+    "Rock Throw",
+    "Earthquake",
+    "Fissure", // 86–90
+    "Dig",
+    "Toxic",
+    "Confusion",
+    "Psychic",
+    "Hypnosis", // 91–95
+    "Meditate",
+    "Agility",
+    "Quick Attack",
+    "Rage",
+    "Teleport", // 96–100
+    "Night Shade",
+    "Mimic",
+    "Screech",
+    "Double Team",
+    "Recover", // 101–105
+    "Harden",
+    "Minimize",
+    "Smokescreen",
+    "Confuse Ray",
+    "Withdraw", // 106–110
+    "Defense Curl",
+    "Barrier",
+    "Light Screen",
+    "Haze",
+    "Reflect", // 111–115
+    "Focus Energy",
+    "Bide",
+    "Metronome",
+    "Mirror Move",
+    "Self-Destruct", // 116–120
+    "Egg Bomb",
+    "Lick",
+    "Smog",
+    "Sludge",
+    "Bone Club", // 121–125
+    "Fire Blast",
+    "Waterfall",
+    "Clamp",
+    "Swift",
+    "Skull Bash", // 126–130
+    "Spike Cannon",
+    "Constrict",
+    "Amnesia",
+    "Kinesis",
+    "Soft-Boiled", // 131–135
+    "High Jump Kick",
+    "Glare",
+    "Dream Eater",
+    "Poison Gas",
+    "Barrage", // 136–140
+    "Leech Life",
+    "Lovely Kiss",
+    "Sky Attack",
+    "Transform",
+    "Bubble", // 141–145
+    "Dizzy Punch",
+    "Spore",
+    "Flash",
+    "Psywave",
+    "Splash", // 146–150
+    "Acid Armor",
+    "Crabhammer",
+    "Explosion",
+    "Fury Swipes",
+    "Bonemerang", // 151–155
+    "Rest",
+    "Rock Slide",
+    "Hyper Fang",
+    "Sharpen",
+    "Conversion", // 156–160
+    "Tri Attack",
+    "Super Fang",
+    "Slash",
+    "Substitute",
+    "Struggle", // 161–165
+    "Sketch",
+    "Triple Kick",
+    "Thief",
+    "Spider Web",
+    "Mind Reader", // 166–170
+    "Nightmare",
+    "Flame Wheel",
+    "Snore",
+    "Curse",
+    "Flail", // 171–175
+    "Conversion 2",
+    "Aeroblast",
+    "Cotton Spore",
+    "Reversal",
+    "Spite", // 176–180
+    "Powder Snow",
+    "Protect",
+    "Mach Punch",
+    "Scary Face",
+    "Feint Attack", // 181–185
+    "Sweet Kiss",
+    "Belly Drum",
+    "Sludge Bomb",
+    "Mud-Slap",
+    "Octazooka", // 186–190
+    "Spikes",
+    "Zap Cannon",
+    "Foresight",
+    "Destiny Bond",
+    "Perish Song", // 191–195
+    "Icy Wind",
+    "Detect",
+    "Bone Rush",
+    "Lock-On",
+    "Outrage", // 196–200
+    "Sandstorm",
+    "Giga Drain",
+    "Endure",
+    "Charm",
+    "Rollout", // 201–205
+    "False Swipe",
+    "Swagger",
+    "Milk Drink",
+    "Spark",
+    "Fury Cutter", // 206–210
+    "Steel Wing",
+    "Mean Look",
+    "Attract",
+    "Sleep Talk",
+    "Heal Bell", // 211–215
+    "Return",
+    "Present",
+    "Frustration",
+    "Safeguard",
+    "Pain Split", // 216–220
+    "Sacred Fire",
+    "Magnitude",
+    "Dynamic Punch",
+    "Megahorn",
+    "Dragon Breath", // 221–225
+    "Baton Pass",
+    "Encore",
+    "Pursuit",
+    "Rapid Spin",
+    "Sweet Scent", // 226–230
+    "Iron Tail",
+    "Metal Claw",
+    "Vital Throw",
+    "Morning Sun",
+    "Synthesis", // 231–235
+    "Moonlight",
+    "Hidden Power",
+    "Cross Chop",
+    "Twister",
+    "Rain Dance", // 236–240
+    "Sunny Day",
+    "Crunch",
+    "Mirror Coat",
+    "Psych Up",
+    "Extreme Speed", // 241–245
+    "Ancient Power",
+    "Shadow Ball",
+    "Future Sight",
+    "Rock Smash",
+    "Whirlpool", // 246–250
+    "Beat Up",
+    "Fake Out",
+    "Uproar",
+    "Stockpile",
+    "Spit Up", // 251–255
+    "Swallow",
+    "Heat Wave",
+    "Hail",
+    "Torment",
+    "Flatter", // 256–260
+    "Will-O-Wisp",
+    "Memento",
+    "Facade",
+    "Focus Punch",
+    "Smelling Salts", // 261–265
+    "Follow Me",
+    "Nature Power",
+    "Charge",
+    "Taunt",
+    "Helping Hand", // 266–270
+    "Trick",
+    "Role Play",
+    "Wish",
+    "Assist",
+    "Ingrain", // 271–275
+    "Superpower",
+    "Magic Coat",
+    "Recycle",
+    "Revenge",
+    "Brick Break", // 276–280
+    "Yawn",
+    "Knock Off",
+    "Endeavor",
+    "Eruption",
+    "Skill Swap", // 281–285
+    "Imprison",
+    "Refresh",
+    "Grudge",
+    "Snatch",
+    "Secret Power", // 286–290
+    "Dive",
+    "Arm Thrust",
+    "Camouflage",
+    "Tail Glow",
+    "Luster Purge", // 291–295
+    "Mist Ball",
+    "Feather Dance",
+    "Teeter Dance",
+    "Blaze Kick",
+    "Mud Sport", // 296–300
+    "Ice Ball",
+    "Needle Arm",
+    "Slack Off",
+    "Hyper Voice",
+    "Poison Fang", // 301–305
+    "Crush Claw",
+    "Blast Burn",
+    "Hydro Cannon",
+    "Meteor Mash",
+    "Astonish", // 306–310
+    "Weather Ball",
+    "Aromatherapy",
+    "Fake Tears",
+    "Air Cutter",
+    "Overheat", // 311–315
+    "Odor Sleuth",
+    "Rock Tomb",
+    "Silver Wind",
+    "Metal Sound",
+    "Grass Whistle", // 316–320
+    "Tickle",
+    "Cosmic Power",
+    "Water Spout",
+    "Signal Beam",
+    "Shadow Punch", // 321–325
+    "Extrasensory",
+    "Sky Uppercut",
+    "Sand Tomb",
+    "Sheer Cold",
+    "Muddy Water", // 326–330
+    "Bullet Seed",
+    "Aerial Ace",
+    "Icicle Spear",
+    "Iron Defense",
+    "Block", // 331–335
+    "Howl",
+    "Dragon Claw",
+    "Frenzy Plant",
+    "Bulk Up",
+    "Bounce", // 336–340
+    "Mud Shot",
+    "Poison Tail",
+    "Covet",
+    "Volt Tackle",
+    "Magical Leaf", // 341–345
+    "Water Sport",
+    "Calm Mind",
+    "Leaf Blade",
+    "Dragon Dance",
+    "Rock Blast", // 346–350
+    "Shock Wave",
+    "Water Pulse",
+    "Doom Desire",
+    "Psycho Boost", // 351–354
 ];
 
 /// Returns the name of the move with the given Gen III index (1–354).
@@ -106,21 +387,43 @@ pub fn format_timestamp(secs: u64) -> String {
     let mut year = 1970u32;
     loop {
         let days_in_year: u64 = if is_leap(year) { 366 } else { 365 };
-        if days < days_in_year { break; }
+        if days < days_in_year {
+            break;
+        }
         days -= days_in_year;
         year += 1;
     }
     let month_days: [u64; 12] = [
-        31, if is_leap(year) { 29 } else { 28 }, 31, 30,
-        31, 30, 31, 31, 30, 31, 30, 31,
+        31,
+        if is_leap(year) { 29 } else { 28 },
+        31,
+        30,
+        31,
+        30,
+        31,
+        31,
+        30,
+        31,
+        30,
+        31,
     ];
     let mut month = 1u32;
     for &md in &month_days {
-        if days < md { break; }
+        if days < md {
+            break;
+        }
         days -= md;
         month += 1;
     }
-    format!("{:04}-{:02}-{:02} {:02}:{:02}:{:02} UTC", year, month, days + 1, h, m, s)
+    format!(
+        "{:04}-{:02}-{:02} {:02}:{:02}:{:02} UTC",
+        year,
+        month,
+        days + 1,
+        h,
+        m,
+        s
+    )
 }
 
 fn is_leap(year: u32) -> bool {
@@ -144,28 +447,48 @@ pub fn parse_timestamp(s: &str) -> Option<u64> {
     let s = s.trim_end_matches(" UTC");
     let (date, time) = s.split_once(' ')?;
     let mut dp = date.splitn(3, '-');
-    let year:  u32 = dp.next()?.parse().ok()?;
+    let year: u32 = dp.next()?.parse().ok()?;
     let month: u32 = dp.next()?.parse().ok()?;
-    let day:   u32 = dp.next()?.parse().ok()?;
+    let day: u32 = dp.next()?.parse().ok()?;
     let mut tp = time.splitn(3, ':');
     let hour: u64 = tp.next()?.parse().ok()?;
-    let min:  u64 = tp.next()?.parse().ok()?;
-    let sec:  u64 = tp.next()?.parse().ok()?;
+    let min: u64 = tp.next()?.parse().ok()?;
+    let sec: u64 = tp.next()?.parse().ok()?;
     // Reject pre-epoch years: the loop `1970..year` is empty for year ≤ 1969,
     // which would silently return Some(0) — the same value as 1970-01-01.
-    if year < 1970 { return None; }
-    if month == 0 || month > 12 { return None; }
-    if day   == 0               { return None; }
-    if hour  > 23 || min > 59 || sec > 59 { return None; }
+    if year < 1970 {
+        return None;
+    }
+    if month == 0 || month > 12 {
+        return None;
+    }
+    if day == 0 {
+        return None;
+    }
+    if hour > 23 || min > 59 || sec > 59 {
+        return None;
+    }
     let mut days: u64 = 0;
     for y in 1970..year {
         days += if is_leap(y) { 366 } else { 365 };
     }
     let month_days_arr: [u32; 12] = [
-        31, if is_leap(year) { 29 } else { 28 }, 31, 30,
-        31, 30, 31, 31, 30, 31, 30, 31,
+        31,
+        if is_leap(year) { 29 } else { 28 },
+        31,
+        30,
+        31,
+        30,
+        31,
+        31,
+        30,
+        31,
+        30,
+        31,
     ];
-    if day > month_days_arr[(month - 1) as usize] { return None; }
+    if day > month_days_arr[(month - 1) as usize] {
+        return None;
+    }
     for m in 1..month {
         days += month_days_arr[(m - 1) as usize] as u64;
     }
@@ -264,40 +587,40 @@ pub struct Encounter {
 #[derive(Clone, Debug)]
 pub struct CaughtPokemon {
     /// Trainer name of the player who caught this Pokémon.
-    pub player_name:  String,
-    pub personality:  u32,
-    pub ot_id:        u32,
-    pub nickname:     String,
-    pub species:      u16,
+    pub player_name: String,
+    pub personality: u32,
+    pub ot_id: u32,
+    pub nickname: String,
+    pub species: u16,
     pub species_name: String,
-    pub is_shiny:     bool,
-    pub nature:       String,
-    pub level:         u8,
-    pub met_location:  u8,
+    pub is_shiny: bool,
+    pub nature: String,
+    pub level: u8,
+    pub met_location: u8,
     /// Human-readable location name resolved at catch time from the current map
     /// (group, map_name) coordinates. Empty for records created before this field
     /// was added.
     pub location_name: String,
-    pub ivs:           IVs,
-    pub evs:           EVs,
-    pub caught_at:     u64,
+    pub ivs: IVs,
+    pub evs: EVs,
+    pub caught_at: u64,
     /// `0` = male, `1` = female, `2` = genderless.
-    pub gender:        u8,
+    pub gender: u8,
 }
 
 /// A defeated trainer — stored once per run/player/flag combination.
 #[derive(Clone, Debug)]
 pub struct TrainerDefeat {
     /// Player who beat this trainer.
-    pub player_name:  String,
+    pub player_name: String,
     /// SaveBlock1 flag index for this trainer (range 0x100–0x3DF).
-    pub flag_index:   u32,
+    pub flag_index: u32,
     /// Human-readable trainer label, e.g. "Trainer 0x1A3" or a named entry.
     pub trainer_name: String,
     /// Location string at the moment of defeat.
-    pub location:     String,
+    pub location: String,
     /// Unix timestamp of the defeat.
-    pub defeated_at:  u64,
+    pub defeated_at: u64,
 }
 
 // ---------------------------------------------------------------------------
@@ -317,7 +640,8 @@ struct DbState {
 static DB: OnceLock<Mutex<DbState>> = OnceLock::new();
 
 fn db() -> &'static Mutex<DbState> {
-    DB.get().expect("fire_red_database::initialize must be called before any database operation")
+    DB.get()
+        .expect("fire_red_database::initialize must be called before any database operation")
 }
 
 /// Connects to the PostgreSQL server and creates the schema if absent.
@@ -355,28 +679,31 @@ pub fn initialize(connection_string: &str) -> Result<(), String> {
         &normalized
     };
 
-    let mut client = Client::connect(connection_string, NoTls)
-        .map_err(|e| format!(
+    let mut client = Client::connect(connection_string, NoTls).map_err(|e| {
+        format!(
             "Failed to connect to PostgreSQL: {e}\n\
              Ensure the server is reachable and the database exists.\n\
              Create it with:  psql -c 'CREATE DATABASE nuzlocke;'"
-        ))?;
+        )
+    })?;
 
     // If the meta table already records the current schema version, all
     // migrations have already been applied — skip the batch entirely.
     let already_current = client
-        .query_opt(
-            "SELECT value FROM meta WHERE key = 'schema_version'",
-            &[],
-        )
+        .query_opt("SELECT value FROM meta WHERE key = 'schema_version'", &[])
         .ok()
         .flatten()
         .map(|row| row.get::<_, String>(0))
-        .as_deref() == Some(SCHEMA_VERSION);
+        .as_deref()
+        == Some(SCHEMA_VERSION);
 
     if already_current {
         return DB
-            .set(Mutex::new(DbState { client, run_id: None, current_player: String::new() }))
+            .set(Mutex::new(DbState {
+                client,
+                run_id: None,
+                current_player: String::new(),
+            }))
             .map_err(|_| "fire_red_database::initialize called more than once".to_string());
     }
 
@@ -607,14 +934,20 @@ pub fn initialize(connection_string: &str) -> Result<(), String> {
     ").map_err(|e| format!("Failed to create database schema: {e}"))?;
 
     // Record the schema version so future startups can skip all migrations.
-    client.execute(
-        "INSERT INTO meta (key, value) VALUES ('schema_version', $1)
+    client
+        .execute(
+            "INSERT INTO meta (key, value) VALUES ('schema_version', $1)
          ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value",
-        &[&SCHEMA_VERSION],
-    ).map_err(|e| format!("Failed to write schema_version: {e}"))?;
+            &[&SCHEMA_VERSION],
+        )
+        .map_err(|e| format!("Failed to write schema_version: {e}"))?;
 
-    DB.set(Mutex::new(DbState { client, run_id: None, current_player: String::new() }))
-        .map_err(|_| "fire_red_database::initialize called more than once".to_string())?;
+    DB.set(Mutex::new(DbState {
+        client,
+        run_id: None,
+        current_player: String::new(),
+    }))
+    .map_err(|_| "fire_red_database::initialize called more than once".to_string())?;
 
     Ok(())
 }
@@ -662,35 +995,35 @@ fn query_caught(client: &mut Client, run_id: u32, player_name: &str) -> Vec<Caug
         .unwrap_or_default()
         .iter()
         .map(|row| CaughtPokemon {
-            player_name:  row.get(0),
-            personality:  row.get::<_, i64>(1) as u32,
-            ot_id:        row.get::<_, i64>(2) as u32,
-            nickname:     row.get(3),
-            species:      row.get::<_, i32>(4) as u16,
+            player_name: row.get(0),
+            personality: row.get::<_, i64>(1) as u32,
+            ot_id: row.get::<_, i64>(2) as u32,
+            nickname: row.get(3),
+            species: row.get::<_, i32>(4) as u16,
             species_name: row.get(5),
-            is_shiny:     row.get(6),
-            nature:       row.get(7),
-            level:        row.get::<_, i32>(8) as u8,
-            met_location:  row.get::<_, i32>(9) as u8,
+            is_shiny: row.get(6),
+            nature: row.get(7),
+            level: row.get::<_, i32>(8) as u8,
+            met_location: row.get::<_, i32>(9) as u8,
             location_name: row.get::<_, String>(18),
             ivs: IVs {
-                hp:         row.get::<_, i32>(10) as u8,
-                attack:     row.get::<_, i32>(11) as u8,
-                defense:    row.get::<_, i32>(12) as u8,
-                speed:      row.get::<_, i32>(13) as u8,
-                sp_attack:  row.get::<_, i32>(14) as u8,
+                hp: row.get::<_, i32>(10) as u8,
+                attack: row.get::<_, i32>(11) as u8,
+                defense: row.get::<_, i32>(12) as u8,
+                speed: row.get::<_, i32>(13) as u8,
+                sp_attack: row.get::<_, i32>(14) as u8,
                 sp_defense: row.get::<_, i32>(15) as u8,
             },
             evs: EVs {
-                hp:         row.get::<_, i32>(19) as u8,
-                attack:     row.get::<_, i32>(20) as u8,
-                defense:    row.get::<_, i32>(21) as u8,
-                speed:      row.get::<_, i32>(22) as u8,
-                sp_attack:  row.get::<_, i32>(23) as u8,
+                hp: row.get::<_, i32>(19) as u8,
+                attack: row.get::<_, i32>(20) as u8,
+                defense: row.get::<_, i32>(21) as u8,
+                speed: row.get::<_, i32>(22) as u8,
+                sp_attack: row.get::<_, i32>(23) as u8,
                 sp_defense: row.get::<_, i32>(24) as u8,
             },
             caught_at: row.get::<_, i64>(16) as u64,
-            gender:    row.get::<_, i32>(17) as u8,
+            gender: row.get::<_, i32>(17) as u8,
         })
         .collect()
 }
@@ -712,23 +1045,23 @@ fn query_is_dead(client: &mut Client, run_id: u32, personality: u32) -> bool {
 /// `is_soul_link_death` appended last (column 44).
 fn row_to_dead_pokemon(row: &postgres::Row) -> DeadPokemon {
     DeadPokemon {
-        player_name:  row.get(0),
-        personality:  row.get::<_, i64>(1) as u32,
-        ot_id:        row.get::<_, i64>(2) as u32,
-        ot_name:      row.get(3),
-        nickname:     row.get(4),
-        species:      row.get::<_, i32>(5) as u16,
+        player_name: row.get(0),
+        personality: row.get::<_, i64>(1) as u32,
+        ot_id: row.get::<_, i64>(2) as u32,
+        ot_name: row.get(3),
+        nickname: row.get(4),
+        species: row.get::<_, i32>(5) as u16,
         species_name: row.get(6),
-        is_shiny:     row.get(7),
-        nature:       row.get(8),
-        level:        row.get::<_, i32>(9) as u8,
-        experience:   row.get::<_, i64>(10) as u32,
-        max_hp:       row.get::<_, i32>(11) as u16,
-        attack:       row.get::<_, i32>(12) as u16,
-        defense:      row.get::<_, i32>(13) as u16,
-        speed:        row.get::<_, i32>(14) as u16,
-        sp_attack:    row.get::<_, i32>(15) as u16,
-        sp_defense:   row.get::<_, i32>(16) as u16,
+        is_shiny: row.get(7),
+        nature: row.get(8),
+        level: row.get::<_, i32>(9) as u8,
+        experience: row.get::<_, i64>(10) as u32,
+        max_hp: row.get::<_, i32>(11) as u16,
+        attack: row.get::<_, i32>(12) as u16,
+        defense: row.get::<_, i32>(13) as u16,
+        speed: row.get::<_, i32>(14) as u16,
+        sp_attack: row.get::<_, i32>(15) as u16,
+        sp_defense: row.get::<_, i32>(16) as u16,
         moves: [
             row.get::<_, i32>(17) as u16,
             row.get::<_, i32>(18) as u16,
@@ -742,31 +1075,31 @@ fn row_to_dead_pokemon(row: &postgres::Row) -> DeadPokemon {
             row.get::<_, i32>(24) as u8,
         ],
         ivs: IVs {
-            hp:         row.get::<_, i32>(25) as u8,
-            attack:     row.get::<_, i32>(26) as u8,
-            defense:    row.get::<_, i32>(27) as u8,
-            speed:      row.get::<_, i32>(28) as u8,
-            sp_attack:  row.get::<_, i32>(29) as u8,
+            hp: row.get::<_, i32>(25) as u8,
+            attack: row.get::<_, i32>(26) as u8,
+            defense: row.get::<_, i32>(27) as u8,
+            speed: row.get::<_, i32>(28) as u8,
+            sp_attack: row.get::<_, i32>(29) as u8,
             sp_defense: row.get::<_, i32>(30) as u8,
         },
         evs: EVs {
-            hp:         row.get::<_, i32>(31) as u8,
-            attack:     row.get::<_, i32>(32) as u8,
-            defense:    row.get::<_, i32>(33) as u8,
-            speed:      row.get::<_, i32>(34) as u8,
-            sp_attack:  row.get::<_, i32>(35) as u8,
+            hp: row.get::<_, i32>(31) as u8,
+            attack: row.get::<_, i32>(32) as u8,
+            defense: row.get::<_, i32>(33) as u8,
+            speed: row.get::<_, i32>(34) as u8,
+            sp_attack: row.get::<_, i32>(35) as u8,
             sp_defense: row.get::<_, i32>(36) as u8,
         },
-        held_item:         row.get::<_, i32>(37) as u16,
-        ability:           row.get::<_, i32>(38) as u8,
-        ability_name:      row.get(39),
-        friendship:        row.get::<_, i32>(40) as u8,
-        met_location:      row.get::<_, i32>(41) as u8,
-        died_at:           row.get::<_, i64>(42) as u64,
-        gender:            row.get::<_, i32>(43) as u8,
+        held_item: row.get::<_, i32>(37) as u16,
+        ability: row.get::<_, i32>(38) as u8,
+        ability_name: row.get(39),
+        friendship: row.get::<_, i32>(40) as u8,
+        met_location: row.get::<_, i32>(41) as u8,
+        died_at: row.get::<_, i64>(42) as u64,
+        gender: row.get::<_, i32>(43) as u8,
         is_soul_link_death: row.get(44),
-        killed_by_species:  row.get(45),
-        killed_by_move:     row.get(46),
+        killed_by_species: row.get(45),
+        killed_by_move: row.get(46),
     }
 }
 
@@ -777,7 +1110,8 @@ fn row_to_dead_pokemon(row: &postgres::Row) -> DeadPokemon {
 /// Creates a fresh run, sets it as active in this process, and returns its ID.
 pub fn new_run(player_name: &str) -> Result<u32, String> {
     let mut state = db().lock_or_recover();
-    let row = state.client
+    let row = state
+        .client
         .query_one(
             "INSERT INTO runs (player_name, started_at) VALUES ($1, $2) RETURNING id",
             &[&player_name, &(unix_now() as i64)],
@@ -794,7 +1128,8 @@ pub fn new_run(player_name: &str) -> Result<u32, String> {
 /// Returns `Ok(false)` if no run with that ID exists.
 pub fn resume_run(id: u32) -> Result<bool, String> {
     let mut state = db().lock_or_recover();
-    let exists = state.client
+    let exists = state
+        .client
         .query_opt("SELECT 1 FROM runs WHERE id = $1", &[&(id as i32)])
         .map_err(|e| format!("Failed to query runs: {e}"))?
         .is_some();
@@ -816,11 +1151,9 @@ pub fn get_or_create_run(player_name: &str) -> Result<u32, String> {
     }
 
     // Fall back to the most recently created run — all trackers share one run.
-    if let Some(row) = state.client
-        .query_opt(
-            "SELECT id FROM runs ORDER BY id DESC LIMIT 1",
-            &[],
-        )
+    if let Some(row) = state
+        .client
+        .query_opt("SELECT id FROM runs ORDER BY id DESC LIMIT 1", &[])
         .map_err(|e| format!("Failed to query runs: {e}"))?
     {
         let id = row.get::<_, i32>(0) as u32;
@@ -830,7 +1163,8 @@ pub fn get_or_create_run(player_name: &str) -> Result<u32, String> {
     }
 
     // No runs at all — create one.
-    let row = state.client
+    let row = state
+        .client
         .query_one(
             "INSERT INTO runs (player_name, started_at) VALUES ($1, $2) RETURNING id",
             &[&player_name, &(unix_now() as i64)],
@@ -864,10 +1198,9 @@ pub fn set_player_name(name: &str) {
 /// a run has been selected in the current session).
 pub fn active_run_id() -> Option<u32> {
     let mut state = db().lock_or_recover();
-    state.run_id.or_else(|| {
-        get_meta(&mut state.client, "active_run_id")
-            .and_then(|v| v.parse().ok())
-    })
+    state
+        .run_id
+        .or_else(|| get_meta(&mut state.client, "active_run_id").and_then(|v| v.parse().ok()))
 }
 
 /// Ends the active run by recording its end timestamp and clearing the
@@ -891,7 +1224,8 @@ pub fn end_run() -> Option<u32> {
 /// Returns a summary of every run: `(id, player_name, started_at, dead_count)`.
 pub fn list_runs() -> Result<Vec<(u32, String, u64, usize)>, String> {
     let mut state = db().lock_or_recover();
-    let rows = state.client
+    let rows = state
+        .client
         .query(
             "SELECT r.id, r.player_name, r.started_at, COUNT(d.personality)
              FROM runs r
@@ -901,13 +1235,16 @@ pub fn list_runs() -> Result<Vec<(u32, String, u64, usize)>, String> {
             &[],
         )
         .map_err(|e| format!("Failed to query runs: {e}"))?;
-    Ok(rows.iter()
-        .map(|row| (
-            row.get::<_, i32>(0) as u32,
-            row.get(1),
-            row.get::<_, i64>(2) as u64,
-            row.get::<_, i64>(3) as usize,
-        ))
+    Ok(rows
+        .iter()
+        .map(|row| {
+            (
+                row.get::<_, i32>(0) as u32,
+                row.get(1),
+                row.get::<_, i64>(2) as u64,
+                row.get::<_, i64>(3) as usize,
+            )
+        })
         .collect())
 }
 
@@ -929,10 +1266,10 @@ pub fn mark_dead(pokemon: DeadPokemon) -> Result<bool, postgres::Error> {
         Some(id) => id,
         None => return Ok(false),
     };
-    let player       = pg_safe(&state.current_player);
-    let ot_name      = pg_safe(&pokemon.ot_name);
-    let nickname     = pg_safe(&pokemon.nickname);
-    let spec_name    = pg_safe(&pokemon.species_name);
+    let player = pg_safe(&state.current_player);
+    let ot_name = pg_safe(&pokemon.ot_name);
+    let nickname = pg_safe(&pokemon.nickname);
+    let spec_name = pg_safe(&pokemon.species_name);
     let ability_name = pg_safe(&pokemon.ability_name);
     let n = state.client.execute(
         "INSERT INTO dead_pokemon (
@@ -954,7 +1291,7 @@ pub fn mark_dead(pokemon: DeadPokemon) -> Result<bool, postgres::Error> {
         ) ON CONFLICT (run_id, personality) DO NOTHING",
         &[
             &(active as i32),
-            &player,       // $2  = player_name
+            &player, // $2  = player_name
             &(pokemon.personality as i64),
             &(pokemon.ot_id as i64),
             &ot_name,
@@ -1060,11 +1397,23 @@ fn pg_safe(s: &str) -> String {
 /// by `occurred_at`, making them suitable for streaming or timeline displays.
 pub enum EventKind<'a> {
     /// A Pokémon was caught and added to the party.
-    Catch { species_name: &'a str, nickname: &'a str, level: u8 },
+    Catch {
+        species_name: &'a str,
+        nickname: &'a str,
+        level: u8,
+    },
     /// A Pokémon fainted from direct in-game damage.
-    Death { species_name: &'a str, nickname: &'a str, level: u8 },
+    Death {
+        species_name: &'a str,
+        nickname: &'a str,
+        level: u8,
+    },
     /// A Pokémon was killed by the Soul Link rule.
-    SoulLinkDeath { species_name: &'a str, nickname: &'a str, level: u8 },
+    SoulLinkDeath {
+        species_name: &'a str,
+        nickname: &'a str,
+        level: u8,
+    },
     /// A shiny Pokémon appeared in the wild.
     Shiny { species_name: &'a str, level: u8 },
     /// The party was wiped, ending the run.
@@ -1072,27 +1421,43 @@ pub enum EventKind<'a> {
     /// A gym badge (or E4 win) was earned.
     Badge { badge_name: &'a str },
     /// A caught Pokémon's nickname was changed in-game.
-    NicknameChange { species_name: &'a str, old_name: &'a str, new_name: &'a str },
+    NicknameChange {
+        species_name: &'a str,
+        old_name: &'a str,
+        new_name: &'a str,
+    },
 }
 
 impl<'a> EventKind<'a> {
     /// Extracts `(event_type, species_name, nickname, old_nickname, level)` for a DB INSERT.
     fn row_parts(&self) -> (&'static str, &'a str, &'a str, &'a str, i32) {
         match self {
-            EventKind::Catch { species_name, nickname, level } =>
-                ("catch",            species_name,  nickname,  "",        *level as i32),
-            EventKind::Death { species_name, nickname, level } =>
-                ("death",            species_name,  nickname,  "",        *level as i32),
-            EventKind::SoulLinkDeath { species_name, nickname, level } =>
-                ("soul_link_death",  species_name,  nickname,  "",        *level as i32),
-            EventKind::Shiny { species_name, level } =>
-                ("shiny",            species_name,  "",         "",        *level as i32),
-            EventKind::Wipe =>
-                ("wipe",             "",             "",         "",        0),
-            EventKind::Badge { badge_name } =>
-                ("badge",            badge_name,     "",         "",        0),
-            EventKind::NicknameChange { species_name, old_name, new_name } =>
-                ("nickname_change",  species_name,  new_name,  old_name,  0),
+            EventKind::Catch {
+                species_name,
+                nickname,
+                level,
+            } => ("catch", species_name, nickname, "", *level as i32),
+            EventKind::Death {
+                species_name,
+                nickname,
+                level,
+            } => ("death", species_name, nickname, "", *level as i32),
+            EventKind::SoulLinkDeath {
+                species_name,
+                nickname,
+                level,
+            } => ("soul_link_death", species_name, nickname, "", *level as i32),
+            EventKind::Shiny {
+                species_name,
+                level,
+            } => ("shiny", species_name, "", "", *level as i32),
+            EventKind::Wipe => ("wipe", "", "", "", 0),
+            EventKind::Badge { badge_name } => ("badge", badge_name, "", "", 0),
+            EventKind::NicknameChange {
+                species_name,
+                old_name,
+                new_name,
+            } => ("nickname_change", species_name, new_name, old_name, 0),
         }
     }
 }
@@ -1107,9 +1472,9 @@ pub fn record_event(event: EventKind<'_>) -> Result<(), postgres::Error> {
     let mut state = db().lock_or_recover();
     let run_id = match state.run_id {
         Some(id) => id,
-        None     => return Ok(()),
+        None => return Ok(()),
     };
-    let player      = state.current_player.clone();
+    let player = state.current_player.clone();
     let occurred_at = unix_now() as i64;
     let (event_type, species_name, nickname, old_nickname, level) = event.row_parts();
     state.client.execute(
@@ -1138,7 +1503,7 @@ pub fn record_trainer_defeat(defeat: TrainerDefeat) -> Result<bool, postgres::Er
     let mut state = db().lock_or_recover();
     let run_id = match state.run_id {
         Some(id) => id,
-        None     => return Ok(false),
+        None => return Ok(false),
     };
     let player = pg_safe(&state.current_player);
     let n = state.client.execute(
@@ -1170,20 +1535,23 @@ pub fn get_trainer_defeats_json(conn_str: &str, run_id: u32) -> serde_json::Valu
          FROM trainer_battles WHERE run_id = $1 ORDER BY defeated_at ASC",
         &[&(run_id as i32)],
     ) {
-        Ok(r)  => r,
+        Ok(r) => r,
         Err(e) => return serde_json::json!({ "error": e.to_string() }),
     };
-    let entries: Vec<serde_json::Value> = rows.iter().map(|row| {
-        let defeated_at = row.get::<_, i64>(4) as u64;
-        serde_json::json!({
-            "player_name":     row.get::<_, String>(0),
-            "flag_index":      row.get::<_, i32>(1),
-            "trainer_name":    row.get::<_, String>(2),
-            "location":        row.get::<_, String>(3),
-            "defeated_at":     defeated_at,
-            "defeated_at_human": format_timestamp(defeated_at),
+    let entries: Vec<serde_json::Value> = rows
+        .iter()
+        .map(|row| {
+            let defeated_at = row.get::<_, i64>(4) as u64;
+            serde_json::json!({
+                "player_name":     row.get::<_, String>(0),
+                "flag_index":      row.get::<_, i32>(1),
+                "trainer_name":    row.get::<_, String>(2),
+                "location":        row.get::<_, String>(3),
+                "defeated_at":     defeated_at,
+                "defeated_at_human": format_timestamp(defeated_at),
+            })
         })
-    }).collect();
+        .collect();
     serde_json::json!(entries)
 }
 
@@ -1199,8 +1567,8 @@ pub fn mark_caught(pokemon: CaughtPokemon) -> bool {
         Some(id) => id,
         None => return false,
     };
-    let player    = pg_safe(&state.current_player);
-    let nickname  = pg_safe(&pokemon.nickname);
+    let player = pg_safe(&state.current_player);
+    let nickname = pg_safe(&pokemon.nickname);
     let spec_name = pg_safe(&pokemon.species_name);
     match state.client.execute(
         "INSERT INTO caught_pokemon (
@@ -1329,7 +1697,8 @@ pub fn is_caught(personality: u32) -> bool {
         Some(id) => id,
         None => return false,
     };
-    state.client
+    state
+        .client
         .query_one(
             "SELECT COUNT(*) FROM caught_pokemon WHERE run_id = $1 AND personality = $2",
             &[&(active as i32), &(personality as i64)],
@@ -1366,7 +1735,7 @@ pub fn record_encounter(encounter: Encounter) -> Result<bool, postgres::Error> {
         Some(id) => id,
         None => return Ok(false),
     };
-    let player    = pg_safe(&state.current_player);
+    let player = pg_safe(&state.current_player);
     let spec_name = pg_safe(&encounter.species_name);
     let rows = state.client.execute(
         "INSERT INTO encounters (
@@ -1399,7 +1768,12 @@ pub fn set_encounter_caught(map_group: u8, map_name: u8) {
     if let Err(e) = state.client.execute(
         "UPDATE encounters SET caught = TRUE
          WHERE run_id = $1 AND player_name = $2 AND map_group = $3 AND map_name = $4",
-        &[&(active as i32), &player, &(map_group as i32), &(map_name as i32)],
+        &[
+            &(active as i32),
+            &player,
+            &(map_group as i32),
+            &(map_name as i32),
+        ],
     ) {
         tracing::warn!("set_encounter_caught: DB error: {}", e);
     }
@@ -1417,7 +1791,8 @@ pub fn species_caught_any(species: u16) -> bool {
         Some(id) => id,
         None => return false,
     };
-    state.client
+    state
+        .client
         .query_one(
             "SELECT COUNT(*) FROM caught_pokemon WHERE run_id = $1 AND species = $2",
             &[&(active as i32), &(species as i32)],
@@ -1438,7 +1813,8 @@ pub fn species_caught_by_self(species: u16) -> bool {
         None => return false,
     };
     let player = state.current_player.clone();
-    state.client
+    state
+        .client
         .query_one(
             "SELECT COUNT(*) FROM caught_pokemon \
              WHERE run_id = $1 AND player_name = $2 AND species = $3",
@@ -1457,7 +1833,8 @@ pub fn species_encountered(species: u16) -> bool {
         None => return false,
     };
     let player = state.current_player.clone();
-    state.client
+    state
+        .client
         .query_one(
             "SELECT COUNT(*) FROM encounters
              WHERE run_id = $1 AND player_name = $2 AND species = $3",
@@ -1476,7 +1853,8 @@ pub fn has_any_encounters() -> bool {
         Some(id) => id,
         None => return false,
     };
-    state.client
+    state
+        .client
         .query_one(
             "SELECT EXISTS(SELECT 1 FROM encounters WHERE run_id = $1)",
             &[&(active as i32)],
@@ -1508,12 +1886,21 @@ pub fn has_encounter_for_any_floor(floors: &[(u8, u8)]) -> bool {
     // construction is safe and the query planner handles it fine.
     use std::fmt::Write as _;
     let mut cond = String::new();
-    let floor_pairs: Vec<(i32, i32)> = floors.iter()
+    let floor_pairs: Vec<(i32, i32)> = floors
+        .iter()
         .map(|&(mg, mn)| (mg as i32, mn as i32))
         .collect();
     for i in 0..floor_pairs.len() {
-        if i > 0 { cond.push_str(" OR "); }
-        write!(&mut cond, "(map_group=${} AND map_name=${})", 3 + i * 2, 4 + i * 2).unwrap();
+        if i > 0 {
+            cond.push_str(" OR ");
+        }
+        write!(
+            &mut cond,
+            "(map_group=${} AND map_name=${})",
+            3 + i * 2,
+            4 + i * 2
+        )
+        .unwrap();
     }
     let sql = format!(
         "SELECT EXISTS (SELECT 1 FROM encounters \
@@ -1525,7 +1912,8 @@ pub fn has_encounter_for_any_floor(floors: &[(u8, u8)]) -> bool {
         params.push(mg);
         params.push(mn);
     }
-    state.client
+    state
+        .client
         .query_one(&sql, &params)
         .map(|row| row.get::<_, bool>(0))
         .unwrap_or(false)
@@ -1539,11 +1927,17 @@ pub fn has_encounter(map_group: u8, map_name: u8) -> bool {
         None => return false,
     };
     let player = state.current_player.clone();
-    state.client
+    state
+        .client
         .query_one(
             "SELECT COUNT(*) FROM encounters
              WHERE run_id = $1 AND player_name = $2 AND map_group = $3 AND map_name = $4",
-            &[&(active as i32), &player, &(map_group as i32), &(map_name as i32)],
+            &[
+                &(active as i32),
+                &player,
+                &(map_group as i32),
+                &(map_name as i32),
+            ],
         )
         .map(|row| row.get::<_, i64>(0) > 0)
         .unwrap_or(false)
@@ -1589,11 +1983,14 @@ pub fn set_soul_link_override(personality: u32, partner_personality: u32) {
     let mut state = db().lock_or_recover();
     let active = match state.run_id {
         Some(id) => id,
-        None => { tracing::warn!("set_soul_link_override: no active run"); return; }
+        None => {
+            tracing::warn!("set_soul_link_override: no active run");
+            return;
+        }
     };
-    let p       = personality as i64;
-    let pp      = partner_personality as i64;
-    let now     = unix_now() as i64;
+    let p = personality as i64;
+    let pp = partner_personality as i64;
+    let now = unix_now() as i64;
     let run_i32 = active as i32;
     if let Err(e) = state.client.execute(
         "INSERT INTO soul_link_overrides (run_id, personality, partner_personality, created_at)
@@ -1616,7 +2013,7 @@ pub fn clear_soul_link_override(personality: u32) {
         Some(id) => id,
         None => return,
     };
-    let p       = personality as i64;
+    let p = personality as i64;
     let run_i32 = active as i32;
     if let Err(e) = state.client.execute(
         "DELETE FROM soul_link_overrides WHERE run_id = $1 AND personality = $2",
@@ -1637,12 +2034,12 @@ pub fn clear_soul_link_override(personality: u32) {
 // ---------------------------------------------------------------------------
 
 pub struct DbReader {
-    client:      Mutex<Client>,
-    run_id:      Mutex<Option<u32>>,
+    client: Mutex<Client>,
+    run_id: Mutex<Option<u32>>,
     last_player: Mutex<String>,
-    dirty:       std::sync::atomic::AtomicBool,
+    dirty: std::sync::atomic::AtomicBool,
     /// `true` when the tracked run has `ended_at IS NULL` (currently active).
-    is_active:   std::sync::atomic::AtomicBool,
+    is_active: std::sync::atomic::AtomicBool,
 }
 
 impl DbReader {
@@ -1659,11 +2056,11 @@ impl DbReader {
         };
         tracing::info!("DB connected: {}", connection_string);
         Some(Self {
-            client:      Mutex::new(client),
-            run_id:      Mutex::new(None),
+            client: Mutex::new(client),
+            run_id: Mutex::new(None),
             last_player: Mutex::new(String::new()),
-            dirty:       std::sync::atomic::AtomicBool::new(false),
-            is_active:   std::sync::atomic::AtomicBool::new(false),
+            dirty: std::sync::atomic::AtomicBool::new(false),
+            is_active: std::sync::atomic::AtomicBool::new(false),
         })
     }
 
@@ -1694,10 +2091,13 @@ impl DbReader {
         let forced = self.dirty.swap(false, std::sync::atomic::Ordering::SeqCst);
         if !forced {
             let last = self.last_player.lock_or_recover();
-            if *last == player_name { return false; }
+            if *last == player_name {
+                return false;
+            }
         }
 
-        let row = self.client
+        let row = self
+            .client
             .lock_or_recover()
             .query_opt(
                 "SELECT id, ended_at FROM runs ORDER BY id DESC LIMIT 1",
@@ -1715,7 +2115,8 @@ impl DbReader {
             None => (None, false),
         };
 
-        self.is_active.store(active, std::sync::atomic::Ordering::SeqCst);
+        self.is_active
+            .store(active, std::sync::atomic::Ordering::SeqCst);
         let mut rid = self.run_id.lock_or_recover();
         let old_id = *rid;
         *rid = new_id;
@@ -1822,7 +2223,9 @@ impl DbReader {
         .flatten()
         .map(|row| row.get::<_, i32>(0) as u32);
 
-        let Some(prev_id) = prev_run_id else { return vec![] };
+        let Some(prev_id) = prev_run_id else {
+            return vec![];
+        };
 
         client
             .query(
@@ -1864,24 +2267,30 @@ impl DbReader {
             )
             .ok()
             .flatten()
-            .map(|row| (
-                run_id,
-                row.get::<_, String>(0),
-                row.get::<_, i64>(1) as u64,
-                row.get::<_, Option<i64>>(2).map(|v| v as u64),
-                row.get::<_, i64>(3) as usize,
-                row.get::<_, i64>(4) as usize,
-            ))
+            .map(|row| {
+                (
+                    run_id,
+                    row.get::<_, String>(0),
+                    row.get::<_, i64>(1) as u64,
+                    row.get::<_, Option<i64>>(2).map(|v| v as u64),
+                    row.get::<_, i64>(3) as usize,
+                    row.get::<_, i64>(4) as usize,
+                )
+            })
     }
 
     /// Appends a row to the `events` table using this reader's connection and run.
     ///
     /// Used by the aggregator process, which does not share the tracker's global
     /// `DB` singleton. Mirrors the standalone `record_event` function.
-    pub fn record_event(&self, player_name: &str, event: EventKind<'_>) -> Result<(), postgres::Error> {
+    pub fn record_event(
+        &self,
+        player_name: &str,
+        event: EventKind<'_>,
+    ) -> Result<(), postgres::Error> {
         let run_id = match *self.run_id.lock_or_recover() {
             Some(id) => id,
-            None     => return Ok(()),
+            None => return Ok(()),
         };
         let occurred_at = unix_now() as i64;
         let (event_type, species_name, nickname, old_nickname, level) = event.row_parts();
@@ -1918,7 +2327,8 @@ impl DbReader {
             "SELECT personality, partner_personality FROM soul_link_overrides WHERE run_id = $1",
             &[&run_i32],
         ) {
-            Ok(rows) => rows.iter()
+            Ok(rows) => rows
+                .iter()
                 .map(|r| (r.get::<_, i64>(0) as u32, r.get::<_, i64>(1) as u32))
                 .collect(),
             Err(e) => {
@@ -1951,12 +2361,15 @@ impl DbReader {
         };
         let mut out = String::from("[");
         for (i, row) in rows.iter().enumerate() {
-            let p:  i64 = row.get(0);
+            let p: i64 = row.get(0);
             let pp: i64 = row.get(1);
             let ca: i64 = row.get(2);
-            if i > 0 { out.push(','); }
+            if i > 0 {
+                out.push(',');
+            }
             use std::fmt::Write as _;
-            let _ = write!(&mut out,
+            let _ = write!(
+                &mut out,
                 r#"{{"personality":{p},"partner_personality":{pp},"created_at":{ca}}}"#
             );
         }
@@ -1978,10 +2391,8 @@ impl DbReader {
     pub fn mark_soul_link_dead(&self, caught: &CaughtPokemon) -> Option<bool> {
         let run_id = (*self.run_id.lock_or_recover())?;
         let now = unix_now();
-        match self.client
-            .lock_or_recover()
-            .execute(
-                "INSERT INTO dead_pokemon (
+        match self.client.lock_or_recover().execute(
+            "INSERT INTO dead_pokemon (
                     run_id, player_name, personality, ot_id, ot_name, nickname,
                     species, species_name, is_shiny, nature,
                     level, experience, max_hp, attack, defense, speed, sp_attack, sp_defense,
@@ -2001,29 +2412,28 @@ impl DbReader {
                     0, 0, '', 0, $17, $18, $19,
                     TRUE
                 ) ON CONFLICT (run_id, personality) DO NOTHING",
-                &[
-                    &(run_id as i32),
-                    &caught.player_name,
-                    &(caught.personality as i64),
-                    &(caught.ot_id as i64),
-                    &caught.nickname,
-                    &(caught.species as i32),
-                    &caught.species_name,
-                    &caught.is_shiny,
-                    &caught.nature,
-                    &(caught.level as i32),
-                    &(caught.ivs.hp as i32),
-                    &(caught.ivs.attack as i32),
-                    &(caught.ivs.defense as i32),
-                    &(caught.ivs.speed as i32),
-                    &(caught.ivs.sp_attack as i32),
-                    &(caught.ivs.sp_defense as i32),
-                    &(caught.met_location as i32),
-                    &(now as i64),
-                    &(caught.gender as i32),
-                ],
-            )
-        {
+            &[
+                &(run_id as i32),
+                &caught.player_name,
+                &(caught.personality as i64),
+                &(caught.ot_id as i64),
+                &caught.nickname,
+                &(caught.species as i32),
+                &caught.species_name,
+                &caught.is_shiny,
+                &caught.nature,
+                &(caught.level as i32),
+                &(caught.ivs.hp as i32),
+                &(caught.ivs.attack as i32),
+                &(caught.ivs.defense as i32),
+                &(caught.ivs.speed as i32),
+                &(caught.ivs.sp_attack as i32),
+                &(caught.ivs.sp_defense as i32),
+                &(caught.met_location as i32),
+                &(now as i64),
+                &(caught.gender as i32),
+            ],
+        ) {
             Ok(1) => Some(true),
             Ok(_) => Some(false), // ON CONFLICT DO NOTHING — row already existed
             Err(e) => {
@@ -2052,11 +2462,11 @@ impl DbReader {
 /// Errors return `{ "error": "..." }`.
 pub fn run_sql(conn_str: &str, sql: &str) -> serde_json::Value {
     let mut client = match Client::connect(conn_str, NoTls) {
-        Ok(c)  => c,
+        Ok(c) => c,
         Err(e) => return serde_json::json!({ "error": format!("DB connection failed: {e}") }),
     };
     let messages = match client.simple_query(sql) {
-        Ok(m)  => m,
+        Ok(m) => m,
         Err(e) => return serde_json::json!({ "error": format!("Query error: {e}") }),
     };
     let mut columns: Vec<String> = Vec::new();
@@ -2068,11 +2478,13 @@ pub fn run_sql(conn_str: &str, sql: &str) -> serde_json::Value {
                 if columns.is_empty() {
                     columns = row.columns().iter().map(|c| c.name().to_string()).collect();
                 }
-                let obj: serde_json::Map<String, serde_json::Value> = row.columns()
+                let obj: serde_json::Map<String, serde_json::Value> = row
+                    .columns()
                     .iter()
                     .enumerate()
                     .map(|(i, col)| {
-                        let val = row.get(i)
+                        let val = row
+                            .get(i)
                             .map(|s| serde_json::Value::String(s.to_string()))
                             .unwrap_or(serde_json::Value::Null);
                         (col.name().to_string(), val)
@@ -2094,7 +2506,7 @@ pub fn run_sql(conn_str: &str, sql: &str) -> serde_json::Value {
 /// Opens its own connection (like `dump_all`) so live tracker connections are not blocked.
 pub fn run_stats(conn_str: &str, run_id: u32) -> serde_json::Value {
     let mut client = match Client::connect(conn_str, NoTls) {
-        Ok(c)  => c,
+        Ok(c) => c,
         Err(e) => return serde_json::json!({ "error": format!("DB connection failed: {e}") }),
     };
 
@@ -2103,23 +2515,25 @@ pub fn run_stats(conn_str: &str, run_id: u32) -> serde_json::Value {
         &[&(run_id as i32)],
     ) {
         Ok(Some(r)) => r,
-        Ok(None)    => return serde_json::json!({ "error": "Run not found" }),
-        Err(e)      => return serde_json::json!({ "error": format!("Query error: {e}") }),
+        Ok(None) => return serde_json::json!({ "error": "Run not found" }),
+        Err(e) => return serde_json::json!({ "error": format!("Query error: {e}") }),
     };
 
-    let player_name: String  = run_row.get(0);
-    let started_at:  i64     = run_row.get(1);
-    let ended_at:    Option<i64> = run_row.get(2);
+    let player_name: String = run_row.get(0);
+    let started_at: i64 = run_row.get(1);
+    let ended_at: Option<i64> = run_row.get(2);
 
     let now = unix_now() as i64;
     let duration_secs = ended_at.unwrap_or(now) - started_at;
     let playtime = format!("{}h {}m", duration_secs / 3600, (duration_secs % 3600) / 60);
 
-    let enc_rows = client.query(
-        "SELECT map_group, map_name, species_name, level, caught, is_shiny, encountered_at
+    let enc_rows = client
+        .query(
+            "SELECT map_group, map_name, species_name, level, caught, is_shiny, encountered_at
          FROM encounters WHERE run_id = $1 ORDER BY encountered_at ASC",
-        &[&(run_id as i32)],
-    ).unwrap_or_default();
+            &[&(run_id as i32)],
+        )
+        .unwrap_or_default();
 
     let total_encounters = enc_rows.len();
     let total_caught: usize = enc_rows.iter().filter(|r| r.get::<_, bool>(4)).count();
@@ -2129,26 +2543,35 @@ pub fn run_stats(conn_str: &str, run_id: u32) -> serde_json::Value {
         0.0
     };
 
-    let zone_stats: Vec<serde_json::Value> = enc_rows.iter().map(|row| {
-        let mg  = row.get::<_, i32>(0) as u8;
-        let mn  = row.get::<_, i32>(1) as u8;
-        let raw = fire_red_location_names::map_area_name(mg, mn);
-        let area = if raw.is_empty() { format!("{}:{}", mg, mn) } else { raw.to_string() };
-        serde_json::json!({
-            "area":          area,
-            "species_name":  row.get::<_, String>(2),
-            "level":         row.get::<_, i32>(3),
-            "caught":        row.get::<_, bool>(4),
-            "is_shiny":      row.get::<_, bool>(5),
-            "encountered_at": format_timestamp(row.get::<_, i64>(6) as u64),
+    let zone_stats: Vec<serde_json::Value> = enc_rows
+        .iter()
+        .map(|row| {
+            let mg = row.get::<_, i32>(0) as u8;
+            let mn = row.get::<_, i32>(1) as u8;
+            let raw = fire_red_location_names::map_area_name(mg, mn);
+            let area = if raw.is_empty() {
+                format!("{}:{}", mg, mn)
+            } else {
+                raw.to_string()
+            };
+            serde_json::json!({
+                "area":          area,
+                "species_name":  row.get::<_, String>(2),
+                "level":         row.get::<_, i32>(3),
+                "caught":        row.get::<_, bool>(4),
+                "is_shiny":      row.get::<_, bool>(5),
+                "encountered_at": format_timestamp(row.get::<_, i64>(6) as u64),
+            })
         })
-    }).collect();
+        .collect();
 
-    let dead_rows = client.query(
-        "SELECT level, species_name, met_location, died_at, is_soul_link_death
+    let dead_rows = client
+        .query(
+            "SELECT level, species_name, met_location, died_at, is_soul_link_death
          FROM dead_pokemon WHERE run_id = $1 ORDER BY died_at ASC",
-        &[&(run_id as i32)],
-    ).unwrap_or_default();
+            &[&(run_id as i32)],
+        )
+        .unwrap_or_default();
 
     let total_deaths = dead_rows.len();
     let avg_death_level = if total_deaths > 0 {
@@ -2158,18 +2581,25 @@ pub fn run_stats(conn_str: &str, run_id: u32) -> serde_json::Value {
         0.0
     };
 
-    let deaths: Vec<serde_json::Value> = dead_rows.iter().map(|row| {
-        let met_loc  = row.get::<_, i32>(2) as u8;
-        let raw      = fire_red_location_names::location_name(met_loc);
-        let location = if raw.is_empty() { format!("loc {}", met_loc) } else { raw.to_string() };
-        serde_json::json!({
-            "level":        row.get::<_, i32>(0),
-            "species_name": row.get::<_, String>(1),
-            "location":     location,
-            "died_at":      format_timestamp(row.get::<_, i64>(3) as u64),
-            "soul_link":    row.get::<_, bool>(4),
+    let deaths: Vec<serde_json::Value> = dead_rows
+        .iter()
+        .map(|row| {
+            let met_loc = row.get::<_, i32>(2) as u8;
+            let raw = fire_red_location_names::location_name(met_loc);
+            let location = if raw.is_empty() {
+                format!("loc {}", met_loc)
+            } else {
+                raw.to_string()
+            };
+            serde_json::json!({
+                "level":        row.get::<_, i32>(0),
+                "species_name": row.get::<_, String>(1),
+                "location":     location,
+                "died_at":      format_timestamp(row.get::<_, i64>(3) as u64),
+                "soul_link":    row.get::<_, bool>(4),
+            })
         })
-    }).collect();
+        .collect();
 
     serde_json::json!({
         "run_id":          run_id,
@@ -2194,7 +2624,7 @@ pub fn run_stats(conn_str: &str, run_id: u32) -> serde_json::Value {
 /// connection so live tracker connections are not blocked.
 pub fn route_stats(conn_str: &str, run_id: u32) -> serde_json::Value {
     let mut client = match Client::connect(conn_str, NoTls) {
-        Ok(c)  => c,
+        Ok(c) => c,
         Err(e) => return serde_json::json!({ "error": format!("DB connection failed: {e}") }),
     };
 
@@ -2208,27 +2638,38 @@ pub fn route_stats(conn_str: &str, run_id: u32) -> serde_json::Value {
          ORDER BY map_group, map_name",
         &[&(run_id as i32)],
     ) {
-        Ok(r)  => r,
+        Ok(r) => r,
         Err(e) => return serde_json::json!({ "error": format!("Query error: {e}") }),
     };
 
-    let zones: Vec<serde_json::Value> = rows.iter().map(|row| {
-        let mg:    u8  = row.get::<_, i32>(0) as u8;
-        let mn:    u8  = row.get::<_, i32>(1) as u8;
-        let total: i64 = row.get(2);
-        let caught: i64 = row.get(3);
-        let raw  = fire_red_location_names::map_area_name(mg, mn);
-        let area = if raw.is_empty() { format!("{}:{}", mg, mn) } else { raw.to_string() };
-        let catch_rate = if total > 0 { (caught as f64 / total as f64 * 100.0).round() } else { 0.0 };
-        serde_json::json!({
-            "map_group":      mg,
-            "map_name":       mn,
-            "area":           area,
-            "total":          total,
-            "caught":         caught,
-            "catch_rate_pct": catch_rate,
+    let zones: Vec<serde_json::Value> = rows
+        .iter()
+        .map(|row| {
+            let mg: u8 = row.get::<_, i32>(0) as u8;
+            let mn: u8 = row.get::<_, i32>(1) as u8;
+            let total: i64 = row.get(2);
+            let caught: i64 = row.get(3);
+            let raw = fire_red_location_names::map_area_name(mg, mn);
+            let area = if raw.is_empty() {
+                format!("{}:{}", mg, mn)
+            } else {
+                raw.to_string()
+            };
+            let catch_rate = if total > 0 {
+                (caught as f64 / total as f64 * 100.0).round()
+            } else {
+                0.0
+            };
+            serde_json::json!({
+                "map_group":      mg,
+                "map_name":       mn,
+                "area":           area,
+                "total":          total,
+                "caught":         caught,
+                "catch_rate_pct": catch_rate,
+            })
         })
-    }).collect();
+        .collect();
 
     serde_json::json!({ "run_id": run_id, "zones": zones })
 }
@@ -2239,31 +2680,39 @@ pub fn route_stats(conn_str: &str, run_id: u32) -> serde_json::Value {
 /// Opens its own connection so live tracker connections are not blocked.
 pub fn shiny_stats(conn_str: &str, run_id: u32) -> serde_json::Value {
     let mut client = match Client::connect(conn_str, NoTls) {
-        Ok(c)  => c,
+        Ok(c) => c,
         Err(e) => return serde_json::json!({ "error": format!("DB connection failed: {e}") }),
     };
 
-    let rows = client.query(
-        "SELECT species_name, encountered_at, is_shiny, map_group, map_name, level, caught
+    let rows = client
+        .query(
+            "SELECT species_name, encountered_at, is_shiny, map_group, map_name, level, caught
          FROM encounters WHERE run_id = $1 ORDER BY encountered_at ASC",
-        &[&(run_id as i32)],
-    ).unwrap_or_default();
+            &[&(run_id as i32)],
+        )
+        .unwrap_or_default();
 
     let total_encounters = rows.len();
     let total_shinies: usize = rows.iter().filter(|r| r.get::<_, bool>(2)).count();
 
-    let last_shiny_idx = rows.iter().enumerate()
+    let last_shiny_idx = rows
+        .iter()
+        .enumerate()
         .filter(|(_, r)| r.get::<_, bool>(2))
         .map(|(i, _)| i)
         .last();
 
     let (encounters_since_shiny, last_shiny) = match last_shiny_idx {
         Some(idx) => {
-            let sr  = &rows[idx];
-            let mg  = sr.get::<_, i32>(3) as u8;
-            let mn  = sr.get::<_, i32>(4) as u8;
+            let sr = &rows[idx];
+            let mg = sr.get::<_, i32>(3) as u8;
+            let mn = sr.get::<_, i32>(4) as u8;
             let raw = fire_red_location_names::map_area_name(mg, mn);
-            let area = if raw.is_empty() { format!("{}:{}", mg, mn) } else { raw.to_string() };
+            let area = if raw.is_empty() {
+                format!("{}:{}", mg, mn)
+            } else {
+                raw.to_string()
+            };
             let shiny = serde_json::json!({
                 "species_name":  sr.get::<_, String>(0),
                 "encountered_at": format_timestamp(sr.get::<_, i64>(1) as u64),
@@ -2277,19 +2726,26 @@ pub fn shiny_stats(conn_str: &str, run_id: u32) -> serde_json::Value {
     };
 
     let recent_start = last_shiny_idx.map(|i| i + 1).unwrap_or(0);
-    let since_last_shiny: Vec<serde_json::Value> = rows[recent_start..].iter().map(|row| {
-        let mg  = row.get::<_, i32>(3) as u8;
-        let mn  = row.get::<_, i32>(4) as u8;
-        let raw = fire_red_location_names::map_area_name(mg, mn);
-        let area = if raw.is_empty() { format!("{}:{}", mg, mn) } else { raw.to_string() };
-        serde_json::json!({
-            "species_name":  row.get::<_, String>(0),
-            "encountered_at": format_timestamp(row.get::<_, i64>(1) as u64),
-            "area":          area,
-            "level":         row.get::<_, i32>(5),
-            "caught":        row.get::<_, bool>(6),
+    let since_last_shiny: Vec<serde_json::Value> = rows[recent_start..]
+        .iter()
+        .map(|row| {
+            let mg = row.get::<_, i32>(3) as u8;
+            let mn = row.get::<_, i32>(4) as u8;
+            let raw = fire_red_location_names::map_area_name(mg, mn);
+            let area = if raw.is_empty() {
+                format!("{}:{}", mg, mn)
+            } else {
+                raw.to_string()
+            };
+            serde_json::json!({
+                "species_name":  row.get::<_, String>(0),
+                "encountered_at": format_timestamp(row.get::<_, i64>(1) as u64),
+                "area":          area,
+                "level":         row.get::<_, i32>(5),
+                "caught":        row.get::<_, bool>(6),
+            })
         })
-    }).collect();
+        .collect();
 
     serde_json::json!({
         "run_id":                   run_id,
@@ -2302,15 +2758,19 @@ pub fn shiny_stats(conn_str: &str, run_id: u32) -> serde_json::Value {
 }
 
 pub fn clear_all_records(conn_str: &str) -> Result<(), String> {
-    let mut client = Client::connect(conn_str, NoTls)
-        .map_err(|e| format!("DB connection failed: {e}"))?;
-    client.batch_execute("
+    let mut client =
+        Client::connect(conn_str, NoTls).map_err(|e| format!("DB connection failed: {e}"))?;
+    client
+        .batch_execute(
+            "
         DELETE FROM encounters;
         DELETE FROM caught_pokemon;
         DELETE FROM dead_pokemon;
         DELETE FROM runs;
         DELETE FROM meta WHERE key = 'active_run_id';
-    ").map_err(|e| format!("Clear failed: {e}"))
+    ",
+        )
+        .map_err(|e| format!("Clear failed: {e}"))
 }
 
 /// Returns a JSON export of a single run: metadata, caught, dead, and encounter lists.
@@ -2318,7 +2778,7 @@ pub fn clear_all_records(conn_str: &str) -> Result<(), String> {
 /// Opens its own connection so the live tracker connection is not blocked.
 pub fn export_run(conn_str: &str, run_id: u32) -> serde_json::Value {
     let mut client = match Client::connect(conn_str, NoTls) {
-        Ok(c)  => c,
+        Ok(c) => c,
         Err(e) => return serde_json::json!({ "error": format!("DB connection failed: {e}") }),
     };
     let rid = run_id as i32;
@@ -2329,33 +2789,48 @@ pub fn export_run(conn_str: &str, run_id: u32) -> serde_json::Value {
     ) {
         Ok(Some(r)) => r,
         Ok(None) => return serde_json::json!({ "error": format!("Run {run_id} not found") }),
-        Err(e)   => return serde_json::json!({ "error": format!("Query failed: {e}") }),
+        Err(e) => return serde_json::json!({ "error": format!("Query failed: {e}") }),
     };
 
-    let caught_rows = client.query(
-        "SELECT nickname, species_name, level, nature, is_shiny, gender, \
+    let caught_rows = client
+        .query(
+            "SELECT nickname, species_name, level, nature, is_shiny, gender, \
                 met_location, location_name, caught_at, player_name, personality, \
                 iv_hp, iv_attack, iv_defense, iv_speed, iv_sp_attack, iv_sp_defense, \
                 ev_hp, ev_attack, ev_defense, ev_speed, ev_sp_attack, ev_sp_defense \
          FROM caught_pokemon WHERE run_id = $1 ORDER BY caught_at",
-        &[&rid],
-    ).unwrap_or_else(|e| { tracing::warn!("export_run caught query failed for run {run_id}: {e}"); vec![] });
+            &[&rid],
+        )
+        .unwrap_or_else(|e| {
+            tracing::warn!("export_run caught query failed for run {run_id}: {e}");
+            vec![]
+        });
 
-    let dead_rows = client.query(
-        "SELECT nickname, species_name, level, nature, is_shiny, gender, \
+    let dead_rows = client
+        .query(
+            "SELECT nickname, species_name, level, nature, is_shiny, gender, \
                 met_location, died_at, player_name, is_soul_link_death, personality, \
                 iv_hp, iv_attack, iv_defense, iv_speed, iv_sp_attack, iv_sp_defense, \
                 ev_hp, ev_attack, ev_defense, ev_speed, ev_sp_attack, ev_sp_defense \
          FROM dead_pokemon WHERE run_id = $1 ORDER BY died_at",
-        &[&rid],
-    ).unwrap_or_else(|e| { tracing::warn!("export_run dead query failed for run {run_id}: {e}"); vec![] });
+            &[&rid],
+        )
+        .unwrap_or_else(|e| {
+            tracing::warn!("export_run dead query failed for run {run_id}: {e}");
+            vec![]
+        });
 
-    let enc_rows = client.query(
-        "SELECT species_name, level, map_group, map_name, caught, is_shiny, \
+    let enc_rows = client
+        .query(
+            "SELECT species_name, level, map_group, map_name, caught, is_shiny, \
                 encountered_at, player_name \
          FROM encounters WHERE run_id = $1 ORDER BY encountered_at",
-        &[&rid],
-    ).unwrap_or_else(|e| { tracing::warn!("export_run encounters query failed for run {run_id}: {e}"); vec![] });
+            &[&rid],
+        )
+        .unwrap_or_else(|e| {
+            tracing::warn!("export_run encounters query failed for run {run_id}: {e}");
+            vec![]
+        });
 
     serde_json::json!({
         "run": {
@@ -2432,48 +2907,55 @@ pub fn export_run(conn_str: &str, run_id: u32) -> serde_json::Value {
 /// Sections: `caught`, `dead`, `encounters`. Each section has a header row.
 /// Opens its own connection so the live tracker is not blocked.
 pub fn export_run_csv(conn_str: &str, run_id: u32) -> Result<String, String> {
-    let mut client = Client::connect(conn_str, NoTls)
-        .map_err(|e| format!("DB connection failed: {e}"))?;
+    let mut client =
+        Client::connect(conn_str, NoTls).map_err(|e| format!("DB connection failed: {e}"))?;
     let rid = run_id as i32;
 
     let mut out = String::new();
 
     // Caught Pokémon
-    out.push_str("section,player_name,nickname,species_name,level,nature,is_shiny,gender,\
+    out.push_str(
+        "section,player_name,nickname,species_name,level,nature,is_shiny,gender,\
 met_location,location_name,iv_hp,iv_atk,iv_def,iv_spe,iv_spa,iv_spd,\
-ev_hp,ev_atk,ev_def,ev_spe,ev_spa,ev_spd,caught_at\n");
-    let caught_rows = client.query(
-        "SELECT nickname, species_name, level, nature, is_shiny, gender, \
+ev_hp,ev_atk,ev_def,ev_spe,ev_spa,ev_spd,caught_at\n",
+    );
+    let caught_rows = client
+        .query(
+            "SELECT nickname, species_name, level, nature, is_shiny, gender, \
                 met_location, location_name, caught_at, player_name, \
                 iv_hp, iv_attack, iv_defense, iv_speed, iv_sp_attack, iv_sp_defense, \
                 ev_hp, ev_attack, ev_defense, ev_speed, ev_sp_attack, ev_sp_defense \
          FROM caught_pokemon WHERE run_id = $1 ORDER BY caught_at",
-        &[&rid],
-    ).unwrap_or_else(|e| { tracing::warn!("export_run_csv caught query failed for run {run_id}: {e}"); vec![] });
+            &[&rid],
+        )
+        .unwrap_or_else(|e| {
+            tracing::warn!("export_run_csv caught query failed for run {run_id}: {e}");
+            vec![]
+        });
     for r in &caught_rows {
         out.push_str(&format!(
             "caught,{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}\n",
-            csv_field(r.get::<_, String>(9)),   // player_name
-            csv_field(r.get::<_, String>(0)),   // nickname
-            csv_field(r.get::<_, String>(1)),   // species_name
-            r.get::<_, i32>(2),                  // level
-            csv_field(r.get::<_, String>(3)),   // nature
-            r.get::<_, bool>(4),                 // is_shiny
-            r.get::<_, i32>(5),                  // gender
-            r.get::<_, i32>(6),                  // met_location
-            csv_field(r.get::<_, String>(7)),   // location_name
-            r.get::<_, i32>(10),                 // iv_hp
-            r.get::<_, i32>(11),                 // iv_atk
-            r.get::<_, i32>(12),                 // iv_def
-            r.get::<_, i32>(13),                 // iv_spe
-            r.get::<_, i32>(14),                 // iv_spa
-            r.get::<_, i32>(15),                 // iv_spd
-            r.get::<_, i32>(16),                 // ev_hp
-            r.get::<_, i32>(17),                 // ev_atk
-            r.get::<_, i32>(18),                 // ev_def
-            r.get::<_, i32>(19),                 // ev_spe
-            r.get::<_, i32>(20),                 // ev_spa
-            r.get::<_, i32>(21),                 // ev_spd
+            csv_field(r.get::<_, String>(9)), // player_name
+            csv_field(r.get::<_, String>(0)), // nickname
+            csv_field(r.get::<_, String>(1)), // species_name
+            r.get::<_, i32>(2),               // level
+            csv_field(r.get::<_, String>(3)), // nature
+            r.get::<_, bool>(4),              // is_shiny
+            r.get::<_, i32>(5),               // gender
+            r.get::<_, i32>(6),               // met_location
+            csv_field(r.get::<_, String>(7)), // location_name
+            r.get::<_, i32>(10),              // iv_hp
+            r.get::<_, i32>(11),              // iv_atk
+            r.get::<_, i32>(12),              // iv_def
+            r.get::<_, i32>(13),              // iv_spe
+            r.get::<_, i32>(14),              // iv_spa
+            r.get::<_, i32>(15),              // iv_spd
+            r.get::<_, i32>(16),              // ev_hp
+            r.get::<_, i32>(17),              // ev_atk
+            r.get::<_, i32>(18),              // ev_def
+            r.get::<_, i32>(19),              // ev_spe
+            r.get::<_, i32>(20),              // ev_spa
+            r.get::<_, i32>(21),              // ev_spd
             csv_field(format_timestamp(r.get::<_, i64>(8) as u64)), // caught_at
         ));
     }
@@ -2481,41 +2963,48 @@ ev_hp,ev_atk,ev_def,ev_spe,ev_spa,ev_spd,caught_at\n");
     out.push('\n');
 
     // Dead Pokémon
-    out.push_str("section,player_name,nickname,species_name,level,nature,is_shiny,gender,\
+    out.push_str(
+        "section,player_name,nickname,species_name,level,nature,is_shiny,gender,\
 met_location,soul_link_death,iv_hp,iv_atk,iv_def,iv_spe,iv_spa,iv_spd,\
-ev_hp,ev_atk,ev_def,ev_spe,ev_spa,ev_spd,died_at\n");
-    let dead_rows = client.query(
-        "SELECT nickname, species_name, level, nature, is_shiny, gender, \
+ev_hp,ev_atk,ev_def,ev_spe,ev_spa,ev_spd,died_at\n",
+    );
+    let dead_rows = client
+        .query(
+            "SELECT nickname, species_name, level, nature, is_shiny, gender, \
                 met_location, died_at, player_name, is_soul_link_death, \
                 iv_hp, iv_attack, iv_defense, iv_speed, iv_sp_attack, iv_sp_defense, \
                 ev_hp, ev_attack, ev_defense, ev_speed, ev_sp_attack, ev_sp_defense \
          FROM dead_pokemon WHERE run_id = $1 ORDER BY died_at",
-        &[&rid],
-    ).unwrap_or_else(|e| { tracing::warn!("export_run_csv dead query failed for run {run_id}: {e}"); vec![] });
+            &[&rid],
+        )
+        .unwrap_or_else(|e| {
+            tracing::warn!("export_run_csv dead query failed for run {run_id}: {e}");
+            vec![]
+        });
     for r in &dead_rows {
         out.push_str(&format!(
             "dead,{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}\n",
-            csv_field(r.get::<_, String>(8)),   // player_name
-            csv_field(r.get::<_, String>(0)),   // nickname
-            csv_field(r.get::<_, String>(1)),   // species_name
-            r.get::<_, i32>(2),                  // level
-            csv_field(r.get::<_, String>(3)),   // nature
-            r.get::<_, bool>(4),                 // is_shiny
-            r.get::<_, i32>(5),                  // gender
-            r.get::<_, i32>(6),                  // met_location
-            r.get::<_, bool>(9),                 // soul_link_death
-            r.get::<_, i32>(10),                 // iv_hp
-            r.get::<_, i32>(11),                 // iv_atk
-            r.get::<_, i32>(12),                 // iv_def
-            r.get::<_, i32>(13),                 // iv_spe
-            r.get::<_, i32>(14),                 // iv_spa
-            r.get::<_, i32>(15),                 // iv_spd
-            r.get::<_, i32>(16),                 // ev_hp
-            r.get::<_, i32>(17),                 // ev_atk
-            r.get::<_, i32>(18),                 // ev_def
-            r.get::<_, i32>(19),                 // ev_spe
-            r.get::<_, i32>(20),                 // ev_spa
-            r.get::<_, i32>(21),                 // ev_spd
+            csv_field(r.get::<_, String>(8)), // player_name
+            csv_field(r.get::<_, String>(0)), // nickname
+            csv_field(r.get::<_, String>(1)), // species_name
+            r.get::<_, i32>(2),               // level
+            csv_field(r.get::<_, String>(3)), // nature
+            r.get::<_, bool>(4),              // is_shiny
+            r.get::<_, i32>(5),               // gender
+            r.get::<_, i32>(6),               // met_location
+            r.get::<_, bool>(9),              // soul_link_death
+            r.get::<_, i32>(10),              // iv_hp
+            r.get::<_, i32>(11),              // iv_atk
+            r.get::<_, i32>(12),              // iv_def
+            r.get::<_, i32>(13),              // iv_spe
+            r.get::<_, i32>(14),              // iv_spa
+            r.get::<_, i32>(15),              // iv_spd
+            r.get::<_, i32>(16),              // ev_hp
+            r.get::<_, i32>(17),              // ev_atk
+            r.get::<_, i32>(18),              // ev_def
+            r.get::<_, i32>(19),              // ev_spe
+            r.get::<_, i32>(20),              // ev_spa
+            r.get::<_, i32>(21),              // ev_spd
             csv_field(format_timestamp(r.get::<_, i64>(7) as u64)), // died_at
         ));
     }
@@ -2524,12 +3013,17 @@ ev_hp,ev_atk,ev_def,ev_spe,ev_spa,ev_spd,died_at\n");
 
     // Encounters
     out.push_str("section,player_name,species_name,level,map_group,map_name,caught,is_shiny,encountered_at\n");
-    let enc_rows = client.query(
-        "SELECT species_name, level, map_group, map_name, caught, is_shiny, \
+    let enc_rows = client
+        .query(
+            "SELECT species_name, level, map_group, map_name, caught, is_shiny, \
                 encountered_at, player_name \
          FROM encounters WHERE run_id = $1 ORDER BY encountered_at",
-        &[&rid],
-    ).unwrap_or_else(|e| { tracing::warn!("export_run_csv encounters query failed for run {run_id}: {e}"); vec![] });
+            &[&rid],
+        )
+        .unwrap_or_else(|e| {
+            tracing::warn!("export_run_csv encounters query failed for run {run_id}: {e}");
+            vec![]
+        });
     for r in &enc_rows {
         out.push_str(&format!(
             "encounter,{},{},{},{},{},{},{},{}\n",
@@ -2564,7 +3058,7 @@ fn csv_field(s: impl AsRef<str>) -> String {
 /// Opens its own connection so the live tracker is not blocked.
 pub fn list_all_runs_json(conn_str: &str) -> serde_json::Value {
     let mut client = match Client::connect(conn_str, NoTls) {
-        Ok(c)  => c,
+        Ok(c) => c,
         Err(e) => return serde_json::json!({ "error": format!("DB connection failed: {e}") }),
     };
     let rows = match client.query(
@@ -2580,22 +3074,25 @@ pub fn list_all_runs_json(conn_str: &str) -> serde_json::Value {
          ORDER BY r.id DESC",
         &[],
     ) {
-        Ok(r)  => r,
+        Ok(r) => r,
         Err(e) => return serde_json::json!({ "error": format!("Query failed: {e}") }),
     };
-    let runs: Vec<serde_json::Value> = rows.iter().map(|row| {
-        let started: i64         = row.get(2);
-        let ended:   Option<i64> = row.get(3);
-        serde_json::json!({
-            "id":          row.get::<_, i32>(0),
-            "player_name": row.get::<_, String>(1),
-            "started_at":  format_timestamp(started as u64),
-            "ended_at":    ended.map(|t| format_timestamp(t as u64)),
-            "deaths":      row.get::<_, i64>(4),
-            "catches":     row.get::<_, i64>(5),
-            "encounters":  row.get::<_, i64>(6),
+    let runs: Vec<serde_json::Value> = rows
+        .iter()
+        .map(|row| {
+            let started: i64 = row.get(2);
+            let ended: Option<i64> = row.get(3);
+            serde_json::json!({
+                "id":          row.get::<_, i32>(0),
+                "player_name": row.get::<_, String>(1),
+                "started_at":  format_timestamp(started as u64),
+                "ended_at":    ended.map(|t| format_timestamp(t as u64)),
+                "deaths":      row.get::<_, i64>(4),
+                "catches":     row.get::<_, i64>(5),
+                "encounters":  row.get::<_, i64>(6),
+            })
         })
-    }).collect();
+        .collect();
     serde_json::json!({ "runs": runs })
 }
 
@@ -2613,27 +3110,30 @@ pub fn list_all_runs_json(conn_str: &str) -> serde_json::Value {
 /// Returns `{ "run_id": <new_id> }` on success or `{ "error": "..." }` on failure.
 pub fn import_run(conn_str: &str, body: &serde_json::Value) -> serde_json::Value {
     let mut client = match Client::connect(conn_str, NoTls) {
-        Ok(c)  => c,
+        Ok(c) => c,
         Err(e) => return serde_json::json!({ "error": format!("DB connection failed: {e}") }),
     };
 
     let run_obj = match body.get("run") {
         Some(v) => v,
-        None    => return serde_json::json!({ "error": "missing 'run' field" }),
+        None => return serde_json::json!({ "error": "missing 'run' field" }),
     };
 
-    let player_name = run_obj.get("player_name")
+    let player_name = run_obj
+        .get("player_name")
         .and_then(|v| v.as_str())
         .unwrap_or("Imported");
 
     // Preserve original run timestamps; fall back to now if absent (old exports).
     let now = unix_now() as i64;
-    let started_at: i64 = run_obj.get("started_at")
+    let started_at: i64 = run_obj
+        .get("started_at")
         .and_then(|v| v.as_str())
         .and_then(parse_timestamp)
         .map(|t| t as i64)
         .unwrap_or(now);
-    let ended_at: Option<i64> = run_obj.get("ended_at")
+    let ended_at: Option<i64> = run_obj
+        .get("ended_at")
         .and_then(|v| v.as_str())
         .and_then(parse_timestamp)
         .map(|t| t as i64);
@@ -2643,20 +3143,30 @@ pub fn import_run(conn_str: &str, body: &serde_json::Value) -> serde_json::Value
         &[&player_name, &started_at, &ended_at],
     ) {
         Ok(row) => row.get(0),
-        Err(e)  => return serde_json::json!({ "error": format!("Failed to create run: {e}") }),
+        Err(e) => return serde_json::json!({ "error": format!("Failed to create run: {e}") }),
     };
 
     // Re-insert encounters.
     if let Some(encounters) = body.get("encounters").and_then(|v| v.as_array()) {
         for enc in encounters {
-            let species_name  = enc.get("species_name").and_then(|v| v.as_str()).unwrap_or("");
-            let level         = enc.get("level").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
-            let map_group     = enc.get("map_group").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
-            let map_name      = enc.get("map_name").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
-            let caught        = enc.get("caught").and_then(|v| v.as_bool()).unwrap_or(false);
-            let is_shiny      = enc.get("is_shiny").and_then(|v| v.as_bool()).unwrap_or(false);
-            let enc_player    = enc.get("player_name").and_then(|v| v.as_str()).unwrap_or(player_name);
-            let encountered_at: i64 = enc.get("encountered_at")
+            let species_name = enc
+                .get("species_name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let level = enc.get("level").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+            let map_group = enc.get("map_group").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+            let map_name = enc.get("map_name").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+            let caught = enc.get("caught").and_then(|v| v.as_bool()).unwrap_or(false);
+            let is_shiny = enc
+                .get("is_shiny")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            let enc_player = enc
+                .get("player_name")
+                .and_then(|v| v.as_str())
+                .unwrap_or(player_name);
+            let encountered_at: i64 = enc
+                .get("encountered_at")
                 .and_then(|v| v.as_str())
                 .and_then(parse_timestamp)
                 .map(|t| t as i64)
@@ -2666,15 +3176,26 @@ pub fn import_run(conn_str: &str, body: &serde_json::Value) -> serde_json::Value
                                         map_group, map_name, caught, is_shiny, encountered_at) \
                  VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) \
                  ON CONFLICT DO NOTHING",
-                &[&new_id, &enc_player, &species_name, &level,
-                  &map_group, &map_name, &caught, &is_shiny, &encountered_at],
+                &[
+                    &new_id,
+                    &enc_player,
+                    &species_name,
+                    &level,
+                    &map_group,
+                    &map_name,
+                    &caught,
+                    &is_shiny,
+                    &encountered_at,
+                ],
             ) {
                 Ok(0) => tracing::warn!(
                     "import_run: encounter ({species_name}, map {map_group}/{map_name}, \
-                     player {enc_player}) already exists in run {new_id}; skipped"),
+                     player {enc_player}) already exists in run {new_id}; skipped"
+                ),
                 Ok(_) => {}
-                Err(e) => tracing::warn!(
-                    "import_run: failed to insert encounter ({species_name}): {e}"),
+                Err(e) => {
+                    tracing::warn!("import_run: failed to insert encounter ({species_name}): {e}")
+                }
             }
         }
     }
@@ -2682,32 +3203,40 @@ pub fn import_run(conn_str: &str, body: &serde_json::Value) -> serde_json::Value
     // Re-insert caught.
     if let Some(caught_list) = body.get("caught").and_then(|v| v.as_array()) {
         for (idx, c) in caught_list.iter().enumerate() {
-            let nickname      = c.get("nickname").and_then(|v| v.as_str()).unwrap_or("");
-            let species_name  = c.get("species_name").and_then(|v| v.as_str()).unwrap_or("");
-            let level         = c.get("level").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
-            let nature        = c.get("nature").and_then(|v| v.as_str()).unwrap_or("");
-            let is_shiny      = c.get("is_shiny").and_then(|v| v.as_bool()).unwrap_or(false);
-            let gender        = c.get("gender").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
-            let met_location  = c.get("met_location").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
-            let location_name = c.get("location_name").and_then(|v| v.as_str()).unwrap_or("");
-            let c_player      = c.get("player_name").and_then(|v| v.as_str()).unwrap_or(player_name);
+            let nickname = c.get("nickname").and_then(|v| v.as_str()).unwrap_or("");
+            let species_name = c.get("species_name").and_then(|v| v.as_str()).unwrap_or("");
+            let level = c.get("level").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+            let nature = c.get("nature").and_then(|v| v.as_str()).unwrap_or("");
+            let is_shiny = c.get("is_shiny").and_then(|v| v.as_bool()).unwrap_or(false);
+            let gender = c.get("gender").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+            let met_location = c.get("met_location").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+            let location_name = c
+                .get("location_name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let c_player = c
+                .get("player_name")
+                .and_then(|v| v.as_str())
+                .unwrap_or(player_name);
             // Use original personality; fall back to a synthetic unique value for
             // exports produced before this field was added.
-            let personality: i64 = c.get("personality")
+            let personality: i64 = c
+                .get("personality")
                 .and_then(|v| v.as_i64())
                 .unwrap_or(new_id as i64 * 10_000 + idx as i64 + 1);
-            let caught_at: i64 = c.get("caught_at")
+            let caught_at: i64 = c
+                .get("caught_at")
                 .and_then(|v| v.as_str())
                 .and_then(parse_timestamp)
                 .map(|t| t as i64)
                 .unwrap_or(now);
-            let iv_hp:  i32 = c.get("iv_hp") .and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+            let iv_hp: i32 = c.get("iv_hp").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
             let iv_atk: i32 = c.get("iv_atk").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
             let iv_def: i32 = c.get("iv_def").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
             let iv_spe: i32 = c.get("iv_spe").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
             let iv_spa: i32 = c.get("iv_spa").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
             let iv_spd: i32 = c.get("iv_spd").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
-            let ev_hp:  i32 = c.get("ev_hp") .and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+            let ev_hp: i32 = c.get("ev_hp").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
             let ev_atk: i32 = c.get("ev_atk").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
             let ev_def: i32 = c.get("ev_def").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
             let ev_spe: i32 = c.get("ev_spe").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
@@ -2725,19 +3254,43 @@ pub fn import_run(conn_str: &str, body: &serde_json::Value) -> serde_json::Value
                  VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12, \
                          $13,$14,$15,$16,$17,$18, $19,$20,$21,$22,$23,$24, $25,$26) \
                  ON CONFLICT (run_id, personality) DO NOTHING",
-                &[&new_id, &c_player, &personality, &0i64,
-                  &nickname, &0i32, &species_name, &is_shiny,
-                  &nature, &level, &met_location, &location_name,
-                  &iv_hp, &iv_atk, &iv_def, &iv_spe, &iv_spa, &iv_spd,
-                  &ev_hp, &ev_atk, &ev_def, &ev_spe, &ev_spa, &ev_spd,
-                  &caught_at, &gender],
+                &[
+                    &new_id,
+                    &c_player,
+                    &personality,
+                    &0i64,
+                    &nickname,
+                    &0i32,
+                    &species_name,
+                    &is_shiny,
+                    &nature,
+                    &level,
+                    &met_location,
+                    &location_name,
+                    &iv_hp,
+                    &iv_atk,
+                    &iv_def,
+                    &iv_spe,
+                    &iv_spa,
+                    &iv_spd,
+                    &ev_hp,
+                    &ev_atk,
+                    &ev_def,
+                    &ev_spe,
+                    &ev_spa,
+                    &ev_spd,
+                    &caught_at,
+                    &gender,
+                ],
             ) {
                 Ok(0) => tracing::warn!(
                     "import_run: caught personality 0x{personality:08X} ({species_name}) already \
-                     exists in run {new_id}; skipped — possible duplicate import"),
+                     exists in run {new_id}; skipped — possible duplicate import"
+                ),
                 Ok(_) => {}
                 Err(e) => tracing::warn!(
-                    "import_run: failed to insert caught personality 0x{personality:08X}: {e}"),
+                    "import_run: failed to insert caught personality 0x{personality:08X}: {e}"
+                ),
             }
         }
     }
@@ -2745,34 +3298,40 @@ pub fn import_run(conn_str: &str, body: &serde_json::Value) -> serde_json::Value
     // Re-insert dead.
     if let Some(dead_list) = body.get("dead").and_then(|v| v.as_array()) {
         for (idx, d) in dead_list.iter().enumerate() {
-            let nickname     = d.get("nickname").and_then(|v| v.as_str()).unwrap_or("");
+            let nickname = d.get("nickname").and_then(|v| v.as_str()).unwrap_or("");
             let species_name = d.get("species_name").and_then(|v| v.as_str()).unwrap_or("");
-            let level        = d.get("level").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
-            let nature       = d.get("nature").and_then(|v| v.as_str()).unwrap_or("");
-            let is_shiny     = d.get("is_shiny").and_then(|v| v.as_bool()).unwrap_or(false);
-            let gender       = d.get("gender").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+            let level = d.get("level").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+            let nature = d.get("nature").and_then(|v| v.as_str()).unwrap_or("");
+            let is_shiny = d.get("is_shiny").and_then(|v| v.as_bool()).unwrap_or(false);
+            let gender = d.get("gender").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
             let met_location = d.get("met_location").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
-            let d_player     = d.get("player_name").and_then(|v| v.as_str()).unwrap_or(player_name);
+            let d_player = d
+                .get("player_name")
+                .and_then(|v| v.as_str())
+                .unwrap_or(player_name);
             // Accept "is_soul_link_death" (current) or "soul_link" (old exports).
-            let is_soul_link_death = d.get("is_soul_link_death")
+            let is_soul_link_death = d
+                .get("is_soul_link_death")
                 .or_else(|| d.get("soul_link"))
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false);
-            let personality: i64 = d.get("personality")
+            let personality: i64 = d
+                .get("personality")
                 .and_then(|v| v.as_i64())
                 .unwrap_or(new_id as i64 * 10_000 + 5_000 + idx as i64 + 1);
-            let died_at: i64 = d.get("died_at")
+            let died_at: i64 = d
+                .get("died_at")
                 .and_then(|v| v.as_str())
                 .and_then(parse_timestamp)
                 .map(|t| t as i64)
                 .unwrap_or(now);
-            let iv_hp:  i32 = d.get("iv_hp") .and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+            let iv_hp: i32 = d.get("iv_hp").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
             let iv_atk: i32 = d.get("iv_atk").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
             let iv_def: i32 = d.get("iv_def").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
             let iv_spe: i32 = d.get("iv_spe").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
             let iv_spa: i32 = d.get("iv_spa").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
             let iv_spd: i32 = d.get("iv_spd").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
-            let ev_hp:  i32 = d.get("ev_hp") .and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+            let ev_hp: i32 = d.get("ev_hp").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
             let ev_atk: i32 = d.get("ev_atk").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
             let ev_def: i32 = d.get("ev_def").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
             let ev_spe: i32 = d.get("ev_spe").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
@@ -2829,9 +3388,9 @@ pub enum EventsError {
 impl std::fmt::Display for EventsError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            EventsError::NoActiveRun         => f.write_str("no active run"),
+            EventsError::NoActiveRun => f.write_str("no active run"),
             EventsError::ConnectionFailed(e) => write!(f, "DB connection failed: {e}"),
-            EventsError::QueryFailed(e)      => write!(f, "Query failed: {e}"),
+            EventsError::QueryFailed(e) => write!(f, "Query failed: {e}"),
         }
     }
 }
@@ -2847,15 +3406,20 @@ pub fn list_events_json(conn_str: &str, run_id: u32) -> Result<serde_json::Value
          FROM events WHERE run_id = $1 ORDER BY occurred_at ASC",
         &[&(run_id as i32)],
     ).map_err(|e| EventsError::QueryFailed(e.to_string()))?;
-    let events: Vec<serde_json::Value> = rows.iter().map(|row| serde_json::json!({
-        "player_name":   row.get::<_, String>(0),
-        "event_type":    row.get::<_, String>(1),
-        "species_name":  row.get::<_, String>(2),
-        "nickname":      row.get::<_, String>(3),
-        "old_nickname":  row.get::<_, String>(4),
-        "level":         row.get::<_, i32>(5),
-        "occurred_at":   format_timestamp(row.get::<_, i64>(6) as u64),
-    })).collect();
+    let events: Vec<serde_json::Value> = rows
+        .iter()
+        .map(|row| {
+            serde_json::json!({
+                "player_name":   row.get::<_, String>(0),
+                "event_type":    row.get::<_, String>(1),
+                "species_name":  row.get::<_, String>(2),
+                "nickname":      row.get::<_, String>(3),
+                "old_nickname":  row.get::<_, String>(4),
+                "level":         row.get::<_, i32>(5),
+                "occurred_at":   format_timestamp(row.get::<_, i64>(6) as u64),
+            })
+        })
+        .collect();
     Ok(serde_json::json!({ "run_id": run_id, "events": events }))
 }
 
@@ -2879,19 +3443,22 @@ pub fn active_run_timeline_json(conn_str: &str) -> Result<serde_json::Value, Eve
          FROM events WHERE run_id = $1 ORDER BY occurred_at ASC",
         &[&(run_id as i32)],
     ).map_err(|e| EventsError::QueryFailed(e.to_string()))?;
-    let events: Vec<serde_json::Value> = rows.iter().map(|row| {
-        let ts = row.get::<_, i64>(6) as u64;
-        serde_json::json!({
-            "player_name":       row.get::<_, String>(0),
-            "event_type":        row.get::<_, String>(1),
-            "species_name":      row.get::<_, String>(2),
-            "nickname":          row.get::<_, String>(3),
-            "old_nickname":      row.get::<_, String>(4),
-            "level":             row.get::<_, i32>(5),
-            "occurred_at":       ts,
-            "occurred_at_human": format_timestamp(ts),
+    let events: Vec<serde_json::Value> = rows
+        .iter()
+        .map(|row| {
+            let ts = row.get::<_, i64>(6) as u64;
+            serde_json::json!({
+                "player_name":       row.get::<_, String>(0),
+                "event_type":        row.get::<_, String>(1),
+                "species_name":      row.get::<_, String>(2),
+                "nickname":          row.get::<_, String>(3),
+                "old_nickname":      row.get::<_, String>(4),
+                "level":             row.get::<_, i32>(5),
+                "occurred_at":       ts,
+                "occurred_at_human": format_timestamp(ts),
+            })
         })
-    }).collect();
+        .collect();
     Ok(serde_json::json!({ "run_id": run_id, "events": events }))
 }
 
@@ -2910,14 +3477,16 @@ pub fn get_active_run_id() -> Option<u32> {
 /// Silently no-ops when the database is not initialized (e.g. in tests or the
 /// aggregator process — this function should only be called from the tracker).
 pub fn record_webhook_delivery(
-    run_id:     Option<u32>,
+    run_id: Option<u32>,
     event_type: &str,
-    url:        &str,
-    success:    bool,
-    attempts:   u32,
-    payload:    &str,
+    url: &str,
+    success: bool,
+    attempts: u32,
+    payload: &str,
 ) {
-    let Some(db) = DB.get() else { return; };
+    let Some(db) = DB.get() else {
+        return;
+    };
     let mut state = db.lock_or_recover();
     let fired_at = unix_now() as i64;
     if let Err(e) = state.client.execute(
@@ -2942,7 +3511,7 @@ pub fn record_webhook_delivery(
 /// Opens its own connection; intended for the aggregator's API endpoint.
 pub fn get_webhook_log_json(conn_str: &str, run_id: u32) -> serde_json::Value {
     let mut client = match Client::connect(conn_str, NoTls) {
-        Ok(c)  => c,
+        Ok(c) => c,
         Err(e) => return serde_json::json!({ "error": format!("DB connection failed: {e}") }),
     };
     let rows = match client.query(
@@ -2950,18 +3519,23 @@ pub fn get_webhook_log_json(conn_str: &str, run_id: u32) -> serde_json::Value {
          FROM webhook_log WHERE run_id = $1 ORDER BY fired_at ASC",
         &[&(run_id as i32)],
     ) {
-        Ok(r)  => r,
+        Ok(r) => r,
         Err(e) => return serde_json::json!({ "error": format!("Query error: {e}") }),
     };
-    let entries: Vec<serde_json::Value> = rows.iter().map(|row| serde_json::json!({
-        "event_type": row.get::<_, String>(0),
-        "url":        row.get::<_, String>(1),
-        "success":    row.get::<_, bool>(2),
-        "attempts":   row.get::<_, i32>(3),
-        "payload":    row.get::<_, String>(4),
-        "fired_at":   row.get::<_, i64>(5),
-        "fired_at_human": format_timestamp(row.get::<_, i64>(5) as u64),
-    })).collect();
+    let entries: Vec<serde_json::Value> = rows
+        .iter()
+        .map(|row| {
+            serde_json::json!({
+                "event_type": row.get::<_, String>(0),
+                "url":        row.get::<_, String>(1),
+                "success":    row.get::<_, bool>(2),
+                "attempts":   row.get::<_, i32>(3),
+                "payload":    row.get::<_, String>(4),
+                "fired_at":   row.get::<_, i64>(5),
+                "fired_at_human": format_timestamp(row.get::<_, i64>(5) as u64),
+            })
+        })
+        .collect();
     serde_json::json!({ "run_id": run_id, "webhook_log": entries })
 }
 
@@ -2974,7 +3548,7 @@ pub fn get_webhook_log_json(conn_str: &str, run_id: u32) -> serde_json::Value {
 /// Used by `GET /api/run/:id/soul_link/overrides`.
 pub fn soul_link_overrides_json(conn_str: &str, run_id: u32) -> serde_json::Value {
     let mut client = match Client::connect(conn_str, NoTls) {
-        Ok(c)  => c,
+        Ok(c) => c,
         Err(e) => return serde_json::json!({ "error": format!("DB connection failed: {e}") }),
     };
     let rows = match client.query(
@@ -2982,14 +3556,19 @@ pub fn soul_link_overrides_json(conn_str: &str, run_id: u32) -> serde_json::Valu
          FROM soul_link_overrides WHERE run_id = $1 ORDER BY created_at",
         &[&(run_id as i32)],
     ) {
-        Ok(r)  => r,
+        Ok(r) => r,
         Err(e) => return serde_json::json!({ "error": format!("Query error: {e}") }),
     };
-    let overrides: Vec<serde_json::Value> = rows.iter().map(|row| serde_json::json!({
-        "personality":         row.get::<_, i64>(0) as u64,
-        "partner_personality": row.get::<_, i64>(1) as u64,
-        "created_at":          row.get::<_, i64>(2),
-    })).collect();
+    let overrides: Vec<serde_json::Value> = rows
+        .iter()
+        .map(|row| {
+            serde_json::json!({
+                "personality":         row.get::<_, i64>(0) as u64,
+                "partner_personality": row.get::<_, i64>(1) as u64,
+                "created_at":          row.get::<_, i64>(2),
+            })
+        })
+        .collect();
     serde_json::json!({ "run_id": run_id, "overrides": overrides })
 }
 
@@ -2997,17 +3576,17 @@ pub fn soul_link_overrides_json(conn_str: &str, run_id: u32) -> serde_json::Valu
 ///
 /// Used by `POST /api/run/:id/soul_link/override`.
 pub fn set_soul_link_override_by_run(
-    conn_str:           &str,
-    run_id:             u32,
-    personality:        u32,
+    conn_str: &str,
+    run_id: u32,
+    personality: u32,
     partner_personality: u32,
 ) -> serde_json::Value {
     let mut client = match Client::connect(conn_str, NoTls) {
-        Ok(c)  => c,
+        Ok(c) => c,
         Err(e) => return serde_json::json!({ "error": format!("DB connection failed: {e}") }),
     };
-    let p   = personality as i64;
-    let pp  = partner_personality as i64;
+    let p = personality as i64;
+    let pp = partner_personality as i64;
     let now = unix_now() as i64;
     let rid = run_id as i32;
     match client.execute(
@@ -3018,7 +3597,7 @@ pub fn set_soul_link_override_by_run(
                        created_at          = EXCLUDED.created_at",
         &[&rid, &p, &pp, &now],
     ) {
-        Ok(_)  => serde_json::json!({ "ok": true }),
+        Ok(_) => serde_json::json!({ "ok": true }),
         Err(e) => serde_json::json!({ "error": format!("DB error: {e}") }),
     }
 }
@@ -3027,21 +3606,21 @@ pub fn set_soul_link_override_by_run(
 ///
 /// Used by `DELETE /api/run/:id/soul_link/override/:personality`.
 pub fn clear_soul_link_override_by_run(
-    conn_str:    &str,
-    run_id:      u32,
+    conn_str: &str,
+    run_id: u32,
     personality: u32,
 ) -> serde_json::Value {
     let mut client = match Client::connect(conn_str, NoTls) {
-        Ok(c)  => c,
+        Ok(c) => c,
         Err(e) => return serde_json::json!({ "error": format!("DB connection failed: {e}") }),
     };
-    let p   = personality as i64;
+    let p = personality as i64;
     let rid = run_id as i32;
     match client.execute(
         "DELETE FROM soul_link_overrides WHERE run_id = $1 AND personality = $2",
         &[&rid, &p],
     ) {
-        Ok(n)  => serde_json::json!({ "ok": true, "deleted": n }),
+        Ok(n) => serde_json::json!({ "ok": true, "deleted": n }),
         Err(e) => serde_json::json!({ "error": format!("DB error: {e}") }),
     }
 }
@@ -3058,7 +3637,7 @@ pub fn clear_soul_link_override_by_run(
 /// Opens its own connection; intended for the aggregator's API endpoint.
 pub fn route_odds_json(conn_str: &str, run_id: u32) -> serde_json::Value {
     let mut client = match Client::connect(conn_str, NoTls) {
-        Ok(c)  => c,
+        Ok(c) => c,
         Err(e) => return serde_json::json!({ "error": format!("DB connection failed: {e}") }),
     };
 
@@ -3078,8 +3657,8 @@ pub fn route_odds_json(conn_str: &str, run_id: u32) -> serde_json::Value {
     use std::collections::HashSet;
     let mut seen_canonical: HashSet<(u8, u8)> = HashSet::new();
     for row in &rows {
-        let mg = row.get::<_, i32>(1) as u8;  // col 1 = map_group
-        let mn = row.get::<_, i32>(2) as u8;  // col 2 = map_name
+        let mg = row.get::<_, i32>(1) as u8; // col 1 = map_group
+        let mn = row.get::<_, i32>(2) as u8; // col 2 = map_name
         let floors = fire_red_location_names::dungeon_floors(mg, mn);
         if floors.is_empty() {
             seen_canonical.insert((mg, mn));
@@ -3090,34 +3669,43 @@ pub fn route_odds_json(conn_str: &str, run_id: u32) -> serde_json::Value {
         }
     }
 
-    let encountered: Vec<serde_json::Value> = rows.iter().map(|row| {
-        let mg = row.get::<_, i32>(1) as u8;
-        let mn = row.get::<_, i32>(2) as u8;
-        let raw = fire_red_location_names::map_area_name(mg, mn);
-        let area = if raw.is_empty() { format!("{mg}:{mn}") } else { raw.to_string() };
-        serde_json::json!({
-            "player_name":    row.get::<_, String>(0),
-            "map_group":      mg,
-            "map_name":       mn,
-            "area":           area,
-            "species":        row.get::<_, i32>(3),
-            "species_name":   row.get::<_, String>(4),
-            "level":          row.get::<_, i32>(5),
-            "caught":         row.get::<_, bool>(6),
-            "is_shiny":       row.get::<_, bool>(7),
-            "encountered_at": format_timestamp(row.get::<_, i64>(8) as u64),
+    let encountered: Vec<serde_json::Value> = rows
+        .iter()
+        .map(|row| {
+            let mg = row.get::<_, i32>(1) as u8;
+            let mn = row.get::<_, i32>(2) as u8;
+            let raw = fire_red_location_names::map_area_name(mg, mn);
+            let area = if raw.is_empty() {
+                format!("{mg}:{mn}")
+            } else {
+                raw.to_string()
+            };
+            serde_json::json!({
+                "player_name":    row.get::<_, String>(0),
+                "map_group":      mg,
+                "map_name":       mn,
+                "area":           area,
+                "species":        row.get::<_, i32>(3),
+                "species_name":   row.get::<_, String>(4),
+                "level":          row.get::<_, i32>(5),
+                "caught":         row.get::<_, bool>(6),
+                "is_shiny":       row.get::<_, bool>(7),
+                "encountered_at": format_timestamp(row.get::<_, i64>(8) as u64),
+            })
         })
-    }).collect();
+        .collect();
 
     // Unencountered: all known wild areas minus those in seen_canonical.
     let unencountered: Vec<serde_json::Value> = fire_red_location_names::all_wild_areas()
         .iter()
         .filter(|&&(mg, mn, _)| !seen_canonical.contains(&(mg, mn)))
-        .map(|&(mg, mn, area)| serde_json::json!({
-            "map_group": mg,
-            "map_name":  mn,
-            "area":      area,
-        }))
+        .map(|&(mg, mn, area)| {
+            serde_json::json!({
+                "map_group": mg,
+                "map_name":  mn,
+                "area":      area,
+            })
+        })
         .collect();
 
     serde_json::json!({
@@ -3137,21 +3725,22 @@ pub fn route_odds_json(conn_str: &str, run_id: u32) -> serde_json::Value {
 /// tracker connections are not blocked. Returns a JSON error object on failure.
 pub fn dump_all(conn_str: &str) -> serde_json::Value {
     let mut client = match Client::connect(conn_str, NoTls) {
-        Ok(c)  => c,
+        Ok(c) => c,
         Err(e) => return serde_json::json!({ "error": format!("DB connection failed: {e}") }),
     };
 
-    let runs       = dump_runs(&mut client);
-    let caught     = dump_caught(&mut client);
-    let dead       = dump_dead(&mut client);
+    let runs = dump_runs(&mut client);
+    let caught = dump_caught(&mut client);
+    let dead = dump_dead(&mut client);
     let encounters = dump_encounters(&mut client);
 
     serde_json::json!({ "runs": runs, "caught": caught, "dead": dead, "encounters": encounters })
 }
 
 fn dump_runs(client: &mut Client) -> serde_json::Value {
-    let rows = client.query(
-        "SELECT r.id, r.player_name, r.started_at, r.ended_at,
+    let rows = client
+        .query(
+            "SELECT r.id, r.player_name, r.started_at, r.ended_at,
                 COUNT(DISTINCT d.personality) AS deaths,
                 COUNT(DISTINCT c.personality) AS catches,
                 COUNT(DISTINCT e.id) AS encounters
@@ -3160,21 +3749,26 @@ fn dump_runs(client: &mut Client) -> serde_json::Value {
          LEFT JOIN caught_pokemon c ON c.run_id = r.id
          LEFT JOIN encounters e ON e.run_id = r.id
          GROUP BY r.id ORDER BY r.id",
-        &[],
-    ).unwrap_or_default();
+            &[],
+        )
+        .unwrap_or_default();
 
-    serde_json::Value::Array(rows.iter().map(|row| {
-        let ended: Option<i64> = row.get(3);
-        serde_json::json!({
-            "id":         row.get::<_, i32>(0),
-            "player":     row.get::<_, String>(1),
-            "started":    format_timestamp(row.get::<_, i64>(2) as u64),
-            "ended":      ended.map(|t| format_timestamp(t as u64)),
-            "deaths":     row.get::<_, i64>(4),
-            "catches":    row.get::<_, i64>(5),
-            "encounters": row.get::<_, i64>(6),
-        })
-    }).collect())
+    serde_json::Value::Array(
+        rows.iter()
+            .map(|row| {
+                let ended: Option<i64> = row.get(3);
+                serde_json::json!({
+                    "id":         row.get::<_, i32>(0),
+                    "player":     row.get::<_, String>(1),
+                    "started":    format_timestamp(row.get::<_, i64>(2) as u64),
+                    "ended":      ended.map(|t| format_timestamp(t as u64)),
+                    "deaths":     row.get::<_, i64>(4),
+                    "catches":    row.get::<_, i64>(5),
+                    "encounters": row.get::<_, i64>(6),
+                })
+            })
+            .collect(),
+    )
 }
 
 fn dump_caught(client: &mut Client) -> serde_json::Value {
@@ -3190,26 +3784,30 @@ fn dump_caught(client: &mut Client) -> serde_json::Value {
         &[],
     ).unwrap_or_default();
 
-    serde_json::Value::Array(rows.iter().map(|row| {
-        serde_json::json!({
-            "run_id":    row.get::<_, i32>(0),
-            "player":    row.get::<_, String>(1),
-            "nickname":  row.get::<_, String>(2),
-            "species":   row.get::<_, String>(3),
-            "level":     row.get::<_, i32>(4),
-            "nature":    row.get::<_, String>(5),
-            "shiny":     row.get::<_, bool>(6),
-            "location":  row.get::<_, String>(7),
-            "ivs":       format!("{}/{}/{}/{}/{}/{}",
-                row.get::<_, i32>(8),  row.get::<_, i32>(9),  row.get::<_, i32>(10),
-                row.get::<_, i32>(11), row.get::<_, i32>(12), row.get::<_, i32>(13)),
-            "evs":       format!("{}/{}/{}/{}/{}/{}",
-                row.get::<_, i32>(14), row.get::<_, i32>(15), row.get::<_, i32>(16),
-                row.get::<_, i32>(17), row.get::<_, i32>(18), row.get::<_, i32>(19)),
-            "caught_at": format_timestamp(row.get::<_, i64>(20) as u64),
-            "gender":    row.get::<_, i32>(21),
-        })
-    }).collect())
+    serde_json::Value::Array(
+        rows.iter()
+            .map(|row| {
+                serde_json::json!({
+                    "run_id":    row.get::<_, i32>(0),
+                    "player":    row.get::<_, String>(1),
+                    "nickname":  row.get::<_, String>(2),
+                    "species":   row.get::<_, String>(3),
+                    "level":     row.get::<_, i32>(4),
+                    "nature":    row.get::<_, String>(5),
+                    "shiny":     row.get::<_, bool>(6),
+                    "location":  row.get::<_, String>(7),
+                    "ivs":       format!("{}/{}/{}/{}/{}/{}",
+                        row.get::<_, i32>(8),  row.get::<_, i32>(9),  row.get::<_, i32>(10),
+                        row.get::<_, i32>(11), row.get::<_, i32>(12), row.get::<_, i32>(13)),
+                    "evs":       format!("{}/{}/{}/{}/{}/{}",
+                        row.get::<_, i32>(14), row.get::<_, i32>(15), row.get::<_, i32>(16),
+                        row.get::<_, i32>(17), row.get::<_, i32>(18), row.get::<_, i32>(19)),
+                    "caught_at": format_timestamp(row.get::<_, i64>(20) as u64),
+                    "gender":    row.get::<_, i32>(21),
+                })
+            })
+            .collect(),
+    )
 }
 
 fn dump_dead(client: &mut Client) -> serde_json::Value {
@@ -3226,29 +3824,33 @@ fn dump_dead(client: &mut Client) -> serde_json::Value {
         &[],
     ).unwrap_or_default();
 
-    serde_json::Value::Array(rows.iter().map(|row| {
-        serde_json::json!({
-            "run_id":    row.get::<_, i32>(0),
-            "player":    row.get::<_, String>(1),
-            "nickname":  row.get::<_, String>(2),
-            "species":   row.get::<_, String>(3),
-            "level":     row.get::<_, i32>(4),
-            "nature":    row.get::<_, String>(5),
-            "shiny":     row.get::<_, bool>(6),
-            "stats":     format!("{}/{}/{}/{}/{}/{}",
-                row.get::<_, i32>(7),  row.get::<_, i32>(8),  row.get::<_, i32>(9),
-                row.get::<_, i32>(10), row.get::<_, i32>(11), row.get::<_, i32>(12)),
-            "ivs":       format!("{}/{}/{}/{}/{}/{}",
-                row.get::<_, i32>(13), row.get::<_, i32>(14), row.get::<_, i32>(15),
-                row.get::<_, i32>(16), row.get::<_, i32>(17), row.get::<_, i32>(18)),
-            "evs":       format!("{}/{}/{}/{}/{}/{}",
-                row.get::<_, i32>(19), row.get::<_, i32>(20), row.get::<_, i32>(21),
-                row.get::<_, i32>(22), row.get::<_, i32>(23), row.get::<_, i32>(24)),
-            "soul_link": row.get::<_, bool>(25),
-            "died_at":   format_timestamp(row.get::<_, i64>(26) as u64),
-            "gender":    row.get::<_, i32>(27),
-        })
-    }).collect())
+    serde_json::Value::Array(
+        rows.iter()
+            .map(|row| {
+                serde_json::json!({
+                    "run_id":    row.get::<_, i32>(0),
+                    "player":    row.get::<_, String>(1),
+                    "nickname":  row.get::<_, String>(2),
+                    "species":   row.get::<_, String>(3),
+                    "level":     row.get::<_, i32>(4),
+                    "nature":    row.get::<_, String>(5),
+                    "shiny":     row.get::<_, bool>(6),
+                    "stats":     format!("{}/{}/{}/{}/{}/{}",
+                        row.get::<_, i32>(7),  row.get::<_, i32>(8),  row.get::<_, i32>(9),
+                        row.get::<_, i32>(10), row.get::<_, i32>(11), row.get::<_, i32>(12)),
+                    "ivs":       format!("{}/{}/{}/{}/{}/{}",
+                        row.get::<_, i32>(13), row.get::<_, i32>(14), row.get::<_, i32>(15),
+                        row.get::<_, i32>(16), row.get::<_, i32>(17), row.get::<_, i32>(18)),
+                    "evs":       format!("{}/{}/{}/{}/{}/{}",
+                        row.get::<_, i32>(19), row.get::<_, i32>(20), row.get::<_, i32>(21),
+                        row.get::<_, i32>(22), row.get::<_, i32>(23), row.get::<_, i32>(24)),
+                    "soul_link": row.get::<_, bool>(25),
+                    "died_at":   format_timestamp(row.get::<_, i64>(26) as u64),
+                    "gender":    row.get::<_, i32>(27),
+                })
+            })
+            .collect(),
+    )
 }
 
 fn dump_encounters(client: &mut Client) -> serde_json::Value {
@@ -3260,25 +3862,29 @@ fn dump_encounters(client: &mut Client) -> serde_json::Value {
         &[],
     ).unwrap_or_default();
 
-    serde_json::Value::Array(rows.iter().map(|row| {
-        let group = row.get::<_, i32>(2) as u8;
-        let map   = row.get::<_, i32>(3) as u8;
-        let name  = fire_red_location_names::map_area_name(group, map);
-        let area  = if name.is_empty() {
-            format!("{}:{}", group, map)
-        } else {
-            name.to_string()
-        };
-        serde_json::json!({
-            "run_id":  row.get::<_, i32>(0),
-            "player":  row.get::<_, String>(1),
-            "area":    area,
-            "species": row.get::<_, String>(4),
-            "level":   row.get::<_, i32>(5),
-            "caught":  row.get::<_, bool>(6),
-            "seen_at": format_timestamp(row.get::<_, i64>(7) as u64),
-        })
-    }).collect())
+    serde_json::Value::Array(
+        rows.iter()
+            .map(|row| {
+                let group = row.get::<_, i32>(2) as u8;
+                let map = row.get::<_, i32>(3) as u8;
+                let name = fire_red_location_names::map_area_name(group, map);
+                let area = if name.is_empty() {
+                    format!("{}:{}", group, map)
+                } else {
+                    name.to_string()
+                };
+                serde_json::json!({
+                    "run_id":  row.get::<_, i32>(0),
+                    "player":  row.get::<_, String>(1),
+                    "area":    area,
+                    "species": row.get::<_, String>(4),
+                    "level":   row.get::<_, i32>(5),
+                    "caught":  row.get::<_, bool>(6),
+                    "seen_at": format_timestamp(row.get::<_, i64>(7) as u64),
+                })
+            })
+            .collect(),
+    )
 }
 
 /// Returns cross-run per-species statistics as JSON.
@@ -3289,7 +3895,7 @@ fn dump_encounters(client: &mut Client) -> serde_json::Value {
 /// appear first.
 pub fn species_stats(conn_str: &str) -> serde_json::Value {
     let mut client = match Client::connect(conn_str, NoTls) {
-        Ok(c)  => c,
+        Ok(c) => c,
         Err(e) => return serde_json::json!({ "error": format!("DB connection failed: {e}") }),
     };
 
@@ -3306,27 +3912,30 @@ pub fn species_stats(conn_str: &str) -> serde_json::Value {
          ORDER BY total_dead DESC, total_caught DESC",
         &[],
     ) {
-        Ok(r)  => r,
+        Ok(r) => r,
         Err(e) => return serde_json::json!({ "error": format!("Query error: {e}") }),
     };
 
-    let entries: Vec<serde_json::Value> = rows.iter().map(|row| {
-        let species:      String = row.get(0);
-        let total_caught: i64   = row.get(1);
-        let total_dead:   i64   = row.get(2);
-        let survival_pct = if total_caught > 0 {
-            let survived = total_caught - total_dead;
-            (survived.max(0) as f64 / total_caught as f64 * 100.0).round()
-        } else {
-            0.0
-        };
-        serde_json::json!({
-            "species_name":   species,
-            "total_caught":   total_caught,
-            "total_dead":     total_dead,
-            "survival_pct":   survival_pct,
+    let entries: Vec<serde_json::Value> = rows
+        .iter()
+        .map(|row| {
+            let species: String = row.get(0);
+            let total_caught: i64 = row.get(1);
+            let total_dead: i64 = row.get(2);
+            let survival_pct = if total_caught > 0 {
+                let survived = total_caught - total_dead;
+                (survived.max(0) as f64 / total_caught as f64 * 100.0).round()
+            } else {
+                0.0
+            };
+            serde_json::json!({
+                "species_name":   species,
+                "total_caught":   total_caught,
+                "total_dead":     total_dead,
+                "survival_pct":   survival_pct,
+            })
         })
-    }).collect();
+        .collect();
 
     serde_json::json!({ "species": entries })
 }
@@ -3339,7 +3948,7 @@ mod tests {
 
     #[test]
     fn nature_name_first_and_last() {
-        assert_eq!(nature_name(0),  "Hardy");
+        assert_eq!(nature_name(0), "Hardy");
         assert_eq!(nature_name(24), "Quirky");
     }
 
@@ -3351,7 +3960,7 @@ mod tests {
 
     #[test]
     fn nature_name_known_values() {
-        assert_eq!(nature_name(1),  "Lonely");
+        assert_eq!(nature_name(1), "Lonely");
         assert_eq!(nature_name(10), "Timid");
         assert_eq!(nature_name(20), "Calm");
     }
@@ -3420,25 +4029,40 @@ mod tests {
 
     #[test]
     fn event_kind_catch_maps_to_correct_type() {
-        let e = EventKind::Catch { species_name: "BULBASAUR", nickname: "Bulby", level: 5 };
+        let e = EventKind::Catch {
+            species_name: "BULBASAUR",
+            nickname: "Bulby",
+            level: 5,
+        };
         assert_eq!(event_type_str(&e), "catch");
     }
 
     #[test]
     fn event_kind_death_maps_to_correct_type() {
-        let e = EventKind::Death { species_name: "CHARMANDER", nickname: "Ember", level: 10 };
+        let e = EventKind::Death {
+            species_name: "CHARMANDER",
+            nickname: "Ember",
+            level: 10,
+        };
         assert_eq!(event_type_str(&e), "death");
     }
 
     #[test]
     fn event_kind_soul_link_death_maps_to_correct_type() {
-        let e = EventKind::SoulLinkDeath { species_name: "SQUIRTLE", nickname: "Shell", level: 8 };
+        let e = EventKind::SoulLinkDeath {
+            species_name: "SQUIRTLE",
+            nickname: "Shell",
+            level: 8,
+        };
         assert_eq!(event_type_str(&e), "soul_link_death");
     }
 
     #[test]
     fn event_kind_shiny_maps_to_correct_type() {
-        let e = EventKind::Shiny { species_name: "MEWTWO", level: 70 };
+        let e = EventKind::Shiny {
+            species_name: "MEWTWO",
+            level: 70,
+        };
         assert_eq!(event_type_str(&e), "shiny");
     }
 
@@ -3449,36 +4073,48 @@ mod tests {
 
     #[test]
     fn event_kind_badge_maps_to_correct_type() {
-        let e = EventKind::Badge { badge_name: "Boulder Badge" };
+        let e = EventKind::Badge {
+            badge_name: "Boulder Badge",
+        };
         assert_eq!(event_type_str(&e), "badge");
     }
 
     #[test]
     fn event_kind_badge_carries_name_in_species_field() {
-        let e = EventKind::Badge { badge_name: "Boulder Badge" };
+        let e = EventKind::Badge {
+            badge_name: "Boulder Badge",
+        };
         let (event_type, species_name, nickname, old_nickname, level) = e.row_parts();
-        assert_eq!(event_type,    "badge");
-        assert_eq!(species_name,  "Boulder Badge");
-        assert_eq!(nickname,      "");
-        assert_eq!(old_nickname,  "");
-        assert_eq!(level,         0);
+        assert_eq!(event_type, "badge");
+        assert_eq!(species_name, "Boulder Badge");
+        assert_eq!(nickname, "");
+        assert_eq!(old_nickname, "");
+        assert_eq!(level, 0);
     }
 
     #[test]
     fn event_kind_nickname_change_maps_to_correct_type() {
-        let e = EventKind::NicknameChange { species_name: "EEVEE", old_name: "Eevee", new_name: "Sylvi" };
+        let e = EventKind::NicknameChange {
+            species_name: "EEVEE",
+            old_name: "Eevee",
+            new_name: "Sylvi",
+        };
         assert_eq!(event_type_str(&e), "nickname_change");
     }
 
     #[test]
     fn event_kind_nickname_change_carries_names() {
-        let e = EventKind::NicknameChange { species_name: "EEVEE", old_name: "Eevee", new_name: "Sylvi" };
+        let e = EventKind::NicknameChange {
+            species_name: "EEVEE",
+            old_name: "Eevee",
+            new_name: "Sylvi",
+        };
         let (event_type, species_name, nickname, old_nickname, level) = e.row_parts();
-        assert_eq!(event_type,   "nickname_change");
+        assert_eq!(event_type, "nickname_change");
         assert_eq!(species_name, "EEVEE");
-        assert_eq!(nickname,     "Sylvi");   // new_name → nickname column
-        assert_eq!(old_nickname, "Eevee");   // old_name → old_nickname column
-        assert_eq!(level,        0);
+        assert_eq!(nickname, "Sylvi"); // new_name → nickname column
+        assert_eq!(old_nickname, "Eevee"); // old_name → old_nickname column
+        assert_eq!(level, 0);
     }
 
     // ── format_timestamp / parse_timestamp round-trip ────────────────────────

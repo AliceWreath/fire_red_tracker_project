@@ -34,9 +34,9 @@ pub enum DupesClauseMode {
 impl Serialize for DupesClauseMode {
     fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
         s.serialize_str(match self {
-            DupesClauseMode::Off       => "off",
+            DupesClauseMode::Off => "off",
             DupesClauseMode::PerPlayer => "per_player",
-            DupesClauseMode::Shared    => "shared",
+            DupesClauseMode::Shared => "shared",
         })
     }
 }
@@ -50,14 +50,18 @@ impl<'de> Deserialize<'de> for DupesClauseMode {
                 write!(f, r#"bool or one of "off", "per_player", "shared""#)
             }
             fn visit_bool<E: serde::de::Error>(self, v: bool) -> Result<DupesClauseMode, E> {
-                Ok(if v { DupesClauseMode::Shared } else { DupesClauseMode::Off })
+                Ok(if v {
+                    DupesClauseMode::Shared
+                } else {
+                    DupesClauseMode::Off
+                })
             }
             fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<DupesClauseMode, E> {
                 match v {
-                    "off"        => Ok(DupesClauseMode::Off),
+                    "off" => Ok(DupesClauseMode::Off),
                     "per_player" => Ok(DupesClauseMode::PerPlayer),
-                    "shared"     => Ok(DupesClauseMode::Shared),
-                    _            => Err(E::unknown_variant(v, &["off", "per_player", "shared"])),
+                    "shared" => Ok(DupesClauseMode::Shared),
+                    _ => Err(E::unknown_variant(v, &["off", "per_player", "shared"])),
                 }
             }
         }
@@ -68,9 +72,9 @@ impl<'de> Deserialize<'de> for DupesClauseMode {
 impl fmt::Display for DupesClauseMode {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
-            DupesClauseMode::Off       => "Off",
+            DupesClauseMode::Off => "Off",
             DupesClauseMode::PerPlayer => "Per Player",
-            DupesClauseMode::Shared    => "Shared",
+            DupesClauseMode::Shared => "Shared",
         })
     }
 }
@@ -96,10 +100,10 @@ pub enum NuzlockePreset {
 impl NuzlockePreset {
     pub fn settings(self) -> (DupesClauseMode, bool) {
         match self {
-            NuzlockePreset::Standard   => (DupesClauseMode::Off,       false),
-            NuzlockePreset::Hardcore   => (DupesClauseMode::PerPlayer, false),
-            NuzlockePreset::Randomizer => (DupesClauseMode::Off,       true),
-            NuzlockePreset::SoulLink   => (DupesClauseMode::Shared,    false),
+            NuzlockePreset::Standard => (DupesClauseMode::Off, false),
+            NuzlockePreset::Hardcore => (DupesClauseMode::PerPlayer, false),
+            NuzlockePreset::Randomizer => (DupesClauseMode::Off, true),
+            NuzlockePreset::SoulLink => (DupesClauseMode::Shared, false),
         }
     }
 }
@@ -137,7 +141,10 @@ pub struct TrackerConfig {
     /// How often the game-polling loop ticks, in milliseconds.
     /// Lower values give more responsive HP/death detection at the cost of CPU.
     /// Defaults to 100 ms. Valid range: 20–2000.
-    #[serde(default = "default_poll_ms", skip_serializing_if = "is_default_poll_ms")]
+    #[serde(
+        default = "default_poll_ms",
+        skip_serializing_if = "is_default_poll_ms"
+    )]
     pub poll_ms: u64,
     /// Webhook URLs fired on game events.
     #[serde(default, skip_serializing_if = "WebhookConfig::is_empty")]
@@ -188,11 +195,21 @@ pub struct TrackerConfig {
     pub discord_client_id: Option<u64>,
 }
 
-fn default_aggregator_host() -> String { "127.0.0.1".to_string() }
-fn default_aggregator_port() -> u16 { 7878 }
-fn default_poll_ms() -> u64 { 100 }
-fn is_default_poll_ms(v: &u64) -> bool { *v == 100 }
-fn default_true() -> bool { true }
+fn default_aggregator_host() -> String {
+    "127.0.0.1".to_string()
+}
+fn default_aggregator_port() -> u16 {
+    7878
+}
+fn default_poll_ms() -> u64 {
+    100
+}
+fn is_default_poll_ms(v: &u64) -> bool {
+    *v == 100
+}
+fn default_true() -> bool {
+    true
+}
 
 // ---------------------------------------------------------------------------
 // Webhook config
@@ -292,18 +309,22 @@ pub struct ObsConfig {
     pub clip_on_badge: bool,
 }
 
-fn default_obs_host() -> String { "localhost".to_string() }
-fn default_obs_port() -> u16 { 4455 }
+fn default_obs_host() -> String {
+    "localhost".to_string()
+}
+fn default_obs_port() -> u16 {
+    4455
+}
 
 impl Default for ObsConfig {
     fn default() -> Self {
         Self {
-            host:          default_obs_host(),
-            port:          default_obs_port(),
-            password:      None,
+            host: default_obs_host(),
+            port: default_obs_port(),
+            password: None,
             clip_on_death: false,
             clip_on_shiny: false,
-            clip_on_wipe:  false,
+            clip_on_wipe: false,
             clip_on_badge: false,
         }
     }
@@ -317,9 +338,9 @@ impl ObsConfig {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct TrackerTestOverrides {
-    pub db:               Option<String>,
-    pub aggregator_host:  Option<String>,
-    pub aggregator_port:  Option<u16>,
+    pub db: Option<String>,
+    pub aggregator_host: Option<String>,
+    pub aggregator_port: Option<u16>,
     pub preferred_player: Option<u8>,
 }
 
@@ -345,7 +366,7 @@ pub fn default_config_path() -> PathBuf {
 /// A single validation error returned by [`validate_config`].
 #[derive(Debug, Clone, PartialEq)]
 pub struct ConfigError {
-    pub field:   &'static str,
+    pub field: &'static str,
     pub message: String,
 }
 
@@ -366,17 +387,20 @@ pub fn validate_config(cfg: &TrackerConfig) -> Vec<ConfigError> {
 
     // ROM path
     if cfg.rom.trim().is_empty() {
-        errors.push(ConfigError { field: "rom", message: "path is empty".to_string() });
+        errors.push(ConfigError {
+            field: "rom",
+            message: "path is empty".to_string(),
+        });
     } else {
         let path = std::path::Path::new(&cfg.rom);
         if !path.exists() {
             errors.push(ConfigError {
-                field:   "rom",
+                field: "rom",
                 message: format!("file not found: {}", cfg.rom),
             });
         } else if std::fs::File::open(path).is_err() {
             errors.push(ConfigError {
-                field:   "rom",
+                field: "rom",
                 message: format!("file exists but cannot be opened: {}", cfg.rom),
             });
         }
@@ -384,14 +408,15 @@ pub fn validate_config(cfg: &TrackerConfig) -> Vec<ConfigError> {
 
     // Webhook URLs
     let wh_fields: &[(&'static str, &Option<String>)] = &[
-        ("webhooks.death_url",  &cfg.webhooks.death_url),
-        ("webhooks.catch_url",  &cfg.webhooks.catch_url),
-        ("webhooks.shiny_url",  &cfg.webhooks.shiny_url),
-        ("webhooks.wipe_url",   &cfg.webhooks.wipe_url),
+        ("webhooks.death_url", &cfg.webhooks.death_url),
+        ("webhooks.catch_url", &cfg.webhooks.catch_url),
+        ("webhooks.shiny_url", &cfg.webhooks.shiny_url),
+        ("webhooks.wipe_url", &cfg.webhooks.wipe_url),
     ];
     for (field, url_opt) in wh_fields {
         if let Some(url) = url_opt
-            && !url.starts_with("http://") && !url.starts_with("https://")
+            && !url.starts_with("http://")
+            && !url.starts_with("https://")
         {
             errors.push(ConfigError {
                 field,
@@ -446,7 +471,8 @@ pub fn load_or_prompt(path: &PathBuf) -> TrackerConfig {
 
 pub fn save_config(config: &TrackerConfig, path: &PathBuf) {
     if let Some(parent) = path.parent()
-        && let Err(e) = std::fs::create_dir_all(parent) {
+        && let Err(e) = std::fs::create_dir_all(parent)
+    {
         tracing::warn!("could not create config directory: {}", e);
     }
     match toml::to_string_pretty(config) {
@@ -466,154 +492,186 @@ pub fn save_config(config: &TrackerConfig, path: &PathBuf) {
 // ---------------------------------------------------------------------------
 
 struct SetupApp {
-    rom:              String,
-    db:               String,
-    clean:            bool,
-    mode:             ConfigMode,
-    aggregator_host:  String,
-    aggregator_port:  String,
+    rom: String,
+    db: String,
+    clean: bool,
+    mode: ConfigMode,
+    aggregator_host: String,
+    aggregator_port: String,
     preferred_player: String,
-    result:           Arc<Mutex<Option<TrackerConfig>>>,
-    should_close:     bool,
-    heading:          &'static str,
+    result: Arc<Mutex<Option<TrackerConfig>>>,
+    should_close: bool,
+    heading: &'static str,
     // Run / polling
-    poll_ms:          String,
-    dupes_clause:     DupesClauseMode,
-    allow_species_repeats:  bool,
-    run_start_balls:  String,
+    poll_ms: String,
+    dupes_clause: DupesClauseMode,
+    allow_species_repeats: bool,
+    run_start_balls: String,
     // Test mode
-    default_test:     bool,
-    test_db:          String,
-    test_agg_host:    String,
-    test_agg_port:    String,
-    test_player:      String,
+    default_test: bool,
+    test_db: String,
+    test_agg_host: String,
+    test_agg_port: String,
+    test_player: String,
     // OBS clip trigger
-    obs_host:         String,
-    obs_port:         String,
-    obs_password:     String,
-    obs_clip_death:   bool,
-    obs_clip_shiny:   bool,
-    obs_clip_wipe:    bool,
+    obs_host: String,
+    obs_port: String,
+    obs_password: String,
+    obs_clip_death: bool,
+    obs_clip_shiny: bool,
+    obs_clip_wipe: bool,
     // Webhook URL and template fields
-    death_url:         String,
+    death_url: String,
     death_url_enabled: bool,
-    death_template:    String,
-    catch_url:         String,
+    death_template: String,
+    catch_url: String,
     catch_url_enabled: bool,
-    catch_template:    String,
-    shiny_url:         String,
+    catch_template: String,
+    shiny_url: String,
     shiny_url_enabled: bool,
-    shiny_template:    String,
-    wipe_url:          String,
-    wipe_url_enabled:  bool,
-    wipe_template:     String,
+    shiny_template: String,
+    wipe_url: String,
+    wipe_url_enabled: bool,
+    wipe_template: String,
     // Fields with no UI widget — preserved unchanged from the loaded config.
-    badge_url:         Option<String>,
-    badge_template:    Option<String>,
-    nickname_url:      Option<String>,
+    badge_url: Option<String>,
+    badge_template: Option<String>,
+    nickname_url: Option<String>,
     nickname_template: Option<String>,
-    obs_clip_badge:    bool,
+    obs_clip_badge: bool,
 }
 
 impl SetupApp {
     fn new(result: Arc<Mutex<Option<TrackerConfig>>>) -> Self {
         Self {
-            rom:              String::new(),
-            db:               "localhost/nuzlocke".to_string(),
-            clean:            false,
-            mode:             ConfigMode::Standalone,
-            aggregator_host:  "127.0.0.1".to_string(),
-            aggregator_port:  "7878".to_string(),
+            rom: String::new(),
+            db: "localhost/nuzlocke".to_string(),
+            clean: false,
+            mode: ConfigMode::Standalone,
+            aggregator_host: "127.0.0.1".to_string(),
+            aggregator_port: "7878".to_string(),
             preferred_player: String::new(),
             result,
-            should_close:     false,
-            heading:          "First-Run Setup",
-            poll_ms:          String::new(),
-            dupes_clause:     DupesClauseMode::Off,
-            allow_species_repeats:  false,
-            run_start_balls:  String::new(),
-            default_test:     false,
-            test_db:          String::new(),
-            test_agg_host:    String::new(),
-            test_agg_port:    String::new(),
-            test_player:      String::new(),
-            obs_host:         "localhost".to_string(),
-            obs_port:         "4455".to_string(),
-            obs_password:     String::new(),
-            obs_clip_death:   false,
-            obs_clip_shiny:   false,
-            obs_clip_wipe:    false,
-            death_url:         String::new(),
+            should_close: false,
+            heading: "First-Run Setup",
+            poll_ms: String::new(),
+            dupes_clause: DupesClauseMode::Off,
+            allow_species_repeats: false,
+            run_start_balls: String::new(),
+            default_test: false,
+            test_db: String::new(),
+            test_agg_host: String::new(),
+            test_agg_port: String::new(),
+            test_player: String::new(),
+            obs_host: "localhost".to_string(),
+            obs_port: "4455".to_string(),
+            obs_password: String::new(),
+            obs_clip_death: false,
+            obs_clip_shiny: false,
+            obs_clip_wipe: false,
+            death_url: String::new(),
             death_url_enabled: false,
-            death_template:    String::new(),
-            catch_url:         String::new(),
+            death_template: String::new(),
+            catch_url: String::new(),
             catch_url_enabled: false,
-            catch_template:    String::new(),
-            shiny_url:         String::new(),
+            catch_template: String::new(),
+            shiny_url: String::new(),
             shiny_url_enabled: false,
-            shiny_template:    String::new(),
-            wipe_url:          String::new(),
-            wipe_url_enabled:  false,
-            wipe_template:     String::new(),
-            badge_url:         None,
-            badge_template:    None,
-            nickname_url:      None,
+            shiny_template: String::new(),
+            wipe_url: String::new(),
+            wipe_url_enabled: false,
+            wipe_template: String::new(),
+            badge_url: None,
+            badge_template: None,
+            nickname_url: None,
             nickname_template: None,
-            obs_clip_badge:    false,
+            obs_clip_badge: false,
         }
     }
 
     fn from_existing(result: Arc<Mutex<Option<TrackerConfig>>>, cfg: &TrackerConfig) -> Self {
-        let db_display = cfg.db
+        let db_display = cfg
+            .db
             .trim_start_matches("postgresql://")
             .trim_start_matches("postgres://")
             .to_string();
         let wh = &cfg.webhooks;
         Self {
-            rom:              cfg.rom.clone(),
-            db:               db_display,
-            clean:            cfg.clean,
-            mode:             cfg.mode.clone(),
-            aggregator_host:  cfg.aggregator_host.clone(),
-            aggregator_port:  cfg.aggregator_port.to_string(),
-            preferred_player: cfg.preferred_player.map(|n| n.to_string()).unwrap_or_default(),
+            rom: cfg.rom.clone(),
+            db: db_display,
+            clean: cfg.clean,
+            mode: cfg.mode.clone(),
+            aggregator_host: cfg.aggregator_host.clone(),
+            aggregator_port: cfg.aggregator_port.to_string(),
+            preferred_player: cfg
+                .preferred_player
+                .map(|n| n.to_string())
+                .unwrap_or_default(),
             result,
-            should_close:     false,
-            heading:          "Edit Config",
-            poll_ms: if cfg.poll_ms == 100 { String::new() } else { cfg.poll_ms.to_string() },
-            dupes_clause:     cfg.dupes_clause,
-            allow_species_repeats:  cfg.allow_species_repeats,
-            run_start_balls:  cfg.run_start_balls.map(|n| n.to_string()).unwrap_or_default(),
-            default_test:     cfg.default_test,
-            test_db:       cfg.test.as_ref().and_then(|t| t.db.as_ref())
-                               .map(|s| s.trim_start_matches("postgresql://").trim_start_matches("postgres://").to_string())
-                               .unwrap_or_default(),
-            test_agg_host: cfg.test.as_ref().and_then(|t| t.aggregator_host.clone()).unwrap_or_default(),
-            test_agg_port: cfg.test.as_ref().and_then(|t| t.aggregator_port).map(|p| p.to_string()).unwrap_or_default(),
-            test_player:   cfg.test.as_ref().and_then(|t| t.preferred_player).map(|n| n.to_string()).unwrap_or_default(),
-            obs_host:      cfg.obs.host.clone(),
-            obs_port:      cfg.obs.port.to_string(),
-            obs_password:  cfg.obs.password.clone().unwrap_or_default(),
+            should_close: false,
+            heading: "Edit Config",
+            poll_ms: if cfg.poll_ms == 100 {
+                String::new()
+            } else {
+                cfg.poll_ms.to_string()
+            },
+            dupes_clause: cfg.dupes_clause,
+            allow_species_repeats: cfg.allow_species_repeats,
+            run_start_balls: cfg
+                .run_start_balls
+                .map(|n| n.to_string())
+                .unwrap_or_default(),
+            default_test: cfg.default_test,
+            test_db: cfg
+                .test
+                .as_ref()
+                .and_then(|t| t.db.as_ref())
+                .map(|s| {
+                    s.trim_start_matches("postgresql://")
+                        .trim_start_matches("postgres://")
+                        .to_string()
+                })
+                .unwrap_or_default(),
+            test_agg_host: cfg
+                .test
+                .as_ref()
+                .and_then(|t| t.aggregator_host.clone())
+                .unwrap_or_default(),
+            test_agg_port: cfg
+                .test
+                .as_ref()
+                .and_then(|t| t.aggregator_port)
+                .map(|p| p.to_string())
+                .unwrap_or_default(),
+            test_player: cfg
+                .test
+                .as_ref()
+                .and_then(|t| t.preferred_player)
+                .map(|n| n.to_string())
+                .unwrap_or_default(),
+            obs_host: cfg.obs.host.clone(),
+            obs_port: cfg.obs.port.to_string(),
+            obs_password: cfg.obs.password.clone().unwrap_or_default(),
             obs_clip_death: cfg.obs.clip_on_death,
             obs_clip_shiny: cfg.obs.clip_on_shiny,
-            obs_clip_wipe:  cfg.obs.clip_on_wipe,
-            death_url:         wh.death_url.clone().unwrap_or_default(),
+            obs_clip_wipe: cfg.obs.clip_on_wipe,
+            death_url: wh.death_url.clone().unwrap_or_default(),
             death_url_enabled: wh.death_url.is_some(),
-            death_template:    wh.death_template.clone().unwrap_or_default(),
-            catch_url:         wh.catch_url.clone().unwrap_or_default(),
+            death_template: wh.death_template.clone().unwrap_or_default(),
+            catch_url: wh.catch_url.clone().unwrap_or_default(),
             catch_url_enabled: wh.catch_url.is_some(),
-            catch_template:    wh.catch_template.clone().unwrap_or_default(),
-            shiny_url:         wh.shiny_url.clone().unwrap_or_default(),
+            catch_template: wh.catch_template.clone().unwrap_or_default(),
+            shiny_url: wh.shiny_url.clone().unwrap_or_default(),
             shiny_url_enabled: wh.shiny_url.is_some(),
-            shiny_template:    wh.shiny_template.clone().unwrap_or_default(),
-            wipe_url:          wh.wipe_url.clone().unwrap_or_default(),
-            wipe_url_enabled:  wh.wipe_url.is_some(),
-            wipe_template:     wh.wipe_template.clone().unwrap_or_default(),
-            badge_url:         wh.badge_url.clone(),
-            badge_template:    wh.badge_template.clone(),
-            nickname_url:      wh.nickname_url.clone(),
+            shiny_template: wh.shiny_template.clone().unwrap_or_default(),
+            wipe_url: wh.wipe_url.clone().unwrap_or_default(),
+            wipe_url_enabled: wh.wipe_url.is_some(),
+            wipe_template: wh.wipe_template.clone().unwrap_or_default(),
+            badge_url: wh.badge_url.clone(),
+            badge_template: wh.badge_template.clone(),
+            nickname_url: wh.nickname_url.clone(),
             nickname_template: wh.nickname_template.clone(),
-            obs_clip_badge:    cfg.obs.clip_on_badge,
+            obs_clip_badge: cfg.obs.clip_on_badge,
         }
     }
 }
@@ -890,20 +948,24 @@ impl eframe::App for SetupApp {
         ui.separator();
         ui.add_space(4.0);
 
-        let rom_ok    = !self.rom.trim().is_empty();
+        let rom_ok = !self.rom.trim().is_empty();
         let port_val: Option<u16> = self.aggregator_port.trim().parse().ok().filter(|&p| p > 0);
-        let port_ok   = self.mode != ConfigMode::Connected || port_val.is_some();
-        let player_parse: Option<u8> = self.preferred_player.trim()
-            .parse().ok()
+        let port_ok = self.mode != ConfigMode::Connected || port_val.is_some();
+        let player_parse: Option<u8> = self
+            .preferred_player
+            .trim()
+            .parse()
+            .ok()
             .filter(|&n: &u8| n >= 1);
         let player_ok = self.preferred_player.trim().is_empty() || player_parse.is_some();
-        let can_save  = rom_ok && port_ok && player_ok;
+        let can_save = rom_ok && port_ok && player_ok;
 
         ui.horizontal(|ui| {
             let btn = ui.add_enabled(can_save, egui::Button::new("Save & Continue"));
             if btn.clicked() {
                 let db_raw = self.db.trim().to_string();
-                let db = if db_raw.starts_with("postgresql://") || db_raw.starts_with("postgres://") {
+                let db = if db_raw.starts_with("postgresql://") || db_raw.starts_with("postgres://")
+                {
                     db_raw
                 } else {
                     format!("postgresql://{}", db_raw)
@@ -912,16 +974,38 @@ impl eframe::App for SetupApp {
                 let test_db_raw = self.test_db.trim().to_string();
                 let test = {
                     let t = TrackerTestOverrides {
-                        db: if test_db_raw.is_empty() { None } else if test_db_raw.starts_with("postgresql://") || test_db_raw.starts_with("postgres://") {
+                        db: if test_db_raw.is_empty() {
+                            None
+                        } else if test_db_raw.starts_with("postgresql://")
+                            || test_db_raw.starts_with("postgres://")
+                        {
                             Some(test_db_raw)
                         } else {
                             Some(format!("postgresql://{}", test_db_raw))
                         },
-                        aggregator_host:  if self.test_agg_host.trim().is_empty() { None } else { Some(self.test_agg_host.trim().to_string()) },
-                        aggregator_port:  self.test_agg_port.trim().parse().ok().filter(|&p: &u16| p > 0),
-                        preferred_player: self.test_player.trim().parse().ok().filter(|&n: &u8| n >= 1),
+                        aggregator_host: if self.test_agg_host.trim().is_empty() {
+                            None
+                        } else {
+                            Some(self.test_agg_host.trim().to_string())
+                        },
+                        aggregator_port: self
+                            .test_agg_port
+                            .trim()
+                            .parse()
+                            .ok()
+                            .filter(|&p: &u16| p > 0),
+                        preferred_player: self
+                            .test_player
+                            .trim()
+                            .parse()
+                            .ok()
+                            .filter(|&n: &u8| n >= 1),
                     };
-                    if t.db.is_none() && t.aggregator_host.is_none() && t.aggregator_port.is_none() && t.preferred_player.is_none() {
+                    if t.db.is_none()
+                        && t.aggregator_host.is_none()
+                        && t.aggregator_port.is_none()
+                        && t.preferred_player.is_none()
+                    {
                         None
                     } else {
                         Some(t)
@@ -929,41 +1013,89 @@ impl eframe::App for SetupApp {
                 };
 
                 let config = TrackerConfig {
-                    rom:              self.rom.trim().to_string(),
+                    rom: self.rom.trim().to_string(),
                     db,
-                    clean:            self.clean,
-                    mode:             self.mode.clone(),
-                    aggregator_host:  self.aggregator_host.trim().to_string(),
-                    aggregator_port:  port_val.unwrap_or(7878),
+                    clean: self.clean,
+                    mode: self.mode.clone(),
+                    aggregator_host: self.aggregator_host.trim().to_string(),
+                    aggregator_port: port_val.unwrap_or(7878),
                     preferred_player: player_parse,
-                    default_test:     self.default_test,
+                    default_test: self.default_test,
                     test,
                     poll_ms: if self.poll_ms.trim().is_empty() {
                         default_poll_ms()
                     } else {
-                        self.poll_ms.trim().parse::<u64>().unwrap_or(100).clamp(20, 2000)
+                        self.poll_ms
+                            .trim()
+                            .parse::<u64>()
+                            .unwrap_or(100)
+                            .clamp(20, 2000)
                     },
                     webhooks: WebhookConfig {
-                        death_url:      if self.death_url_enabled && !self.death_url.trim().is_empty() { Some(self.death_url.trim().to_string()) } else { None },
-                        death_template: if self.death_url_enabled && !self.death_template.trim().is_empty() { Some(self.death_template.trim().to_string()) } else { None },
-                        catch_url:      if self.catch_url_enabled && !self.catch_url.trim().is_empty() { Some(self.catch_url.trim().to_string()) } else { None },
-                        catch_template: if self.catch_url_enabled && !self.catch_template.trim().is_empty() { Some(self.catch_template.trim().to_string()) } else { None },
-                        shiny_url:      if self.shiny_url_enabled && !self.shiny_url.trim().is_empty() { Some(self.shiny_url.trim().to_string()) } else { None },
-                        shiny_template: if self.shiny_url_enabled && !self.shiny_template.trim().is_empty() { Some(self.shiny_template.trim().to_string()) } else { None },
-                        wipe_url:       if self.wipe_url_enabled  && !self.wipe_url.trim().is_empty()  { Some(self.wipe_url.trim().to_string())  } else { None },
-                        wipe_template:  if self.wipe_url_enabled  && !self.wipe_template.trim().is_empty()  { Some(self.wipe_template.trim().to_string())  } else { None },
-                        badge_url:      self.badge_url.clone(),
+                        death_url: if self.death_url_enabled && !self.death_url.trim().is_empty() {
+                            Some(self.death_url.trim().to_string())
+                        } else {
+                            None
+                        },
+                        death_template: if self.death_url_enabled
+                            && !self.death_template.trim().is_empty()
+                        {
+                            Some(self.death_template.trim().to_string())
+                        } else {
+                            None
+                        },
+                        catch_url: if self.catch_url_enabled && !self.catch_url.trim().is_empty() {
+                            Some(self.catch_url.trim().to_string())
+                        } else {
+                            None
+                        },
+                        catch_template: if self.catch_url_enabled
+                            && !self.catch_template.trim().is_empty()
+                        {
+                            Some(self.catch_template.trim().to_string())
+                        } else {
+                            None
+                        },
+                        shiny_url: if self.shiny_url_enabled && !self.shiny_url.trim().is_empty() {
+                            Some(self.shiny_url.trim().to_string())
+                        } else {
+                            None
+                        },
+                        shiny_template: if self.shiny_url_enabled
+                            && !self.shiny_template.trim().is_empty()
+                        {
+                            Some(self.shiny_template.trim().to_string())
+                        } else {
+                            None
+                        },
+                        wipe_url: if self.wipe_url_enabled && !self.wipe_url.trim().is_empty() {
+                            Some(self.wipe_url.trim().to_string())
+                        } else {
+                            None
+                        },
+                        wipe_template: if self.wipe_url_enabled
+                            && !self.wipe_template.trim().is_empty()
+                        {
+                            Some(self.wipe_template.trim().to_string())
+                        } else {
+                            None
+                        },
+                        badge_url: self.badge_url.clone(),
                         badge_template: self.badge_template.clone(),
-                        nickname_url:      self.nickname_url.clone(),
+                        nickname_url: self.nickname_url.clone(),
                         nickname_template: self.nickname_template.clone(),
                     },
                     obs: ObsConfig {
-                        host:          self.obs_host.trim().to_string(),
-                        port:          self.obs_port.trim().parse().unwrap_or(4455),
-                        password:      if self.obs_password.trim().is_empty() { None } else { Some(self.obs_password.trim().to_string()) },
+                        host: self.obs_host.trim().to_string(),
+                        port: self.obs_port.trim().parse().unwrap_or(4455),
+                        password: if self.obs_password.trim().is_empty() {
+                            None
+                        } else {
+                            Some(self.obs_password.trim().to_string())
+                        },
                         clip_on_death: self.obs_clip_death,
                         clip_on_shiny: self.obs_clip_shiny,
-                        clip_on_wipe:  self.obs_clip_wipe,
+                        clip_on_wipe: self.obs_clip_wipe,
                         clip_on_badge: self.obs_clip_badge,
                     },
                     dupes_clause: self.dupes_clause,
@@ -982,11 +1114,23 @@ impl eframe::App for SetupApp {
             }
 
             if !rom_ok {
-                ui.label(egui::RichText::new("  ROM path is required").color(egui::Color32::from_rgb(220, 80, 80)).small());
+                ui.label(
+                    egui::RichText::new("  ROM path is required")
+                        .color(egui::Color32::from_rgb(220, 80, 80))
+                        .small(),
+                );
             } else if !port_ok {
-                ui.label(egui::RichText::new("  Invalid aggregator port (1–65535)").color(egui::Color32::from_rgb(220, 80, 80)).small());
+                ui.label(
+                    egui::RichText::new("  Invalid aggregator port (1–65535)")
+                        .color(egui::Color32::from_rgb(220, 80, 80))
+                        .small(),
+                );
             } else if !player_ok {
-                ui.label(egui::RichText::new("  Player number must be 1 or higher").color(egui::Color32::from_rgb(220, 80, 80)).small());
+                ui.label(
+                    egui::RichText::new("  Player number must be 1 or higher")
+                        .color(egui::Color32::from_rgb(220, 80, 80))
+                        .small(),
+                );
             }
         });
     }
@@ -1006,7 +1150,7 @@ fn run_setup_window(existing: Option<&TrackerConfig>) -> TrackerConfig {
 
     let app: SetupApp = match existing {
         Some(cfg) => SetupApp::from_existing(result_for_app, cfg),
-        None      => SetupApp::new(result_for_app),
+        None => SetupApp::new(result_for_app),
     };
 
     let title = if existing.is_some() {
@@ -1051,7 +1195,7 @@ pub fn run_config_editor(path: &PathBuf) {
 
     let new_cfg = match existing {
         Some(ref cfg) => show_config_editor_from(cfg),
-        None          => show_setup_dialog(),
+        None => show_setup_dialog(),
     };
     save_config(&new_cfg, path);
 }
@@ -1082,7 +1226,10 @@ mod tests {
     fn poll_ms_not_serialized_at_default() {
         let cfg: TrackerConfig = toml::from_str(&minimal_toml("")).unwrap();
         let serialized = toml::to_string(&cfg).unwrap();
-        assert!(!serialized.contains("poll_ms"), "poll_ms should be omitted when default");
+        assert!(
+            !serialized.contains("poll_ms"),
+            "poll_ms should be omitted when default"
+        );
     }
 
     #[test]
@@ -1128,48 +1275,54 @@ mod tests {
 
     #[test]
     fn dupes_clause_string_per_player() {
-        let cfg: TrackerConfig = toml::from_str(&minimal_toml("dupes_clause = \"per_player\"\n")).unwrap();
+        let cfg: TrackerConfig =
+            toml::from_str(&minimal_toml("dupes_clause = \"per_player\"\n")).unwrap();
         assert_eq!(cfg.dupes_clause, DupesClauseMode::PerPlayer);
     }
 
     #[test]
     fn dupes_clause_string_shared() {
-        let cfg: TrackerConfig = toml::from_str(&minimal_toml("dupes_clause = \"shared\"\n")).unwrap();
+        let cfg: TrackerConfig =
+            toml::from_str(&minimal_toml("dupes_clause = \"shared\"\n")).unwrap();
         assert_eq!(cfg.dupes_clause, DupesClauseMode::Shared);
     }
 
     #[test]
     fn dupes_clause_serialises_as_string() {
-        let cfg: TrackerConfig = toml::from_str(&minimal_toml("dupes_clause = \"per_player\"\n")).unwrap();
+        let cfg: TrackerConfig =
+            toml::from_str(&minimal_toml("dupes_clause = \"per_player\"\n")).unwrap();
         let s = toml::to_string(&cfg).unwrap();
-        assert!(s.contains("per_player"), "expected 'per_player' in serialised output: {s}");
+        assert!(
+            s.contains("per_player"),
+            "expected 'per_player' in serialised output: {s}"
+        );
     }
 
     // ── validate_config ──────────────────────────────────────────────────────
 
     fn cfg_with_rom(rom: &str) -> TrackerConfig {
         TrackerConfig {
-            rom:             rom.to_string(),
-            db:              "postgresql://localhost/test".to_string(),
-            clean:           false,
-            mode:            ConfigMode::default(),
+            rom: rom.to_string(),
+            db: "postgresql://localhost/test".to_string(),
+            clean: false,
+            mode: ConfigMode::default(),
             aggregator_host: "127.0.0.1".to_string(),
             aggregator_port: 7878,
             preferred_player: None,
-            default_test:    false,
-            test:            None,
-            poll_ms:         100,
-            webhooks:        WebhookConfig::default(),
-            obs:             ObsConfig::default(),
-            dupes_clause:    DupesClauseMode::Off,
+            default_test: false,
+            test: None,
+            poll_ms: 100,
+            webhooks: WebhookConfig::default(),
+            obs: ObsConfig::default(),
+            dupes_clause: DupesClauseMode::Off,
             allow_species_repeats: false,
             preset: None,
             run_start_balls: None,
-            livesplit_host:            None,
-            livesplit_port:            None,
+            livesplit_host: None,
+            livesplit_port: None,
             livesplit_split_on_badges: false,
-            livesplit_split_on_clear:  true,
-            discord_client_id:         None,
+            livesplit_split_on_clear: true,
+            discord_client_id: None,
         }
     }
 
@@ -1177,14 +1330,20 @@ mod tests {
     fn validate_config_empty_rom_is_error() {
         let cfg = cfg_with_rom("");
         let errs = validate_config(&cfg);
-        assert!(errs.iter().any(|e| e.field == "rom"), "expected rom error, got: {errs:?}");
+        assert!(
+            errs.iter().any(|e| e.field == "rom"),
+            "expected rom error, got: {errs:?}"
+        );
     }
 
     #[test]
     fn validate_config_nonexistent_rom_is_error() {
         let cfg = cfg_with_rom("/tmp/__nonexistent_rom_test_file__.gba");
         let errs = validate_config(&cfg);
-        assert!(errs.iter().any(|e| e.field == "rom"), "expected rom error, got: {errs:?}");
+        assert!(
+            errs.iter().any(|e| e.field == "rom"),
+            "expected rom error, got: {errs:?}"
+        );
     }
 
     #[test]
@@ -1195,7 +1354,10 @@ mod tests {
         let cfg = cfg_with_rom(path);
         let errs = validate_config(&cfg);
         std::fs::remove_file(path).ok();
-        assert!(!errs.iter().any(|e| e.field == "rom"), "unexpected rom error: {errs:?}");
+        assert!(
+            !errs.iter().any(|e| e.field == "rom"),
+            "unexpected rom error: {errs:?}"
+        );
     }
 
     #[test]
@@ -1205,7 +1367,10 @@ mod tests {
         cfg.webhooks.death_url = Some("https://discord.com/api/webhooks/123/abc".to_string());
         let errs = validate_config(&cfg);
         std::fs::remove_file("/tmp/__test_rom_validate2__.gba").ok();
-        assert!(!errs.iter().any(|e| e.field.contains("death_url")), "unexpected error: {errs:?}");
+        assert!(
+            !errs.iter().any(|e| e.field.contains("death_url")),
+            "unexpected error: {errs:?}"
+        );
     }
 
     #[test]
@@ -1249,13 +1414,19 @@ mod tests {
 
     #[test]
     fn webhook_config_not_empty_when_death_url_set() {
-        let cfg = WebhookConfig { death_url: Some("https://example.com".to_string()), ..Default::default() };
+        let cfg = WebhookConfig {
+            death_url: Some("https://example.com".to_string()),
+            ..Default::default()
+        };
         assert!(!cfg.is_empty());
     }
 
     #[test]
     fn webhook_config_not_empty_when_template_set() {
-        let cfg = WebhookConfig { death_template: Some("{event}".to_string()), ..Default::default() };
+        let cfg = WebhookConfig {
+            death_template: Some("{event}".to_string()),
+            ..Default::default()
+        };
         assert!(!cfg.is_empty());
     }
 
@@ -1268,7 +1439,10 @@ mod tests {
 
     #[test]
     fn obs_config_not_default_when_clip_on_death() {
-        let cfg = ObsConfig { clip_on_death: true, ..Default::default() };
+        let cfg = ObsConfig {
+            clip_on_death: true,
+            ..Default::default()
+        };
         assert!(!cfg.is_default());
     }
 
@@ -1306,7 +1480,8 @@ mod tests {
 
     #[test]
     fn livesplit_host_parsed_when_present() {
-        let cfg: TrackerConfig = toml::from_str(&minimal_toml("livesplit_host = \"localhost\"\n")).unwrap();
+        let cfg: TrackerConfig =
+            toml::from_str(&minimal_toml("livesplit_host = \"localhost\"\n")).unwrap();
         assert_eq!(cfg.livesplit_host.as_deref(), Some("localhost"));
     }
 
@@ -1318,13 +1493,15 @@ mod tests {
 
     #[test]
     fn livesplit_split_on_clear_can_be_disabled() {
-        let cfg: TrackerConfig = toml::from_str(&minimal_toml("livesplit_split_on_clear = false\n")).unwrap();
+        let cfg: TrackerConfig =
+            toml::from_str(&minimal_toml("livesplit_split_on_clear = false\n")).unwrap();
         assert!(!cfg.livesplit_split_on_clear);
     }
 
     #[test]
     fn discord_client_id_parsed_when_present() {
-        let cfg: TrackerConfig = toml::from_str(&minimal_toml("discord_client_id = 123456789\n")).unwrap();
+        let cfg: TrackerConfig =
+            toml::from_str(&minimal_toml("discord_client_id = 123456789\n")).unwrap();
         assert_eq!(cfg.discord_client_id, Some(123456789u64));
     }
 
@@ -1332,9 +1509,18 @@ mod tests {
     fn livesplit_discord_fields_not_serialized_when_none() {
         let cfg: TrackerConfig = toml::from_str(&minimal_toml("")).unwrap();
         let s = toml::to_string(&cfg).unwrap();
-        assert!(!s.contains("livesplit_host"),    "livesplit_host should be omitted when None");
-        assert!(!s.contains("livesplit_port"),    "livesplit_port should be omitted when None");
-        assert!(!s.contains("discord_client_id"), "discord_client_id should be omitted when None");
+        assert!(
+            !s.contains("livesplit_host"),
+            "livesplit_host should be omitted when None"
+        );
+        assert!(
+            !s.contains("livesplit_port"),
+            "livesplit_port should be omitted when None"
+        );
+        assert!(
+            !s.contains("discord_client_id"),
+            "discord_client_id should be omitted when None"
+        );
     }
 
     // ── try_load_config ───────────────────────────────────────────────────────
@@ -1359,7 +1545,9 @@ mod tests {
 
     #[test]
     fn try_load_config_returns_none_for_missing_file() {
-        let result = try_load_config(std::path::Path::new("/tmp/__nonexistent_tracker_config__.toml"));
+        let result = try_load_config(std::path::Path::new(
+            "/tmp/__nonexistent_tracker_config__.toml",
+        ));
         assert!(result.is_none());
     }
 
@@ -1369,7 +1557,10 @@ mod tests {
         std::fs::write(&path, minimal_toml("preset = \"hardcore\"\n")).unwrap();
         let cfg = try_load_config(&path).expect("should parse");
         std::fs::remove_file(&path).ok();
-        assert_eq!(cfg.dupes_clause, DupesClauseMode::PerPlayer,
-            "hardcore preset should set per_player dupes clause");
+        assert_eq!(
+            cfg.dupes_clause,
+            DupesClauseMode::PerPlayer,
+            "hardcore preset should set per_player dupes clause"
+        );
     }
 }

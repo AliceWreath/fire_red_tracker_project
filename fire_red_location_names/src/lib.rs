@@ -36,8 +36,8 @@ pub fn map_area_name(group: u8, map: u8) -> &'static str {
         (1, 0x01) => "Mt. Moon 1F",
         (1, 0x02) => "Mt. Moon B1F",
         (1, 0x03) => "Mt. Moon B2F",
-        (1, 0x04) => "S.S. Anne (Exterior)",   // no wild encounters
-        (1, 0x05) => "S.S. Anne 1F",           // no wild encounters
+        (1, 0x04) => "S.S. Anne (Exterior)", // no wild encounters
+        (1, 0x05) => "S.S. Anne 1F",         // no wild encounters
         (1, 0x1F) => "Underground Path (N-S)", // no wild encounters
         (1, 0x22) => "Underground Path (E-W)", // no wild encounters
         (1, 0x24) => "Diglett's Cave (N Entrance)",
@@ -387,8 +387,8 @@ pub fn location_name(loc: u8) -> &'static str {
         0x5A => "Canyon Entrance",
         0x5B => "Sevault Canyon",
         0x5C => "Tanoby Chambers",
-        0xFF => "—",           // MAPSEC_NONE: interior map, no banner shown
-        _    => "Unknown Location",
+        0xFF => "—", // MAPSEC_NONE: interior map, no banner shown
+        _ => "Unknown Location",
     }
 }
 
@@ -405,53 +405,111 @@ pub fn location_name(loc: u8) -> &'static str {
 pub fn dungeon_floors(group: u8, map: u8) -> &'static [(u8, u8)] {
     match (group, map) {
         // Mt. Moon
-        (1, 0x01) | (1, 0x02) | (1, 0x03) =>
-            &[(1,0x01),(1,0x02),(1,0x03)],
+        (1, 0x01) | (1, 0x02) | (1, 0x03) => &[(1, 0x01), (1, 0x02), (1, 0x03)],
         // Diglett's Cave (entrances + main tunnel)
-        (1, 0x24) | (1, 0x25) | (1, 0x26) =>
-            &[(1,0x24),(1,0x25),(1,0x26)],
+        (1, 0x24) | (1, 0x25) | (1, 0x26) => &[(1, 0x24), (1, 0x25), (1, 0x26)],
         // Victory Road
-        (1, 0x27) | (1, 0x28) | (1, 0x29) =>
-            &[(1,0x27),(1,0x28),(1,0x29)],
+        (1, 0x27) | (1, 0x28) | (1, 0x29) => &[(1, 0x27), (1, 0x28), (1, 0x29)],
         // Pokémon Mansion
-        (1, 0x3B) | (1, 0x3C) | (1, 0x3D) | (1, 0x3E) =>
-            &[(1,0x3B),(1,0x3C),(1,0x3D),(1,0x3E)],
+        (1, 0x3B) | (1, 0x3C) | (1, 0x3D) | (1, 0x3E) => {
+            &[(1, 0x3B), (1, 0x3C), (1, 0x3D), (1, 0x3E)]
+        }
         // Safari Zone
-        (1, 0x3F) | (1, 0x40) | (1, 0x41) | (1, 0x42) =>
-            &[(1,0x3F),(1,0x40),(1,0x41),(1,0x42)],
+        (1, 0x3F) | (1, 0x40) | (1, 0x41) | (1, 0x42) => {
+            &[(1, 0x3F), (1, 0x40), (1, 0x41), (1, 0x42)]
+        }
         // Cerulean Cave
-        (1, 0x48) | (1, 0x49) | (1, 0x4A) =>
-            &[(1,0x48),(1,0x49),(1,0x4A)],
+        (1, 0x48) | (1, 0x49) | (1, 0x4A) => &[(1, 0x48), (1, 0x49), (1, 0x4A)],
         // Rock Tunnel
-        (1, 0x51) | (1, 0x52) =>
-            &[(1,0x51),(1,0x52)],
+        (1, 0x51) | (1, 0x52) => &[(1, 0x51), (1, 0x52)],
         // Seafoam Islands
-        (1, 0x53) | (1, 0x54) | (1, 0x55) | (1, 0x56) | (1, 0x57) =>
-            &[(1,0x53),(1,0x54),(1,0x55),(1,0x56),(1,0x57)],
+        (1, 0x53) | (1, 0x54) | (1, 0x55) | (1, 0x56) | (1, 0x57) => {
+            &[(1, 0x53), (1, 0x54), (1, 0x55), (1, 0x56), (1, 0x57)]
+        }
         // Pokémon Tower
-        (1, 0x58) | (1, 0x59) | (1, 0x5A) | (1, 0x5B) | (1, 0x5C) | (1, 0x5D) | (1, 0x5E) =>
-            &[(1,0x58),(1,0x59),(1,0x5A),(1,0x5B),(1,0x5C),(1,0x5D),(1,0x5E)],
+        (1, 0x58) | (1, 0x59) | (1, 0x5A) | (1, 0x5B) | (1, 0x5C) | (1, 0x5D) | (1, 0x5E) => &[
+            (1, 0x58),
+            (1, 0x59),
+            (1, 0x5A),
+            (1, 0x5B),
+            (1, 0x5C),
+            (1, 0x5D),
+            (1, 0x5E),
+        ],
         // Mt. Ember (exterior + summit path + ruby path)
-        (1, 0x60) | (1, 0x61) | (1, 0x62) | (1, 0x63) | (1, 0x64)
-        | (1, 0x65) | (1, 0x66) | (1, 0x67) | (1, 0x68) | (1, 0x69) | (1, 0x6A) =>
-            &[(1,0x60),(1,0x61),(1,0x62),(1,0x63),(1,0x64),
-              (1,0x65),(1,0x66),(1,0x67),(1,0x68),(1,0x69),(1,0x6A)],
+        (1, 0x60)
+        | (1, 0x61)
+        | (1, 0x62)
+        | (1, 0x63)
+        | (1, 0x64)
+        | (1, 0x65)
+        | (1, 0x66)
+        | (1, 0x67)
+        | (1, 0x68)
+        | (1, 0x69)
+        | (1, 0x6A) => &[
+            (1, 0x60),
+            (1, 0x61),
+            (1, 0x62),
+            (1, 0x63),
+            (1, 0x64),
+            (1, 0x65),
+            (1, 0x66),
+            (1, 0x67),
+            (1, 0x68),
+            (1, 0x69),
+            (1, 0x6A),
+        ],
         // Icefall Cave
-        (1, 0x6E) | (1, 0x6F) | (1, 0x70) | (1, 0x71) =>
-            &[(1,0x6E),(1,0x6F),(1,0x70),(1,0x71)],
+        (1, 0x6E) | (1, 0x6F) | (1, 0x70) | (1, 0x71) => {
+            &[(1, 0x6E), (1, 0x6F), (1, 0x70), (1, 0x71)]
+        }
         // Dotted Hole
-        (1, 0x73) | (1, 0x74) | (1, 0x75) | (1, 0x76) | (1, 0x77) =>
-            &[(1,0x73),(1,0x74),(1,0x75),(1,0x76),(1,0x77)],
+        (1, 0x73) | (1, 0x74) | (1, 0x75) | (1, 0x76) | (1, 0x77) => {
+            &[(1, 0x73), (1, 0x74), (1, 0x75), (1, 0x76), (1, 0x77)]
+        }
         // Lost Cave
-        (2, 0x0C) | (2, 0x0D) | (2, 0x0E) | (2, 0x0F) | (2, 0x10)
-        | (2, 0x11) | (2, 0x12) | (2, 0x13) | (2, 0x14) | (2, 0x15)
-        | (2, 0x16) | (2, 0x17) | (2, 0x18) | (2, 0x19) | (2, 0x1A) =>
-            &[(2,0x0C),(2,0x0D),(2,0x0E),(2,0x0F),(2,0x10),
-              (2,0x11),(2,0x12),(2,0x13),(2,0x14),(2,0x15),
-              (2,0x16),(2,0x17),(2,0x18),(2,0x19),(2,0x1A)],
+        (2, 0x0C)
+        | (2, 0x0D)
+        | (2, 0x0E)
+        | (2, 0x0F)
+        | (2, 0x10)
+        | (2, 0x11)
+        | (2, 0x12)
+        | (2, 0x13)
+        | (2, 0x14)
+        | (2, 0x15)
+        | (2, 0x16)
+        | (2, 0x17)
+        | (2, 0x18)
+        | (2, 0x19)
+        | (2, 0x1A) => &[
+            (2, 0x0C),
+            (2, 0x0D),
+            (2, 0x0E),
+            (2, 0x0F),
+            (2, 0x10),
+            (2, 0x11),
+            (2, 0x12),
+            (2, 0x13),
+            (2, 0x14),
+            (2, 0x15),
+            (2, 0x16),
+            (2, 0x17),
+            (2, 0x18),
+            (2, 0x19),
+            (2, 0x1A),
+        ],
         // Tanoby Chambers (all seven share one encounter slot)
-        (2, 0x1B) | (2, 0x1C) | (2, 0x1D) | (2, 0x1E) | (2, 0x1F) | (2, 0x20) | (2, 0x21) =>
-            &[(2,0x1B),(2,0x1C),(2,0x1D),(2,0x1E),(2,0x1F),(2,0x20),(2,0x21)],
+        (2, 0x1B) | (2, 0x1C) | (2, 0x1D) | (2, 0x1E) | (2, 0x1F) | (2, 0x20) | (2, 0x21) => &[
+            (2, 0x1B),
+            (2, 0x1C),
+            (2, 0x1D),
+            (2, 0x1E),
+            (2, 0x1F),
+            (2, 0x20),
+            (2, 0x21),
+        ],
         _ => &[],
     }
 }
@@ -463,67 +521,117 @@ mod tests {
     // ── map_area_name: in-game verified ───────────────────────────────────────
 
     #[test]
-    fn viridian_forest_verified()  { assert_eq!(map_area_name(1, 0x00), "Viridian Forest"); }
+    fn viridian_forest_verified() {
+        assert_eq!(map_area_name(1, 0x00), "Viridian Forest");
+    }
     #[test]
-    fn mt_moon_verified()          { assert_eq!(map_area_name(1, 0x01), "Mt. Moon 1F"); }
+    fn mt_moon_verified() {
+        assert_eq!(map_area_name(1, 0x01), "Mt. Moon 1F");
+    }
     #[test]
-    fn ss_anne_ext_verified()      { assert_eq!(map_area_name(1, 0x04), "S.S. Anne (Exterior)"); }
+    fn ss_anne_ext_verified() {
+        assert_eq!(map_area_name(1, 0x04), "S.S. Anne (Exterior)");
+    }
     #[test]
-    fn ss_anne_1f_verified()       { assert_eq!(map_area_name(1, 0x05), "S.S. Anne 1F"); }
+    fn ss_anne_1f_verified() {
+        assert_eq!(map_area_name(1, 0x05), "S.S. Anne 1F");
+    }
     #[test]
-    fn digletts_cave_verified()    { assert_eq!(map_area_name(1, 0x25), "Diglett's Cave"); }
+    fn digletts_cave_verified() {
+        assert_eq!(map_area_name(1, 0x25), "Diglett's Cave");
+    }
     #[test]
-    fn route_1_verified()          { assert_eq!(map_area_name(3, 0x13), "Route 1"); }
+    fn route_1_verified() {
+        assert_eq!(map_area_name(3, 0x13), "Route 1");
+    }
     #[test]
-    fn route_2_verified()          { assert_eq!(map_area_name(3, 0x14), "Route 2"); }
+    fn route_2_verified() {
+        assert_eq!(map_area_name(3, 0x14), "Route 2");
+    }
     #[test]
-    fn route_22_verified()         { assert_eq!(map_area_name(3, 0x29), "Route 22"); }
+    fn route_22_verified() {
+        assert_eq!(map_area_name(3, 0x29), "Route 22");
+    }
 
     // ── map_area_name: route 10/21 split correction ───────────────────────────
 
     #[test]
-    fn route_10_is_single()        { assert_eq!(map_area_name(3, 0x1C), "Route 10"); }
+    fn route_10_is_single() {
+        assert_eq!(map_area_name(3, 0x1C), "Route 10");
+    }
     #[test]
-    fn route_11_correct()          { assert_eq!(map_area_name(3, 0x1D), "Route 11"); }
+    fn route_11_correct() {
+        assert_eq!(map_area_name(3, 0x1D), "Route 11");
+    }
     #[test]
-    fn route_21_north()            { assert_eq!(map_area_name(3, 0x27), "Route 21 (N)"); }
+    fn route_21_north() {
+        assert_eq!(map_area_name(3, 0x27), "Route 21 (N)");
+    }
     #[test]
-    fn route_21_south()            { assert_eq!(map_area_name(3, 0x28), "Route 21 (S)"); }
+    fn route_21_south() {
+        assert_eq!(map_area_name(3, 0x28), "Route 21 (S)");
+    }
 
     // ── map_area_name: key wild areas from doc ────────────────────────────────
 
     #[test]
-    fn rock_tunnel_1f()            { assert_eq!(map_area_name(1, 0x51), "Rock Tunnel 1F"); }
+    fn rock_tunnel_1f() {
+        assert_eq!(map_area_name(1, 0x51), "Rock Tunnel 1F");
+    }
     #[test]
-    fn cerulean_cave_b1f()         { assert_eq!(map_area_name(1, 0x4A), "Cerulean Cave B1F"); }
+    fn cerulean_cave_b1f() {
+        assert_eq!(map_area_name(1, 0x4A), "Cerulean Cave B1F");
+    }
     #[test]
-    fn power_plant()               { assert_eq!(map_area_name(1, 0x5F), "Power Plant"); }
+    fn power_plant() {
+        assert_eq!(map_area_name(1, 0x5F), "Power Plant");
+    }
     #[test]
-    fn safari_zone_center()        { assert_eq!(map_area_name(1, 0x3F), "Safari Zone (Center)"); }
+    fn safari_zone_center() {
+        assert_eq!(map_area_name(1, 0x3F), "Safari Zone (Center)");
+    }
     #[test]
-    fn berry_forest()              { assert_eq!(map_area_name(1, 0x6D), "Berry Forest"); }
+    fn berry_forest() {
+        assert_eq!(map_area_name(1, 0x6D), "Berry Forest");
+    }
     #[test]
-    fn dunsparce_tunnel()          { assert_eq!(map_area_name(2, 0x22), "Dunsparce Tunnel"); }
+    fn dunsparce_tunnel() {
+        assert_eq!(map_area_name(2, 0x22), "Dunsparce Tunnel");
+    }
     #[test]
-    fn unknown_pair_returns_empty(){ assert_eq!(map_area_name(0xFF, 0xFF), ""); }
+    fn unknown_pair_returns_empty() {
+        assert_eq!(map_area_name(0xFF, 0xFF), "");
+    }
 
     // ── location_name (MAPSEC) ────────────────────────────────────────────────
 
     #[test]
-    fn pallet_town()               { assert_eq!(location_name(0x00), "Pallet Town"); }
+    fn pallet_town() {
+        assert_eq!(location_name(0x00), "Pallet Town");
+    }
     #[test]
-    fn viridian_city()             { assert_eq!(location_name(0x01), "Viridian City"); }
+    fn viridian_city() {
+        assert_eq!(location_name(0x01), "Viridian City");
+    }
     #[test]
-    fn mapsec_none_returns_dash()  { assert_eq!(location_name(0xFF), "—"); }
+    fn mapsec_none_returns_dash() {
+        assert_eq!(location_name(0xFF), "—");
+    }
     #[test]
-    fn unknown_location()          { assert_eq!(location_name(0xFE), "Unknown Location"); }
+    fn unknown_location() {
+        assert_eq!(location_name(0xFE), "Unknown Location");
+    }
 
     // ── dungeon_floors ────────────────────────────────────────────────────────
 
     #[test]
-    fn outdoor_route_has_no_floors() { assert!(dungeon_floors(3, 0x13).is_empty()); }
+    fn outdoor_route_has_no_floors() {
+        assert!(dungeon_floors(3, 0x13).is_empty());
+    }
     #[test]
-    fn unknown_pair_has_no_floors()  { assert!(dungeon_floors(0xFF, 0xFF).is_empty()); }
+    fn unknown_pair_has_no_floors() {
+        assert!(dungeon_floors(0xFF, 0xFF).is_empty());
+    }
     #[test]
     fn mt_moon_1f_groups_all_floors() {
         let floors = dungeon_floors(1, 0x01);
@@ -536,7 +644,7 @@ mod tests {
         assert_eq!(dungeon_floors(1, 0x03), dungeon_floors(1, 0x01));
     }
     #[test]
-    fn rock_tunnel_both_floors()     {
+    fn rock_tunnel_both_floors() {
         let floors = dungeon_floors(1, 0x51);
         assert!(floors.contains(&(1, 0x51)));
         assert!(floors.contains(&(1, 0x52)));
@@ -553,7 +661,7 @@ mod tests {
         assert_eq!(floors.len(), 7);
     }
     #[test]
-    fn lost_cave_room_7_in_group()   {
+    fn lost_cave_room_7_in_group() {
         let floors = dungeon_floors(2, 0x13);
         assert_eq!(floors.len(), 15);
         assert!(floors.contains(&(2, 0x0C)));

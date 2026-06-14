@@ -56,8 +56,12 @@ pub struct TypeCoverage {
 pub fn compute(types: &[(u8, u8)]) -> TypeCoverage {
     let mut team_types_set = [false; NUM_TYPES];
     for &(t1, t2) in types {
-        if (t1 as usize) < NUM_TYPES { team_types_set[t1 as usize] = true; }
-        if (t2 as usize) < NUM_TYPES && t2 != t1 { team_types_set[t2 as usize] = true; }
+        if (t1 as usize) < NUM_TYPES {
+            team_types_set[t1 as usize] = true;
+        }
+        if (t2 as usize) < NUM_TYPES && t2 != t1 {
+            team_types_set[t2 as usize] = true;
+        }
     }
 
     // Weaknesses: for each attacking type, does any member take ×2+?
@@ -76,7 +80,9 @@ pub fn compute(types: &[(u8, u8)]) -> TypeCoverage {
     let mut coverage_set = [false; NUM_TYPES];
     for def in 0..NUM_TYPES {
         for atk in 0..NUM_TYPES {
-            if !team_types_set[atk] { continue; }
+            if !team_types_set[atk] {
+                continue;
+            }
             if EFFECTIVENESS[atk][def] >= 16 {
                 coverage_set[def] = true;
                 break;
@@ -85,9 +91,24 @@ pub fn compute(types: &[(u8, u8)]) -> TypeCoverage {
     }
 
     TypeCoverage {
-        team_types:         team_types_set.iter().enumerate().filter(|&(_, &b)| b).map(|(i, _)| i as u8).collect(),
-        team_weaknesses:    weaknesses_set.iter().enumerate().filter(|&(_, &b)| b).map(|(i, _)| i as u8).collect(),
-        offensive_coverage: coverage_set.iter().enumerate().filter(|&(_, &b)| b).map(|(i, _)| i as u8).collect(),
+        team_types: team_types_set
+            .iter()
+            .enumerate()
+            .filter(|&(_, &b)| b)
+            .map(|(i, _)| i as u8)
+            .collect(),
+        team_weaknesses: weaknesses_set
+            .iter()
+            .enumerate()
+            .filter(|&(_, &b)| b)
+            .map(|(i, _)| i as u8)
+            .collect(),
+        offensive_coverage: coverage_set
+            .iter()
+            .enumerate()
+            .filter(|&(_, &b)| b)
+            .map(|(i, _)| i as u8)
+            .collect(),
     }
 }
 
@@ -131,15 +152,18 @@ mod tests {
     #[test]
     fn effectiveness_table_known_self_matchups() {
         // Ghost and Dragon are super-effective vs themselves (Gen III)
-        assert_eq!(EFFECTIVENESS[7][7],  16, "Ghost vs Ghost should be ×2");
+        assert_eq!(EFFECTIVENESS[7][7], 16, "Ghost vs Ghost should be ×2");
         assert_eq!(EFFECTIVENESS[15][15], 16, "Dragon vs Dragon should be ×2");
         // Elemental types resist themselves
-        assert_eq!(EFFECTIVENESS[9][9],   4, "Fire vs Fire should be ×½");
+        assert_eq!(EFFECTIVENESS[9][9], 4, "Fire vs Fire should be ×½");
         assert_eq!(EFFECTIVENESS[10][10], 4, "Water vs Water should be ×½");
-        assert_eq!(EFFECTIVENESS[12][12], 4, "Electric vs Electric should be ×½");
+        assert_eq!(
+            EFFECTIVENESS[12][12], 4,
+            "Electric vs Electric should be ×½"
+        );
         // Normal and Fighting are neutral to themselves
-        assert_eq!(EFFECTIVENESS[0][0],  8, "Normal vs Normal should be ×1");
-        assert_eq!(EFFECTIVENESS[1][1],  8, "Fighting vs Fighting should be ×1");
+        assert_eq!(EFFECTIVENESS[0][0], 8, "Normal vs Normal should be ×1");
+        assert_eq!(EFFECTIVENESS[1][1], 8, "Fighting vs Fighting should be ×1");
     }
 
     #[test]
@@ -166,13 +190,19 @@ mod tests {
     #[test]
     fn compute_fire_type_is_weak_to_water() {
         let cov = compute(&[(9, 9)]);
-        assert!(cov.team_weaknesses.contains(&10), "Fire team should be weak to Water (10)");
+        assert!(
+            cov.team_weaknesses.contains(&10),
+            "Fire team should be weak to Water (10)"
+        );
     }
 
     #[test]
     fn compute_fire_type_covers_grass() {
         let cov = compute(&[(9, 9)]);
-        assert!(cov.offensive_coverage.contains(&11), "Fire covers Grass (11)");
+        assert!(
+            cov.offensive_coverage.contains(&11),
+            "Fire covers Grass (11)"
+        );
     }
 
     #[test]
@@ -229,8 +259,14 @@ mod tests {
         let cov = compute(&[(16, 16)]); // mono Dark team
         // EFFECTIVENESS[16][13] was incorrectly 0 (immune); fix set it to 16 (×2).
         // This assertion directly verifies the corrected table cell.
-        assert_eq!(EFFECTIVENESS[16][13], 16, "Dark vs Psychic should be ×2 (EFFECTIVENESS[16][13])");
-        assert!(cov.offensive_coverage.contains(&13), "Dark team should cover Psychic (13)");
+        assert_eq!(
+            EFFECTIVENESS[16][13], 16,
+            "Dark vs Psychic should be ×2 (EFFECTIVENESS[16][13])"
+        );
+        assert!(
+            cov.offensive_coverage.contains(&13),
+            "Dark team should cover Psychic (13)"
+        );
     }
 
     #[test]

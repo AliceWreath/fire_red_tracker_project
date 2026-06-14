@@ -19,7 +19,7 @@ use arc_swap::ArcSwap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 
-pub use trainer_data::{PlayerData, PLAYER_DATA_SIZE};
+pub use trainer_data::{PLAYER_DATA_SIZE, PlayerData};
 
 // ---------------------------------------------------------------------------
 // Statics and constants
@@ -100,7 +100,11 @@ pub fn end_loop() {
 /// EWRAM snapshot buffer.
 #[inline]
 fn ewram_offset(addr: usize) -> usize {
-    debug_assert!(addr >= EWRAM_BASE, "address 0x{:08X} is below EWRAM_BASE", addr);
+    debug_assert!(
+        addr >= EWRAM_BASE,
+        "address 0x{:08X} is below EWRAM_BASE",
+        addr
+    );
     addr - EWRAM_BASE
 }
 

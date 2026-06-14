@@ -1,32 +1,32 @@
 //! # FireRed Map Data Structures
-//! 
-//! C-compatible (in the works not completed) (`#[repr(C)]`) structs that mirror the in-memory layout of 
+//!
+//! C-compatible (in the works not completed) (`#[repr(C)]`) structs that mirror the in-memory layout of
 //! pokemon FireRed map data, along with the methods for deserializing them from raw emulate memory reads
 //! and generating follow-up `READ_CORE_MEMORY` commands.
-//! 
+//!
 //! ## Parsing convention
-//! 
-//! Every `fill_*` method accepts a `buffer: &[&str]` slice of hex byte tokens as returned by the 
+//!
+//! Every `fill_*` method accepts a `buffer: &[&str]` slice of hex byte tokens as returned by the
 //! emulator's `READ_CORE_MEMORY` response. Parsing always starts at index 2 because index 0 is the
 //! command echo and index 1 is the address; the actual data bytes begin at index 2.
-//! 
-//! Methods consume `self` and return the populated struct (builder pattern), except for 
-//! `fill_allow_esc_run_map_name` which takes `&mut self` because it writes multiple fields from 
+//!
+//! Methods consume `self` and return the populated struct (builder pattern), except for
+//! `fill_allow_esc_run_map_name` which takes `&mut self` because it writes multiple fields from
 //! a single byte.
 
 use fire_red_get_values::*;
 #[cfg(feature = "retroarch-parser")]
 use libc::size_t;
-use std::os::raw::{c_uchar, c_uint, c_ushort};
 #[cfg(feature = "retroarch-parser")]
 use std::os::raw::{c_int, c_short};
+use std::os::raw::{c_uchar, c_uint, c_ushort};
 
 // -------------------------------------------
 // Map identification
 // -------------------------------------------
 
 /// Identifies a map by its group and name indices.
-/// 
+///
 /// FireRed organizes maps into groups (roughly corresponding to towns/routes)
 /// and gives each map within a group a sequential name index. Together,
 /// `(group, name)` uniquely addresses any map in the game.
@@ -44,9 +44,8 @@ pub struct CurrentMapGroupAndName {
 // Map header
 // ---------------------------------------------
 
-
 /// Top-level descriptor for a single map, stored at the map table entry.
-/// 
+///
 /// Each map in FireRed begins with this 28-byte header. All `*_offset_ptr`
 /// fields are GBA ROM/RAM pointers; dereference them with a follow-up
 /// `READ_CORE_MEMORY` command to obtain the pointed-to struct.
@@ -56,35 +55,35 @@ pub struct MapHeader {
     /// Pointer to the [`MapLayout`] struct (a.k.a. map footer)
     pub footer_offset_ptr: c_uint, // Byte 1-4  this is a pointer to the MapLayout struct
     /// Pointer to the [`MapEvents`] struct
-    pub event_offset_ptr: c_uint,  // Byte 5-8
+    pub event_offset_ptr: c_uint, // Byte 5-8
     /// Pointer to the map's script table
     pub script_offset_ptr: c_uint, // Byte 9-12
     /// Pointer to the [`MapConnections`] struct, or 0 if there are none
     pub connections_offset_ptr: c_uint, // Byte 13-16
     /// BGM track ID played on this map
-    pub music_id: c_ushort,      // Byte 17-18
+    pub music_id: c_ushort, // Byte 17-18
     /// Lower byte of the map layout (footer) ID
-    pub footer_id: c_uchar,      // Byte 19
+    pub footer_id: c_uchar, // Byte 19
     /// Upper byte of the map layout (footer) ID
     pub footer_id_cont: c_uchar, // Byte 20
     /// Index into the map-name string table shown on the location banner.
-    pub name_index: c_uchar,     // Byte 21
+    pub name_index: c_uchar, // Byte 21
     /// Cave/dungeon type flag; controls lighting and wild encounter music.
-    pub cave_type: c_uchar,      // Byte 22
+    pub cave_type: c_uchar, // Byte 22
     /// Weather effect index (rain, snow, sandstorm, etc.)
-    pub weather_type: c_uchar,   // Byte 23
+    pub weather_type: c_uchar, // Byte 23
     /// Overrides the default trainer battle background for this map.
     pub trainer_battle_background_override: c_uchar, // Byte 24
     /// Non-zero if the player can use a bicycle here.
-    pub allow_bicycle: c_uchar,  // Byte 25
+    pub allow_bicycle: c_uchar, // Byte 25
     /// Bit 2 of byte 26: player can use Escape Rope / Dig.
-    pub allow_escape: bool,      // Byte 26
+    pub allow_escape: bool, // Byte 26
     /// Bit 1 of byte 26: player can run (hold B).
-    pub allow_running: bool,     // Byte 26
+    pub allow_running: bool, // Byte 26
     /// Bit 0 of byte 26: show the location name banner on map entry.
-    pub show_map_name: bool,     // Byte 26 + 5 unused bits
+    pub show_map_name: bool, // Byte 26 + 5 unused bits
     /// Floor number displayed in multi-floor dungeons (e.g. "B1F")
-    pub floor_number: c_uchar,   // Byte 27
+    pub floor_number: c_uchar, // Byte 27
     /// Overrides the wild battle background; values 0x00-0x09 are standard
     /// 0x0A and above produce undefined behaviour.
     pub battle_background_override: c_uchar, // Byte 28
@@ -239,21 +238,21 @@ pub struct MapEvents {
 pub struct MapLayout {
     // aka footer
     /// Map width in tiles
-    pub width: c_int,                  // map width
+    pub width: c_int, // map width
     /// Map height in tiles
-    pub height: c_int,                 // map height
+    pub height: c_int, // map height
     /// pointer to the border tile block (shown outside the playable area)
-    pub border_ptr: c_uint,            // ptr to the borders
+    pub border_ptr: c_uint, // ptr to the borders
     /// pointer to the map tile data (array of `c_ushort` metatile indices)
-    pub map_ptr: c_uint,               // ptr to the map?
+    pub map_ptr: c_uint, // ptr to the map?
     /// pointer to the primary tileset struct
-    pub tileset_ptr: c_uint,           // ptr to primary tileset struct
+    pub tileset_ptr: c_uint, // ptr to primary tileset struct
     /// pointer to the secondary tileset struct
     pub secondary_tileset_ptr: c_uint, // ptr to secondary tileset struct
     /// width of the border tile region in tiles.
-    pub border_width: c_uchar,         // border width
+    pub border_width: c_uchar, // border width
     /// height of the border tile region in tiles.
-    pub border_height: c_uchar,        // border height
+    pub border_height: c_uchar, // border height
 }
 
 // ------------------------------------------------------------------------
@@ -273,7 +272,7 @@ pub struct ObjectEventTemplate {
     pub graphics_id: c_uchar,
     /// Non-zero if the object was spawned via a map connection
     pub in_connection: c_uchar,
-    /// Tile X spawn position 
+    /// Tile X spawn position
     pub x: c_short,
     /// Tile Y spawn position
     pub y: c_short,
@@ -302,9 +301,9 @@ pub struct ObjectEventTemplate {
 #[cfg(feature = "retroarch-parser")]
 impl BgEvent {
     /// Populates this [`BgEvent`] by parsing hex byte tokens from `buffer`
-    /// 
+    ///
     /// Parsing begins at index 2
-    /// 
+    ///
     /// # Arguments
     /// * `buffer` - Slice of hex byte strings as returned by `READ_CORE_MEMORY`
     pub fn fill_bg_event(mut self, buffer: &[&str]) -> Self {
@@ -330,11 +329,11 @@ impl BgEvent {
     pub fn fill_from_bytes(buffer: &[u8], offset: usize) -> Self {
         let o = offset;
         Self {
-            x:            read_u16(buffer, o),
-            y:            read_u16(buffer, o + 2),
-            elevation:    read_u8 (buffer, o + 4),
-            kind:         read_u8 (buffer, o + 5),
-            script_ptr:   read_u32(buffer, o + 6),
+            x: read_u16(buffer, o),
+            y: read_u16(buffer, o + 2),
+            elevation: read_u8(buffer, o + 4),
+            kind: read_u8(buffer, o + 5),
+            script_ptr: read_u32(buffer, o + 6),
             hidden_items: read_u32(buffer, o + 10),
         }
     }
@@ -349,9 +348,9 @@ impl BgEvent {
 #[cfg(feature = "retroarch-parser")]
 impl CoordEvent {
     /// Populates this [`CoordEvent`] by parsing hex byte tokens from `buffer`
-    /// 
+    ///
     /// Parsing begins at index 2
-    /// 
+    ///
     /// # Arguments
     /// * `buffer` - Slice of hex byte strings as returned by `READ_CORE_MEMORY`
     pub fn fill_coord_event(mut self, buffer: &[&str]) -> Self {
@@ -377,11 +376,11 @@ impl CoordEvent {
     pub fn fill_from_bytes(buffer: &[u8], offset: usize) -> Self {
         let o = offset;
         Self {
-            x:          read_u16(buffer, o),
-            y:          read_u16(buffer, o + 2),
-            elevation:  read_u8 (buffer, o + 4),
-            trigger:    read_u16(buffer, o + 5),
-            index:      read_u16(buffer, o + 7),
+            x: read_u16(buffer, o),
+            y: read_u16(buffer, o + 2),
+            elevation: read_u8(buffer, o + 4),
+            trigger: read_u16(buffer, o + 5),
+            index: read_u16(buffer, o + 7),
             script_ptr: read_u32(buffer, o + 9),
         }
     }
@@ -396,9 +395,9 @@ impl CoordEvent {
 #[cfg(feature = "retroarch-parser")]
 impl WarpEvent {
     /// Populates this [`WarpEvent`] by parsing hex byte tokens from `buffer`
-    /// 
+    ///
     /// Parsing begins at index 2
-    /// 
+    ///
     /// # Arguments
     /// * `buffer` - Slice of hex byte strings as returned by `READ_CORE_MEMORY`
     pub fn fill_warp_event(mut self, buffer: &[&str]) -> Self {
@@ -424,12 +423,12 @@ impl WarpEvent {
     pub fn fill_from_bytes(buffer: &[u8], offset: usize) -> Self {
         let o = offset;
         Self {
-            x:         read_i16(buffer, o),
-            y:         read_i16(buffer, o + 2),
-            elevation: read_u8 (buffer, o + 4),
-            warp_id:   read_u8 (buffer, o + 5),
-            map_num:   read_u8 (buffer, o + 6),
-            map_group: read_u8 (buffer, o + 7),
+            x: read_i16(buffer, o),
+            y: read_i16(buffer, o + 2),
+            elevation: read_u8(buffer, o + 4),
+            warp_id: read_u8(buffer, o + 5),
+            map_num: read_u8(buffer, o + 6),
+            map_group: read_u8(buffer, o + 7),
         }
     }
 }
@@ -437,9 +436,9 @@ impl WarpEvent {
 #[cfg(feature = "retroarch-parser")]
 impl ObjectEventTemplate {
     /// Populates this [`ObjectEventTemplate`] by parsing hex byte tokens from `buffer`
-    /// 
+    ///
     /// Parsing begins at index 2
-    /// 
+    ///
     /// # Arguments
     /// * `buffer` - Slice of hex byte strings as returned by `READ_CORE_MEMORY`
     pub fn fill_obj_event_template(mut self, buffer: &[&str]) -> Self {
@@ -481,19 +480,19 @@ impl ObjectEventTemplate {
     pub fn fill_from_bytes(buffer: &[u8], offset: usize) -> Self {
         let o = offset;
         Self {
-            local_id:                    read_u8 (buffer, o),
-            graphics_id:                 read_u8 (buffer, o + 1),
-            in_connection:               read_u8 (buffer, o + 2),
-            x:                           read_i16(buffer, o + 3),
-            y:                           read_i16(buffer, o + 5),
-            elevation:                   read_u8 (buffer, o + 7),
-            movement_type:               read_u8 (buffer, o + 8),
-            movement_range_x:            read_u16(buffer, o + 9),
-            movement_range_y:            read_u16(buffer, o + 11),
-            trainer_type:                read_u16(buffer, o + 13),
+            local_id: read_u8(buffer, o),
+            graphics_id: read_u8(buffer, o + 1),
+            in_connection: read_u8(buffer, o + 2),
+            x: read_i16(buffer, o + 3),
+            y: read_i16(buffer, o + 5),
+            elevation: read_u8(buffer, o + 7),
+            movement_type: read_u8(buffer, o + 8),
+            movement_range_x: read_u16(buffer, o + 9),
+            movement_range_y: read_u16(buffer, o + 11),
+            trainer_type: read_u16(buffer, o + 13),
             trainer_range_berry_tree_id: read_u16(buffer, o + 15),
-            script_ptr:                  read_u32(buffer, o + 17),
-            flag_id:                     read_u16(buffer, o + 21),
+            script_ptr: read_u32(buffer, o + 17),
+            flag_id: read_u16(buffer, o + 21),
         }
     }
 
@@ -507,9 +506,9 @@ impl ObjectEventTemplate {
 #[cfg(feature = "retroarch-parser")]
 impl MapConnections {
     /// Populates this [`MapConnections`] by parsing hex byte tokens from `buffer`
-    /// 
+    ///
     /// Parsing begins at index 2
-    /// 
+    ///
     /// # Arguments
     /// * `buffer` - Slice of hex byte strings as returned by `READ_CORE_MEMORY`
     pub fn fill_connections(mut self, buffer: &[&str]) -> Self {
@@ -525,8 +524,8 @@ impl MapConnections {
     /// Bytes are read sequentially: count(4) map_connection_ptr(4).
     pub fn fill_from_bytes(buffer: &[u8], offset: usize) -> Self {
         Self {
-            count:               read_i32(buffer, offset),
-            map_connection_ptr:  read_u32(buffer, offset + 4),
+            count: read_i32(buffer, offset),
+            map_connection_ptr: read_u32(buffer, offset + 4),
         }
     }
 }
@@ -534,9 +533,9 @@ impl MapConnections {
 #[cfg(feature = "retroarch-parser")]
 impl MapConnection {
     /// Populates this [`MapConnection`] by parsing hex byte tokens from `buffer`
-    /// 
+    ///
     /// Parsing begins at index 2
-    /// 
+    ///
     /// # Arguments
     /// * `buffer` - Slice of hex byte strings as returned by `READ_CORE_MEMORY`
     pub fn fill_connection(mut self, buffer: &[&str]) -> Self {
@@ -557,10 +556,10 @@ impl MapConnection {
     pub fn fill_from_bytes(buffer: &[u8], offset: usize) -> Self {
         let o = offset;
         Self {
-            direction:  read_u8 (buffer, o),
-            offset:     read_u32(buffer, o + 1),
-            map_group:  read_u8 (buffer, o + 5),
-            map_number: read_u8 (buffer, o + 6),
+            direction: read_u8(buffer, o),
+            offset: read_u32(buffer, o + 1),
+            map_group: read_u8(buffer, o + 5),
+            map_number: read_u8(buffer, o + 6),
         }
     }
 }
@@ -568,9 +567,9 @@ impl MapConnection {
 #[cfg(feature = "retroarch-parser")]
 impl MapScripts {
     /// Populates this [`MapScripts`] by parsing hex byte tokens from `buffer`
-    /// 
+    ///
     /// Parsing begins at index 2
-    /// 
+    ///
     /// # Arguments
     /// * `buffer` - Slice of hex byte strings as returned by `READ_CORE_MEMORY`
     pub fn fill_script(mut self, buffer: &[&str]) -> Self {
@@ -581,16 +580,18 @@ impl MapScripts {
 
     /// Reads the first script-table byte from a raw byte buffer at `offset`.
     pub fn fill_from_bytes(buffer: &[u8], offset: usize) -> Self {
-        Self { scripts: read_u8(buffer, offset) }
+        Self {
+            scripts: read_u8(buffer, offset),
+        }
     }
 }
 
 #[cfg(feature = "retroarch-parser")]
 impl MapEvents {
     /// Populates this [`MapEvents`] by parsing hex byte tokens from `buffer`
-    /// 
+    ///
     /// Parsing begins at index 2
-    /// 
+    ///
     /// # Arguments
     /// * `buffer` - Slice of hex byte strings as returned by `READ_CORE_MEMORY`
     pub fn fill_event(mut self, buffer: &[&str]) -> Self {
@@ -622,14 +623,14 @@ impl MapEvents {
     pub fn fill_from_bytes(buffer: &[u8], offset: usize) -> Self {
         let o = offset;
         Self {
-            object_event_count:           read_u8 (buffer, o),
-            warp_count:                   read_u8 (buffer, o + 1),
-            coord_event_count:            read_u8 (buffer, o + 2),
-            bg_event_count:               read_u8 (buffer, o + 3),
-            object_event_template_ptr:    read_u32(buffer, o + 4),
-            warp_event_pointer:           read_u32(buffer, o + 8),
-            coord_event_pointer:          read_u32(buffer, o + 12),
-            bg_event_pointer:             read_u32(buffer, o + 16),
+            object_event_count: read_u8(buffer, o),
+            warp_count: read_u8(buffer, o + 1),
+            coord_event_count: read_u8(buffer, o + 2),
+            bg_event_count: read_u8(buffer, o + 3),
+            object_event_template_ptr: read_u32(buffer, o + 4),
+            warp_event_pointer: read_u32(buffer, o + 8),
+            coord_event_pointer: read_u32(buffer, o + 12),
+            bg_event_pointer: read_u32(buffer, o + 16),
         }
     }
 }
@@ -637,9 +638,9 @@ impl MapEvents {
 #[cfg(feature = "retroarch-parser")]
 impl MapLayout {
     /// Populates this [`MapLayout`] by parsing hex byte tokens from `buffer`
-    /// 
+    ///
     /// Parsing begins at index 2
-    /// 
+    ///
     /// # Arguments
     /// * `buffer` - Slice of hex byte strings as returned by `READ_CORE_MEMORY`
     pub fn fill_layout(mut self, buffer: &[&str]) -> Self {
@@ -680,14 +681,14 @@ impl MapLayout {
     pub fn fill_from_bytes(buffer: &[u8], offset: usize) -> Self {
         let o = offset;
         Self {
-            width:                  read_i32(buffer, o),
-            height:                 read_i32(buffer, o + 4),
-            border_ptr:             read_u32(buffer, o + 8),
-            map_ptr:                read_u32(buffer, o + 12),
-            tileset_ptr:            read_u32(buffer, o + 16),
-            secondary_tileset_ptr:  read_u32(buffer, o + 20),
-            border_width:           read_u8 (buffer, o + 24),
-            border_height:          read_u8 (buffer, o + 25),
+            width: read_i32(buffer, o),
+            height: read_i32(buffer, o + 4),
+            border_ptr: read_u32(buffer, o + 8),
+            map_ptr: read_u32(buffer, o + 12),
+            tileset_ptr: read_u32(buffer, o + 16),
+            secondary_tileset_ptr: read_u32(buffer, o + 20),
+            border_width: read_u8(buffer, o + 24),
+            border_height: read_u8(buffer, o + 25),
         }
     }
 
@@ -759,23 +760,23 @@ impl MapHeader {
         let o = offset;
         let flags = read_u8(buffer, o + 25);
         Self {
-            footer_offset_ptr:                   read_u32(buffer, o),
-            event_offset_ptr:                    read_u32(buffer, o + 4),
-            script_offset_ptr:                   read_u32(buffer, o + 8),
-            connections_offset_ptr:              read_u32(buffer, o + 12),
-            music_id:                            read_u16(buffer, o + 16),
-            footer_id:                           read_u8 (buffer, o + 18),
-            footer_id_cont:                      read_u8 (buffer, o + 19),
-            name_index:                          read_u8 (buffer, o + 20),
-            cave_type:                           read_u8 (buffer, o + 21),
-            weather_type:                        read_u8 (buffer, o + 22),
-            trainer_battle_background_override:  read_u8 (buffer, o + 23),
-            allow_bicycle:                       read_u8 (buffer, o + 24),
-            allow_escape:                        (flags & 4) == 4,
-            allow_running:                       (flags & 2) == 2,
-            show_map_name:                       (flags & 1) == 1,
-            floor_number:                        read_u8 (buffer, o + 26),
-            battle_background_override:          read_u8 (buffer, o + 27),
+            footer_offset_ptr: read_u32(buffer, o),
+            event_offset_ptr: read_u32(buffer, o + 4),
+            script_offset_ptr: read_u32(buffer, o + 8),
+            connections_offset_ptr: read_u32(buffer, o + 12),
+            music_id: read_u16(buffer, o + 16),
+            footer_id: read_u8(buffer, o + 18),
+            footer_id_cont: read_u8(buffer, o + 19),
+            name_index: read_u8(buffer, o + 20),
+            cave_type: read_u8(buffer, o + 21),
+            weather_type: read_u8(buffer, o + 22),
+            trainer_battle_background_override: read_u8(buffer, o + 23),
+            allow_bicycle: read_u8(buffer, o + 24),
+            allow_escape: (flags & 4) == 4,
+            allow_running: (flags & 2) == 2,
+            show_map_name: (flags & 1) == 1,
+            floor_number: read_u8(buffer, o + 26),
+            battle_background_override: read_u8(buffer, o + 27),
         }
     }
 }
@@ -786,7 +787,7 @@ impl CurrentMapGroupAndName {
     pub fn fill_from_bytes(buffer: &[u8], offset: usize) -> Self {
         Self {
             group: read_u8(buffer, offset),
-            name:  read_u8(buffer, offset + 1),
+            name: read_u8(buffer, offset + 1),
         }
     }
 }
@@ -797,14 +798,14 @@ impl CurrentMapGroupAndName {
 
 /// Generates a `READ_CORE_MEMORY` command string to read `len` bytes starting
 /// at the given GBA poitner.
-/// 
+///
 /// Used throughout the codebase to produce follow-up emulator commands after
 /// dereferencing a pointer field from a previously parsed struct.
-/// 
+///
 /// # Arguments
 /// * `ptr` - GBA memory address (typically 0x08xxxxxx for ROM or 0x02xxxxxx for EWRAM)
 /// * `len` - Number of bytes to read.
-/// 
+///
 /// # Returns
 /// A newline-terminated command string ready to send to the emulator.
 #[cfg(feature = "retroarch-parser")]

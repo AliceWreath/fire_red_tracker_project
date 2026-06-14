@@ -27,14 +27,18 @@ pub struct AggregatorConfig {
     pub allow_injections: bool,
 }
 
-fn default_listen_port() -> u16 { 7878 }
-fn default_true() -> bool { true }
+fn default_listen_port() -> u16 {
+    7878
+}
+fn default_true() -> bool {
+    true
+}
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct AggregatorTestOverrides {
     pub listen_port: Option<u16>,
-    pub db:          Option<String>,
-    pub ws_port:     Option<u16>,
+    pub db: Option<String>,
+    pub ws_port: Option<u16>,
 }
 
 // ---------------------------------------------------------------------------
@@ -75,7 +79,8 @@ pub fn load_or_prompt(path: &PathBuf) -> AggregatorConfig {
 
 pub fn save_config(config: &AggregatorConfig, path: &PathBuf) {
     if let Some(parent) = path.parent()
-        && let Err(e) = std::fs::create_dir_all(parent) {
+        && let Err(e) = std::fs::create_dir_all(parent)
+    {
         tracing::warn!("could not create config directory: {}", e);
     }
     match toml::to_string_pretty(config) {
@@ -95,32 +100,32 @@ pub fn save_config(config: &AggregatorConfig, path: &PathBuf) {
 // ---------------------------------------------------------------------------
 
 struct SetupApp {
-    listen_port_str:   String,
-    db:                String,
-    db_enabled:        bool,
-    ws_port_str:       String,
-    ws_port_enabled:   bool,
-    result:            Arc<Mutex<Option<AggregatorConfig>>>,
-    should_close:      bool,
-    heading:           &'static str,
-    default_test:      bool,
-    test:              Option<AggregatorTestOverrides>,
-    allow_injections:  bool,
+    listen_port_str: String,
+    db: String,
+    db_enabled: bool,
+    ws_port_str: String,
+    ws_port_enabled: bool,
+    result: Arc<Mutex<Option<AggregatorConfig>>>,
+    should_close: bool,
+    heading: &'static str,
+    default_test: bool,
+    test: Option<AggregatorTestOverrides>,
+    allow_injections: bool,
 }
 
 impl SetupApp {
     fn new(result: Arc<Mutex<Option<AggregatorConfig>>>) -> Self {
         Self {
-            listen_port_str:  "7878".to_string(),
-            db:               "localhost/nuzlocke".to_string(),
-            db_enabled:       false,
-            ws_port_str:      "9090".to_string(),
-            ws_port_enabled:  false,
+            listen_port_str: "7878".to_string(),
+            db: "localhost/nuzlocke".to_string(),
+            db_enabled: false,
+            ws_port_str: "9090".to_string(),
+            ws_port_enabled: false,
             result,
-            should_close:     false,
-            heading:          "First-Run Setup",
-            default_test:     false,
-            test:             None,
+            should_close: false,
+            heading: "First-Run Setup",
+            default_test: false,
+            test: None,
             allow_injections: true,
         }
     }
@@ -129,27 +134,27 @@ impl SetupApp {
         let (db, db_enabled) = match &cfg.db {
             Some(s) => (
                 s.trim_start_matches("postgresql://")
-                 .trim_start_matches("postgres://")
-                 .to_string(),
+                    .trim_start_matches("postgres://")
+                    .to_string(),
                 true,
             ),
             None => ("localhost/nuzlocke".to_string(), false),
         };
         let (ws_port_str, ws_port_enabled) = match cfg.ws_port {
             Some(p) => (p.to_string(), true),
-            None    => ("9090".to_string(), false),
+            None => ("9090".to_string(), false),
         };
         Self {
-            listen_port_str:  cfg.listen_port.to_string(),
+            listen_port_str: cfg.listen_port.to_string(),
             db,
             db_enabled,
             ws_port_str,
             ws_port_enabled,
             result,
-            should_close:     false,
-            heading:          "Edit Config",
-            default_test:     cfg.default_test,
-            test:             cfg.test.clone(),
+            should_close: false,
+            heading: "Edit Config",
+            default_test: cfg.default_test,
+            test: cfg.test.clone(),
             allow_injections: cfg.allow_injections,
         }
     }
@@ -178,8 +183,7 @@ impl eframe::App for SetupApp {
                 ui.label("Listen port:");
                 ui.vertical(|ui| {
                     ui.add(
-                        egui::TextEdit::singleline(&mut self.listen_port_str)
-                            .desired_width(80.0),
+                        egui::TextEdit::singleline(&mut self.listen_port_str).desired_width(80.0),
                     );
                     ui.small("trackers connect to this port");
                 });
@@ -228,32 +232,38 @@ impl eframe::App for SetupApp {
         ui.add_space(4.0);
 
         let listen_parse: Result<u16, _> = self.listen_port_str.trim().parse();
-        let ws_parse: Result<u16, _>     = self.ws_port_str.trim().parse();
+        let ws_parse: Result<u16, _> = self.ws_port_str.trim().parse();
         let listen_ok = listen_parse.is_ok();
-        let ws_ok     = !self.ws_port_enabled || ws_parse.is_ok();
+        let ws_ok = !self.ws_port_enabled || ws_parse.is_ok();
 
         ui.horizontal(|ui| {
             let btn = ui.add_enabled(listen_ok && ws_ok, egui::Button::new("Save & Continue"));
             if btn.clicked() {
                 let db = if self.db_enabled {
                     let raw = self.db.trim().to_string();
-                    Some(if raw.starts_with("postgresql://") || raw.starts_with("postgres://") {
-                        raw
-                    } else {
-                        format!("postgresql://{}", raw)
-                    })
+                    Some(
+                        if raw.starts_with("postgresql://") || raw.starts_with("postgres://") {
+                            raw
+                        } else {
+                            format!("postgresql://{}", raw)
+                        },
+                    )
                 } else {
                     None
                 };
 
-                let ws_port = if self.ws_port_enabled { ws_parse.ok() } else { None };
+                let ws_port = if self.ws_port_enabled {
+                    ws_parse.ok()
+                } else {
+                    None
+                };
 
                 *self.result.lock().unwrap() = Some(AggregatorConfig {
-                    listen_port:      listen_parse.unwrap_or(7878),
+                    listen_port: listen_parse.unwrap_or(7878),
                     db,
                     ws_port,
-                    default_test:     self.default_test,
-                    test:             self.test.clone(),
+                    default_test: self.default_test,
+                    test: self.test.clone(),
                     allow_injections: self.allow_injections,
                 });
                 self.should_close = true;
@@ -290,7 +300,7 @@ fn run_setup_window(existing: Option<&AggregatorConfig>) -> AggregatorConfig {
 
     let app: SetupApp = match existing {
         Some(cfg) => SetupApp::from_existing(result_for_app, cfg),
-        None      => SetupApp::new(result_for_app),
+        None => SetupApp::new(result_for_app),
     };
 
     let title = if existing.is_some() {
@@ -335,7 +345,7 @@ pub fn run_config_editor(path: &PathBuf) {
 
     let new_cfg = match existing {
         Some(ref cfg) => show_config_editor_from(cfg),
-        None          => show_setup_dialog(),
+        None => show_setup_dialog(),
     };
     save_config(&new_cfg, path);
 }

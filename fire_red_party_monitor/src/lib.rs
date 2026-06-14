@@ -20,11 +20,11 @@
 //! ordering is determined by `personality % 24`. This module handles
 //! decryption and reordering transparently.
 
+use arc_swap::ArcSwap;
 use fire_red_get_values::*;
 use serde_big_array::BigArray;
-use std::sync::{Arc, OnceLock};
 use std::sync::atomic::{AtomicBool, Ordering};
-use arc_swap::ArcSwap;
+use std::sync::{Arc, OnceLock};
 
 // ---------------------------------------------------------------------------
 // Address constants
@@ -98,10 +98,8 @@ const SLEEP_TIMER: std::time::Duration = std::time::Duration::from_millis(250);
 ///
 /// The ordering for a given pokemon is `personality % 24`.
 static ORDERS: [&str; 24] = [
-    "GAEM", "GAME", "GEAM", "GEMA", "GMAE", "GMEA",
-    "AGEM", "AGME", "AEGM", "AEMG", "AMGE", "AMEG",
-    "EGAM", "EGMA", "EAGM", "EAMG", "EMGA", "EMAG",
-    "MGAE", "MGEA", "MAGE", "MAEG", "MEGA", "MEAG",
+    "GAEM", "GAME", "GEAM", "GEMA", "GMAE", "GMEA", "AGEM", "AGME", "AEGM", "AEMG", "AMGE", "AMEG",
+    "EGAM", "EGMA", "EAGM", "EAMG", "EMGA", "EMAG", "MGAE", "MGEA", "MAGE", "MAEG", "MEGA", "MEAG",
 ];
 
 // ---------------------------------------------------------------------------
@@ -194,7 +192,11 @@ pub fn end_loop() {
 /// Panics in debug builds if `addr` is below [`EWRAM_BASE`].
 #[inline]
 fn ewram_offset(addr: usize) -> usize {
-    debug_assert!(addr >= EWRAM_BASE, "address 0x{:08X} is below EWRAM_BASE", addr);
+    debug_assert!(
+        addr >= EWRAM_BASE,
+        "address 0x{:08X} is below EWRAM_BASE",
+        addr
+    );
     addr - EWRAM_BASE
 }
 
@@ -348,8 +350,8 @@ pub fn get_item_string_from_id(rom_buffer: &[u8], id: u16) -> String {
     if id == 0 {
         return String::from("None");
     }
-    let offset = fire_red_rom_buffer::get_rom_addresses().item_data_addr
-        + id as usize * ITEM_ENTRY_SIZE;
+    let offset =
+        fire_red_rom_buffer::get_rom_addresses().item_data_addr + id as usize * ITEM_ENTRY_SIZE;
     if offset + ITEM_NAME_LENGTH > rom_buffer.len() {
         return String::from("???");
     }
@@ -363,7 +365,11 @@ pub fn get_item_string_from_id(rom_buffer: &[u8], id: u16) -> String {
         .trim_matches('\0')
         .trim()
         .to_string();
-    if name.is_empty() { format!("Item #{}", id) } else { name }
+    if name.is_empty() {
+        format!("Item #{}", id)
+    } else {
+        name
+    }
 }
 
 /// Returns the gender for a Pokémon as a `u8`: `0` = male, `1` = female,
@@ -384,8 +390,14 @@ pub fn get_gender(rom_buffer: &[u8], species: u16, personality: u32) -> u8 {
     match rom_buffer[offset] {
         255 => 2, // genderless
         254 => 1, // always female
-        0   => 0, // always male
-        r   => if personality & 0xFF < r as u32 { 1 } else { 0 },
+        0 => 0,   // always male
+        r => {
+            if personality & 0xFF < r as u32 {
+                1
+            } else {
+                0
+            }
+        }
     }
 }
 
@@ -413,16 +425,16 @@ pub fn get_species_types(rom_buffer: &[u8], species: u16) -> (u8, u8) {
 /// Unknown IDs are returned as `"???"`.
 pub fn type_name(id: u8) -> &'static str {
     match id {
-        0  => "Normal",
-        1  => "Fighting",
-        2  => "Flying",
-        3  => "Poison",
-        4  => "Ground",
-        5  => "Rock",
-        6  => "Bug",
-        7  => "Ghost",
-        8  => "Steel",
-        9  => "Fire",
+        0 => "Normal",
+        1 => "Fighting",
+        2 => "Flying",
+        3 => "Poison",
+        4 => "Ground",
+        5 => "Rock",
+        6 => "Bug",
+        7 => "Ghost",
+        8 => "Steel",
+        9 => "Fire",
         10 => "Water",
         11 => "Grass",
         12 => "Electric",
@@ -430,7 +442,7 @@ pub fn type_name(id: u8) -> &'static str {
         14 => "Ice",
         15 => "Dragon",
         16 => "Dark",
-        _  => "???",
+        _ => "???",
     }
 }
 
@@ -442,20 +454,23 @@ pub fn type_name(id: u8) -> &'static str {
 /// aggregator). Covers national-dex numbers 1–251 (Kanto + Johto). Returns
 /// `(0, 0)` for species ID 0 or numbers outside that range.
 pub fn species_type_static(species: u16) -> (u8, u8) {
-    SPECIES_TYPES.get(species as usize).copied().unwrap_or((0, 0))
+    SPECIES_TYPES
+        .get(species as usize)
+        .copied()
+        .unwrap_or((0, 0))
 }
 
 // Short type-ID abbreviations used exclusively in SPECIES_TYPES below.
-const NRM: u8 = 0;  // Normal
-const FGT: u8 = 1;  // Fighting
-const FLY: u8 = 2;  // Flying
-const PSN: u8 = 3;  // Poison
-const GND: u8 = 4;  // Ground
-const ROK: u8 = 5;  // Rock
-const BUG: u8 = 6;  // Bug
-const GHO: u8 = 7;  // Ghost
-const STL: u8 = 8;  // Steel
-const FIR: u8 = 9;  // Fire
+const NRM: u8 = 0; // Normal
+const FGT: u8 = 1; // Fighting
+const FLY: u8 = 2; // Flying
+const PSN: u8 = 3; // Poison
+const GND: u8 = 4; // Ground
+const ROK: u8 = 5; // Rock
+const BUG: u8 = 6; // Bug
+const GHO: u8 = 7; // Ghost
+const STL: u8 = 8; // Steel
+const FIR: u8 = 9; // Fire
 const WAT: u8 = 10; // Water
 const GRS: u8 = 11; // Grass
 const ELC: u8 = 12; // Electric
@@ -865,8 +880,10 @@ impl BoxPokemon {
 
         let mut offset = 0;
 
-        let personality = read_u32(buffer, offset); offset += 4;
-        let ot_id       = read_u32(buffer, offset); offset += 4;
+        let personality = read_u32(buffer, offset);
+        offset += 4;
+        let ot_id = read_u32(buffer, offset);
+        offset += 4;
 
         // An all-zero personality and OT ID indicates an empty party slot.
         if personality == 0 && ot_id == 0 {
@@ -877,12 +894,14 @@ impl BoxPokemon {
         nickname.copy_from_slice(&buffer[offset..offset + POKEMON_NAME_LENGTH]);
         offset += POKEMON_NAME_LENGTH;
 
-        let language = read_u8(buffer, offset); offset += 1;
+        let language = read_u8(buffer, offset);
+        offset += 1;
 
-        let egg_data    = read_u8(buffer, offset); offset += 1;
-        let is_bad_egg  = egg_data & 0x80;
+        let egg_data = read_u8(buffer, offset);
+        offset += 1;
+        let is_bad_egg = egg_data & 0x80;
         let has_species = egg_data & 0x40;
-        let is_egg      = egg_data & 0x20;
+        let is_egg = egg_data & 0x20;
         let black_box_rs = egg_data & 0x10;
         let unused = [
             egg_data & 0x08,
@@ -895,14 +914,15 @@ impl BoxPokemon {
         ot_name.copy_from_slice(&buffer[offset..offset + PLAYER_NAME_LENGTH]);
         offset += PLAYER_NAME_LENGTH;
 
-        let markings = read_u8(buffer, offset);  offset += 1;
-        let checksum = read_u16(buffer, offset); offset += 2;
-        let unknown  = read_u16(buffer, offset); offset += 2;
+        let markings = read_u8(buffer, offset);
+        offset += 1;
+        let checksum = read_u16(buffer, offset);
+        offset += 2;
+        let unknown = read_u16(buffer, offset);
+        offset += 2;
 
         // The secure block is always 48 bytes starting at offset 32.
-        let secure_raw: [u8; 48] = buffer[offset..offset + 48]
-            .try_into()
-            .ok()?;
+        let secure_raw: [u8; 48] = buffer[offset..offset + 48].try_into().ok()?;
 
         let secure = SecureSubstruct::from_bytes(personality, ot_id, &secure_raw);
 
@@ -959,31 +979,31 @@ pub struct Pokemon {
     pub box_mon: BoxPokemon,
 
     /// Current status condition bitmask.
-    pub status: u32,     // offset 0x50
+    pub status: u32, // offset 0x50
 
     /// Current level.
-    pub level: u8,       // offset 0x54
+    pub level: u8, // offset 0x54
 
     /// Mail item index.
-    pub mail: u8,        // offset 0x55
+    pub mail: u8, // offset 0x55
 
     /// Current HP.
-    pub hp: u16,         // offset 0x56
+    pub hp: u16, // offset 0x56
 
     /// Maximum HP.
-    pub max_hp: u16,     // offset 0x58
+    pub max_hp: u16, // offset 0x58
 
     /// Attack stat.
-    pub attack: u16,     // offset 0x5A
+    pub attack: u16, // offset 0x5A
 
     /// Defense stat.
-    pub defense: u16,    // offset 0x5C
+    pub defense: u16, // offset 0x5C
 
     /// Speed stat.
-    pub speed: u16,      // offset 0x5E
+    pub speed: u16, // offset 0x5E
 
     /// Special Attack stat.
-    pub sp_attack: u16,  // offset 0x60
+    pub sp_attack: u16, // offset 0x60
 
     /// Special Defense stat.
     pub sp_defense: u16, // offset 0x62
@@ -1004,15 +1024,24 @@ impl Pokemon {
 
         // Battle stats follow immediately after the 80-byte BoxPokemon block.
         let mut offset = 80;
-        let status    = read_u32(buffer, offset); offset += 4;
-        let level     = read_u8(buffer, offset);  offset += 1;
-        let mail      = read_u8(buffer, offset);  offset += 1;
-        let hp        = read_u16(buffer, offset); offset += 2;
-        let max_hp    = read_u16(buffer, offset); offset += 2;
-        let attack    = read_u16(buffer, offset); offset += 2;
-        let defense   = read_u16(buffer, offset); offset += 2;
-        let speed     = read_u16(buffer, offset); offset += 2;
-        let sp_attack = read_u16(buffer, offset); offset += 2;
+        let status = read_u32(buffer, offset);
+        offset += 4;
+        let level = read_u8(buffer, offset);
+        offset += 1;
+        let mail = read_u8(buffer, offset);
+        offset += 1;
+        let hp = read_u16(buffer, offset);
+        offset += 2;
+        let max_hp = read_u16(buffer, offset);
+        offset += 2;
+        let attack = read_u16(buffer, offset);
+        offset += 2;
+        let defense = read_u16(buffer, offset);
+        offset += 2;
+        let speed = read_u16(buffer, offset);
+        offset += 2;
+        let sp_attack = read_u16(buffer, offset);
+        offset += 2;
         let sp_defense = read_u16(buffer, offset);
 
         Some(Pokemon {
@@ -1061,10 +1090,10 @@ pub struct SecureSubstruct {
     /// Fully decrypted bytes.
     #[serde(with = "BigArray")]
     pub decrypted_value: [u8; 48],
-    pub growth:       GrowthSubstruct,
-    pub attack:       AttackSubstruct,
+    pub growth: GrowthSubstruct,
+    pub attack: AttackSubstruct,
     pub ev_condition: EvConditionSubstruct,
-    pub misc:         MiscSubstruct,
+    pub misc: MiscSubstruct,
 }
 
 impl Default for SecureSubstruct {
@@ -1073,10 +1102,10 @@ impl Default for SecureSubstruct {
             key: 0,
             encrypted_value: [0u8; 48],
             decrypted_value: [0u8; 48],
-            growth:       GrowthSubstruct::default(),
-            attack:       AttackSubstruct::default(),
+            growth: GrowthSubstruct::default(),
+            attack: AttackSubstruct::default(),
             ev_condition: EvConditionSubstruct::default(),
-            misc:         MiscSubstruct::default(),
+            misc: MiscSubstruct::default(),
         }
     }
 }
@@ -1105,21 +1134,23 @@ impl SecureSubstruct {
             key,
             encrypted_value: *encrypted_value,
             decrypted_value,
-            growth:       GrowthSubstruct::default(),
-            attack:       AttackSubstruct::default(),
+            growth: GrowthSubstruct::default(),
+            attack: AttackSubstruct::default(),
             ev_condition: EvConditionSubstruct::default(),
-            misc:         MiscSubstruct::default(),
+            misc: MiscSubstruct::default(),
         };
 
         // Each substructure is 12 bytes; their positions depend on `order`.
         for (i, ch) in order.chars().enumerate() {
             let index = i * 12;
             match ch {
-                'G' => secure.growth       = GrowthSubstruct::fill_struct(&decrypted_value, index),
-                'A' => secure.attack       = AttackSubstruct::fill_struct(&decrypted_value, index),
-                'E' => secure.ev_condition = EvConditionSubstruct::fill_struct(&decrypted_value, index),
-                'M' => secure.misc         = MiscSubstruct::fill_struct(&decrypted_value, index),
-                _   => tracing::warn!("Unexpected substructure order character: {}", ch),
+                'G' => secure.growth = GrowthSubstruct::fill_struct(&decrypted_value, index),
+                'A' => secure.attack = AttackSubstruct::fill_struct(&decrypted_value, index),
+                'E' => {
+                    secure.ev_condition = EvConditionSubstruct::fill_struct(&decrypted_value, index)
+                }
+                'M' => secure.misc = MiscSubstruct::fill_struct(&decrypted_value, index),
+                _ => tracing::warn!("Unexpected substructure order character: {}", ch),
             }
         }
 
@@ -1152,15 +1183,30 @@ pub struct GrowthSubstruct {
 impl GrowthSubstruct {
     pub fn fill_struct(buffer: &[u8], offset: usize) -> Self {
         let mut i = offset;
-        let species    = read_u16(buffer, i); i += 2;
-        let held_item  = read_u16(buffer, i); i += 2;
-        let experience = read_u32(buffer, i); i += 4;
-        let pp_bonuses = read_u8(buffer, i);  i += 1;
-        let friendship = read_u8(buffer, i);  i += 1;
+        let species = read_u16(buffer, i);
+        i += 2;
+        let held_item = read_u16(buffer, i);
+        i += 2;
+        let experience = read_u32(buffer, i);
+        i += 4;
+        let pp_bonuses = read_u8(buffer, i);
+        i += 1;
+        let friendship = read_u8(buffer, i);
+        i += 1;
         let unknown = [read_u8(buffer, i), read_u8(buffer, i + 1)];
-        let species_string = fire_red_text::get_pokemon_name_by_number(species as usize)
-            .unwrap_or_else(|e| e);
-        Self { species, held_item, experience, pp_bonuses, friendship, unknown, species_string, held_item_string: String::new(), growth_rate_string: String::new() }
+        let species_string =
+            fire_red_text::get_pokemon_name_by_number(species as usize).unwrap_or_else(|e| e);
+        Self {
+            species,
+            held_item,
+            experience,
+            pp_bonuses,
+            friendship,
+            unknown,
+            species_string,
+            held_item_string: String::new(),
+            growth_rate_string: String::new(),
+        }
     }
 }
 
@@ -1177,9 +1223,15 @@ impl AttackSubstruct {
         let buf = &buffer[offset..offset + 12];
         let mut i = 0;
         let mut moves = [0u16; 4];
-        let mut pp    = [0u8; 4];
-        for m in moves.iter_mut() { *m = read_u16(buf, i); i += 2; }
-        for p in pp.iter_mut()    { *p = read_u8(buf, i);  i += 1; }
+        let mut pp = [0u8; 4];
+        for m in moves.iter_mut() {
+            *m = read_u16(buf, i);
+            i += 2;
+        }
+        for p in pp.iter_mut() {
+            *p = read_u8(buf, i);
+            i += 1;
+        }
         Self { moves, pp }
     }
 }
@@ -1188,29 +1240,60 @@ impl AttackSubstruct {
 #[derive(Debug, Clone, Copy, Default, serde::Serialize, serde::Deserialize)]
 #[repr(C)]
 pub struct EvConditionSubstruct {
-    pub hp_ev: u8, pub attack_ev: u8, pub defense_ev: u8,
-    pub speed_ev: u8, pub sp_attack_ev: u8, pub sp_defense_ev: u8,
-    pub cool: u8, pub beauty: u8, pub cute: u8,
-    pub smart: u8, pub tough: u8, pub sheen: u8,
+    pub hp_ev: u8,
+    pub attack_ev: u8,
+    pub defense_ev: u8,
+    pub speed_ev: u8,
+    pub sp_attack_ev: u8,
+    pub sp_defense_ev: u8,
+    pub cool: u8,
+    pub beauty: u8,
+    pub cute: u8,
+    pub smart: u8,
+    pub tough: u8,
+    pub sheen: u8,
 }
 
 impl EvConditionSubstruct {
     pub fn fill_struct(buffer: &[u8], offset: usize) -> Self {
         let mut i = offset;
-        let hp_ev        = read_u8(buffer, i); i += 1;
-        let attack_ev    = read_u8(buffer, i); i += 1;
-        let defense_ev   = read_u8(buffer, i); i += 1;
-        let speed_ev     = read_u8(buffer, i); i += 1;
-        let sp_attack_ev = read_u8(buffer, i); i += 1;
-        let sp_defense_ev = read_u8(buffer, i); i += 1;
-        let cool   = read_u8(buffer, i); i += 1;
-        let beauty = read_u8(buffer, i); i += 1;
-        let cute   = read_u8(buffer, i); i += 1;
-        let smart  = read_u8(buffer, i); i += 1;
-        let tough  = read_u8(buffer, i); i += 1;
-        let sheen  = read_u8(buffer, i);
-        Self { hp_ev, attack_ev, defense_ev, speed_ev, sp_attack_ev, sp_defense_ev,
-               cool, beauty, cute, smart, tough, sheen }
+        let hp_ev = read_u8(buffer, i);
+        i += 1;
+        let attack_ev = read_u8(buffer, i);
+        i += 1;
+        let defense_ev = read_u8(buffer, i);
+        i += 1;
+        let speed_ev = read_u8(buffer, i);
+        i += 1;
+        let sp_attack_ev = read_u8(buffer, i);
+        i += 1;
+        let sp_defense_ev = read_u8(buffer, i);
+        i += 1;
+        let cool = read_u8(buffer, i);
+        i += 1;
+        let beauty = read_u8(buffer, i);
+        i += 1;
+        let cute = read_u8(buffer, i);
+        i += 1;
+        let smart = read_u8(buffer, i);
+        i += 1;
+        let tough = read_u8(buffer, i);
+        i += 1;
+        let sheen = read_u8(buffer, i);
+        Self {
+            hp_ev,
+            attack_ev,
+            defense_ev,
+            speed_ev,
+            sp_attack_ev,
+            sp_defense_ev,
+            cool,
+            beauty,
+            cute,
+            smart,
+            tough,
+            sheen,
+        }
     }
 }
 
@@ -1228,12 +1311,22 @@ pub struct MiscSubstruct {
 impl MiscSubstruct {
     pub fn fill_struct(buffer: &[u8], offset: usize) -> Self {
         let mut i = offset;
-        let pokerus      = read_u8(buffer, i);  i += 1;
-        let met_location = read_u8(buffer, i);  i += 1;
-        let origins      = read_u16(buffer, i); i += 2;
-        let iv_egg_ability = IvEggAbility::fill_struct(read_u32(buffer, i)); i += 4;
+        let pokerus = read_u8(buffer, i);
+        i += 1;
+        let met_location = read_u8(buffer, i);
+        i += 1;
+        let origins = read_u16(buffer, i);
+        i += 2;
+        let iv_egg_ability = IvEggAbility::fill_struct(read_u32(buffer, i));
+        i += 4;
         let ribbons_obedience = read_u32(buffer, i);
-        Self { pokerus, met_location, origins, iv_egg_ability, ribbons_obedience }
+        Self {
+            pokerus,
+            met_location,
+            origins,
+            iv_egg_ability,
+            ribbons_obedience,
+        }
     }
 }
 
@@ -1276,14 +1369,14 @@ impl IvEggAbility {
             return Self::default();
         }
         Self {
-            raw_data:      value,
-            hp_iv:         Self::bits(value,  0, 5),
-            attack_iv:     Self::bits(value,  5, 5),
-            defense_iv:    Self::bits(value, 10, 5),
-            speed_iv:      Self::bits(value, 15, 5),
-            sp_attack_iv:  Self::bits(value, 20, 5),
-            sp_def_iv:     Self::bits(value, 25, 5),
-            egg:           Self::bits(value, 30, 1),
+            raw_data: value,
+            hp_iv: Self::bits(value, 0, 5),
+            attack_iv: Self::bits(value, 5, 5),
+            defense_iv: Self::bits(value, 10, 5),
+            speed_iv: Self::bits(value, 15, 5),
+            sp_attack_iv: Self::bits(value, 20, 5),
+            sp_def_iv: Self::bits(value, 25, 5),
+            egg: Self::bits(value, 30, 1),
             ability_number: Self::bits(value, 31, 1),
         }
     }
@@ -1333,7 +1426,7 @@ mod tests {
     fn make_box_bytes(personality: u32, ot_id: u32, plain: &[u8; 48]) -> [u8; 80] {
         let key = personality ^ ot_id;
         let enc = encrypt_block(plain, key);
-        let cs  = block_checksum(plain);
+        let cs = block_checksum(plain);
         let mut buf = [0u8; 80];
         buf[0..4].copy_from_slice(&personality.to_le_bytes());
         buf[4..8].copy_from_slice(&ot_id.to_le_bytes());
@@ -1359,10 +1452,10 @@ mod tests {
     fn decrypt_xor_roundtrip() {
         setup();
         let personality = 0xDEAD_BEEFu32;
-        let ot_id       = 0x1234_5678u32;
+        let ot_id = 0x1234_5678u32;
         let key = personality ^ ot_id;
         let plain = [0xABu8; 48];
-        let enc   = encrypt_block(&plain, key);
+        let enc = encrypt_block(&plain, key);
         let result = SecureSubstruct::from_bytes(personality, ot_id, &enc);
         assert_eq!(result.decrypted_value, plain);
     }
@@ -1371,7 +1464,7 @@ mod tests {
     fn decrypt_key_field_is_personality_xor_ot_id() {
         setup();
         let personality = 0x0000_0005u32;
-        let ot_id       = 0x0000_0003u32;
+        let ot_id = 0x0000_0003u32;
         let result = SecureSubstruct::from_bytes(personality, ot_id, &[0u8; 48]);
         assert_eq!(result.key, 0x0000_0006);
     }
@@ -1382,8 +1475,8 @@ mod tests {
     fn all_24_orders_route_species_to_growth() {
         setup();
         for p in 0u32..24 {
-            let order   = ORDERS[p as usize];
-            let g_off   = order.chars().position(|c| c == 'G').unwrap() * 12;
+            let order = ORDERS[p as usize];
+            let g_off = order.chars().position(|c| c == 'G').unwrap() * 12;
             let species = 50 + p as u16;
 
             let mut plain = [0u8; 48];
@@ -1404,7 +1497,7 @@ mod tests {
         for p in 0u32..24 {
             let order = ORDERS[p as usize];
             let a_off = order.chars().position(|c| c == 'A').unwrap() * 12;
-            let mv    = 100 + p as u16;
+            let mv = 100 + p as u16;
 
             let mut plain = [0u8; 48];
             plain[a_off..a_off + 2].copy_from_slice(&mv.to_le_bytes());
@@ -1424,7 +1517,7 @@ mod tests {
         for p in 0u32..24 {
             let order = ORDERS[p as usize];
             let m_off = order.chars().position(|c| c == 'M').unwrap() * 12;
-            let met   = (10 + p) as u8;
+            let met = (10 + p) as u8;
 
             let mut plain = [0u8; 48];
             plain[m_off + 1] = met; // met_location is the second byte of M-slot
@@ -1442,9 +1535,9 @@ mod tests {
         setup();
         // EvConditionSubstruct layout: hp_ev is the first byte of the E-slot.
         for p in 0u32..24 {
-            let order  = ORDERS[p as usize];
-            let e_off  = order.chars().position(|c| c == 'E').unwrap() * 12;
-            let hp_ev  = (20 + p) as u8;
+            let order = ORDERS[p as usize];
+            let e_off = order.chars().position(|c| c == 'E').unwrap() * 12;
+            let hp_ev = (20 + p) as u8;
 
             let mut plain = [0u8; 48];
             plain[e_off] = hp_ev;
@@ -1512,7 +1605,7 @@ mod tests {
         setup();
         // personality=1, ot_id=0 → species=0, so no ROM access is needed.
         let plain = [0u8; 48];
-        let buf   = make_box_bytes(1, 0, &plain);
+        let buf = make_box_bytes(1, 0, &plain);
         assert!(BoxPokemon::from_bytes(&buf, &[]).is_some());
     }
 
@@ -1521,13 +1614,13 @@ mod tests {
     #[test]
     fn iv_egg_ability_zero_gives_all_zero_fields() {
         let iva = IvEggAbility::new(0);
-        assert_eq!(iva.hp_iv,        0);
-        assert_eq!(iva.attack_iv,    0);
-        assert_eq!(iva.defense_iv,   0);
-        assert_eq!(iva.speed_iv,     0);
+        assert_eq!(iva.hp_iv, 0);
+        assert_eq!(iva.attack_iv, 0);
+        assert_eq!(iva.defense_iv, 0);
+        assert_eq!(iva.speed_iv, 0);
         assert_eq!(iva.sp_attack_iv, 0);
-        assert_eq!(iva.sp_def_iv,    0);
-        assert_eq!(iva.egg,           0);
+        assert_eq!(iva.sp_def_iv, 0);
+        assert_eq!(iva.egg, 0);
         assert_eq!(iva.ability_number, 0);
     }
 
@@ -1535,13 +1628,13 @@ mod tests {
     fn iv_egg_ability_max_ivs_31_each() {
         // bits 0–29 all set → each 5-bit group = 31; bits 30–31 clear.
         let iva = IvEggAbility::new(0x3FFF_FFFF);
-        assert_eq!(iva.hp_iv,        31);
-        assert_eq!(iva.attack_iv,    31);
-        assert_eq!(iva.defense_iv,   31);
-        assert_eq!(iva.speed_iv,     31);
+        assert_eq!(iva.hp_iv, 31);
+        assert_eq!(iva.attack_iv, 31);
+        assert_eq!(iva.defense_iv, 31);
+        assert_eq!(iva.speed_iv, 31);
         assert_eq!(iva.sp_attack_iv, 31);
-        assert_eq!(iva.sp_def_iv,    31);
-        assert_eq!(iva.egg,           0);
+        assert_eq!(iva.sp_def_iv, 31);
+        assert_eq!(iva.egg, 0);
         assert_eq!(iva.ability_number, 0);
     }
 
@@ -1563,19 +1656,19 @@ mod tests {
 
     #[test]
     fn iv_egg_ability_distinct_values_unpack_independently() {
-        let hp:  u32 = 15; // bits  0– 4
+        let hp: u32 = 15; // bits  0– 4
         let atk: u32 = 20; // bits  5– 9
-        let def: u32 =  7; // bits 10–14
+        let def: u32 = 7; // bits 10–14
         let spd: u32 = 31; // bits 15–19
-        let spa: u32 =  0; // bits 20–24
-        let spd2:u32 = 16; // bits 25–29
+        let spa: u32 = 0; // bits 20–24
+        let spd2: u32 = 16; // bits 25–29
         let raw = hp | (atk << 5) | (def << 10) | (spd << 15) | (spa << 20) | (spd2 << 25);
         let iva = IvEggAbility::new(raw);
-        assert_eq!(iva.hp_iv,        15);
-        assert_eq!(iva.attack_iv,    20);
-        assert_eq!(iva.defense_iv,    7);
-        assert_eq!(iva.speed_iv,     31);
-        assert_eq!(iva.sp_attack_iv,  0);
-        assert_eq!(iva.sp_def_iv,    16);
+        assert_eq!(iva.hp_iv, 15);
+        assert_eq!(iva.attack_iv, 20);
+        assert_eq!(iva.defense_iv, 7);
+        assert_eq!(iva.speed_iv, 31);
+        assert_eq!(iva.sp_attack_iv, 0);
+        assert_eq!(iva.sp_def_iv, 16);
     }
 }

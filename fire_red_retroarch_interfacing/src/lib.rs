@@ -250,7 +250,10 @@ mod tests {
 
     #[test]
     fn generate_command_formats_address() {
-        assert_eq!(generate_command(0x02024284, 4), "READ_CORE_MEMORY 0x02024284 4");
+        assert_eq!(
+            generate_command(0x02024284, 4),
+            "READ_CORE_MEMORY 0x02024284 4"
+        );
     }
 
     #[test]
@@ -260,12 +263,18 @@ mod tests {
 
     #[test]
     fn generate_command_max_address() {
-        assert_eq!(generate_command(0xFFFFFFFF, 16), "READ_CORE_MEMORY 0xFFFFFFFF 16");
+        assert_eq!(
+            generate_command(0xFFFFFFFF, 16),
+            "READ_CORE_MEMORY 0xFFFFFFFF 16"
+        );
     }
 
     #[test]
     fn generate_command_large_length() {
-        assert_eq!(generate_command(0x02000000, 4096), "READ_CORE_MEMORY 0x02000000 4096");
+        assert_eq!(
+            generate_command(0x02000000, 4096),
+            "READ_CORE_MEMORY 0x02000000 4096"
+        );
     }
 
     // ── make_socket ──────────────────────────────────────────────────────────
@@ -278,7 +287,9 @@ mod tests {
     #[test]
     fn make_socket_binds_to_loopback_with_ephemeral_port() {
         let sock = make_socket().expect("make_socket should succeed");
-        let addr = sock.local_addr().expect("socket should have a local address");
+        let addr = sock
+            .local_addr()
+            .expect("socket should have a local address");
         assert_eq!(addr.ip().to_string(), "127.0.0.1");
         assert_ne!(addr.port(), 0);
     }

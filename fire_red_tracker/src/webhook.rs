@@ -59,23 +59,48 @@ use std::sync::mpsc::{Sender, channel};
 #[derive(Clone, Serialize)]
 pub struct PokemonInfo {
     pub nickname: String,
-    pub species:  String,
-    pub level:    u8,
-    pub shiny:    bool,
-    pub nature:   String,
+    pub species: String,
+    pub level: u8,
+    pub shiny: bool,
+    pub nature: String,
 }
 
 #[derive(Clone, Serialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
 pub enum WebhookEvent {
-    Death          { player: String, timestamp: u64, pokemon: PokemonInfo },
-    Catch          { player: String, timestamp: u64, pokemon: PokemonInfo },
-    Shiny          { player: String, timestamp: u64, pokemon: PokemonInfo },
-    Wipe           { player: String, timestamp: u64 },
+    Death {
+        player: String,
+        timestamp: u64,
+        pokemon: PokemonInfo,
+    },
+    Catch {
+        player: String,
+        timestamp: u64,
+        pokemon: PokemonInfo,
+    },
+    Shiny {
+        player: String,
+        timestamp: u64,
+        pokemon: PokemonInfo,
+    },
+    Wipe {
+        player: String,
+        timestamp: u64,
+    },
     /// A gym badge (or E4 member) was just earned.
-    Badge          { player: String, timestamp: u64, badge_name: String },
+    Badge {
+        player: String,
+        timestamp: u64,
+        badge_name: String,
+    },
     /// A caught Pokémon was renamed in-game.
-    NicknameChange { player: String, timestamp: u64, species: String, old_name: String, new_name: String },
+    NicknameChange {
+        player: String,
+        timestamp: u64,
+        species: String,
+        old_name: String,
+        new_name: String,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -89,15 +114,19 @@ enum PostBody {
     Raw(String),
 }
 
-
 enum WorkerTask {
-    Webhook { url: String, body: PostBody, event_type: String, run_id: Option<u32> },
+    Webhook {
+        url: String,
+        body: PostBody,
+        event_type: String,
+        run_id: Option<u32>,
+    },
     ObsClip,
 }
 
 struct WebhookState {
-    tx:         Sender<WorkerTask>,
-    config:     std::sync::Mutex<WebhookConfig>,
+    tx: Sender<WorkerTask>,
+    config: std::sync::Mutex<WebhookConfig>,
     obs_config: std::sync::Mutex<ObsConfig>,
 }
 
@@ -108,42 +137,102 @@ static STATE: OnceLock<WebhookState> = OnceLock::new();
 // ---------------------------------------------------------------------------
 
 fn render_template(template: &str, event: &WebhookEvent) -> String {
-    let (event_name, player, timestamp, pokemon, badge_name_val, old_name_val, new_name_val) = match event {
-        WebhookEvent::Death { player, timestamp, pokemon } =>
-            ("death",            player.as_str(), *timestamp, Some(pokemon), "", "", ""),
-        WebhookEvent::Catch { player, timestamp, pokemon } =>
-            ("catch",            player.as_str(), *timestamp, Some(pokemon), "", "", ""),
-        WebhookEvent::Shiny { player, timestamp, pokemon } =>
-            ("shiny",            player.as_str(), *timestamp, Some(pokemon), "", "", ""),
-        WebhookEvent::Wipe  { player, timestamp } =>
-            ("wipe",             player.as_str(), *timestamp, None, "", "", ""),
-        WebhookEvent::Badge { player, timestamp, badge_name } =>
-            ("badge",            player.as_str(), *timestamp, None, badge_name.as_str(), "", ""),
-        WebhookEvent::NicknameChange { player, timestamp, species: _, old_name, new_name } =>
-            ("nickname_change",  player.as_str(), *timestamp, None, "", old_name.as_str(), new_name.as_str()),
-    };
+    let (event_name, player, timestamp, pokemon, badge_name_val, old_name_val, new_name_val) =
+        match event {
+            WebhookEvent::Death {
+                player,
+                timestamp,
+                pokemon,
+            } => (
+                "death",
+                player.as_str(),
+                *timestamp,
+                Some(pokemon),
+                "",
+                "",
+                "",
+            ),
+            WebhookEvent::Catch {
+                player,
+                timestamp,
+                pokemon,
+            } => (
+                "catch",
+                player.as_str(),
+                *timestamp,
+                Some(pokemon),
+                "",
+                "",
+                "",
+            ),
+            WebhookEvent::Shiny {
+                player,
+                timestamp,
+                pokemon,
+            } => (
+                "shiny",
+                player.as_str(),
+                *timestamp,
+                Some(pokemon),
+                "",
+                "",
+                "",
+            ),
+            WebhookEvent::Wipe { player, timestamp } => {
+                ("wipe", player.as_str(), *timestamp, None, "", "", "")
+            }
+            WebhookEvent::Badge {
+                player,
+                timestamp,
+                badge_name,
+            } => (
+                "badge",
+                player.as_str(),
+                *timestamp,
+                None,
+                badge_name.as_str(),
+                "",
+                "",
+            ),
+            WebhookEvent::NicknameChange {
+                player,
+                timestamp,
+                species: _,
+                old_name,
+                new_name,
+            } => (
+                "nickname_change",
+                player.as_str(),
+                *timestamp,
+                None,
+                "",
+                old_name.as_str(),
+                new_name.as_str(),
+            ),
+        };
     let ts = timestamp.to_string();
     // Allocate these only when there is a pokemon, so non-pokemon events pay nothing.
     let level_buf;
     let shiny_buf;
-    let (nickname, species, level, shiny, nature): (&str, &str, &str, &str, &str) = if let Some(p) = pokemon {
-        level_buf = p.level.to_string();
-        shiny_buf = p.shiny.to_string();
-        (&p.nickname, &p.species, &level_buf, &shiny_buf, &p.nature)
-    } else {
-        ("", "", "", "", "")
-    };
+    let (nickname, species, level, shiny, nature): (&str, &str, &str, &str, &str) =
+        if let Some(p) = pokemon {
+            level_buf = p.level.to_string();
+            shiny_buf = p.shiny.to_string();
+            (&p.nickname, &p.species, &level_buf, &shiny_buf, &p.nature)
+        } else {
+            ("", "", "", "", "")
+        };
 
     let placeholders: &[(&str, &str)] = &[
-        ("{event}",            event_name),
-        ("{player}",           player),
-        ("{timestamp}",        &ts),
+        ("{event}", event_name),
+        ("{player}", player),
+        ("{timestamp}", &ts),
         ("{pokemon.nickname}", nickname),
-        ("{pokemon.species}",  species),
-        ("{pokemon.level}",    level),
-        ("{pokemon.shiny}",    shiny),
-        ("{pokemon.nature}",   nature),
-        ("{badge.name}",       badge_name_val),
+        ("{pokemon.species}", species),
+        ("{pokemon.level}", level),
+        ("{pokemon.shiny}", shiny),
+        ("{pokemon.nature}", nature),
+        ("{badge.name}", badge_name_val),
         ("{pokemon.old_name}", old_name_val),
         ("{pokemon.new_name}", new_name_val),
     ];
@@ -195,11 +284,17 @@ fn render_template(template: &str, event: &WebhookEvent) -> String {
 // ---------------------------------------------------------------------------
 
 const KNOWN_PLACEHOLDERS: &[&str] = &[
-    "{event}", "{player}", "{timestamp}",
-    "{pokemon.nickname}", "{pokemon.species}", "{pokemon.level}",
-    "{pokemon.shiny}", "{pokemon.nature}",
+    "{event}",
+    "{player}",
+    "{timestamp}",
+    "{pokemon.nickname}",
+    "{pokemon.species}",
+    "{pokemon.level}",
+    "{pokemon.shiny}",
+    "{pokemon.nature}",
     "{badge.name}",
-    "{pokemon.old_name}", "{pokemon.new_name}",
+    "{pokemon.old_name}",
+    "{pokemon.new_name}",
 ];
 
 /// Returns a list of unrecognized placeholder names found in `template`.
@@ -212,7 +307,10 @@ fn find_unknown_placeholders(template: &str) -> Vec<String> {
     let mut rest = template;
     while let Some(open) = rest.find('{') {
         rest = &rest[open..];
-        if rest.starts_with("{{") { rest = &rest[2..]; continue; }
+        if rest.starts_with("{{") {
+            rest = &rest[2..];
+            continue;
+        }
         if let Some(close) = rest.find('}') {
             let candidate = &rest[..=close];
             if !KNOWN_PLACEHOLDERS.contains(&candidate) {
@@ -228,11 +326,11 @@ fn find_unknown_placeholders(template: &str) -> Vec<String> {
 
 fn validate_templates(config: &WebhookConfig) {
     let pairs = [
-        ("death",           config.death_template.as_deref()),
-        ("catch",           config.catch_template.as_deref()),
-        ("shiny",           config.shiny_template.as_deref()),
-        ("wipe",            config.wipe_template.as_deref()),
-        ("badge",           config.badge_template.as_deref()),
+        ("death", config.death_template.as_deref()),
+        ("catch", config.catch_template.as_deref()),
+        ("shiny", config.shiny_template.as_deref()),
+        ("wipe", config.wipe_template.as_deref()),
+        ("badge", config.badge_template.as_deref()),
         ("nickname_change", config.nickname_template.as_deref()),
     ];
     for (event, template) in pairs {
@@ -329,7 +427,7 @@ pub fn init(config: WebhookConfig, obs_config: ObsConfig) {
             // its worker thread will exit when rx is orphaned.
             let _ = STATE.set(WebhookState {
                 tx,
-                config:     std::sync::Mutex::new(config),
+                config: std::sync::Mutex::new(config),
                 obs_config: std::sync::Mutex::new(obs_config),
             });
         }
@@ -343,7 +441,7 @@ pub fn init(config: WebhookConfig, obs_config: ObsConfig) {
 pub fn reinit(config: WebhookConfig, obs_config: ObsConfig) {
     validate_templates(&config);
     if let Some(state) = STATE.get() {
-        *state.config    .lock().unwrap_or_else(|p| p.into_inner()) = config;
+        *state.config.lock().unwrap_or_else(|p| p.into_inner()) = config;
         *state.obs_config.lock().unwrap_or_else(|p| p.into_inner()) = obs_config;
         tracing::info!("Webhook/OBS config hot-reloaded.");
     }
@@ -356,9 +454,19 @@ pub fn reinit(config: WebhookConfig, obs_config: ObsConfig) {
 ///
 /// Does nothing if [`init`] was never called.
 pub fn fire_event(event: WebhookEvent) {
-    let Some(state) = STATE.get() else { return; };
-    let config     = state.config    .lock().unwrap_or_else(|p| p.into_inner()).clone();
-    let obs_config = state.obs_config.lock().unwrap_or_else(|p| p.into_inner()).clone();
+    let Some(state) = STATE.get() else {
+        return;
+    };
+    let config = state
+        .config
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .clone();
+    let obs_config = state
+        .obs_config
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .clone();
 
     let (url, template, obs_clip, event_type_str) = match &event {
         WebhookEvent::Death { .. } => (
@@ -403,10 +511,10 @@ pub fn fire_event(event: WebhookEvent) {
         let run_id = fire_red_database::get_active_run_id();
         let body = match template {
             Some(t) => PostBody::Raw(render_template(t, &event)),
-            None    => PostBody::Json(event),
+            None => PostBody::Json(event),
         };
         let _ = state.tx.send(WorkerTask::Webhook {
-            url:        url.to_string(),
+            url: url.to_string(),
             body,
             event_type: event_type_str.to_string(),
             run_id,
@@ -430,33 +538,36 @@ fn obs_clip_inner() {
 
 fn try_obs_clip() -> Result<(), String> {
     let state = STATE.get().ok_or("webhook not initialized")?;
-    let obs   = state.obs_config.lock().unwrap_or_else(|p| p.into_inner()).clone();
+    let obs = state
+        .obs_config
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .clone();
 
     // Raw TCP connection — OBS WebSocket is always local, no TLS needed.
     let stream = std::net::TcpStream::connect(format!("{}:{}", obs.host, obs.port))
         .map_err(|e| format!("TCP connect: {e}"))?;
-    stream.set_read_timeout(Some(std::time::Duration::from_secs(5)))
+    stream
+        .set_read_timeout(Some(std::time::Duration::from_secs(5)))
         .map_err(|e| format!("set_read_timeout: {e}"))?;
 
-    let (mut ws, _) = tungstenite::client(
-        format!("ws://{}:{}/", obs.host, obs.port),
-        stream,
-    ).map_err(|e| format!("WS handshake: {e}"))?;
+    let (mut ws, _) = tungstenite::client(format!("ws://{}:{}/", obs.host, obs.port), stream)
+        .map_err(|e| format!("WS handshake: {e}"))?;
 
     // Read Hello (op 0)
     let hello_text = match ws.read().map_err(|e| format!("read hello: {e}"))? {
         tungstenite::Message::Text(t) => t,
         other => return Err(format!("unexpected hello frame: {:?}", other)),
     };
-    let hello: serde_json::Value = serde_json::from_str(&hello_text)
-        .map_err(|e| format!("parse hello: {e}"))?;
+    let hello: serde_json::Value =
+        serde_json::from_str(&hello_text).map_err(|e| format!("parse hello: {e}"))?;
 
     // Build Identify (op 1) — with authentication if OBS requires it.
     let auth_str: Option<String> = if let (Some(auth_info), Some(password)) = (
         hello["d"]["authentication"].as_object(),
         obs.password.as_deref().filter(|p| !p.is_empty()),
     ) {
-        let salt      = auth_info["salt"].as_str().unwrap_or("");
+        let salt = auth_info["salt"].as_str().unwrap_or("");
         let challenge = auth_info["challenge"].as_str().unwrap_or("");
         use sha2::{Digest, Sha256};
         let mut h = Sha256::new();
@@ -472,8 +583,11 @@ fn try_obs_clip() -> Result<(), String> {
     };
 
     let identify = match auth_str {
-        Some(auth) => format!(r#"{{"op":1,"d":{{"rpcVersion":1,"authentication":"{}"}}}}"#, auth),
-        None       => r#"{"op":1,"d":{"rpcVersion":1}}"#.to_string(),
+        Some(auth) => format!(
+            r#"{{"op":1,"d":{{"rpcVersion":1,"authentication":"{}"}}}}"#,
+            auth
+        ),
+        None => r#"{"op":1,"d":{"rpcVersion":1}}"#.to_string(),
     };
     ws.send(tungstenite::Message::Text(identify))
         .map_err(|e| format!("send identify: {e}"))?;
@@ -484,7 +598,8 @@ fn try_obs_clip() -> Result<(), String> {
     // Send SaveReplayBuffer request (op 6)
     ws.send(tungstenite::Message::Text(
         r#"{"op":6,"d":{"requestType":"SaveReplayBuffer","requestId":"clip"}}"#.to_string(),
-    )).map_err(|e| format!("send request: {e}"))?;
+    ))
+    .map_err(|e| format!("send request: {e}"))?;
 
     let _ = ws.close(None);
     Ok(())
@@ -501,20 +616,23 @@ mod tests {
 
     fn death_event() -> WebhookEvent {
         WebhookEvent::Death {
-            player:    "Alice".to_string(),
+            player: "Alice".to_string(),
             timestamp: 1000,
             pokemon: PokemonInfo {
                 nickname: "Sparky".to_string(),
-                species:  "Pikachu".to_string(),
-                level:    25,
-                shiny:    false,
-                nature:   "Timid".to_string(),
+                species: "Pikachu".to_string(),
+                level: 25,
+                shiny: false,
+                nature: "Timid".to_string(),
             },
         }
     }
 
     fn wipe_event() -> WebhookEvent {
-        WebhookEvent::Wipe { player: "Alice".to_string(), timestamp: 2000 }
+        WebhookEvent::Wipe {
+            player: "Alice".to_string(),
+            timestamp: 2000,
+        }
     }
 
     // ── render_template ──────────────────────────────────────────────────────
@@ -536,7 +654,10 @@ mod tests {
 
     #[test]
     fn render_template_escape_braces() {
-        assert_eq!(render_template("{{literal}} and {event}", &death_event()), "{literal} and death");
+        assert_eq!(
+            render_template("{{literal}} and {event}", &death_event()),
+            "{literal} and death"
+        );
     }
 
     #[test]
@@ -553,10 +674,10 @@ mod tests {
             timestamp: 3000,
             pokemon: PokemonInfo {
                 nickname: "Gleam".to_string(),
-                species:  "Gyarados".to_string(),
-                level:    30,
-                shiny:    true,
-                nature:   "Bold".to_string(),
+                species: "Gyarados".to_string(),
+                level: 30,
+                shiny: true,
+                nature: "Bold".to_string(),
             },
         };
         assert_eq!(render_template("{pokemon.shiny}", &event), "true");
@@ -564,7 +685,10 @@ mod tests {
 
     #[test]
     fn render_template_plain_text_no_placeholders() {
-        assert_eq!(render_template("hello world", &death_event()), "hello world");
+        assert_eq!(
+            render_template("hello world", &death_event()),
+            "hello world"
+        );
     }
 
     #[test]

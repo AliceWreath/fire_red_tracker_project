@@ -16,34 +16,36 @@ use std::sync::{Arc, Mutex};
 #[derive(Default)]
 pub struct EncounterTracker {
     last_enemy_personality: u32,
-    tracked_personality:    Option<u32>,
-    enc_map:                (u8, u8),
+    tracked_personality: Option<u32>,
+    enc_map: (u8, u8),
     /// Latches to `true` once the run is considered officially underway (5+ balls
     /// detected or encounters already exist in DB) and stays true until reset.
-    run_tracking_active:    bool,
+    run_tracking_active: bool,
     /// Set when a party wipe ends the run. Prevents `tick` from re-enabling
     /// tracking until the game unloads or a new run is started.
-    wipe_detected:          bool,
+    wipe_detected: bool,
     /// One-shot clause-enforcement warnings accumulated by `tick`. Drained by
     /// `drain_warnings()` so each warning appears in exactly one `GameState`.
-    pending_warnings:       Vec<String>,
+    pending_warnings: Vec<String>,
 }
 
 impl EncounterTracker {
-    pub fn new() -> Self { Self::default() }
+    pub fn new() -> Self {
+        Self::default()
+    }
 
     pub fn reset(&mut self) {
         self.last_enemy_personality = 0;
-        self.tracked_personality    = None;
-        self.run_tracking_active     = false;
-        self.wipe_detected          = false;
+        self.tracked_personality = None;
+        self.run_tracking_active = false;
+        self.wipe_detected = false;
     }
 
     /// Called when a party wipe ends the run. Clears the ball latch and locks
     /// `tick` so it won't re-enable tracking until `reset` is called.
     pub fn mark_wipe(&mut self) {
         self.run_tracking_active = false;
-        self.wipe_detected      = true;
+        self.wipe_detected = true;
     }
 
     /// Seeds the latch from the database. If any encounters have been recorded
@@ -77,8 +79,17 @@ impl EncounterTracker {
     ///
     /// `run_start_balls` is the minimum Pokéball count that triggers the
     /// run-start latch (configurable via `TrackerConfig::run_start_balls`).
-    pub fn tick(&mut self, current_state: FireRedState, thread_party: &Arc<Mutex<Vec<Pokemon>>>, dupes_clause: DupesClauseMode, allow_species_repeats: bool, run_start_balls: u32) {
-        if self.wipe_detected { return; }
+    pub fn tick(
+        &mut self,
+        current_state: FireRedState,
+        thread_party: &Arc<Mutex<Vec<Pokemon>>>,
+        dupes_clause: DupesClauseMode,
+        allow_species_repeats: bool,
+        run_start_balls: u32,
+    ) {
+        if self.wipe_detected {
+            return;
+        }
         if let Some(enemy) = crate::game::get_wild_enemy_pokemon()
             && enemy.box_mon.personality != self.last_enemy_personality
         {
@@ -93,7 +104,7 @@ impl EncounterTracker {
             }
 
             let map_group = current_state.map_group_id;
-            let map_name  = current_state.map_name_id;
+            let map_name = current_state.map_name_id;
 
             let dungeon = fire_red_location_names::dungeon_floors(map_group, map_name);
             if fire_red_database::has_encounter_for_any_floor(dungeon) {
@@ -103,7 +114,8 @@ impl EncounterTracker {
                 } else {
                     area.to_string()
                 };
-                self.pending_warnings.push(format!("Area already encountered: {}", area_label));
+                self.pending_warnings
+                    .push(format!("Area already encountered: {}", area_label));
                 return;
             }
 
@@ -116,9 +128,9 @@ impl EncounterTracker {
                 return;
             }
             let skip = match dupes_clause {
-                DupesClauseMode::Off       => false,
+                DupesClauseMode::Off => false,
                 DupesClauseMode::PerPlayer => fire_red_database::species_caught_by_self(species),
-                DupesClauseMode::Shared    => fire_red_database::species_caught_any(species),
+                DupesClauseMode::Shared => fire_red_database::species_caught_any(species),
             };
             if skip {
                 self.pending_warnings.push(format!(
@@ -130,42 +142,42 @@ impl EncounterTracker {
             let now = fire_red_database::unix_now();
 
             let personality = enemy.box_mon.personality;
-            let ot_id       = enemy.box_mon.ot_id;
-            let is_shiny    = crate::game::is_shiny(personality, ot_id);
+            let ot_id = enemy.box_mon.ot_id;
+            let is_shiny = crate::game::is_shiny(personality, ot_id);
 
             if is_shiny {
-                if let Err(e) = fire_red_database::record_event(fire_red_database::EventKind::Shiny {
-                    species_name: &enemy.box_mon.secure.growth.species_string,
-                    level:        enemy.level,
-                }) {
+                if let Err(e) =
+                    fire_red_database::record_event(fire_red_database::EventKind::Shiny {
+                        species_name: &enemy.box_mon.secure.growth.species_string,
+                        level: enemy.level,
+                    })
+                {
                     tracing::warn!("Failed to record Shiny event: {e}");
                 }
                 crate::webhook::fire_event(crate::webhook::WebhookEvent::Shiny {
-                    player:    fire_red_loop::get_trainer_name(),
+                    player: fire_red_loop::get_trainer_name(),
                     timestamp: now,
-                    pokemon:   crate::webhook::PokemonInfo {
+                    pokemon: crate::webhook::PokemonInfo {
                         nickname: String::new(),
-                        species:  enemy.box_mon.secure.growth.species_string.clone(),
-                        level:    enemy.level,
-                        shiny:    true,
-                        nature:   fire_red_database::nature_name(personality).to_string(),
+                        species: enemy.box_mon.secure.growth.species_string.clone(),
+                        level: enemy.level,
+                        shiny: true,
+                        nature: fire_red_database::nature_name(personality).to_string(),
                     },
                 });
             }
 
-            let is_first = match fire_red_database::record_encounter(
-                fire_red_database::Encounter {
-                    player_name:    fire_red_loop::get_trainer_name(),
-                    map_group,
-                    map_name,
-                    species:        enemy.box_mon.secure.growth.species,
-                    species_name:   enemy.box_mon.secure.growth.species_string.clone(),
-                    level:          enemy.level,
-                    caught:         false,
-                    encountered_at: now,
-                    is_shiny,
-                },
-            ) {
+            let is_first = match fire_red_database::record_encounter(fire_red_database::Encounter {
+                player_name: fire_red_loop::get_trainer_name(),
+                map_group,
+                map_name,
+                species: enemy.box_mon.secure.growth.species,
+                species_name: enemy.box_mon.secure.growth.species_string.clone(),
+                level: enemy.level,
+                caught: false,
+                encountered_at: now,
+                is_shiny,
+            }) {
                 Ok(v) => v,
                 Err(e) => {
                     tracing::error!("Failed to record encounter: {e}");
@@ -174,7 +186,7 @@ impl EncounterTracker {
             };
 
             if is_first {
-                self.enc_map             = (map_group, map_name);
+                self.enc_map = (map_group, map_name);
                 self.tracked_personality = Some(self.last_enemy_personality);
             } else {
                 self.tracked_personality = None;
@@ -182,13 +194,13 @@ impl EncounterTracker {
         }
 
         if let Some(tp) = self.tracked_personality {
-            let party  = thread_party.lock_or_recover();
+            let party = thread_party.lock_or_recover();
             let caught = party.iter().any(|p| p.box_mon.personality == tp);
             drop(party);
             if caught {
                 fire_red_database::set_encounter_caught(self.enc_map.0, self.enc_map.1);
                 self.tracked_personality = None;
-                self.enc_map             = (0, 0);
+                self.enc_map = (0, 0);
             }
         }
     }
@@ -274,14 +286,17 @@ mod tests {
         let mut t = EncounterTracker::new();
         t.pending_warnings.push("ephemeral warning".to_string());
         let _ = t.drain_warnings();
-        assert!(t.drain_warnings().is_empty(), "second drain should be empty");
+        assert!(
+            t.drain_warnings().is_empty(),
+            "second drain should be empty"
+        );
     }
 
     #[test]
     fn drain_warnings_each_warning_appears_exactly_once() {
         let mut t = EncounterTracker::new();
         t.pending_warnings.push("once".to_string());
-        let first  = t.drain_warnings();
+        let first = t.drain_warnings();
         let second = t.drain_warnings();
         assert_eq!(first.len(), 1);
         assert_eq!(second.len(), 0);

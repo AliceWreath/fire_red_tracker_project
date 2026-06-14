@@ -29,14 +29,14 @@
 
 use crate::client::{MonitorSlot, SharedSlots};
 use crate::config::{AggregatorConfig, save_config};
-use fire_red_states::LockOrRecover;
-use std::sync::Arc;
-use std::path::PathBuf;
 use egui::Ui;
 use fire_red_database::{CaughtPokemon, DeadPokemon};
 use fire_red_party_monitor::Pokemon;
-use fire_red_states::{is_shiny, GameState, MAX_NATIONAL_DEX_FIRERED, SpriteVariant};
+use fire_red_states::LockOrRecover;
+use fire_red_states::{GameState, MAX_NATIONAL_DEX_FIRERED, SpriteVariant, is_shiny};
 use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
+use std::sync::Arc;
 
 // ---------------------------------------------------------------------------
 // Layout constants
@@ -68,14 +68,14 @@ const ENCOUNTER_PANEL_HEIGHT: f32 = 32.0 + 3.0 * ENCOUNTER_ROW_HEIGHT;
 /// there is never a stale-cache delay when a pokemon dies or the run_id is
 /// first resolved.
 struct SlotDbCache {
-    caught:       Vec<CaughtPokemon>,
+    caught: Vec<CaughtPokemon>,
     last_refresh: std::time::Instant,
 }
 
 impl SlotDbCache {
     fn new() -> Self {
         Self {
-            caught:       Vec::new(),
+            caught: Vec::new(),
             // Initialise far in the past so the very first frame triggers a refresh.
             last_refresh: std::time::Instant::now()
                 .checked_sub(std::time::Duration::from_secs(60))
@@ -89,28 +89,37 @@ impl SlotDbCache {
 // ---------------------------------------------------------------------------
 
 struct SettingsDraft {
-    listen_port_str:  String,
-    db:               String,
-    db_enabled:       bool,
-    ws_port_str:      String,
-    ws_port_enabled:  bool,
-    default_test:     bool,
-    test:             Option<crate::config::AggregatorTestOverrides>,
+    listen_port_str: String,
+    db: String,
+    db_enabled: bool,
+    ws_port_str: String,
+    ws_port_enabled: bool,
+    default_test: bool,
+    test: Option<crate::config::AggregatorTestOverrides>,
     allow_injections: bool,
 }
 
 impl SettingsDraft {
     fn from_config(cfg: &AggregatorConfig) -> Self {
         Self {
-            listen_port_str:  cfg.listen_port.to_string(),
-            db:               cfg.db.as_deref()
-                .map(|s| s.trim_start_matches("postgresql://").trim_start_matches("postgres://").to_string())
+            listen_port_str: cfg.listen_port.to_string(),
+            db: cfg
+                .db
+                .as_deref()
+                .map(|s| {
+                    s.trim_start_matches("postgresql://")
+                        .trim_start_matches("postgres://")
+                        .to_string()
+                })
                 .unwrap_or_else(|| "localhost/nuzlocke".to_string()),
-            db_enabled:       cfg.db.is_some(),
-            ws_port_str:      cfg.ws_port.map(|p| p.to_string()).unwrap_or_else(|| "9090".to_string()),
-            ws_port_enabled:  cfg.ws_port.is_some(),
-            default_test:     cfg.default_test,
-            test:             cfg.test.clone(),
+            db_enabled: cfg.db.is_some(),
+            ws_port_str: cfg
+                .ws_port
+                .map(|p| p.to_string())
+                .unwrap_or_else(|| "9090".to_string()),
+            ws_port_enabled: cfg.ws_port.is_some(),
+            default_test: cfg.default_test,
+            test: cfg.test.clone(),
             allow_injections: cfg.allow_injections,
         }
     }
@@ -118,20 +127,20 @@ impl SettingsDraft {
 
 /// The top-level eframe application for the multi-player aggregator view.
 pub struct AggregatorApp {
-    live_slots:           SharedSlots,
+    live_slots: SharedSlots,
     /// Snapshot of slots taken at the start of each frame.
-    slots:                Vec<Arc<MonitorSlot>>,
-    textures:             HashMap<String, egui::TextureHandle>,
-    db_caches:            Vec<SlotDbCache>,
+    slots: Vec<Arc<MonitorSlot>>,
+    textures: HashMap<String, egui::TextureHandle>,
+    db_caches: Vec<SlotDbCache>,
     soul_link_propagated: HashSet<(usize, u32)>,
-    frame_states:              Vec<(String, Option<GameState>)>,
-    frame_all_dead:            Vec<HashMap<u32, DeadPokemon>>,
+    frame_states: Vec<(String, Option<GameState>)>,
+    frame_all_dead: Vec<HashMap<u32, DeadPokemon>>,
     frame_live_soul_link_dead: Vec<HashSet<u32>>,
-    frame_db_connected:        Vec<bool>,
-    config_path:   PathBuf,
+    frame_db_connected: Vec<bool>,
+    config_path: PathBuf,
     settings_open: bool,
-    about_open:    bool,
-    settings:      SettingsDraft,
+    about_open: bool,
+    settings: SettingsDraft,
     /// Latest release version string if a newer version is available, set by the
     /// background update-check thread.
     update_available: Arc<std::sync::Mutex<Option<String>>>,
@@ -148,18 +157,18 @@ impl AggregatorApp {
     ) -> Self {
         Self {
             live_slots,
-            slots:                     Vec::new(),
-            textures:                  HashMap::new(),
-            db_caches:                 Vec::new(),
-            soul_link_propagated:      HashSet::new(),
-            frame_states:              Vec::new(),
-            frame_all_dead:            Vec::new(),
+            slots: Vec::new(),
+            textures: HashMap::new(),
+            db_caches: Vec::new(),
+            soul_link_propagated: HashSet::new(),
+            frame_states: Vec::new(),
+            frame_all_dead: Vec::new(),
             frame_live_soul_link_dead: Vec::new(),
-            frame_db_connected:        Vec::new(),
+            frame_db_connected: Vec::new(),
             config_path,
             settings_open: false,
-            about_open:    false,
-            settings:      SettingsDraft::from_config(config),
+            about_open: false,
+            settings: SettingsDraft::from_config(config),
             update_available,
             title_set: false,
         }
@@ -169,13 +178,11 @@ impl AggregatorApp {
     fn process_textures(&mut self, ctx: &egui::Context) {
         for slot in &self.slots {
             {
-                let mut pending = slot
-                    .pending_textures
-                    .lock_or_recover();
+                let mut pending = slot.pending_textures.lock_or_recover();
                 for pt in pending.drain(..) {
                     let key = match pt.variant {
                         SpriteVariant::Front => sprite_key(pt.species, pt.shiny),
-                        SpriteVariant::Back  => sprite_key_back(pt.species, pt.shiny),
+                        SpriteVariant::Back => sprite_key_back(pt.species, pt.shiny),
                     };
                     let image = egui::ColorImage::from_rgba_unmultiplied(
                         [pt.width as usize, pt.height as usize],
@@ -209,7 +216,10 @@ impl AggregatorApp {
                     .chain(gs.encounters.rock_smash_encounters.wild_pokemon_list.iter())
                     .chain(gs.encounters.fishing_encounters.wild_pokemon_list.iter())
                 {
-                    if wild.species > 0 && wild.species <= MAX_NATIONAL_DEX_FIRERED && !known.contains(&wild.species) {
+                    if wild.species > 0
+                        && wild.species <= MAX_NATIONAL_DEX_FIRERED
+                        && !known.contains(&wild.species)
+                    {
                         needed.push(wild.species);
                     }
                 }
@@ -247,7 +257,14 @@ impl AggregatorApp {
             egui::Rect::from_min_size(full_rect.min, egui::vec2(full_rect.width(), party_height));
         ui.scope_builder(egui::UiBuilder::new().max_rect(party_rect), |ui| {
             Self::draw_party_region(
-                ui, label, state, dead_records, soul_link_dead, db_connected, textures, all_states,
+                ui,
+                label,
+                state,
+                dead_records,
+                soul_link_dead,
+                db_connected,
+                textures,
+                all_states,
             );
         });
 
@@ -352,13 +369,23 @@ impl AggregatorApp {
                     } else {
                         None
                     };
-                    let level_cap = gs.badge_state.as_ref()
+                    let level_cap = gs
+                        .badge_state
+                        .as_ref()
                         .and_then(|bs| bs.next_gym.as_ref())
                         .map(|g| g.max_level);
-                    Self::draw_party_member(ui, gift_index, pokemon, dead_record, is_soul_link_dead, textures, &others, level_cap);
+                    Self::draw_party_member(
+                        ui,
+                        gift_index,
+                        pokemon,
+                        dead_record,
+                        is_soul_link_dead,
+                        textures,
+                        &others,
+                        level_cap,
+                    );
                     ui.separator();
                 }
-
             });
     }
 
@@ -419,9 +446,13 @@ impl AggregatorApp {
         let met = pokemon.box_mon.secure.misc.met_location;
         let shiny = is_shiny(personality, ot_id);
         let front_key = sprite_key(species, shiny);
-        let back_key  = sprite_key_back(species, shiny);
+        let back_key = sprite_key_back(species, shiny);
         let show_back = (ui.ctx().input(|i| i.time) * 2.0) as u64 % 2 == 1;
-        let key = if show_back && textures.contains_key(&back_key) { back_key } else { front_key };
+        let key = if show_back && textures.contains_key(&back_key) {
+            back_key
+        } else {
+            front_key
+        };
         let dead = dead_record.is_some() || pokemon.hp == 0 || soul_link_dead;
 
         // Soul-link annotation based on live party state.
@@ -431,12 +462,15 @@ impl AggregatorApp {
             if let Some(gs) = other_state {
                 let partner = if met == 0 {
                     gift_index.and_then(|idx| {
-                        gs.party.iter()
+                        gs.party
+                            .iter()
                             .filter(|p| p.box_mon.secure.misc.met_location == 0)
                             .nth(idx)
                     })
                 } else {
-                    gs.party.iter().find(|p| p.box_mon.secure.misc.met_location == met)
+                    gs.party
+                        .iter()
+                        .find(|p| p.box_mon.secure.misc.met_location == met)
                 };
                 if let Some(other_mon) = partner {
                     ui.label(
@@ -492,7 +526,8 @@ impl AggregatorApp {
                     } else {
                         ui.label(format!("Lv{}", pokemon.level));
                         if let Some(cap) = level_cap
-                            && pokemon.level >= cap {
+                            && pokemon.level >= cap
+                        {
                             ui.label(
                                 egui::RichText::new("⚠ OVER CAP")
                                     .strong()
@@ -516,11 +551,19 @@ impl AggregatorApp {
                         .color(dim),
                     );
                     if r.max_hp > 0 {
-                        ui.label(stat_row_job(&r.nature, r.max_hp, r.attack, r.defense, r.speed, r.sp_attack, r.sp_defense, dim, 11.0));
+                        ui.label(stat_row_job(
+                            &r.nature,
+                            r.max_hp,
+                            r.attack,
+                            r.defense,
+                            r.speed,
+                            r.sp_attack,
+                            r.sp_defense,
+                            dim,
+                            11.0,
+                        ));
                     } else {
-                        ui.label(
-                            egui::RichText::new("Soul Link").color(dim).size(11.0),
-                        );
+                        ui.label(egui::RichText::new("Soul Link").color(dim).size(11.0));
                     }
                     ui.label(
                         egui::RichText::new(format!(
@@ -544,7 +587,17 @@ impl AggregatorApp {
                         ))
                         .color(dim),
                     );
-                    ui.label(stat_row_job(nature, pokemon.max_hp, pokemon.attack, pokemon.defense, pokemon.speed, pokemon.sp_attack, pokemon.sp_defense, dim, 11.0));
+                    ui.label(stat_row_job(
+                        nature,
+                        pokemon.max_hp,
+                        pokemon.attack,
+                        pokemon.defense,
+                        pokemon.speed,
+                        pokemon.sp_attack,
+                        pokemon.sp_defense,
+                        dim,
+                        11.0,
+                    ));
                     if soul_link_dead {
                         ui.label(egui::RichText::new("Soul Link").color(dim).size(11.0));
                     }
@@ -598,7 +651,11 @@ impl AggregatorApp {
 
                 ui.checkbox(&mut s.db_enabled, "Database:");
                 ui.add_enabled_ui(s.db_enabled, |ui| {
-                    ui.add(egui::TextEdit::singleline(&mut s.db).desired_width(280.0).hint_text("localhost/nuzlocke"));
+                    ui.add(
+                        egui::TextEdit::singleline(&mut s.db)
+                            .desired_width(280.0)
+                            .hint_text("localhost/nuzlocke"),
+                    );
                 });
                 ui.end_row();
 
@@ -612,7 +669,9 @@ impl AggregatorApp {
                 ui.end_row();
 
                 ui.checkbox(&mut s.default_test, "Default to test mode:");
-                ui.small("Uses [test] config overrides on every launch (same as always passing --test).");
+                ui.small(
+                    "Uses [test] config overrides on every launch (same as always passing --test).",
+                );
                 ui.end_row();
 
                 ui.checkbox(&mut s.allow_injections, "Allow injections:");
@@ -622,25 +681,47 @@ impl AggregatorApp {
 
         ui.add_space(8.0);
         let port_ok = s.listen_port_str.trim().parse::<u16>().is_ok();
-        let ws_ok   = !s.ws_port_enabled || s.ws_port_str.trim().parse::<u16>().is_ok();
+        let ws_ok = !s.ws_port_enabled || s.ws_port_str.trim().parse::<u16>().is_ok();
         ui.horizontal(|ui| {
-            let saved = ui.add_enabled(port_ok && ws_ok, egui::Button::new("Save")).clicked();
+            let saved = ui
+                .add_enabled(port_ok && ws_ok, egui::Button::new("Save"))
+                .clicked();
             if !port_ok {
-                ui.label(egui::RichText::new("Invalid listen port").color(egui::Color32::from_rgb(220, 80, 80)).small());
+                ui.label(
+                    egui::RichText::new("Invalid listen port")
+                        .color(egui::Color32::from_rgb(220, 80, 80))
+                        .small(),
+                );
             } else if !ws_ok {
-                ui.label(egui::RichText::new("Invalid WebSocket port").color(egui::Color32::from_rgb(220, 80, 80)).small());
+                ui.label(
+                    egui::RichText::new("Invalid WebSocket port")
+                        .color(egui::Color32::from_rgb(220, 80, 80))
+                        .small(),
+                );
             }
             if saved {
                 let db = if s.db_enabled {
                     let raw = s.db.trim().to_string();
-                    Some(if raw.starts_with("postgresql://") || raw.starts_with("postgres://") { raw } else { format!("postgresql://{}", raw) })
-                } else { None };
+                    Some(
+                        if raw.starts_with("postgresql://") || raw.starts_with("postgres://") {
+                            raw
+                        } else {
+                            format!("postgresql://{}", raw)
+                        },
+                    )
+                } else {
+                    None
+                };
                 let cfg = AggregatorConfig {
-                    listen_port:      s.listen_port_str.trim().parse().unwrap_or(7878),
+                    listen_port: s.listen_port_str.trim().parse().unwrap_or(7878),
                     db,
-                    ws_port:          if s.ws_port_enabled { s.ws_port_str.trim().parse().ok() } else { None },
-                    default_test:     s.default_test,
-                    test:             s.test.clone(),
+                    ws_port: if s.ws_port_enabled {
+                        s.ws_port_str.trim().parse().ok()
+                    } else {
+                        None
+                    },
+                    default_test: s.default_test,
+                    test: s.test.clone(),
                     allow_injections: s.allow_injections,
                 };
                 save_config(&cfg, &self.config_path);
@@ -703,18 +784,20 @@ impl eframe::App for AggregatorApp {
         });
 
         let n = self.slots.len();
-        if self.frame_states.len() < n { return; }
+        if self.frame_states.len() < n {
+            return;
+        }
 
-        let textures              = &self.textures;
-        let frame_states          = &self.frame_states;
-        let frame_all_dead        = &self.frame_all_dead;
-        let frame_soul_link_dead  = &self.frame_live_soul_link_dead;
-        let db_connected          = &self.frame_db_connected;
+        let textures = &self.textures;
+        let frame_states = &self.frame_states;
+        let frame_all_dead = &self.frame_all_dead;
+        let frame_soul_link_dead = &self.frame_live_soul_link_dead;
+        let db_connected = &self.frame_db_connected;
 
         for i in 0..n {
-            let (label, state)   = &frame_states[i];
-            let dead_records     = &frame_all_dead[i];
-            let soul_link_dead   = &frame_soul_link_dead[i];
+            let (label, state) = &frame_states[i];
+            let dead_records = &frame_all_dead[i];
+            let soul_link_dead = &frame_soul_link_dead[i];
 
             let panel_id = egui::Id::new(format!("player_col_{}", i));
             egui::Panel::left(panel_id)
@@ -722,8 +805,14 @@ impl eframe::App for AggregatorApp {
                 .resizable(false)
                 .show_inside(ui, |ui| {
                     AggregatorApp::draw_column(
-                        ui, label, state, dead_records, soul_link_dead,
-                        db_connected[i], textures, frame_states,
+                        ui,
+                        label,
+                        state,
+                        dead_records,
+                        soul_link_dead,
+                        db_connected[i],
+                        textures,
+                        frame_states,
                     );
                 });
         }
@@ -761,9 +850,10 @@ impl eframe::App for AggregatorApp {
         if !self.title_set
             && let Some(v) = &*self.update_available.lock_or_recover()
         {
-            ctx.send_viewport_cmd(egui::ViewportCommand::Title(
-                format!("Fire Red Aggregator — v{} available", v.trim_start_matches('v')),
-            ));
+            ctx.send_viewport_cmd(egui::ViewportCommand::Title(format!(
+                "Fire Red Aggregator — v{} available",
+                v.trim_start_matches('v')
+            )));
             self.title_set = true;
         }
 
@@ -804,8 +894,7 @@ impl eframe::App for AggregatorApp {
             let should_refresh = run_id_changed[i]
                 || now.duration_since(self.db_caches[i].last_refresh)
                     >= std::time::Duration::from_secs(1);
-            if should_refresh
-                && let Some(db) = &self.slots[i].db {
+            if should_refresh && let Some(db) = &self.slots[i].db {
                 self.db_caches[i].caught = db.list_caught(&states[i].0);
                 self.db_caches[i].last_refresh = now;
             }
@@ -828,31 +917,31 @@ impl eframe::App for AggregatorApp {
 
         // ── Soul link death propagation ───────────────────────────────────────
         let n = self.slots.len();
-        let caught_by_slot: Vec<&[CaughtPokemon]> = self.db_caches
-            .iter()
-            .map(|c| c.caught.as_slice())
-            .collect();
-        for (j, partner) in soul_link_kill_candidates(
-            &all_dead,
-            &caught_by_slot,
-            &self.soul_link_propagated,
-        ) {
+        let caught_by_slot: Vec<&[CaughtPokemon]> =
+            self.db_caches.iter().map(|c| c.caught.as_slice()).collect();
+        for (j, partner) in
+            soul_link_kill_candidates(&all_dead, &caught_by_slot, &self.soul_link_propagated)
+        {
             // None = run_id unknown or DB error → retry next frame.
             // Some(true)  = newly inserted → fire event and mark propagated.
             // Some(false) = already existed (ON CONFLICT) → mark propagated only,
             //               so we stop re-querying on every frame after a restart.
-            let result = self.slots[j].db.as_ref()
+            let result = self.slots[j]
+                .db
+                .as_ref()
                 .and_then(|db| db.mark_soul_link_dead(&partner));
             if result.is_some() {
                 if result == Some(true)
-                    && let Err(e) = self.slots[j].db.as_ref()
+                    && let Err(e) = self.slots[j]
+                        .db
+                        .as_ref()
                         .expect("db is Some when mark_soul_link_dead returned Some(true)")
                         .record_event(
                             &partner.player_name,
                             fire_red_database::EventKind::SoulLinkDeath {
                                 species_name: &partner.species_name,
-                                nickname:     &partner.nickname,
-                                level:        partner.level,
+                                nickname: &partner.nickname,
+                                level: partner.level,
                             },
                         )
                 {
@@ -874,7 +963,8 @@ impl eframe::App for AggregatorApp {
         //
         // Pre-sort gifts per slot once so the inner j loop does not re-sort on
         // every (dead_pokemon, j) combination.
-        let live_sorted_gifts: Vec<Vec<&CaughtPokemon>> = self.db_caches
+        let live_sorted_gifts: Vec<Vec<&CaughtPokemon>> = self
+            .db_caches
             .iter()
             .map(|c| sort_gifts_by_caught_at(&c.caught))
             .collect();
@@ -883,16 +973,23 @@ impl eframe::App for AggregatorApp {
         for i in 0..n {
             let Some(gs_i) = &states[i].1 else { continue };
             for pokemon_i in &gs_i.party {
-                if pokemon_i.hp != 0 { continue; }
+                if pokemon_i.hp != 0 {
+                    continue;
+                }
                 let met_i = pokemon_i.box_mon.secure.misc.met_location;
                 for j in 0..n {
-                    if j == i { continue; }
+                    if j == i {
+                        continue;
+                    }
                     if met_i == 0 {
                         // Gift Pokémon: pair by order of receipt (caught_at) — same
                         // ordering used by soul_link_kill_candidates.
-                        let Some(idx) = live_sorted_gifts[i].iter()
+                        let Some(idx) = live_sorted_gifts[i]
+                            .iter()
                             .position(|c| c.personality == pokemon_i.box_mon.personality)
-                            else { continue };
+                        else {
+                            continue;
+                        };
                         if let Some(partner) = live_sorted_gifts[j].get(idx) {
                             live_soul_link_dead[j].insert(partner.personality);
                         }
@@ -909,9 +1006,9 @@ impl eframe::App for AggregatorApp {
         }
 
         // ── Store frame data for ui() ─────────────────────────────────────────
-        self.frame_db_connected        = self.slots.iter().map(|s| s.db.is_some()).collect();
-        self.frame_states              = states;
-        self.frame_all_dead            = all_dead;
+        self.frame_db_connected = self.slots.iter().map(|s| s.db.is_some()).collect();
+        self.frame_states = states;
+        self.frame_all_dead = all_dead;
         self.frame_live_soul_link_dead = live_soul_link_dead;
     }
 }
@@ -923,44 +1020,83 @@ impl eframe::App for AggregatorApp {
 /// Returns `(boosted_stat, dropped_stat)` label pairs for a nature, or `None` for neutral.
 fn nature_mods(nature: &str) -> Option<(&'static str, &'static str)> {
     match nature {
-        "Lonely"  => Some(("Atk", "Def")), "Brave"   => Some(("Atk", "Spe")),
-        "Adamant" => Some(("Atk", "SpA")), "Naughty" => Some(("Atk", "SpD")),
-        "Bold"    => Some(("Def", "Atk")), "Relaxed" => Some(("Def", "Spe")),
-        "Impish"  => Some(("Def", "SpA")), "Lax"     => Some(("Def", "SpD")),
-        "Timid"   => Some(("Spe", "Atk")), "Hasty"   => Some(("Spe", "Def")),
-        "Jolly"   => Some(("Spe", "SpA")), "Naive"   => Some(("Spe", "SpD")),
-        "Modest"  => Some(("SpA", "Atk")), "Mild"    => Some(("SpA", "Def")),
-        "Quiet"   => Some(("SpA", "Spe")), "Rash"    => Some(("SpA", "SpD")),
-        "Calm"    => Some(("SpD", "Atk")), "Gentle"  => Some(("SpD", "Def")),
-        "Sassy"   => Some(("SpD", "Spe")), "Careful" => Some(("SpD", "SpA")),
-        _         => None,
+        "Lonely" => Some(("Atk", "Def")),
+        "Brave" => Some(("Atk", "Spe")),
+        "Adamant" => Some(("Atk", "SpA")),
+        "Naughty" => Some(("Atk", "SpD")),
+        "Bold" => Some(("Def", "Atk")),
+        "Relaxed" => Some(("Def", "Spe")),
+        "Impish" => Some(("Def", "SpA")),
+        "Lax" => Some(("Def", "SpD")),
+        "Timid" => Some(("Spe", "Atk")),
+        "Hasty" => Some(("Spe", "Def")),
+        "Jolly" => Some(("Spe", "SpA")),
+        "Naive" => Some(("Spe", "SpD")),
+        "Modest" => Some(("SpA", "Atk")),
+        "Mild" => Some(("SpA", "Def")),
+        "Quiet" => Some(("SpA", "Spe")),
+        "Rash" => Some(("SpA", "SpD")),
+        "Calm" => Some(("SpD", "Atk")),
+        "Gentle" => Some(("SpD", "Def")),
+        "Sassy" => Some(("SpD", "Spe")),
+        "Careful" => Some(("SpD", "SpA")),
+        _ => None,
     }
 }
 
 #[allow(clippy::too_many_arguments)]
 fn stat_row_job(
     nature: &str,
-    hp: u16, atk: u16, def: u16, spe: u16, spa: u16, spd: u16,
+    hp: u16,
+    atk: u16,
+    def: u16,
+    spe: u16,
+    spa: u16,
+    spd: u16,
     base: egui::Color32,
     size: f32,
 ) -> egui::text::LayoutJob {
-    let mods     = nature_mods(nature);
-    let up_stat  = mods.map(|(u, _)| u);
-    let dn_stat  = mods.map(|(_, d)| d);
+    let mods = nature_mods(nature);
+    let up_stat = mods.map(|(u, _)| u);
+    let dn_stat = mods.map(|(_, d)| d);
     let stat_col = |label: &str| {
-        if up_stat == Some(label)  { egui::Color32::from_rgb(255, 153, 204) }
-        else if dn_stat == Some(label) { egui::Color32::from_rgb(158, 200, 255) }
-        else { base }
+        if up_stat == Some(label) {
+            egui::Color32::from_rgb(255, 153, 204)
+        } else if dn_stat == Some(label) {
+            egui::Color32::from_rgb(158, 200, 255)
+        } else {
+            base
+        }
     };
     let sep = egui::text::TextFormat {
-        color: base, font_id: egui::FontId::proportional(size), ..Default::default()
+        color: base,
+        font_id: egui::FontId::proportional(size),
+        ..Default::default()
     };
     let mut job = egui::text::LayoutJob::default();
-    for (i, (label, val)) in [("HP", hp), ("Atk", atk), ("Def", def), ("Spe", spe), ("SpA", spa), ("SpD", spd)].iter().enumerate() {
-        if i > 0 { job.append(" | ", 0.0, sep.clone()); }
-        job.append(&format!("{} {}", label, val), 0.0, egui::text::TextFormat {
-            color: stat_col(label), font_id: egui::FontId::proportional(size), ..Default::default()
-        });
+    for (i, (label, val)) in [
+        ("HP", hp),
+        ("Atk", atk),
+        ("Def", def),
+        ("Spe", spe),
+        ("SpA", spa),
+        ("SpD", spd),
+    ]
+    .iter()
+    .enumerate()
+    {
+        if i > 0 {
+            job.append(" | ", 0.0, sep.clone());
+        }
+        job.append(
+            &format!("{} {}", label, val),
+            0.0,
+            egui::text::TextFormat {
+                color: stat_col(label),
+                font_id: egui::FontId::proportional(size),
+                ..Default::default()
+            },
+        );
     }
     job
 }
@@ -968,7 +1104,8 @@ fn stat_row_job(
 /// Returns the position of `personality` among `met_location = 0` Pokémon in
 /// `party`, in party-slot order.
 fn gift_party_index(party: &[Pokemon], personality: u32) -> Option<usize> {
-    party.iter()
+    party
+        .iter()
         .filter(|p| p.box_mon.secure.misc.met_location == 0)
         .position(|p| p.box_mon.personality == personality)
 }
@@ -977,9 +1114,7 @@ fn gift_party_index(party: &[Pokemon], personality: u32) -> Option<usize> {
 /// (`caught_at`). Used to pair starters and gifts consistently across soul-link
 /// slots, both in the DB-propagation path and the live-detection path.
 pub(crate) fn sort_gifts_by_caught_at(caught: &[CaughtPokemon]) -> Vec<&CaughtPokemon> {
-    let mut gifts: Vec<&CaughtPokemon> = caught.iter()
-        .filter(|c| c.met_location == 0)
-        .collect();
+    let mut gifts: Vec<&CaughtPokemon> = caught.iter().filter(|c| c.met_location == 0).collect();
     gifts.sort_by_key(|c| c.caught_at);
     gifts
 }
@@ -1003,7 +1138,8 @@ fn soul_link_kill_candidates(
 
     // Pre-sort gift Pokémon per slot once; uses the shared helper so ordering
     // is identical to the live-detection and BroadcastLoop paths.
-    let sorted_gifts: Vec<Vec<&CaughtPokemon>> = caught_by_slot.iter()
+    let sorted_gifts: Vec<Vec<&CaughtPokemon>> = caught_by_slot
+        .iter()
         .map(|slot| sort_gifts_by_caught_at(slot))
         .collect();
 
@@ -1019,9 +1155,13 @@ fn soul_link_kill_candidates(
             if met_loc == 0 {
                 // Gift Pokémon: pair by order of receipt across slots.
                 let Some(gift_idx) = sorted_gifts[i].iter().position(|c| c.personality == dead_p)
-                    else { continue };
+                else {
+                    continue;
+                };
                 for j in 0..n {
-                    if j == i { continue; }
+                    if j == i {
+                        continue;
+                    }
                     if let Some(p) = sorted_gifts[j].get(gift_idx).map(|c| (*c).clone())
                         && !all_dead[j].contains_key(&p.personality)
                         && !already_propagated.contains(&(j, p.personality))
@@ -1031,7 +1171,9 @@ fn soul_link_kill_candidates(
                 }
             } else {
                 for j in 0..n {
-                    if j == i { continue; }
+                    if j == i {
+                        continue;
+                    }
                     if let Some(p) = caught_by_slot[j]
                         .iter()
                         .find(|c| c.met_location == met_loc && c.personality != dead_p)
@@ -1050,34 +1192,54 @@ fn soul_link_kill_candidates(
 
 /// Returns the front-sprite texture cache key for a given species and shininess.
 pub fn sprite_key(species: u16, shiny: bool) -> String {
-    format!("pokemon_{}_{}", species, if shiny { "shiny" } else { "normal" })
+    format!(
+        "pokemon_{}_{}",
+        species,
+        if shiny { "shiny" } else { "normal" }
+    )
 }
 
 /// Returns the back-sprite texture cache key for a given species and shininess.
 pub fn sprite_key_back(species: u16, shiny: bool) -> String {
-    format!("pokemon_{}_{}_back", species, if shiny { "shiny" } else { "normal" })
+    format!(
+        "pokemon_{}_{}_back",
+        species,
+        if shiny { "shiny" } else { "normal" }
+    )
 }
-
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fire_red_database::{IVs, EVs};
+    use fire_red_database::{EVs, IVs};
 
     // ── Test helpers ──────────────────────────────────────────────────────────
 
     fn stub_caught(personality: u32, met_location: u8) -> CaughtPokemon {
         CaughtPokemon {
-            player_name: String::new(), personality, ot_id: 0,
-            nickname: String::new(), species: 0, species_name: String::new(),
-            is_shiny: false, nature: String::new(), level: 5, met_location,
+            player_name: String::new(),
+            personality,
+            ot_id: 0,
+            nickname: String::new(),
+            species: 0,
+            species_name: String::new(),
+            is_shiny: false,
+            nature: String::new(),
+            level: 5,
+            met_location,
             location_name: String::new(),
-            ivs: IVs::default(), evs: EVs::default(), caught_at: 0, gender: 2,
+            ivs: IVs::default(),
+            evs: EVs::default(),
+            caught_at: 0,
+            gender: 2,
         }
     }
 
     fn stub_caught_at(personality: u32, met_location: u8, caught_at: u64) -> CaughtPokemon {
-        CaughtPokemon { caught_at, ..stub_caught(personality, met_location) }
+        CaughtPokemon {
+            caught_at,
+            ..stub_caught(personality, met_location)
+        }
     }
 
     fn slices(v: &[Vec<CaughtPokemon>]) -> Vec<&[CaughtPokemon]> {
@@ -1086,15 +1248,37 @@ mod tests {
 
     fn stub_dead() -> DeadPokemon {
         DeadPokemon {
-            player_name: String::new(), personality: 0, ot_id: 0, ot_name: String::new(),
-            nickname: String::new(), species: 0, species_name: String::new(), is_shiny: false,
-            nature: String::new(), level: 5, experience: 0, max_hp: 0, attack: 0, defense: 0,
-            speed: 0, sp_attack: 0, sp_defense: 0, moves: [0; 4], pp: [0; 4],
-            ivs: IVs::default(), evs: EVs::default(), held_item: 0, ability: 0,
-            ability_name: String::new(), friendship: 0, met_location: 0, died_at: 0, gender: 2,
+            player_name: String::new(),
+            personality: 0,
+            ot_id: 0,
+            ot_name: String::new(),
+            nickname: String::new(),
+            species: 0,
+            species_name: String::new(),
+            is_shiny: false,
+            nature: String::new(),
+            level: 5,
+            experience: 0,
+            max_hp: 0,
+            attack: 0,
+            defense: 0,
+            speed: 0,
+            sp_attack: 0,
+            sp_defense: 0,
+            moves: [0; 4],
+            pp: [0; 4],
+            ivs: IVs::default(),
+            evs: EVs::default(),
+            held_item: 0,
+            ability: 0,
+            ability_name: String::new(),
+            friendship: 0,
+            met_location: 0,
+            died_at: 0,
+            gender: 2,
             is_soul_link_death: false,
-            killed_by_species:  None,
-            killed_by_move:     None,
+            killed_by_species: None,
+            killed_by_move: None,
         }
     }
 
@@ -1106,8 +1290,8 @@ mod tests {
 
     #[test]
     fn no_dead_pokemon_returns_empty() {
-        let all_dead  = vec![HashMap::new(), HashMap::new()];
-        let caught    = vec![vec![stub_caught(1, 10)], vec![stub_caught(2, 10)]];
+        let all_dead = vec![HashMap::new(), HashMap::new()];
+        let caught = vec![vec![stub_caught(1, 10)], vec![stub_caught(2, 10)]];
         let propagated = HashSet::new();
         assert!(soul_link_kill_candidates(&all_dead, &slices(&caught), &propagated).is_empty());
     }
@@ -1115,7 +1299,7 @@ mod tests {
     #[test]
     fn dead_with_no_partner_at_same_location_returns_empty() {
         let all_dead = vec![dead_map(&[1]), HashMap::new()];
-        let caught   = vec![
+        let caught = vec![
             vec![stub_caught(1, 10)],
             vec![stub_caught(2, 99)], // different location
         ];
@@ -1126,7 +1310,7 @@ mod tests {
     #[test]
     fn partner_at_same_location_is_identified() {
         let all_dead = vec![dead_map(&[1]), HashMap::new()];
-        let caught   = vec![
+        let caught = vec![
             vec![stub_caught(1, 10)], // dead pokemon, caught at 10 by slot 0
             vec![stub_caught(2, 10)], // soul-link partner, caught at 10 by slot 1
         ];
@@ -1141,10 +1325,7 @@ mod tests {
     fn already_dead_partner_is_skipped() {
         // Both pokemon are already dead — no new kills needed.
         let all_dead = vec![dead_map(&[1]), dead_map(&[2])];
-        let caught   = vec![
-            vec![stub_caught(1, 10)],
-            vec![stub_caught(2, 10)],
-        ];
+        let caught = vec![vec![stub_caught(1, 10)], vec![stub_caught(2, 10)]];
         let propagated = HashSet::new();
         assert!(soul_link_kill_candidates(&all_dead, &slices(&caught), &propagated).is_empty());
     }
@@ -1152,10 +1333,7 @@ mod tests {
     #[test]
     fn already_propagated_pair_is_skipped() {
         let all_dead = vec![dead_map(&[1]), HashMap::new()];
-        let caught   = vec![
-            vec![stub_caught(1, 10)],
-            vec![stub_caught(2, 10)],
-        ];
+        let caught = vec![vec![stub_caught(1, 10)], vec![stub_caught(2, 10)]];
         let mut propagated = HashSet::new();
         propagated.insert((1usize, 2u32)); // already handled this session
         assert!(soul_link_kill_candidates(&all_dead, &slices(&caught), &propagated).is_empty());
@@ -1165,10 +1343,7 @@ mod tests {
     fn gift_pokemon_are_soul_linked_by_catch_order() {
         // Slot 0's starter (personality 1, met=0) dies → links to slot 1's starter (2).
         let all_dead = vec![dead_map(&[1]), HashMap::new()];
-        let caught   = vec![
-            vec![stub_caught(1, 0)],
-            vec![stub_caught(2, 0)],
-        ];
+        let caught = vec![vec![stub_caught(1, 0)], vec![stub_caught(2, 0)]];
         let propagated = HashSet::new();
         let candidates = soul_link_kill_candidates(&all_dead, &slices(&caught), &propagated);
         assert_eq!(candidates.len(), 1);
@@ -1182,7 +1357,7 @@ mod tests {
         // Slot 1 has two gifts in reversed list order but same timestamps.
         // Slot 0's Eevee (personality 4, gift index 1) dies → should link to slot 1's Eevee (6).
         let all_dead = vec![dead_map(&[4]), HashMap::new()];
-        let caught   = vec![
+        let caught = vec![
             vec![stub_caught_at(4, 0, 2), stub_caught_at(3, 0, 1)], // Eevee before starter in list
             vec![stub_caught_at(6, 0, 2), stub_caught_at(5, 0, 1)],
         ];
@@ -1198,7 +1373,7 @@ mod tests {
         // Slot 0 has two gifts; slot 1 has only one. Slot 0's second gift (Eevee) dies.
         // No partner at index 1 for slot 1 → skip.
         let all_dead = vec![dead_map(&[4]), HashMap::new()];
-        let caught   = vec![
+        let caught = vec![
             vec![stub_caught_at(3, 0, 1), stub_caught_at(4, 0, 2)],
             vec![stub_caught_at(5, 0, 1)], // only one gift
         ];
@@ -1211,7 +1386,7 @@ mod tests {
         // Personality 99 is dead in slot 0 but has no caught record → met_loc falls
         // back to 0, but gift_catch_index finds no personality 99 among gifts → skip.
         let all_dead = vec![dead_map(&[99]), HashMap::new()];
-        let caught   = vec![
+        let caught = vec![
             vec![stub_caught(1, 10)], // no entry for personality 99
             vec![stub_caught(2, 10)],
         ];
@@ -1223,7 +1398,7 @@ mod tests {
     fn three_slots_cross_links_all_partners() {
         // Slot 0's pokemon 1 (met 10) links to slot 1's pokemon 2 AND slot 2's pokemon 3.
         let all_dead = vec![dead_map(&[1]), HashMap::new(), HashMap::new()];
-        let caught   = vec![
+        let caught = vec![
             vec![stub_caught(1, 10)],
             vec![stub_caught(2, 10), stub_caught(5, 99)],
             vec![stub_caught(3, 10)],
@@ -1242,7 +1417,7 @@ mod tests {
     fn unrelated_slot_catch_at_different_location_is_not_linked() {
         // Slot 1 has catches at two locations; only the one matching met_loc is linked.
         let all_dead = vec![dead_map(&[1]), HashMap::new()];
-        let caught   = vec![
+        let caught = vec![
             vec![stub_caught(1, 10)],
             vec![stub_caught(2, 99), stub_caught(3, 10)], // only personality 3 links
         ];

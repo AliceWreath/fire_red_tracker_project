@@ -14,7 +14,9 @@
 //! returns. The caller (TCP listener loop) can then accept the next connection
 //! and reuse the same slot.
 
-use fire_red_states::{BagPockets, ClientMessage, GameState, LockOrRecover, ServerMessage, recv_message, send_message};
+use fire_red_states::{
+    BagPockets, ClientMessage, GameState, LockOrRecover, ServerMessage, recv_message, send_message,
+};
 use image::ImageEncoder;
 use image::codecs::png::PngEncoder;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -132,7 +134,9 @@ impl MonitorSlot {
     /// * `addr`    - TCP address of the tracker server.
     /// * `db_path` - Optional path to this player's SQLite nuzlocke database.
     pub fn new(index: usize, addr: String, db_path: Option<String>) -> Self {
-        let db = db_path.as_deref().and_then(fire_red_database::DbReader::open);
+        let db = db_path
+            .as_deref()
+            .and_then(fire_red_database::DbReader::open);
         Self {
             label: Arc::new(Mutex::new(format!("Player {}", index + 1))),
             _addr: addr,
@@ -142,12 +146,12 @@ impl MonitorSlot {
             texture_request_queue: Arc::new(Mutex::new(VecDeque::new())),
             _db_path: db_path,
             db,
-            sprite_cache:  Arc::new(Mutex::new(None)),
-            command_queue:    Arc::new(Mutex::new(VecDeque::new())),
+            sprite_cache: Arc::new(Mutex::new(None)),
+            command_queue: Arc::new(Mutex::new(VecDeque::new())),
             injection_events: Arc::new(Mutex::new(VecDeque::new())),
-            run_changed:      Arc::new(AtomicBool::new(false)),
-            box_data:      Arc::new(Mutex::new(Vec::new())),
-            bag_data:      Arc::new(Mutex::new(None)),
+            run_changed: Arc::new(AtomicBool::new(false)),
+            box_data: Arc::new(Mutex::new(Vec::new())),
+            bag_data: Arc::new(Mutex::new(None)),
         }
     }
 }
@@ -212,17 +216,23 @@ pub fn handle_tracker_connection(
     bag_data: Arc<Mutex<Option<BagPockets>>>,
 ) {
     let mut write_stream = match stream.try_clone() {
-        Ok(s)  => s,
-        Err(e) => { tracing::error!("Failed to clone stream: {}", e); return; }
+        Ok(s) => s,
+        Err(e) => {
+            tracing::error!("Failed to clone stream: {}", e);
+            return;
+        }
     };
     let mut read_stream = stream;
 
-    let _ = send_message(&mut write_stream, &ClientMessage::Hello(env!("CARGO_PKG_VERSION").to_string()));
+    let _ = send_message(
+        &mut write_stream,
+        &ClientMessage::Hello(env!("CARGO_PKG_VERSION").to_string()),
+    );
 
-    let connected        = Arc::new(AtomicBool::new(true));
+    let connected = Arc::new(AtomicBool::new(true));
     let connected_writer = connected.clone();
-    let writer_queue     = texture_request_queue.clone();
-    let writer_cmds      = command_queue.clone();
+    let writer_queue = texture_request_queue.clone();
+    let writer_cmds = command_queue.clone();
 
     // ── Writer thread: drains texture requests and commands ──────────────────
     let writer = std::thread::spawn(move || {
@@ -245,8 +255,7 @@ pub fn handle_tracker_connection(
                 all
             };
             if !batch.is_empty()
-                && send_message(&mut write_stream, &ClientMessage::RequestTextures(batch))
-                    .is_err()
+                && send_message(&mut write_stream, &ClientMessage::RequestTextures(batch)).is_err()
             {
                 break;
             }
@@ -262,10 +271,9 @@ pub fn handle_tracker_connection(
                 *state.lock_or_recover() = Some(*gs);
             }
             Ok(ServerMessage::Textures(sprites)) => {
-                let maybe_cache: Option<PngSpriteCache> =
-                    sprite_cache.lock_or_recover().clone();
+                let maybe_cache: Option<PngSpriteCache> = sprite_cache.lock_or_recover().clone();
                 let mut pending = pending_textures.lock_or_recover();
-                let mut known   = known_species.lock_or_recover();
+                let mut known = known_species.lock_or_recover();
                 for sprite in sprites {
                     known.insert(sprite.species);
                     let pixels = decompress_pixels(&sprite.pixels);
@@ -273,17 +281,18 @@ pub fn handle_tracker_connection(
                         let key = (sprite.species, sprite.shiny);
                         let mut c = cache.lock_or_recover();
                         if let std::collections::hash_map::Entry::Vacant(e) = c.entry(key)
-                            && let Some(png) = encode_png(&pixels, sprite.width, sprite.height) {
+                            && let Some(png) = encode_png(&pixels, sprite.width, sprite.height)
+                        {
                             e.insert(png);
                         }
                     }
                     pending.push(PendingTexture {
                         species: sprite.species,
-                        shiny:   sprite.shiny,
+                        shiny: sprite.shiny,
                         variant: sprite.variant.clone(),
                         pixels,
-                        width:   sprite.width,
-                        height:  sprite.height,
+                        width: sprite.width,
+                        height: sprite.height,
                     });
                 }
             }

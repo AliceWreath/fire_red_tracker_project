@@ -1,5 +1,5 @@
-use std::net::TcpStream;
 use std::io::{Read, Write};
+use std::net::TcpStream;
 
 /// Maximum allowed network message size: 20 MB.
 ///
@@ -65,109 +65,194 @@ pub enum ClientMessage {
     Hello(String),             // index 3 — do not reorder
     /// Inject an item into the player's items pocket. `item_id` is the Gen III
     /// FireRed item ID (e.g. 13 = Potion). `quantity` is capped at 99 in-game.
-    GiveItem { item_id: u16, quantity: u16 }, // index 4 — do not reorder
+    GiveItem {
+        item_id: u16,
+        quantity: u16,
+    }, // index 4 — do not reorder
     /// Make the party Pokémon at `party_position` (0–5) shiny by rewriting its
     /// stored OT Secret ID so the Gen III shiny formula holds. Personality is
     /// unchanged, preserving nature, ability, gender, and data block order.
-    MakeShiny { party_position: u8 },         // index 5 — do not reorder
+    MakeShiny {
+        party_position: u8,
+    }, // index 5 — do not reorder
     /// Remove `quantity` of `item_id` from the player's bag. If the current
     /// quantity is ≤ `quantity` the item is fully removed and the pocket is
     /// compacted; otherwise the quantity is decremented in place.
-    TakeItem { item_id: u16, quantity: u16 }, // index 6 — do not reorder
+    TakeItem {
+        item_id: u16,
+        quantity: u16,
+    }, // index 6 — do not reorder
     /// Change the party Pokémon at `party_position` (0–5) to `new_species`.
     /// Personality, OT ID, nickname, EVs, IVs, and moves are all preserved.
     /// Only the species field in the Growth substructure is updated; the
     /// checksum is recalculated and the data block re-encrypted.
-    ChangeSpecies { party_position: u8, new_species: u16 }, // index 7 — do not reorder
+    ChangeSpecies {
+        party_position: u8,
+        new_species: u16,
+    }, // index 7 — do not reorder
     /// Switch the party Pokémon at `party_position` (0–5) to ability slot
     /// `ability_slot` (0 = first ability, 1 = second ability). Sets or clears
     /// bit 31 of the IV/egg/ability word in the Misc substructure and
     /// recalculates the checksum.
-    ChangeAbility { party_position: u8, ability_slot: u8 }, // index 8 — do not reorder
+    ChangeAbility {
+        party_position: u8,
+        ability_slot: u8,
+    }, // index 8 — do not reorder
     /// Change the party Pokémon at `party_position` (0–5) to `target_gender`
     /// (0 = male, 1 = female) by adjusting the low byte of the personality.
     /// Nature (personality % 25) is always preserved. If the Pokémon is shiny
     /// only personality bytes that keep the shiny formula satisfied are
     /// considered; the call fails if no such byte exists for the requested gender.
-    ChangeGender { party_position: u8, target_gender: u8 }, // index 9 — do not reorder
+    ChangeGender {
+        party_position: u8,
+        target_gender: u8,
+    }, // index 9 — do not reorder
     /// Rename the party Pokémon at `party_position` (0–5). `nickname` is UTF-8;
     /// the tracker converts it to GBA encoding, silently dropping unmapped chars
     /// and truncating to 10 characters. Shiny, nature, gender, and all encrypted
     /// data are untouched.
-    ChangeNickname { party_position: u8, nickname: String }, // index 10 — do not reorder
+    ChangeNickname {
+        party_position: u8,
+        nickname: String,
+    }, // index 10 — do not reorder
     /// Set the held item of the party Pokémon at `party_position` (0–5) to
     /// `item_id`. Use `item_id = 0` to remove the held item. The held-item field
     /// in the Growth substructure is updated; checksum is recalculated.
-    ChangeHeldItem { party_position: u8, item_id: u16 },    // index 11 — do not reorder
+    ChangeHeldItem {
+        party_position: u8,
+        item_id: u16,
+    }, // index 11 — do not reorder
     /// Clear the status condition (burn, sleep, paralysis, poison, freeze) of the
     /// party Pokémon at `party_position` (0–5) by zeroing the 4-byte status word
     /// at bytes 80–83 of the PartyPokemon struct.
-    CureStatus { party_position: u8 },                      // index 12 — do not reorder
+    CureStatus {
+        party_position: u8,
+    }, // index 12 — do not reorder
     /// Change the nature of the party Pokémon at `party_position` (0–5) to
     /// `target_nature` (0–24). Adjusts the low byte of the personality to satisfy
     /// `personality % 25 == target_nature`, preserving gender (for species where
     /// gender is personality-derived) and shiny status. The substructure block
     /// order is rearranged when `personality % 24` changes.
-    ChangeNature { party_position: u8, target_nature: u8 }, // index 13 — do not reorder
+    ChangeNature {
+        party_position: u8,
+        target_nature: u8,
+    }, // index 13 — do not reorder
     /// Restore PP on all four move slots to their current maximum (base PP +
     /// PP-Up bonus). Only slots with a move equipped are affected; empty slots
     /// (move_id = 0) are skipped. Shiny status and all other fields are
     /// untouched.
-    RestorePp { party_position: u8 },                       // index 14 — do not reorder
+    RestorePp {
+        party_position: u8,
+    }, // index 14 — do not reorder
     /// Set the friendship (happiness) byte of the party Pokémon at
     /// `party_position` (0–5) to `friendship` (0–255). Friendship is stored at
     /// Growth substructure offset 9; checksum is recalculated.
-    SetFriendship { party_position: u8, friendship: u8 },   // index 15 — do not reorder
+    SetFriendship {
+        party_position: u8,
+        friendship: u8,
+    }, // index 15 — do not reorder
     /// Replace the move at `slot` (0–3) of the party Pokémon at
     /// `party_position` (0–5) with `move_id`. PP is set to the maximum for the
     /// new move (base PP + current PP-Up bonus). Use `move_id = 0` to clear the
     /// slot.
-    ChangeMove { party_position: u8, slot: u8, move_id: u16 }, // index 16 — do not reorder
+    ChangeMove {
+        party_position: u8,
+        slot: u8,
+        move_id: u16,
+    }, // index 16 — do not reorder
     /// Set all six IVs of the party Pokémon at `party_position` (0–5). Each
     /// stat is clamped to 0–31. The egg and ability bits in the IV/egg/ability
     /// word (bits 30–31 of the Misc substructure) are preserved.
-    SetIvs { party_position: u8, hp: u8, atk: u8, def: u8, spd: u8, spa: u8, spdef: u8 }, // index 17 — do not reorder
+    SetIvs {
+        party_position: u8,
+        hp: u8,
+        atk: u8,
+        def: u8,
+        spd: u8,
+        spa: u8,
+        spdef: u8,
+    }, // index 17 — do not reorder
     /// Add to each IV of the party Pokémon at `party_position` (0–5), clamping
     /// each result at 31. Egg and ability bits are preserved.
-    IncreaseIvs { party_position: u8, hp: u8, atk: u8, def: u8, spd: u8, spa: u8, spdef: u8 }, // index 18 — do not reorder
+    IncreaseIvs {
+        party_position: u8,
+        hp: u8,
+        atk: u8,
+        def: u8,
+        spd: u8,
+        spa: u8,
+        spdef: u8,
+    }, // index 18 — do not reorder
     /// Set all six EVs of the party Pokémon at `party_position` (0–5). Each
     /// stat is stored as a raw byte (0–255); the per-stat game cap is not
     /// enforced by this command.
-    SetEvs { party_position: u8, hp: u8, atk: u8, def: u8, spd: u8, spa: u8, spdef: u8 }, // index 19 — do not reorder
+    SetEvs {
+        party_position: u8,
+        hp: u8,
+        atk: u8,
+        def: u8,
+        spd: u8,
+        spa: u8,
+        spdef: u8,
+    }, // index 19 — do not reorder
     /// Add to each EV of the party Pokémon at `party_position` (0–5), clamping
     /// each result at 255. The 510-total game cap is not enforced.
-    IncreaseEvs { party_position: u8, hp: u8, atk: u8, def: u8, spd: u8, spa: u8, spdef: u8 }, // index 20 — do not reorder
+    IncreaseEvs {
+        party_position: u8,
+        hp: u8,
+        atk: u8,
+        def: u8,
+        spd: u8,
+        spa: u8,
+        spdef: u8,
+    }, // index 20 — do not reorder
     /// Restore the current HP of the party Pokémon at `party_position` (0–5)
     /// to its maximum. Reads the calculated max-HP word (PartyPokemon offset
     /// 88–89) and writes it to the current-HP word (offset 86–87). No
     /// encrypted data is touched.
-    RestoreHp { party_position: u8 },                                                          // index 21 — do not reorder
+    RestoreHp {
+        party_position: u8,
+    }, // index 21 — do not reorder
     /// Restore the HP and cure the status condition of every occupied party
     /// slot in one command. Equivalent to calling [`RestoreHp`] + [`CureStatus`]
     /// on each of the six party positions, but reuses a single UDP socket.
-    HealParty,                                                                                  // index 22 — do not reorder
+    HealParty, // index 22 — do not reorder
     /// Set the experience points of the party Pokémon at `party_position` (0–5)
     /// to exactly `exp`. The Growth substructure is updated, checksum is
     /// recalculated, and the block is re-encrypted. The level byte is NOT
     /// updated — use [`SetLevel`] to change both atomically.
-    SetExp { party_position: u8, exp: u32 },                                                    // index 23 — do not reorder
+    SetExp {
+        party_position: u8,
+        exp: u32,
+    }, // index 23 — do not reorder
     /// Set the level of the party Pokémon at `party_position` (0–5) to `level`
     /// (1–100). Writes the level byte at PartyMon offset 84, and also updates
     /// the experience in the Growth substructure to the Gen III minimum for that
     /// level and growth rate so the game does not immediately re-sync downwards.
-    SetLevel { party_position: u8, level: u8 },                                                 // index 24 — do not reorder
+    SetLevel {
+        party_position: u8,
+        level: u8,
+    }, // index 24 — do not reorder
     /// Place `move_id` into the first empty move slot (move_id == 0) of the
     /// party Pokémon at `party_position` (0–5). PP is set to the maximum for
     /// the move. No-op if all four slots are occupied or the move is already
     /// known.
-    LearnMove { party_position: u8, move_id: u16 },                                             // index 25 — do not reorder
+    LearnMove {
+        party_position: u8,
+        move_id: u16,
+    }, // index 25 — do not reorder
     /// Clear the move at `slot` (0–3) of the party Pokémon at `party_position`
     /// (0–5) and compact subsequent moves left. PP bytes are shifted to match.
-    ForgetMove { party_position: u8, slot: u8 },                                                // index 26 — do not reorder
+    ForgetMove {
+        party_position: u8,
+        slot: u8,
+    }, // index 26 — do not reorder
     /// Infect the party Pokémon at `party_position` (0–5) with Pokérus (strain
     /// 1, 4 days remaining). No-op if already actively infected.
-    SetPokerus { party_position: u8 },                                                          // index 27 — do not reorder
-    // Append new variants here only.
+    SetPokerus {
+        party_position: u8,
+    }, // index 27 — do not reorder
+                               // Append new variants here only.
 }
 
 /// Messages sent from the server to connected clients.
@@ -181,18 +266,18 @@ pub enum ClientMessage {
 ///   4 = Bag
 #[derive(serde::Serialize, serde::Deserialize)]
 pub enum ServerMessage {
-    State(Box<GameState>),      // index 0 — do not reorder
-    Textures(Vec<SpriteData>),  // index 1 — do not reorder
-    RunChanged(Option<u32>),    // index 2 — do not reorder
-    BoxData(Vec<BoxEntry>),     // index 3 — do not reorder
-    Bag(BagPockets),            // index 4 — do not reorder
-    // Append new variants here only.
+    State(Box<GameState>),     // index 0 — do not reorder
+    Textures(Vec<SpriteData>), // index 1 — do not reorder
+    RunChanged(Option<u32>),   // index 2 — do not reorder
+    BoxData(Vec<BoxEntry>),    // index 3 — do not reorder
+    Bag(BagPockets),           // index 4 — do not reorder
+                               // Append new variants here only.
 }
 
 /// One item slot read from the player's bag (quantity already XOR-decrypted).
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
 pub struct ItemSlot {
-    pub item_id:  u16,
+    pub item_id: u16,
     pub quantity: u16,
 }
 
@@ -202,10 +287,10 @@ pub struct ItemSlot {
 /// Contains only occupied slots (item_id != 0); empty slots are omitted.
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
 pub struct BagPockets {
-    pub items:     Vec<ItemSlot>,
+    pub items: Vec<ItemSlot>,
     pub key_items: Vec<ItemSlot>,
-    pub balls:     Vec<ItemSlot>,
-    pub tms:       Vec<ItemSlot>,
+    pub balls: Vec<ItemSlot>,
+    pub tms: Vec<ItemSlot>,
 }
 
 /// A compact snapshot of one PC box slot for network transmission.
@@ -215,25 +300,25 @@ pub struct BagPockets {
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
 pub struct BoxEntry {
     /// Zero-based index of the PC box (0–13).
-    pub box_index:    u8,
+    pub box_index: u8,
     /// Zero-based slot within the box (0–29).
-    pub slot_index:   u8,
-    pub species:      u16,
+    pub slot_index: u8,
+    pub species: u16,
     pub species_name: String,
-    pub nickname:     String,
-    pub personality:  u32,
-    pub ot_id:        u32,
-    pub is_shiny:     bool,
-    pub nature:       String,
-    pub iv_hp:        u8,
-    pub iv_atk:       u8,
-    pub iv_def:       u8,
-    pub iv_spe:       u8,
-    pub iv_spa:       u8,
-    pub iv_spd:       u8,
-    pub is_egg:       bool,
+    pub nickname: String,
+    pub personality: u32,
+    pub ot_id: u32,
+    pub is_shiny: bool,
+    pub nature: String,
+    pub iv_hp: u8,
+    pub iv_atk: u8,
+    pub iv_def: u8,
+    pub iv_spe: u8,
+    pub iv_spa: u8,
+    pub iv_spd: u8,
+    pub is_egg: bool,
     /// `0` = male, `1` = female, `2` = genderless.
-    pub gender:       u8,
+    pub gender: u8,
 }
 
 /// Which sprite image a [`SpriteData`] packet carries.
@@ -263,7 +348,7 @@ pub struct SpriteData {
 }
 
 /// Shared game state transmitted between server and clients.
-/// 
+///
 /// Contains both the current player party and wild encounter data.
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
 pub struct GameState {
@@ -323,29 +408,28 @@ pub enum Mode {
 // ---------------------------------------------------------------------------
 
 /// Serializes and sends a message over a TCP stream.
-/// 
+///
 /// Messages are encoded using 'bincode' and prefixed with a 4-byte
 /// big-endian length header.
-/// 
+///
 /// # Arguments
-/// 
+///
 /// * 'stream' - Connected TCP stream.
 /// * 'msg' - Serializable message to send.
-/// 
+///
 /// # Errors
-/// 
+///
 /// Returns an error if serialization or network I/O fails.
-/// 
+///
 /// # Protocol
-/// 
+///
 /// Packet layout:
-/// 
+///
 /// ```text
 /// [4-byte big-endian length][bincode-encoded message bytes]
 /// ```
 pub fn send_message<T: serde::Serialize>(stream: &mut TcpStream, msg: &T) -> std::io::Result<()> {
-    let encoded =
-        bincode::serialize(msg).map_err(std::io::Error::other)?;
+    let encoded = bincode::serialize(msg).map_err(std::io::Error::other)?;
     let len = u32::try_from(encoded.len())
         .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidData, "message too large"))?;
     stream.write_all(&len.to_be_bytes())?;
@@ -354,28 +438,28 @@ pub fn send_message<T: serde::Serialize>(stream: &mut TcpStream, msg: &T) -> std
 }
 
 /// Receives and deserializes a message from a TCP stream.
-/// 
+///
 /// Reads a 4-byte big-endian prefix followed by a bincode message of the specified length.
-/// 
+///
 /// # Type Parameters
-/// 
+///
 /// * `T` - Message type implementing [`serde::de::DeserializeOwned`].
-/// 
+///
 /// # Arguments
-/// 
+///
 /// * 'stream' - Connected TCP stream.
-/// 
+///
 /// # Errors
-/// 
+///
 /// returns an error if:
-/// 
+///
 /// - The connection closes unexpectedly.
 /// - The packet exceeds ['MAX_MESSAGE_SIZE'].
 /// - Deserialization fails.
-/// 
+///
 /// # Security
-/// 
-/// Incoming packet sizes are validated before allocation to avoid 
+///
+/// Incoming packet sizes are validated before allocation to avoid
 /// excessive memory usage from malformed or malicious packets.
 pub fn recv_message<T: serde::de::DeserializeOwned>(stream: &mut TcpStream) -> std::io::Result<T> {
     let mut len_buf = [0u8; 4];
@@ -431,11 +515,19 @@ pub fn base64_encode(data: &[u8]) -> String {
         let b0 = chunk[0] as u32;
         let b1 = if chunk.len() > 1 { chunk[1] as u32 } else { 0 };
         let b2 = if chunk.len() > 2 { chunk[2] as u32 } else { 0 };
-        let n  = (b0 << 16) | (b1 << 8) | b2;
+        let n = (b0 << 16) | (b1 << 8) | b2;
         out.push(CHARS[((n >> 18) & 63) as usize] as char);
         out.push(CHARS[((n >> 12) & 63) as usize] as char);
-        out.push(if chunk.len() > 1 { CHARS[((n >>  6) & 63) as usize] as char } else { '=' });
-        out.push(if chunk.len() > 2 { CHARS[( n        & 63) as usize] as char } else { '=' });
+        out.push(if chunk.len() > 1 {
+            CHARS[((n >> 6) & 63) as usize] as char
+        } else {
+            '='
+        });
+        out.push(if chunk.len() > 2 {
+            CHARS[(n & 63) as usize] as char
+        } else {
+            '='
+        });
     }
     out
 }
@@ -448,10 +540,10 @@ pub fn base64_encode(data: &[u8]) -> String {
 ///
 /// Gen III formula: `(p_high ^ p_low ^ id_high ^ id_low) < 8`.
 pub fn is_shiny(personality: u32, ot_id: u32) -> bool {
-    let p_high  = (personality >> 16) as u16;
-    let p_low   = (personality & 0xFFFF) as u16;
+    let p_high = (personality >> 16) as u16;
+    let p_low = (personality & 0xFFFF) as u16;
     let id_high = (ot_id >> 16) as u16;
-    let id_low  = (ot_id & 0xFFFF) as u16;
+    let id_low = (ot_id & 0xFFFF) as u16;
     (p_high ^ p_low ^ id_high ^ id_low) < 8
 }
 
@@ -485,7 +577,11 @@ mod base64_tests {
         for len in 0..=9usize {
             let data: Vec<u8> = (0..len as u8).collect();
             let encoded = base64_encode(&data);
-            assert_eq!(encoded.len() % 4, 0, "length {len} gave non-multiple-of-4 output");
+            assert_eq!(
+                encoded.len() % 4,
+                0,
+                "length {len} gave non-multiple-of-4 output"
+            );
         }
     }
 

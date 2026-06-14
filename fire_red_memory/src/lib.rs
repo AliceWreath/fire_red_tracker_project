@@ -41,11 +41,11 @@
 //! At ~16 ms per round-trip with 16 concurrent chunks, EWRAM (64 chunks) takes
 //! approximately 4 × 16 ms = 64 ms; IWRAM (8 chunks) takes ~16 ms.
 
-use std::sync::{Arc, Condvar, Mutex, OnceLock};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc;
 use arc_swap::ArcSwap;
 use fire_red_retroarch_interfacing::{generate_command, get_from_retroarch, make_socket};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc;
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
 
 // ---------------------------------------------------------------------------
 // Statics
@@ -91,11 +91,11 @@ const MAX_CONCURRENT_CHUNKS: usize = 16;
 
 /// GBA IWRAM address range (inclusive on both ends).
 const IWRAM_START: u32 = 0x03000000;
-const IWRAM_END:   u32 = 0x03007FFF;
+const IWRAM_END: u32 = 0x03007FFF;
 
 /// GBA EWRAM address range (inclusive on both ends).
 const EWRAM_START: u32 = 0x02000000;
-const EWRAM_END:   u32 = 0x0203FFFF;
+const EWRAM_END: u32 = 0x0203FFFF;
 
 /// How long the background thread sleeps between full memory reads.
 const SLEEP_DURATION: std::time::Duration = std::time::Duration::from_millis(100);
@@ -135,13 +135,21 @@ struct Iwram;
 struct Ewram;
 
 impl MemoryType for Iwram {
-    fn start(&self) -> u32 { IWRAM_START }
-    fn end(&self)   -> u32 { IWRAM_END   }
+    fn start(&self) -> u32 {
+        IWRAM_START
+    }
+    fn end(&self) -> u32 {
+        IWRAM_END
+    }
 }
 
 impl MemoryType for Ewram {
-    fn start(&self) -> u32 { EWRAM_START }
-    fn end(&self)   -> u32 { EWRAM_END   }
+    fn start(&self) -> u32 {
+        EWRAM_START
+    }
+    fn end(&self) -> u32 {
+        EWRAM_END
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -280,7 +288,10 @@ fn update_memory() -> Result<(), &'static str> {
 fn read_chunk(start: u32, chunk_start: u32, chunk_size: u32) -> Option<(u32, Vec<u8>)> {
     let socket = match make_socket() {
         Ok(s) => s,
-        Err(e) => { tracing::error!("Failed to create UDP socket: {e}"); return None; }
+        Err(e) => {
+            tracing::error!("Failed to create UDP socket: {e}");
+            return None;
+        }
     };
     let command = generate_command(start + chunk_start, chunk_size as usize);
     let mut retries = 0u32;
@@ -301,30 +312,32 @@ fn read_chunk(start: u32, chunk_start: u32, chunk_size: u32) -> Option<(u32, Vec
         };
 
         // Validate response header
-if ret[0] != "READ_CORE_MEMORY" {
-    retries += 1;
-    continue;
-}
+        if ret[0] != "READ_CORE_MEMORY" {
+            retries += 1;
+            continue;
+        }
 
-let response_addr = u32::from_str_radix(ret[1].trim(), 16).ok();
-if response_addr != Some(start + chunk_start) {
-    retries += 1;
-    continue;
-}
+        let response_addr = u32::from_str_radix(ret[1].trim(), 16).ok();
+        if response_addr != Some(start + chunk_start) {
+            retries += 1;
+            continue;
+        }
 
-// Strict hex parse — reject the chunk if any token is malformed
-let Some(bytes) = ret.iter().skip(2)
-    .map(|s| u8::from_str_radix(s.trim(), 16).ok())
-    .collect::<Option<Vec<u8>>>()
-else {
-    retries += 1;
-    continue;
-};
+        // Strict hex parse — reject the chunk if any token is malformed
+        let Some(bytes) = ret
+            .iter()
+            .skip(2)
+            .map(|s| u8::from_str_radix(s.trim(), 16).ok())
+            .collect::<Option<Vec<u8>>>()
+        else {
+            retries += 1;
+            continue;
+        };
 
-if bytes.len() < chunk_size as usize {
-    retries += 1;
-    continue;
-}
+        if bytes.len() < chunk_size as usize {
+            retries += 1;
+            continue;
+        }
 
         return Some((chunk_start, bytes));
     }
@@ -427,7 +440,10 @@ mod tests {
         assert_eq!(full_size, 256 * 1024, "EWRAM must be 256 KiB");
         // Every chunk is MAX_CHUNK_SIZE except possibly the last.
         let chunk_count = full_size.div_ceil(MAX_CHUNK_SIZE);
-        assert_eq!(chunk_count, 64, "EWRAM must split into 64 chunks at 4 KiB each");
+        assert_eq!(
+            chunk_count, 64,
+            "EWRAM must split into 64 chunks at 4 KiB each"
+        );
         // All chunks fit inside one sliding window: ceiling(64/16) = 4 rounds.
         let window_rounds = chunk_count.div_ceil(MAX_CONCURRENT_CHUNKS);
         assert_eq!(window_rounds, 4);
@@ -438,7 +454,10 @@ mod tests {
         let full_size = (IWRAM_END - IWRAM_START + 1) as usize;
         assert_eq!(full_size, 32 * 1024, "IWRAM must be 32 KiB");
         let chunk_count = full_size.div_ceil(MAX_CHUNK_SIZE);
-        assert_eq!(chunk_count, 8, "IWRAM must split into 8 chunks at 4 KiB each");
+        assert_eq!(
+            chunk_count, 8,
+            "IWRAM must split into 8 chunks at 4 KiB each"
+        );
         // 8 chunks < 16 concurrent → fits in a single window round.
         assert!(chunk_count <= MAX_CONCURRENT_CHUNKS);
     }
@@ -474,7 +493,10 @@ mod tests {
         for (_, bytes) in results {
             assembled.extend_from_slice(&bytes);
         }
-        assert_eq!(assembled, vec![0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08]);
+        assert_eq!(
+            assembled,
+            vec![0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08]
+        );
     }
 
     /// Integration test: reads both RAM regions from a live RetroArch instance.

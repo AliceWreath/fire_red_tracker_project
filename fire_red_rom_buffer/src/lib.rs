@@ -70,12 +70,18 @@ pub enum RomRevision {
 impl RomRevision {
     /// Returns `true` if this revision is a LeafGreen ROM.
     pub fn is_leaf_green(self) -> bool {
-        matches!(self, RomRevision::LeafGreenUsaRev1 | RomRevision::LeafGreenUsaRev0)
+        matches!(
+            self,
+            RomRevision::LeafGreenUsaRev1 | RomRevision::LeafGreenUsaRev0
+        )
     }
 
     /// Returns `true` if this revision is a FireRed ROM.
     pub fn is_fire_red(self) -> bool {
-        matches!(self, RomRevision::FireRedUsaRev1 | RomRevision::FireRedUsaRev0)
+        matches!(
+            self,
+            RomRevision::FireRedUsaRev1 | RomRevision::FireRedUsaRev0
+        )
     }
 }
 
@@ -102,14 +108,14 @@ pub struct RomAddresses {
     // ROM data table offsets (ROM file offset = bus address − 0x08000000)
     pub pokemon_names_addr: usize,
     pub ability_names_addr: usize,
-    pub item_data_addr:     usize,
-    pub base_stats_addr:    usize,
-    pub move_data_addr:     usize,
+    pub item_data_addr: usize,
+    pub base_stats_addr: usize,
+    pub move_data_addr: usize,
 
     // GBA bus addresses in EWRAM (0x02xxxxxx)
-    pub party_size_addr:         usize,
-    pub party_addr:              usize,
-    pub player_data_addr:        usize,
+    pub party_size_addr: usize,
+    pub party_addr: usize,
+    pub player_data_addr: usize,
     pub map_group_and_name_addr: usize,
 
     // GBA bus addresses in IWRAM (0x03xxxxxx) — runtime pointers to SaveBlocks
@@ -117,9 +123,9 @@ pub struct RomAddresses {
     pub save_block_3_ptr: usize,
 
     // Byte offsets within SaveBlock structures
-    pub flags_offset:     usize,
+    pub flags_offset: usize,
     pub badge_flag_start: usize,
-    pub box_data_offset:  usize,
+    pub box_data_offset: usize,
 
     // Elite 4 and game-clear flag indices within gSaveBlock1.flags[]
     /// Flag index for Lorelei's first defeat (enables rematch).
@@ -137,22 +143,22 @@ pub struct RomAddresses {
 /// ROM data addresses were verified against the `pokefirered` decompilation.
 /// EWRAM addresses were confirmed by live scan on Rev 1 (see project notes).
 const FIRERED_USA_REV1: RomAddresses = RomAddresses {
-    pokemon_names_addr:      0x245F5B,
-    ability_names_addr:      0x24FCB0,
-    item_data_addr:          0x3DB098,
-    base_stats_addr:         0x2547F4,
-    move_data_addr:          0x250C04,
-    party_size_addr:         0x02024029,
-    party_addr:              0x02024284,
-    player_data_addr:        0x02024298,
+    pokemon_names_addr: 0x245F5B,
+    ability_names_addr: 0x24FCB0,
+    item_data_addr: 0x3DB098,
+    base_stats_addr: 0x2547F4,
+    move_data_addr: 0x250C04,
+    party_size_addr: 0x02024029,
+    party_addr: 0x02024284,
+    player_data_addr: 0x02024298,
     map_group_and_name_addr: 0x02031DBC,
-    save_block_1_ptr:        0x03005008,
-    save_block_3_ptr:        0x03005010,
-    flags_offset:            0x0EE0,
-    badge_flag_start:        0x820,
-    box_data_offset:         0x4,
-    e4_flag_start:           0x3E3,
-    game_clear_flag:         0x083,
+    save_block_1_ptr: 0x03005008,
+    save_block_3_ptr: 0x03005010,
+    flags_offset: 0x0EE0,
+    badge_flag_start: 0x820,
+    box_data_offset: 0x4,
+    e4_flag_start: 0x3E3,
+    game_clear_flag: 0x083,
 };
 
 /// Address table for Pokémon FireRed USA Rev 0.
@@ -168,22 +174,22 @@ const FIRERED_USA_REV0: RomAddresses = FIRERED_USA_REV1;
 /// than FireRed for the name/stats tables; the item table has a larger shift.
 /// EWRAM/IWRAM runtime addresses and save-block offsets are identical to FireRed.
 const LEAFGREEN_USA_REV1: RomAddresses = RomAddresses {
-    pokemon_names_addr:      0x245F37,
-    ability_names_addr:      0x24FC8C,
-    item_data_addr:          0x3DAED4,
-    base_stats_addr:         0x2547D0,
-    move_data_addr:          0x250BE0,
-    party_size_addr:         0x02024029,
-    party_addr:              0x02024284,
-    player_data_addr:        0x02024298,
+    pokemon_names_addr: 0x245F37,
+    ability_names_addr: 0x24FC8C,
+    item_data_addr: 0x3DAED4,
+    base_stats_addr: 0x2547D0,
+    move_data_addr: 0x250BE0,
+    party_size_addr: 0x02024029,
+    party_addr: 0x02024284,
+    player_data_addr: 0x02024298,
     map_group_and_name_addr: 0x02031DBC,
-    save_block_1_ptr:        0x03005008,
-    save_block_3_ptr:        0x03005010,
-    flags_offset:            0x0EE0,
-    badge_flag_start:        0x820,
-    box_data_offset:         0x4,
-    e4_flag_start:           0x3E3,
-    game_clear_flag:         0x083,
+    save_block_1_ptr: 0x03005008,
+    save_block_3_ptr: 0x03005010,
+    flags_offset: 0x0EE0,
+    badge_flag_start: 0x820,
+    box_data_offset: 0x4,
+    e4_flag_start: 0x3E3,
+    game_clear_flag: 0x083,
 };
 
 const LEAFGREEN_USA_REV0: RomAddresses = LEAFGREEN_USA_REV1;
@@ -209,7 +215,9 @@ const LEAFGREEN_USA_REV0: RomAddresses = LEAFGREEN_USA_REV1;
 /// [`Unknown`]: RomRevision::Unknown
 pub fn detect_rom_revision(rom: &[u8]) -> RomRevision {
     let Some(game_code) = rom.get(GAME_CODE_OFFSET..GAME_CODE_OFFSET + 4) else {
-        tracing::warn!("ROM auto-detect: file too small to read header — defaulting to FireRed USA Rev 1 addresses.");
+        tracing::warn!(
+            "ROM auto-detect: file too small to read header — defaulting to FireRed USA Rev 1 addresses."
+        );
         return RomRevision::Unknown;
     };
     let revision = rom.get(REVISION_OFFSET).copied().unwrap_or(0xFF);
@@ -250,7 +258,8 @@ pub fn detect_rom_revision(rom: &[u8]) -> RomRevision {
             tracing::warn!(
                 "ROM auto-detect: unrecognized game code {:?} rev {:#04X} \
                  — defaulting to FireRed USA Rev 1 addresses; some lookups may be wrong.",
-                code_str, revision
+                code_str,
+                revision
             );
             RomRevision::Unknown
         }
@@ -260,11 +269,11 @@ pub fn detect_rom_revision(rom: &[u8]) -> RomRevision {
 /// Returns the [`RomAddresses`] table for the given revision.
 fn addresses_for(rev: RomRevision) -> RomAddresses {
     match rev {
-        RomRevision::FireRedUsaRev1    => FIRERED_USA_REV1,
-        RomRevision::FireRedUsaRev0    => FIRERED_USA_REV0,
-        RomRevision::LeafGreenUsaRev1  => LEAFGREEN_USA_REV1,
-        RomRevision::LeafGreenUsaRev0  => LEAFGREEN_USA_REV0,
-        RomRevision::Unknown           => FIRERED_USA_REV1,
+        RomRevision::FireRedUsaRev1 => FIRERED_USA_REV1,
+        RomRevision::FireRedUsaRev0 => FIRERED_USA_REV0,
+        RomRevision::LeafGreenUsaRev1 => LEAFGREEN_USA_REV1,
+        RomRevision::LeafGreenUsaRev0 => LEAFGREEN_USA_REV0,
+        RomRevision::Unknown => FIRERED_USA_REV1,
     }
 }
 
@@ -318,7 +327,10 @@ pub fn fill_rom(path_to_file: &str) -> Result<(), String> {
 
     let rom = std::fs::read(path_to_file);
     if rom.is_err() {
-        return Err(format!("Unable to open file {}, check the path.\nROM static not initialized!", path_to_file));
+        return Err(format!(
+            "Unable to open file {}, check the path.\nROM static not initialized!",
+            path_to_file
+        ));
     }
 
     let rom = rom.unwrap();
@@ -461,15 +473,39 @@ mod tests {
     #[test]
     fn leafgreen_rev1_ewram_addresses_match_firered() {
         // Runtime addresses must be identical between FireRed and LeafGreen.
-        assert_eq!(LEAFGREEN_USA_REV1.party_size_addr,         FIRERED_USA_REV1.party_size_addr);
-        assert_eq!(LEAFGREEN_USA_REV1.party_addr,              FIRERED_USA_REV1.party_addr);
-        assert_eq!(LEAFGREEN_USA_REV1.player_data_addr,        FIRERED_USA_REV1.player_data_addr);
-        assert_eq!(LEAFGREEN_USA_REV1.map_group_and_name_addr, FIRERED_USA_REV1.map_group_and_name_addr);
-        assert_eq!(LEAFGREEN_USA_REV1.save_block_1_ptr,        FIRERED_USA_REV1.save_block_1_ptr);
-        assert_eq!(LEAFGREEN_USA_REV1.save_block_3_ptr,        FIRERED_USA_REV1.save_block_3_ptr);
-        assert_eq!(LEAFGREEN_USA_REV1.flags_offset,            FIRERED_USA_REV1.flags_offset);
-        assert_eq!(LEAFGREEN_USA_REV1.badge_flag_start,        FIRERED_USA_REV1.badge_flag_start);
-        assert_eq!(LEAFGREEN_USA_REV1.box_data_offset,         FIRERED_USA_REV1.box_data_offset);
+        assert_eq!(
+            LEAFGREEN_USA_REV1.party_size_addr,
+            FIRERED_USA_REV1.party_size_addr
+        );
+        assert_eq!(LEAFGREEN_USA_REV1.party_addr, FIRERED_USA_REV1.party_addr);
+        assert_eq!(
+            LEAFGREEN_USA_REV1.player_data_addr,
+            FIRERED_USA_REV1.player_data_addr
+        );
+        assert_eq!(
+            LEAFGREEN_USA_REV1.map_group_and_name_addr,
+            FIRERED_USA_REV1.map_group_and_name_addr
+        );
+        assert_eq!(
+            LEAFGREEN_USA_REV1.save_block_1_ptr,
+            FIRERED_USA_REV1.save_block_1_ptr
+        );
+        assert_eq!(
+            LEAFGREEN_USA_REV1.save_block_3_ptr,
+            FIRERED_USA_REV1.save_block_3_ptr
+        );
+        assert_eq!(
+            LEAFGREEN_USA_REV1.flags_offset,
+            FIRERED_USA_REV1.flags_offset
+        );
+        assert_eq!(
+            LEAFGREEN_USA_REV1.badge_flag_start,
+            FIRERED_USA_REV1.badge_flag_start
+        );
+        assert_eq!(
+            LEAFGREEN_USA_REV1.box_data_offset,
+            FIRERED_USA_REV1.box_data_offset
+        );
     }
 
     #[test]
@@ -478,12 +514,24 @@ mod tests {
         // These must not equal the FireRed values (which were the old placeholders).
         assert_eq!(LEAFGREEN_USA_REV1.pokemon_names_addr, 0x245F37);
         assert_eq!(LEAFGREEN_USA_REV1.ability_names_addr, 0x24FC8C);
-        assert_eq!(LEAFGREEN_USA_REV1.base_stats_addr,    0x2547D0);
-        assert_eq!(LEAFGREEN_USA_REV1.item_data_addr,     0x3DAED4);
-        assert_ne!(LEAFGREEN_USA_REV1.pokemon_names_addr, FIRERED_USA_REV1.pokemon_names_addr);
-        assert_ne!(LEAFGREEN_USA_REV1.ability_names_addr, FIRERED_USA_REV1.ability_names_addr);
-        assert_ne!(LEAFGREEN_USA_REV1.base_stats_addr,    FIRERED_USA_REV1.base_stats_addr);
-        assert_ne!(LEAFGREEN_USA_REV1.item_data_addr,     FIRERED_USA_REV1.item_data_addr);
+        assert_eq!(LEAFGREEN_USA_REV1.base_stats_addr, 0x2547D0);
+        assert_eq!(LEAFGREEN_USA_REV1.item_data_addr, 0x3DAED4);
+        assert_ne!(
+            LEAFGREEN_USA_REV1.pokemon_names_addr,
+            FIRERED_USA_REV1.pokemon_names_addr
+        );
+        assert_ne!(
+            LEAFGREEN_USA_REV1.ability_names_addr,
+            FIRERED_USA_REV1.ability_names_addr
+        );
+        assert_ne!(
+            LEAFGREEN_USA_REV1.base_stats_addr,
+            FIRERED_USA_REV1.base_stats_addr
+        );
+        assert_ne!(
+            LEAFGREEN_USA_REV1.item_data_addr,
+            FIRERED_USA_REV1.item_data_addr
+        );
     }
 
     #[test]
