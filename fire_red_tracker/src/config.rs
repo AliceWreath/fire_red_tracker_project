@@ -171,12 +171,28 @@ pub struct TrackerConfig {
     /// Defaults to 5. Increase if your starter gift delays the first catch.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run_start_balls: Option<u8>,
+    /// LiveSplit Server host. Leave unset to disable LiveSplit integration.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub livesplit_host: Option<String>,
+    /// LiveSplit Server TCP port. Defaults to 16834.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub livesplit_port: Option<u16>,
+    /// Send a split to LiveSplit each time a new gym badge is earned.
+    #[serde(default)]
+    pub livesplit_split_on_badges: bool,
+    /// Send a split to LiveSplit when the game is cleared (Champion defeated).
+    #[serde(default = "default_true")]
+    pub livesplit_split_on_clear: bool,
+    /// Discord application client ID for Rich Presence. Leave unset to disable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub discord_client_id: Option<u64>,
 }
 
 fn default_aggregator_host() -> String { "127.0.0.1".to_string() }
 fn default_aggregator_port() -> u16 { 7878 }
 fn default_poll_ms() -> u64 { 100 }
 fn is_default_poll_ms(v: &u64) -> bool { *v == 100 }
+fn default_true() -> bool { true }
 
 // ---------------------------------------------------------------------------
 // Webhook config
@@ -390,6 +406,20 @@ pub fn validate_config(cfg: &TrackerConfig) -> Vec<ConfigError> {
 // ---------------------------------------------------------------------------
 // Load / save
 // ---------------------------------------------------------------------------
+
+/// Load the config file silently (no GUI, no prompts). Returns `None` on any error.
+///
+/// Used by the hot-reload thread — on failure the existing in-memory config stays active.
+pub fn try_load_config(path: &std::path::Path) -> Option<TrackerConfig> {
+    let content = std::fs::read_to_string(path).ok()?;
+    let mut config: TrackerConfig = toml::from_str(&content).ok()?;
+    if let Some(preset) = config.preset {
+        let (dc, asr) = preset.settings();
+        config.dupes_clause = dc;
+        config.allow_species_repeats = asr;
+    }
+    Some(config)
+}
 
 pub fn load_or_prompt(path: &PathBuf) -> TrackerConfig {
     if path.exists() {
@@ -940,6 +970,11 @@ impl eframe::App for SetupApp {
                     allow_species_repeats: self.allow_species_repeats,
                     preset: None,
                     run_start_balls: self.run_start_balls.trim().parse::<u8>().ok(),
+                    livesplit_host: None,
+                    livesplit_port: None,
+                    livesplit_split_on_badges: false,
+                    livesplit_split_on_clear: true,
+                    discord_client_id: None,
                 };
 
                 *self.result.lock().unwrap() = Some(config);

@@ -1093,6 +1093,8 @@ mod tests {
             ivs: IVs::default(), evs: EVs::default(), held_item: 0, ability: 0,
             ability_name: String::new(), friendship: 0, met_location: 0, died_at: 0, gender: 2,
             is_soul_link_death: false,
+            killed_by_species:  None,
+            killed_by_move:     None,
         }
     }
 

@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Moves — FireRed Nuzlocke __VERSION__</title>
+<!-- THEME_SLOT -->
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body {
+    background: transparent;
+    font-family: 'Segoe UI', Tahoma, sans-serif;
+    color: #fff;
+    text-shadow: 0 1px 3px rgba(0,0,0,0.9);
+    width: fit-content;
+}
+#party {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    padding: 4px;
+    width: 320px;
+}
+.mon {
+    background: rgba(15,15,15,0.85);
+    border-radius: 7px;
+    padding: 6px 8px;
+    border: 1px solid rgba(255,255,255,0.06);
+}
+.mon.dead { background: rgba(60,0,0,0.55); border-color: rgba(180,50,50,0.2); }
+.mon-header {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    margin-bottom: 5px;
+}
+.sprite {
+    width: 40px; height: 40px;
+    image-rendering: pixelated;
+    flex-shrink: 0;
+    filter: drop-shadow(0 1px 3px rgba(0,0,0,0.8));
+}
+.mon.dead .sprite { filter: grayscale(100%) brightness(0.4); }
+.mon-name {
+    font-size: 13px;
+    font-weight: bold;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    flex: 1;
+}
+.mon-level {
+    font-size: 11px;
+    color: #aaa;
+    flex-shrink: 0;
+}
+.dead-tag {
+    font-size: 10px;
+    font-weight: bold;
+    color: #ff5555;
+    flex-shrink: 0;
+}
+.moves-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 3px;
+}
+.move-slot {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    background: rgba(255,255,255,0.07);
+    border-radius: 4px;
+    padding: 3px 7px;
+    min-height: 22px;
+}
+.move-slot.empty { background: rgba(255,255,255,0.03); }
+.move-name {
+    font-size: 11px;
+    color: #ddd;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    flex: 1;
+}
+.move-slot.empty .move-name { color: #444; }
+.pp-label {
+    font-size: 10px;
+    color: #88aaee;
+    font-weight: 600;
+    margin-left: 6px;
+    flex-shrink: 0;
+    white-space: nowrap;
+}
+.pp-zero { color: #ee4444 !important; }
+</style>
+</head>
+<body>
+<div id="party"></div>
+<script>
+const parts = window.location.pathname.split('/').filter(Boolean);
+const playerIndex = parseInt(parts[0]) || 0;
+
+let ws;
+let reconnectDelay = 1000;
+function connect() {
+    ws = new WebSocket('ws://' + location.host + '/ws');
+    ws.onopen    = () => { reconnectDelay = 1000; };
+    ws.onmessage = e => render(JSON.parse(e.data));
+    ws.onclose   = () => { setTimeout(connect, reconnectDelay); reconnectDelay = Math.min(reconnectDelay * 2, 30000); };
+}
+connect();
+
+function render(slots) {
+    const slot = slots[playerIndex];
+    const root = document.getElementById('party');
+    root.innerHTML = '';
+    if (!slot || !slot.party) return;
+
+    for (const mon of slot.party) {
+        const card = document.createElement('div');
+        card.className = 'mon' + (mon.dead ? ' dead' : '');
+
+        const header = document.createElement('div');
+        header.className = 'mon-header';
+
+        if (mon.sprite) {
+            const img = document.createElement('img');
+            img.className = 'sprite';
+            img.src = mon.sprite;
+            header.appendChild(img);
+        }
+
+        const name = document.createElement('div');
+        name.className = 'mon-name';
+        name.textContent = mon.nickname || mon.species_name;
+        header.appendChild(name);
+
+        if (mon.dead) {
+            const dt = document.createElement('span');
+            dt.className = 'dead-tag';
+            dt.textContent = 'DEAD';
+            header.appendChild(dt);
+        } else {
+            const lv = document.createElement('span');
+            lv.className = 'mon-level';
+            lv.textContent = 'Lv ' + mon.level;
+            header.appendChild(lv);
+        }
+
+        card.appendChild(header);
+
+        const grid = document.createElement('div');
+        grid.className = 'moves-grid';
+
+        const moves = mon.moves || ['', '', '', ''];
+        const pps   = mon.pp   || [0, 0, 0, 0];
+
+        for (let i = 0; i < 4; i++) {
+            const slot = document.createElement('div');
+            const mv = moves[i] || '';
+            slot.className = 'move-slot' + (mv === '' || mv === '—' ? ' empty' : '');
+
+            const mn = document.createElement('span');
+            mn.className = 'move-name';
+            mn.textContent = mv === '—' ? '—' : (mv || '—');
+            slot.appendChild(mn);
+
+            if (mv && mv !== '—') {
+                const pp = document.createElement('span');
+                pp.className = 'pp-label' + (pps[i] === 0 ? ' pp-zero' : '');
+                pp.textContent = 'PP ' + pps[i];
+                slot.appendChild(pp);
+            }
+
+            grid.appendChild(slot);
+        }
+
+        card.appendChild(grid);
+        root.appendChild(card);
+    }
+}
+</script>
+</body>
+</html>

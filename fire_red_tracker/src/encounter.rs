@@ -24,6 +24,9 @@ pub struct EncounterTracker {
     /// Set when a party wipe ends the run. Prevents `tick` from re-enabling
     /// tracking until the game unloads or a new run is started.
     wipe_detected:          bool,
+    /// One-shot clause-enforcement warnings accumulated by `tick`. Drained by
+    /// `drain_warnings()` so each warning appears in exactly one `GameState`.
+    pending_warnings:       Vec<String>,
 }
 
 impl EncounterTracker {
@@ -58,6 +61,11 @@ impl EncounterTracker {
         self.run_tracking_active
     }
 
+    /// Drains and returns all pending clause-enforcement warnings.
+    pub fn drain_warnings(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.pending_warnings)
+    }
+
     /// Called once per poll cycle while the game is loaded and state is
     /// initialized. Records first encounters and detects catches.
     ///
@@ -89,11 +97,22 @@ impl EncounterTracker {
 
             let dungeon = fire_red_location_names::dungeon_floors(map_group, map_name);
             if fire_red_database::has_encounter_for_any_floor(dungeon) {
+                let area = fire_red_location_names::map_area_name(map_group, map_name);
+                let area_label = if area.is_empty() {
+                    format!("{}:{}", map_group, map_name)
+                } else {
+                    area.to_string()
+                };
+                self.pending_warnings.push(format!("Area already encountered: {}", area_label));
                 return;
             }
 
             let species = enemy.box_mon.secure.growth.species;
             if !allow_species_repeats && fire_red_database::species_encountered(species) {
+                self.pending_warnings.push(format!(
+                    "Species already encountered: {}",
+                    enemy.box_mon.secure.growth.species_string
+                ));
                 return;
             }
             let skip = match dupes_clause {
@@ -101,7 +120,13 @@ impl EncounterTracker {
                 DupesClauseMode::PerPlayer => fire_red_database::species_caught_by_self(species),
                 DupesClauseMode::Shared    => fire_red_database::species_caught_any(species),
             };
-            if skip { return; }
+            if skip {
+                self.pending_warnings.push(format!(
+                    "Dupes clause: {} already caught",
+                    enemy.box_mon.secure.growth.species_string
+                ));
+                return;
+            }
             let now = fire_red_database::unix_now();
 
             let personality = enemy.box_mon.personality;

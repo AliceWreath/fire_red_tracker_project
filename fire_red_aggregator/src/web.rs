@@ -118,6 +118,7 @@ struct DeadMonDto {
     ev_spa:        u8,
     ev_spd:        u8,
     sprite:        Option<String>,
+    killed_by:     Option<String>,
 }
 
 #[derive(serde::Serialize, Clone)]
@@ -682,6 +683,7 @@ impl BroadcastLoop {
             ev_spa:       dp.evs.sp_attack,
             ev_spd:       dp.evs.sp_defense,
             sprite:       self.sprite_uri(dp.species, dp.is_shiny),
+            killed_by:    dp.killed_by_species.clone(),
         }).collect()
     }
 
@@ -1028,6 +1030,24 @@ impl BroadcastLoop {
                     })
                     .collect();
 
+                // Push clause-enforcement warnings from the tracker as inject-style toasts.
+                if let Some(gs) = state {
+                    if !gs.warnings.is_empty() {
+                        let now_ms = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map(|d| d.as_millis())
+                            .unwrap_or(0);
+                        let mut queue = slots[i].injection_events.lock_or_recover();
+                        for (j, warn) in gs.warnings.iter().enumerate() {
+                            queue.push_back(serde_json::json!({
+                                "type":  "clause_warning",
+                                "label": warn,
+                                "at":    now_ms + j as u128,
+                            }));
+                        }
+                    }
+                }
+
                 let injection_events: Vec<serde_json::Value> =
                     slots[i].injection_events.lock_or_recover().drain(..).collect();
                 SlotDto { label: label.clone(), connected, db_connected, active_run_id, run_summary, db_encounters, badges, next_gym, party, encounters, dead, caught, box_pokemon, current_map_group, current_map_name, current_zone_name, prev_run_encounters, e4_progress, game_cleared, injection_events }
@@ -1078,6 +1098,10 @@ const TYPES_HTML:        &str = include_str!("types.html");
 const ABOUT_HTML:        &str = include_str!("about.html");
 const COMPARE_HTML:      &str = include_str!("compare.html");
 const ITEMS_HTML:        &str = include_str!("items.html");
+const MOVES_HTML:        &str = include_str!("moves.html");
+const MOBILE_HTML:       &str = include_str!("mobile.html");
+const TIMELINE_HTML:     &str = include_str!("timeline.html");
+const SPECIES_HTML:      &str = include_str!("species.html");
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -1585,6 +1609,40 @@ async fn serve_items(
 ) -> Html<String> {
     let theme = params.get("theme").map(String::as_str);
     Html(apply_page_with_theme(ITEMS_HTML, state.testing, theme))
+}
+
+/// `GET /:index/moves` — move / PP overlay for a specific tracker slot.
+async fn serve_moves_page(
+    State(state): State<WebState>,
+    Path(_index): Path<usize>,
+    Query(params): Query<HashMap<String, String>>,
+) -> Html<String> {
+    let theme = params.get("theme").map(String::as_str);
+    Html(apply_page_with_theme(MOVES_HTML, state.testing, theme))
+}
+
+/// `GET /party/mobile` — mobile-friendly party viewer.
+async fn serve_mobile_party(State(state): State<WebState>) -> Html<String> {
+    Html(apply_page(MOBILE_HTML, state.testing))
+}
+
+/// `GET /timeline` and `GET /run/:id/timeline` — visual run timeline page.
+async fn serve_timeline(State(state): State<WebState>) -> Html<String> {
+    Html(apply_page(TIMELINE_HTML, state.testing))
+}
+
+/// `GET /species` — cross-run per-species survival statistics page.
+async fn serve_species(State(state): State<WebState>) -> Html<String> {
+    Html(apply_page(SPECIES_HTML, state.testing))
+}
+
+/// `GET /api/species/stats` — cross-run per-species survival statistics JSON.
+async fn api_species_stats(State(state): State<WebState>) -> axum::Json<serde_json::Value> {
+    let conn = require_db!(state);
+    let result = tokio::task::spawn_blocking(move || {
+        fire_red_database::species_stats(&conn)
+    }).await;
+    axum::Json(result.unwrap_or_else(|_| serde_json::json!({ "error": "Task panicked" })))
 }
 
 /// `GET /api/slot/:index/bag` — bag pockets JSON for a specific tracker slot.
@@ -2675,9 +2733,15 @@ pub fn run(live_slots: SharedSlots, port: u16, db_conn: Option<String>, testing:
             .route("/:index/box", get(serve_focused))
             .route("/:index/types", get(serve_types_page))
             .route("/:index/items", get(serve_items))
+            .route("/:index/moves", get(serve_moves_page))
             .route("/api/slot/:index/bag", get(api_bag))
             .route("/run/:id/stats", get(serve_run_stats))
             .route("/run/:id/memorial", get(serve_memorial))
+            .route("/run/:id/timeline", get(serve_timeline))
+            .route("/party/mobile", get(serve_mobile_party))
+            .route("/timeline", get(serve_timeline))
+            .route("/species", get(serve_species))
+            .route("/api/species/stats", get(api_species_stats))
             .route("/about", get(serve_about))
             .route("/compare", get(serve_compare))
             .with_state(web_state);

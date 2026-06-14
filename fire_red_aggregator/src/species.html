@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Species Stats — FireRed Nuzlocke __VERSION__</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body {
+    background: #0f0f18;
+    font-family: 'Segoe UI', Tahoma, sans-serif;
+    color: #e0e0e0;
+    min-height: 100vh;
+}
+#root { max-width: 900px; margin: 0 auto; padding: 20px 16px; }
+.page-header {
+    display: flex; align-items: center; gap: 12px;
+    padding-bottom: 14px;
+    border-bottom: 1px solid rgba(255,255,255,0.1);
+    margin-bottom: 20px;
+}
+.page-title { font-size: 20px; font-weight: bold; color: #fff; }
+.page-sub   { font-size: 12px; color: #555; margin-top: 2px; }
+.controls {
+    display: flex; align-items: center; gap: 10px;
+    margin-bottom: 16px;
+    flex-wrap: wrap;
+}
+.controls label { font-size: 13px; color: #888; }
+input[type=text] {
+    background: #1a1a2e; border: 1px solid #334; border-radius: 6px;
+    color: #ccd; padding: 5px 10px; font-size: 13px;
+    width: 200px;
+}
+select {
+    background: #1a1a2e; border: 1px solid #334; border-radius: 6px;
+    color: #ccd; padding: 5px 10px; font-size: 13px; cursor: pointer;
+}
+#error-msg { color: #e06060; font-size: 13px; padding: 16px 0; display: none; }
+#loading   { color: #666; font-size: 13px; padding: 16px 0; }
+table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+}
+th {
+    text-align: left;
+    padding: 8px 12px;
+    background: #111120;
+    color: #778;
+    font-weight: 600;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    border-bottom: 1px solid rgba(255,255,255,0.07);
+    cursor: pointer;
+    user-select: none;
+    white-space: nowrap;
+}
+th:hover { color: #aac; }
+th .sort-arrow { margin-left: 4px; opacity: 0.4; }
+th.sorted .sort-arrow { opacity: 1; color: #88aaff; }
+td {
+    padding: 7px 12px;
+    border-bottom: 1px solid rgba(255,255,255,0.04);
+}
+tr:hover td { background: rgba(255,255,255,0.03); }
+.col-species { font-weight: 600; color: #ddd; }
+.col-caught  { color: #66cc66; text-align: right; }
+.col-dead    { color: #ee6666; text-align: right; }
+.col-survival { text-align: right; }
+.col-bar { width: 120px; padding-right: 16px; }
+.surv-bar-bg {
+    height: 7px; background: rgba(255,255,255,0.08);
+    border-radius: 4px; overflow: hidden; min-width: 80px;
+}
+.surv-bar-fill {
+    height: 100%; border-radius: 4px;
+    transition: width 0.3s ease;
+}
+.surv-high { background: #44bb44; }
+.surv-mid  { background: #ddbb22; }
+.surv-low  { background: #cc3333; }
+.empty-msg { color: #555; font-size: 13px; padding: 32px 0; text-align: center; }
+</style>
+</head>
+<body>
+<div id="root">
+  <div class="page-header">
+    <div>
+      <div class="page-title">Species Stats</div>
+      <div class="page-sub">Cross-run survival data — FireRed Nuzlocke Tracker __VERSION__</div>
+    </div>
+  </div>
+
+  <div class="controls">
+    <label>Filter:</label>
+    <input type="text" id="search" placeholder="species name…" oninput="applyFilter()">
+    <label>Sort:</label>
+    <select id="sort-field" onchange="applySort()">
+      <option value="total_dead">Most deaths</option>
+      <option value="total_caught">Most caught</option>
+      <option value="species_name">Name</option>
+      <option value="survival_pct">Survival %</option>
+    </select>
+  </div>
+
+  <div id="error-msg"></div>
+  <div id="loading">Loading…</div>
+
+  <table id="table" style="display:none">
+    <thead>
+      <tr>
+        <th onclick="sortBy('species_name')">Species <span class="sort-arrow">↕</span></th>
+        <th onclick="sortBy('total_caught')" style="text-align:right">Caught <span class="sort-arrow">↕</span></th>
+        <th onclick="sortBy('total_dead')"   style="text-align:right">Deaths <span class="sort-arrow">↕</span></th>
+        <th onclick="sortBy('survival_pct')" class="col-bar">Survival <span class="sort-arrow">↕</span></th>
+        <th onclick="sortBy('survival_pct')" style="text-align:right">% <span class="sort-arrow">↕</span></th>
+      </tr>
+    </thead>
+    <tbody id="tbody"></tbody>
+  </table>
+  <div id="empty-msg" class="empty-msg" style="display:none">No species data found.</div>
+</div>
+<script>
+let allData  = [];
+let sortKey  = 'total_dead';
+let sortDesc = true;
+
+async function load() {
+    const err = document.getElementById('error-msg');
+    const ld  = document.getElementById('loading');
+    try {
+        const r = await fetch('/api/species/stats');
+        ld.style.display = 'none';
+        if (!r.ok) { showError('HTTP ' + r.status); return; }
+        const json = await r.json();
+        if (json.error) { showError(json.error); return; }
+        allData = json.species || [];
+        applyFilter();
+        document.getElementById('table').style.display = '';
+    } catch (e) {
+        ld.style.display = 'none';
+        showError(e.message);
+    }
+}
+
+function showError(msg) {
+    const el = document.getElementById('error-msg');
+    el.textContent = 'Error: ' + msg;
+    el.style.display = '';
+}
+
+function sortBy(key) {
+    if (sortKey === key) { sortDesc = !sortDesc; }
+    else { sortKey = key; sortDesc = true; }
+    document.getElementById('sort-field').value = key;
+    applyFilter();
+}
+
+function applySort() {
+    sortKey = document.getElementById('sort-field').value;
+    applyFilter();
+}
+
+function applyFilter() {
+    const q = document.getElementById('search').value.toLowerCase();
+    let rows = allData.filter(d => d.species_name.toLowerCase().includes(q));
+
+    rows.sort((a, b) => {
+        let av = a[sortKey], bv = b[sortKey];
+        if (typeof av === 'string') av = av.toLowerCase();
+        if (typeof bv === 'string') bv = bv.toLowerCase();
+        if (av < bv) return sortDesc ? 1 : -1;
+        if (av > bv) return sortDesc ? -1 : 1;
+        return 0;
+    });
+
+    // Update sort arrow indicators
+    document.querySelectorAll('th').forEach(th => th.classList.remove('sorted'));
+
+    const tbody = document.getElementById('tbody');
+    tbody.innerHTML = '';
+
+    if (rows.length === 0) {
+        document.getElementById('table').style.display = 'none';
+        document.getElementById('empty-msg').style.display = '';
+        return;
+    }
+    document.getElementById('table').style.display = '';
+    document.getElementById('empty-msg').style.display = 'none';
+
+    for (const d of rows) {
+        const tr = document.createElement('tr');
+
+        const tdName = document.createElement('td');
+        tdName.className = 'col-species';
+        tdName.textContent = d.species_name;
+        tr.appendChild(tdName);
+
+        const tdCaught = document.createElement('td');
+        tdCaught.className = 'col-caught';
+        tdCaught.textContent = d.total_caught;
+        tr.appendChild(tdCaught);
+
+        const tdDead = document.createElement('td');
+        tdDead.className = 'col-dead';
+        tdDead.textContent = d.total_dead;
+        tr.appendChild(tdDead);
+
+        const tdBar = document.createElement('td');
+        tdBar.className = 'col-bar';
+        const pct = d.survival_pct;
+        const bg  = document.createElement('div'); bg.className = 'surv-bar-bg';
+        const fill = document.createElement('div');
+        fill.className = 'surv-bar-fill ' + (pct >= 70 ? 'surv-high' : pct >= 35 ? 'surv-mid' : 'surv-low');
+        fill.style.width = pct + '%';
+        bg.appendChild(fill); tdBar.appendChild(bg);
+        tr.appendChild(tdBar);
+
+        const tdPct = document.createElement('td');
+        tdPct.className = 'col-survival';
+        tdPct.textContent = pct + '%';
+        tr.appendChild(tdPct);
+
+        tbody.appendChild(tr);
+    }
+}
+
+load();
+</script>
+</body>
+</html>

@@ -48,6 +48,7 @@ pub fn handle_client(
     run_changed: Arc<AtomicBool>,
     wipe_signal: Arc<AtomicBool>,
     preferred_player: Option<u8>,
+    server_warnings: Arc<Mutex<Vec<String>>>,
 ) {
     tracing::info!(
         "Client connected: {}",
@@ -249,6 +250,7 @@ pub fn handle_client(
                 current_map_group: pos.map_group_id,
                 current_map_name:  pos.map_name_id,
                 preferred_player,
+                warnings:          server_warnings.lock_or_recover().drain(..).collect(),
             }
         };
 

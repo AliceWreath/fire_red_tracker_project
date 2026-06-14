@@ -124,6 +124,12 @@ pub fn check_for_dead_pokemon(thread_party: &Arc<Mutex<Vec<Pokemon>>>, run_track
         let died_at    = fire_red_database::unix_now();
         let shiny_flag = is_shiny(personality, ot_id);
 
+        // Capture enemy state at the moment of death. `get_wild_enemy_pokemon`
+        // returns the enemy battler when in a wild encounter; returns None in
+        // trainer battles (OT ID mismatch) or outside battle.
+        let killed_by_species = get_wild_enemy_pokemon()
+            .map(|e| e.box_mon.secure.growth.species_string.clone());
+
         let recorded = match fire_red_database::mark_dead(fire_red_database::DeadPokemon {
             player_name:   fire_red_loop::get_trainer_name(),
             personality,
@@ -175,6 +181,8 @@ pub fn check_for_dead_pokemon(thread_party: &Arc<Mutex<Vec<Pokemon>>>, run_track
             // Regular in-battle deaths are never soul-link deaths; the aggregator
             // sets is_soul_link_death = true when it calls mark_soul_link_dead().
             is_soul_link_death: false,
+            killed_by_species,
+            killed_by_move: None,
         }) {
             Ok(v)  => v,
             Err(e) => {
@@ -716,7 +724,7 @@ pub fn get_wild_enemy_pokemon() -> Option<Pokemon> {
 /// as the baseline without firing events — preventing both mid-game startup
 /// replays and false positives after a wipe. Subsequent calls with the
 /// returned `Some(mask)` fire events only for genuinely new badges.
-pub fn check_for_new_badges(last_mask: Option<u8>) -> Option<u8> {
+pub fn check_for_new_badges(last_mask: Option<u8>, split_on_badges: bool, split_on_clear: bool) -> Option<u8> {
     let Some(bs) = fire_red_badge::read_badge_state() else {
         return last_mask;
     };
@@ -758,6 +766,16 @@ pub fn check_for_new_badges(last_mask: Option<u8>) -> Option<u8> {
             badge_name: badge_name.to_string(),
         });
         tracing::info!("Badge earned: {}", badge_name);
+        if split_on_badges {
+            crate::livesplit::split();
+        }
+    }
+
+    // Fire a "game clear" split when all 8 badges are now held.
+    // This uses the Earth Badge (badge 8) as a proxy for completion since
+    // detecting the Champion defeat requires additional EWRAM research.
+    if split_on_clear && current_mask == 0xFF {
+        crate::livesplit::split();
     }
 
     Some(current_mask)

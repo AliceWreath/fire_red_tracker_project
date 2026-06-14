@@ -97,8 +97,8 @@ enum WorkerTask {
 
 struct WebhookState {
     tx:         Sender<WorkerTask>,
-    config:     WebhookConfig,
-    obs_config: ObsConfig,
+    config:     std::sync::Mutex<WebhookConfig>,
+    obs_config: std::sync::Mutex<ObsConfig>,
 }
 
 static STATE: OnceLock<WebhookState> = OnceLock::new();
@@ -327,8 +327,25 @@ pub fn init(config: WebhookConfig, obs_config: ObsConfig) {
             // Ignore the Err case: a racing second init() that also passed the
             // STATE.get() fast-path will simply have its tx dropped here and
             // its worker thread will exit when rx is orphaned.
-            let _ = STATE.set(WebhookState { tx, config, obs_config });
+            let _ = STATE.set(WebhookState {
+                tx,
+                config:     std::sync::Mutex::new(config),
+                obs_config: std::sync::Mutex::new(obs_config),
+            });
         }
+    }
+}
+
+/// Replace the webhook and OBS config at runtime without restarting.
+///
+/// Safe to call from the hot-reload thread. The worker thread continues
+/// running; only its configuration snapshot changes.
+pub fn reinit(config: WebhookConfig, obs_config: ObsConfig) {
+    validate_templates(&config);
+    if let Some(state) = STATE.get() {
+        *state.config    .lock().unwrap_or_else(|p| p.into_inner()) = config;
+        *state.obs_config.lock().unwrap_or_else(|p| p.into_inner()) = obs_config;
+        tracing::info!("Webhook/OBS config hot-reloaded.");
     }
 }
 
@@ -340,41 +357,43 @@ pub fn init(config: WebhookConfig, obs_config: ObsConfig) {
 /// Does nothing if [`init`] was never called.
 pub fn fire_event(event: WebhookEvent) {
     let Some(state) = STATE.get() else { return; };
+    let config     = state.config    .lock().unwrap_or_else(|p| p.into_inner()).clone();
+    let obs_config = state.obs_config.lock().unwrap_or_else(|p| p.into_inner()).clone();
 
     let (url, template, obs_clip, event_type_str) = match &event {
         WebhookEvent::Death { .. } => (
-            state.config.death_url.as_deref(),
-            state.config.death_template.as_deref(),
-            state.obs_config.clip_on_death,
+            config.death_url.as_deref(),
+            config.death_template.as_deref(),
+            obs_config.clip_on_death,
             "death",
         ),
         WebhookEvent::Catch { .. } => (
-            state.config.catch_url.as_deref(),
-            state.config.catch_template.as_deref(),
+            config.catch_url.as_deref(),
+            config.catch_template.as_deref(),
             false,
             "catch",
         ),
         WebhookEvent::Shiny { .. } => (
-            state.config.shiny_url.as_deref(),
-            state.config.shiny_template.as_deref(),
-            state.obs_config.clip_on_shiny,
+            config.shiny_url.as_deref(),
+            config.shiny_template.as_deref(),
+            obs_config.clip_on_shiny,
             "shiny",
         ),
         WebhookEvent::Wipe { .. } => (
-            state.config.wipe_url.as_deref(),
-            state.config.wipe_template.as_deref(),
-            state.obs_config.clip_on_wipe,
+            config.wipe_url.as_deref(),
+            config.wipe_template.as_deref(),
+            obs_config.clip_on_wipe,
             "wipe",
         ),
         WebhookEvent::Badge { .. } => (
-            state.config.badge_url.as_deref(),
-            state.config.badge_template.as_deref(),
-            state.obs_config.clip_on_badge,
+            config.badge_url.as_deref(),
+            config.badge_template.as_deref(),
+            obs_config.clip_on_badge,
             "badge",
         ),
         WebhookEvent::NicknameChange { .. } => (
-            state.config.nickname_url.as_deref(),
-            state.config.nickname_template.as_deref(),
+            config.nickname_url.as_deref(),
+            config.nickname_template.as_deref(),
             false,
             "nickname_change",
         ),
@@ -411,7 +430,7 @@ fn obs_clip_inner() {
 
 fn try_obs_clip() -> Result<(), String> {
     let state = STATE.get().ok_or("webhook not initialized")?;
-    let obs   = &state.obs_config;
+    let obs   = state.obs_config.lock().unwrap_or_else(|p| p.into_inner()).clone();
 
     // Raw TCP connection — OBS WebSocket is always local, no TLS needed.
     let stream = std::net::TcpStream::connect(format!("{}:{}", obs.host, obs.port))

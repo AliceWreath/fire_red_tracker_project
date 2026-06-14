@@ -711,6 +711,11 @@ impl WindowInfo {
                     allow_species_repeats: s.allow_species_repeats,
                     preset: None,
                     run_start_balls: s.run_start_balls.trim().parse::<u8>().ok(),
+                    livesplit_host: None,
+                    livesplit_port: None,
+                    livesplit_split_on_badges: false,
+                    livesplit_split_on_clear: true,
+                    discord_client_id: None,
                 };
                 save_config(&cfg, &self.config_path);
                 self.settings_open = false;

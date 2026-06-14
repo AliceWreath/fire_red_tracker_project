@@ -39,9 +39,11 @@
 
 mod cli;
 mod config;
+mod discord;
 mod encounter;
 mod game;
 mod gui;
+mod livesplit;
 mod server;
 mod textures;
 mod type_coverage;
@@ -60,7 +62,7 @@ use gui::{WindowInfo, PARTY_WINDOW};
 use server::{handle_client, RomSpriteCache};
 use std::collections::HashMap;
 use std::net::TcpStream;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 // ---------------------------------------------------------------------------
@@ -309,13 +311,17 @@ fn main() {
     }
 
     webhook::init(cfg.webhooks.clone(), cfg.obs.clone());
+    livesplit::init(cfg.livesplit_host.clone(), cfg.livesplit_port.unwrap_or(16834));
+    discord::init(cfg.discord_client_id);
 
     let is_clean            = cfg.clean || cli.clean;
-    let poll_ms             = cfg.poll_ms.clamp(20, 2000);
+    let poll_ms             = Arc::new(AtomicU64::new(cfg.poll_ms.clamp(20, 2000)));
     let rom_path            = cli.rom.unwrap_or(cfg.rom);
     let dupes_clause          = cfg.dupes_clause;
     let allow_species_repeats = cfg.allow_species_repeats;
     let run_start_balls       = cfg.run_start_balls.unwrap_or(5) as u32;
+    let livesplit_split_on_badges = cfg.livesplit_split_on_badges;
+    let livesplit_split_on_clear  = cfg.livesplit_split_on_clear;
     #[cfg(feature = "dev-tools")]
     let do_scan_balls   = cli.scan_balls_pocket;
     #[cfg(feature = "dev-tools")]
@@ -336,6 +342,7 @@ fn main() {
         Arc::new(Mutex::new(Vec::new()));
     let shared_bag: Arc<Mutex<Option<fire_red_states::BagPockets>>> =
         Arc::new(Mutex::new(None));
+    let shared_warnings: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
     let sprite_cache: RomSpriteCache = Arc::new(Mutex::new(HashMap::new()));
 
     // ── Game-polling thread (both modes) ──────────────────────────────────────
@@ -347,6 +354,8 @@ fn main() {
         let thread_game_loaded = game_loaded.clone();
         let thread_run_changed = run_changed.clone();
         let thread_wipe_signal = wipe_signal.clone();
+        let thread_warnings    = shared_warnings.clone();
+        let thread_poll_ms     = poll_ms.clone();
 
         let main_thread = std::thread::spawn(move || {
             match start_loop(rom_path.as_str(), is_clean) {
@@ -486,6 +495,20 @@ fn main() {
                     current_state = state;
                     *thread_encounters.lock_or_recover() =
                         get_area_pokemon_id_for_state(&current_state);
+                    let zone = fire_red_loop::get_area_name_for(
+                        current_state.map_group_id, current_state.map_name_id,
+                    );
+                    let zone_str = if zone.is_empty() {
+                        format!("{}\u{B7}{}", current_state.map_group_id, current_state.map_name_id)
+                    } else {
+                        zone.to_string()
+                    };
+                    discord::update(discord::Presence {
+                        details:     zone_str,
+                        state:       format!("Party: {}", party_size),
+                        large_image: "pokeball",
+                        large_text:  fire_red_loop::get_trainer_name(),
+                    });
                 }
 
                 // Refresh HP/status from the EWRAM buffer every tick so the
@@ -499,6 +522,23 @@ fn main() {
                     *thread_box.lock_or_recover() = build_box_entries();
                     if handle_party_events(&thread_party, &mut enc_tracker, &thread_wipe_signal) {
                         last_badge_mask = None;
+                    }
+                    // Presence update: party size changed (catch, death, trade, etc).
+                    if state_initialized {
+                        let zone = fire_red_loop::get_area_name_for(
+                            current_state.map_group_id, current_state.map_name_id,
+                        );
+                        let zone_str = if zone.is_empty() {
+                            format!("{}\u{B7}{}", current_state.map_group_id, current_state.map_name_id)
+                        } else {
+                            zone.to_string()
+                        };
+                        discord::update(discord::Presence {
+                            details:     zone_str,
+                            state:       format!("Party: {}", party_size),
+                            large_image: "pokeball",
+                            large_text:  fire_red_loop::get_trainer_name(),
+                        });
                     }
                 }
 
@@ -517,7 +557,11 @@ fn main() {
 
                 if state_initialized {
                     enc_tracker.tick(current_state, &thread_party, dupes_clause, allow_species_repeats, run_start_balls);
-                    last_badge_mask = game::check_for_new_badges(last_badge_mask);
+                    let drained = enc_tracker.drain_warnings();
+                    if !drained.is_empty() {
+                        thread_warnings.lock_or_recover().extend(drained);
+                    }
+                    last_badge_mask = game::check_for_new_badges(last_badge_mask, livesplit_split_on_badges, livesplit_split_on_clear);
                 }
 
                 if last_bag_refresh.elapsed() >= std::time::Duration::from_secs(2) {
@@ -525,11 +569,43 @@ fn main() {
                     last_bag_refresh = std::time::Instant::now();
                 }
 
-                std::thread::sleep(std::time::Duration::from_millis(poll_ms));
+                std::thread::sleep(std::time::Duration::from_millis(thread_poll_ms.load(Ordering::Relaxed)));
             }
         });
 
         *MAIN_THREAD_HANDLE.lock_or_recover() = Some(main_thread);
+    }
+
+    // ── Config hot-reload thread ──────────────────────────────────────────────
+    {
+        let reload_path  = config_path.clone();
+        let reload_ms    = poll_ms.clone();
+        std::thread::spawn(move || {
+            let mut last_mtime = std::fs::metadata(&reload_path)
+                .and_then(|m| m.modified())
+                .ok();
+            loop {
+                std::thread::sleep(std::time::Duration::from_secs(5));
+                let current_mtime = std::fs::metadata(&reload_path)
+                    .and_then(|m| m.modified())
+                    .ok();
+                if current_mtime == last_mtime || current_mtime.is_none() { continue; }
+                last_mtime = current_mtime;
+                match config::try_load_config(&reload_path) {
+                    Some(new_cfg) => {
+                        let errors = config::validate_config(&new_cfg);
+                        if !errors.is_empty() {
+                            for e in &errors { tracing::warn!("Hot-reload config error: {e}"); }
+                            continue;
+                        }
+                        webhook::reinit(new_cfg.webhooks.clone(), new_cfg.obs.clone());
+                        reload_ms.store(new_cfg.poll_ms.clamp(20, 2000), Ordering::Relaxed);
+                        tracing::info!("Config hot-reloaded from {}", reload_path.display());
+                    }
+                    None => tracing::warn!("Hot-reload: failed to parse {}", reload_path.display()),
+                }
+            }
+        });
     }
 
     // ── Connected mode: dial out to the aggregator ────────────────────────────
@@ -543,6 +619,7 @@ fn main() {
         let net_loaded        = game_loaded.clone();
         let net_run_changed   = run_changed.clone();
         let net_wipe_signal   = wipe_signal.clone();
+        let net_warnings      = shared_warnings.clone();
 
         let net_thread = std::thread::spawn(move || {
             let mut delay_secs: u64 = 5;
@@ -563,6 +640,7 @@ fn main() {
                             net_run_changed.clone(),
                             net_wipe_signal.clone(),
                             preferred_player,
+                            net_warnings.clone(),
                         );
                         tracing::info!("Disconnected from aggregator.");
                     }

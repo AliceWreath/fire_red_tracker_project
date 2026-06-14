@@ -1,0 +1,277 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Run Timeline — FireRed Nuzlocke __VERSION__</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body {
+    background: #0f0f18;
+    font-family: 'Segoe UI', Tahoma, sans-serif;
+    color: #e0e0e0;
+    min-height: 100vh;
+}
+#root { max-width: 900px; margin: 0 auto; padding: 20px 16px; }
+.page-header {
+    display: flex; align-items: center; gap: 12px;
+    padding-bottom: 14px;
+    border-bottom: 1px solid rgba(255,255,255,0.1);
+    margin-bottom: 24px;
+}
+.page-title { font-size: 20px; font-weight: bold; color: #fff; }
+.page-sub { font-size: 12px; color: #555; margin-top: 2px; }
+.run-select-row {
+    display: flex; align-items: center; gap: 10px;
+    margin-bottom: 20px;
+    flex-wrap: wrap;
+}
+.run-select-row label { font-size: 13px; color: #888; }
+select {
+    background: #1a1a2e; border: 1px solid #334; border-radius: 6px;
+    color: #ccd; padding: 5px 10px; font-size: 13px; cursor: pointer;
+    min-width: 220px;
+}
+#error-msg { color: #e06060; font-size: 13px; padding: 20px 0; display: none; }
+#loading   { color: #666; font-size: 13px; padding: 20px 0; }
+
+.timeline {
+    position: relative;
+    padding-left: 28px;
+}
+.timeline::before {
+    content: '';
+    position: absolute;
+    left: 9px; top: 0; bottom: 0;
+    width: 2px;
+    background: rgba(255,255,255,0.08);
+    border-radius: 1px;
+}
+
+.tl-event {
+    position: relative;
+    margin-bottom: 12px;
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+}
+.tl-dot {
+    position: absolute;
+    left: -22px;
+    top: 5px;
+    width: 12px; height: 12px;
+    border-radius: 50%;
+    border: 2px solid #0f0f18;
+    flex-shrink: 0;
+}
+.tl-card {
+    flex: 1;
+    background: #161624;
+    border: 1px solid rgba(255,255,255,0.07);
+    border-radius: 7px;
+    padding: 8px 12px;
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+}
+.tl-icon {
+    font-size: 15px;
+    flex-shrink: 0;
+    margin-top: 1px;
+    width: 20px;
+    text-align: center;
+}
+.tl-body { flex: 1; min-width: 0; }
+.tl-title {
+    font-size: 13px; font-weight: 600; color: #ddd;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.tl-sub  { font-size: 11px; color: #778; margin-top: 2px; }
+.tl-time { font-size: 10px; color: #445; margin-top: 3px; }
+
+/* Event-type colours */
+.ev-catch  .tl-dot { background: #44bb44; }
+.ev-catch  .tl-card { border-left: 3px solid #44bb44; }
+.ev-catch  .tl-title { color: #88dd88; }
+
+.ev-death  .tl-dot { background: #cc3333; }
+.ev-death  .tl-card { border-left: 3px solid #cc3333; }
+.ev-death  .tl-title { color: #ee7777; }
+
+.ev-shiny  .tl-dot { background: #f8c840; }
+.ev-shiny  .tl-card { border-left: 3px solid #f8c840; }
+.ev-shiny  .tl-title { color: #ffe870; }
+
+.ev-badge  .tl-dot { background: #5588ff; }
+.ev-badge  .tl-card { border-left: 3px solid #5588ff; }
+.ev-badge  .tl-title { color: #99bbff; }
+
+.ev-wipe   .tl-dot { background: #992222; }
+.ev-wipe   .tl-card { border-left: 3px solid #992222; background: rgba(60,0,0,0.4); }
+.ev-wipe   .tl-title { color: #ff5555; font-weight: 700; }
+
+.ev-soullink .tl-dot { background: #cc66ff; }
+.ev-soullink .tl-card { border-left: 3px solid #cc66ff; }
+.ev-soullink .tl-title { color: #ddaaff; }
+
+.ev-nickname .tl-dot { background: #44aacc; }
+.ev-nickname .tl-card { border-left: 3px solid #44aacc; }
+.ev-nickname .tl-title { color: #77ccdd; }
+
+.ev-other .tl-dot { background: #444; }
+.ev-other .tl-card { border-left: 3px solid #444; }
+
+.empty-msg { color: #555; font-size: 13px; text-align: center; padding: 40px 0; }
+</style>
+</head>
+<body>
+<div id="root">
+  <div class="page-header">
+    <div>
+      <div class="page-title">Run Timeline</div>
+      <div class="page-sub">FireRed Nuzlocke Tracker __VERSION__</div>
+    </div>
+  </div>
+
+  <div class="run-select-row">
+    <label>Run:</label>
+    <select id="run-select"><option value="">— select —</option></select>
+    <button onclick="loadTimeline()" style="background:#1a1a2e;border:1px solid #334;border-radius:5px;color:#aac;padding:5px 14px;cursor:pointer;font-size:13px;">Load</button>
+  </div>
+
+  <div id="error-msg"></div>
+  <div id="loading" style="display:none">Loading…</div>
+  <div id="timeline" class="timeline"></div>
+</div>
+<script>
+const runParam = new URLSearchParams(location.search).get('run');
+
+async function loadRuns() {
+    try {
+        const r = await fetch('/api/runs');
+        if (!r.ok) return;
+        const runs = await r.json();
+        const sel  = document.getElementById('run-select');
+        sel.innerHTML = '<option value="">— select —</option>';
+        for (const run of runs) {
+            const opt = document.createElement('option');
+            opt.value = run.id;
+            opt.textContent = run.player_name + '  (run #' + run.id + ')';
+            sel.appendChild(opt);
+        }
+        if (runParam) {
+            sel.value = runParam;
+            await loadTimeline();
+        } else if (runs.length > 0) {
+            sel.value = runs[0].id;
+        }
+    } catch (e) { /* no runs endpoint */ }
+}
+
+const TYPE_INFO = {
+    'catch':      { cls: 'ev-catch',    icon: '✔',  label: 'Caught' },
+    'death':      { cls: 'ev-death',    icon: '✕',  label: 'Fainted' },
+    'shiny':      { cls: 'ev-shiny',    icon: '★',  label: 'Shiny!' },
+    'badge':      { cls: 'ev-badge',    icon: '🏅', label: 'Badge' },
+    'wipe':       { cls: 'ev-wipe',     icon: '💀', label: 'Party Wiped' },
+    'soullink_death': { cls: 'ev-soullink', icon: '🔗', label: 'Soul Link Death' },
+    'nickname_change':{ cls: 'ev-nickname', icon: '✏',  label: 'Renamed' },
+    'trainer_battle': { cls: 'ev-badge',   icon: '⚔',  label: 'Trainer Defeated' },
+};
+
+async function loadTimeline() {
+    const sel = document.getElementById('run-select');
+    const id  = sel.value;
+    if (!id) return;
+
+    const tl  = document.getElementById('timeline');
+    const err = document.getElementById('error-msg');
+    const ld  = document.getElementById('loading');
+
+    tl.innerHTML = '';
+    err.style.display = 'none';
+    ld.style.display  = '';
+
+    try {
+        const r = await fetch('/api/run/' + id + '/events');
+        ld.style.display = 'none';
+        if (!r.ok) {
+            err.textContent = 'Failed to load events (HTTP ' + r.status + ')';
+            err.style.display = '';
+            return;
+        }
+        const events = await r.json();
+        if (!events || events.length === 0) {
+            tl.innerHTML = '<div class="empty-msg">No events recorded for this run.</div>';
+            return;
+        }
+
+        history.replaceState(null, '', '?run=' + id);
+
+        for (const ev of events) {
+            const info = TYPE_INFO[ev.event_type] || { cls: 'ev-other', icon: '•', label: ev.event_type };
+
+            const item = document.createElement('div');
+            item.className = 'tl-event ' + info.cls;
+
+            const dot = document.createElement('div');
+            dot.className = 'tl-dot';
+            item.appendChild(dot);
+
+            const card = document.createElement('div');
+            card.className = 'tl-card';
+
+            const icon = document.createElement('div');
+            icon.className = 'tl-icon';
+            icon.textContent = info.icon;
+            card.appendChild(icon);
+
+            const body = document.createElement('div');
+            body.className = 'tl-body';
+
+            const title = document.createElement('div');
+            title.className = 'tl-title';
+            let titleText = info.label;
+            if (ev.nickname && ev.species_name) {
+                titleText += ' — ' + ev.nickname + ' (' + ev.species_name + ')';
+            } else if (ev.nickname) {
+                titleText += ' — ' + ev.nickname;
+            } else if (ev.species_name) {
+                titleText += ' — ' + ev.species_name;
+            } else if (ev.badge_name) {
+                titleText += ' — ' + ev.badge_name;
+            }
+            title.textContent = titleText;
+            body.appendChild(title);
+
+            const sub = document.createElement('div');
+            sub.className = 'tl-sub';
+            const parts = [];
+            if (ev.level)     parts.push('Lv ' + ev.level);
+            if (ev.player_name) parts.push(ev.player_name);
+            if (ev.old_nickname && ev.nickname) {
+                parts.length = 0;
+                parts.push('"' + ev.old_nickname + '" → "' + ev.nickname + '"');
+            }
+            sub.textContent = parts.join(' · ');
+            if (parts.length) body.appendChild(sub);
+
+            const time = document.createElement('div');
+            time.className = 'tl-time';
+            time.textContent = ev.occurred_at || '';
+            body.appendChild(time);
+
+            card.appendChild(body);
+            item.appendChild(card);
+            tl.appendChild(item);
+        }
+    } catch (e) {
+        ld.style.display = 'none';
+        err.textContent  = 'Error: ' + e.message;
+        err.style.display = '';
+    }
+}
+
+loadRuns();
+</script>
+</body>
+</html>

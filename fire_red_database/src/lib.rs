@@ -238,6 +238,10 @@ pub struct DeadPokemon {
     /// died first) rather than the Pokémon reaching 0 HP itself.
     /// Stored explicitly to avoid using `max_hp == 0` as a sentinel.
     pub is_soul_link_death: bool,
+    /// Species name of the enemy that dealt the killing blow, if known.
+    pub killed_by_species: Option<String>,
+    /// Move name used by the enemy for the killing blow, if known.
+    pub killed_by_move: Option<String>,
 }
 
 /// A wild Pokémon encounter — the first one per area per player is stored for Nuzlocke tracking.
@@ -321,7 +325,7 @@ fn db() -> &'static Mutex<DbState> {
 /// `initialize` has already been called.
 /// Increment this whenever a new migration or data-repair statement is added.
 /// `initialize` skips all SQL when the DB already records this version.
-const SCHEMA_VERSION: &str = "9";
+const SCHEMA_VERSION: &str = "10";
 
 pub fn initialize(connection_string: &str) -> Result<(), String> {
     // Accept bare `host/dbname` strings — prepend the scheme so callers don't have to.
@@ -569,6 +573,10 @@ pub fn initialize(connection_string: &str) -> Result<(), String> {
             created_at          BIGINT  NOT NULL,
             PRIMARY KEY (run_id, personality)
         );
+
+        -- Migration v10: death cause analysis — enemy species / move at time of death.
+        ALTER TABLE dead_pokemon ADD COLUMN IF NOT EXISTS killed_by_species TEXT;
+        ALTER TABLE dead_pokemon ADD COLUMN IF NOT EXISTS killed_by_move TEXT;
     ").map_err(|e| format!("Failed to create database schema: {e}"))?;
 
     // Record the schema version so future startups can skip all migrations.
@@ -730,6 +738,8 @@ fn row_to_dead_pokemon(row: &postgres::Row) -> DeadPokemon {
         died_at:           row.get::<_, i64>(42) as u64,
         gender:            row.get::<_, i32>(43) as u8,
         is_soul_link_death: row.get(44),
+        killed_by_species:  row.get(45),
+        killed_by_move:     row.get(46),
     }
 }
 
@@ -907,13 +917,13 @@ pub fn mark_dead(pokemon: DeadPokemon) -> Result<bool, postgres::Error> {
             iv_hp, iv_attack, iv_defense, iv_speed, iv_sp_attack, iv_sp_defense,
             ev_hp, ev_attack, ev_defense, ev_speed, ev_sp_attack, ev_sp_defense,
             held_item, ability, ability_name, friendship, met_location, died_at, gender,
-            is_soul_link_death
+            is_soul_link_death, killed_by_species, killed_by_move
         ) VALUES (
             $1,  $2,  $3,  $4,  $5,  $6,  $7,  $8,  $9,  $10, $11,
             $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22,
             $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33,
             $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45,
-            $46
+            $46, $47, $48
         ) ON CONFLICT (run_id, personality) DO NOTHING",
         &[
             &(active as i32),
@@ -962,6 +972,8 @@ pub fn mark_dead(pokemon: DeadPokemon) -> Result<bool, postgres::Error> {
             &(pokemon.died_at as i64),
             &(pokemon.gender as i32),
             &pokemon.is_soul_link_death,
+            &pokemon.killed_by_species,
+            &pokemon.killed_by_move,
         ],
     )?;
     // execute() returns the number of rows affected. ON CONFLICT DO NOTHING yields 0,
@@ -992,7 +1004,7 @@ pub fn get_dead_pokemon(personality: u32) -> Option<DeadPokemon> {
                 iv_hp, iv_attack, iv_defense, iv_speed, iv_sp_attack, iv_sp_defense,
                 ev_hp, ev_attack, ev_defense, ev_speed, ev_sp_attack, ev_sp_defense,
                 held_item, ability, ability_name, friendship, met_location, died_at, gender,
-                is_soul_link_death
+                is_soul_link_death, killed_by_species, killed_by_move
              FROM dead_pokemon
              WHERE run_id = $1 AND personality = $2",
             &[&(active as i32), &(personality as i64)],
@@ -1663,7 +1675,7 @@ impl DbReader {
                     iv_hp, iv_attack, iv_defense, iv_speed, iv_sp_attack, iv_sp_defense,
                     ev_hp, ev_attack, ev_defense, ev_speed, ev_sp_attack, ev_sp_defense,
                     held_item, ability, ability_name, friendship, met_location, died_at, gender,
-                    is_soul_link_death
+                    is_soul_link_death, killed_by_species, killed_by_move
                  FROM dead_pokemon WHERE run_id = $1 AND player_name = $2",
                 &[&(run_id as i32), &player_name],
             )
@@ -3182,6 +3194,56 @@ fn dump_encounters(client: &mut Client) -> serde_json::Value {
             "seen_at": format_timestamp(row.get::<_, i64>(7) as u64),
         })
     }).collect())
+}
+
+/// Returns cross-run per-species statistics as JSON.
+///
+/// For every species that has been caught or killed across all runs, returns
+/// the total caught count, total death count, and a naive survival rate.
+/// Results are ordered by total deaths descending so the most dangerous species
+/// appear first.
+pub fn species_stats(conn_str: &str) -> serde_json::Value {
+    let mut client = match Client::connect(conn_str, NoTls) {
+        Ok(c)  => c,
+        Err(e) => return serde_json::json!({ "error": format!("DB connection failed: {e}") }),
+    };
+
+    let rows = match client.query(
+        "SELECT species_name,
+                SUM(caught_count)   AS total_caught,
+                SUM(dead_count)     AS total_dead
+         FROM (
+             SELECT species_name, 1 AS caught_count, 0 AS dead_count FROM caught_pokemon
+             UNION ALL
+             SELECT species_name, 0 AS caught_count, 1 AS dead_count FROM dead_pokemon
+         ) t
+         GROUP BY species_name
+         ORDER BY total_dead DESC, total_caught DESC",
+        &[],
+    ) {
+        Ok(r)  => r,
+        Err(e) => return serde_json::json!({ "error": format!("Query error: {e}") }),
+    };
+
+    let entries: Vec<serde_json::Value> = rows.iter().map(|row| {
+        let species:      String = row.get(0);
+        let total_caught: i64   = row.get(1);
+        let total_dead:   i64   = row.get(2);
+        let survival_pct = if total_caught > 0 {
+            let survived = total_caught - total_dead;
+            (survived.max(0) as f64 / total_caught as f64 * 100.0).round()
+        } else {
+            0.0
+        };
+        serde_json::json!({
+            "species_name":   species,
+            "total_caught":   total_caught,
+            "total_dead":     total_dead,
+            "survival_pct":   survival_pct,
+        })
+    }).collect();
+
+    serde_json::json!({ "species": entries })
 }
 
 #[cfg(test)]

@@ -1,0 +1,321 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<title>Party — FireRed Nuzlocke __VERSION__</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body {
+    background: #0f0f18;
+    font-family: 'Segoe UI', system-ui, sans-serif;
+    color: #e0e0e0;
+    min-height: 100vh;
+    -webkit-tap-highlight-color: transparent;
+}
+#header {
+    background: #111122;
+    border-bottom: 1px solid rgba(255,255,255,0.08);
+    padding: 10px 14px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    position: sticky;
+    top: 0;
+    z-index: 10;
+}
+#header h1 {
+    font-size: 15px;
+    font-weight: 700;
+    color: #aac4ff;
+    flex: 1;
+}
+.badge-row {
+    display: flex;
+    gap: 3px;
+}
+.badge-dot {
+    width: 9px; height: 9px;
+    border-radius: 50%;
+    background: rgba(255,255,255,0.12);
+    border: 1px solid rgba(255,255,255,0.15);
+}
+.badge-dot.earned { background: #f8c840; border-color: #f8c840; }
+#party { padding: 10px; display: flex; flex-direction: column; gap: 8px; }
+#status-msg { text-align: center; color: #555; font-size: 13px; padding: 32px 0; }
+.mon-card {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    background: #161624;
+    border: 1px solid rgba(255,255,255,0.07);
+    border-radius: 10px;
+    padding: 10px 14px 10px 10px;
+}
+.mon-card.dead {
+    background: rgba(50,8,8,0.7);
+    border-color: rgba(180,50,50,0.25);
+}
+.sprite-wrap {
+    flex-shrink: 0;
+    width: 56px; height: 56px;
+    display: flex; align-items: center; justify-content: center;
+}
+.sprite {
+    max-width: 56px; max-height: 56px;
+    image-rendering: pixelated;
+    filter: drop-shadow(0 2px 4px rgba(0,0,0,0.7));
+}
+.mon-card.dead .sprite { filter: grayscale(100%) brightness(0.4); }
+.mon-info { flex: 1; min-width: 0; }
+.mon-top {
+    display: flex; align-items: baseline; gap: 6px;
+    margin-bottom: 5px;
+}
+.mon-name {
+    font-size: 14px;
+    font-weight: 700;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.mon-card.dead .mon-name { color: #c06060; }
+.mon-lv { font-size: 11px; color: #888; flex-shrink: 0; }
+.dead-badge {
+    font-size: 10px;
+    font-weight: 700;
+    color: #ff4444;
+    margin-left: auto;
+    flex-shrink: 0;
+}
+.mon-hp-row {
+    display: flex; align-items: center; gap: 8px;
+}
+.hp-bar-bg {
+    flex: 1; height: 7px;
+    background: rgba(255,255,255,0.1);
+    border-radius: 4px;
+    overflow: hidden;
+}
+.hp-bar-fill { height: 100%; border-radius: 4px; transition: width 0.3s ease; }
+.hp-bar-fill.high { background: #44cc44; }
+.hp-bar-fill.mid  { background: #ddcc22; }
+.hp-bar-fill.low  { background: #cc3333; }
+.hp-nums {
+    font-size: 11px; color: #ccc; font-weight: 600;
+    white-space: nowrap; min-width: 58px; text-align: right;
+}
+.mon-sub {
+    display: flex; align-items: center; gap: 5px;
+    margin-top: 4px;
+    flex-wrap: wrap;
+}
+.nature-tag {
+    font-size: 10px; color: #aaa;
+    background: rgba(255,255,255,0.06);
+    border-radius: 3px;
+    padding: 1px 5px;
+}
+.status-badge {
+    font-size: 9px; font-weight: 700;
+    padding: 1px 5px; border-radius: 3px;
+}
+.status-slp { background: #555577; color: #ccccee; }
+.status-psn { background: #7733aa; color: #ddb8ff; }
+.status-brn { background: #aa4400; color: #ffcc99; }
+.status-frz { background: #336688; color: #aaddff; }
+.status-par { background: #887700; color: #ffee88; }
+.status-tox { background: #550077; color: #dd99ff; }
+.shiny-star { color: #f8c840; font-size: 11px; }
+#zone-bar {
+    background: rgba(20,20,40,0.9);
+    border-top: 1px solid rgba(100,150,255,0.15);
+    padding: 7px 14px;
+    font-size: 12px;
+    color: #7799cc;
+    text-align: center;
+}
+</style>
+</head>
+<body>
+<div id="header">
+    <h1 id="player-name">—</h1>
+    <div class="badge-row" id="badge-row"></div>
+</div>
+<div id="party"><div id="status-msg">Connecting…</div></div>
+<div id="zone-bar" id="zone-bar" style="display:none"></div>
+
+<script>
+const params = new URLSearchParams(location.search);
+const playerIndex = parseInt(params.get('player') || '0');
+
+let ws;
+let reconnectDelay = 1000;
+function connect() {
+    ws = new WebSocket('ws://' + location.host + '/ws');
+    ws.onopen    = () => { reconnectDelay = 1000; };
+    ws.onmessage = e => render(JSON.parse(e.data));
+    ws.onclose   = () => {
+        document.getElementById('status-msg').style.display = '';
+        document.getElementById('status-msg').textContent = 'Reconnecting…';
+        setTimeout(connect, reconnectDelay);
+        reconnectDelay = Math.min(reconnectDelay * 2, 30000);
+    };
+}
+connect();
+
+function statusBadge(status) {
+    if (!status) return null;
+    let label = '', cls = '';
+    if      (status & 0x07) { label = 'SLP'; cls = 'status-slp'; }
+    else if (status & 0x80) { label = 'TOX'; cls = 'status-tox'; }
+    else if (status & 0x08) { label = 'PSN'; cls = 'status-psn'; }
+    else if (status & 0x10) { label = 'BRN'; cls = 'status-brn'; }
+    else if (status & 0x20) { label = 'FRZ'; cls = 'status-frz'; }
+    else if (status & 0x40) { label = 'PAR'; cls = 'status-par'; }
+    if (!label) return null;
+    const s = document.createElement('span');
+    s.className = 'status-badge ' + cls;
+    s.textContent = label;
+    return s;
+}
+
+function render(slots) {
+    const slot = slots[playerIndex];
+    const party = document.getElementById('party');
+    const msg   = document.getElementById('status-msg');
+
+    if (!slot || !slot.connected) {
+        party.innerHTML = '';
+        msg.style.display = '';
+        msg.textContent = 'Tracker not connected';
+        return;
+    }
+    msg.style.display = 'none';
+
+    // Header: player name + badge dots
+    document.getElementById('player-name').textContent =
+        slot.run_summary ? slot.run_summary.player_name : slot.label || 'Player';
+
+    const badgeRow = document.getElementById('badge-row');
+    badgeRow.innerHTML = '';
+    if (slot.badges) {
+        for (const earned of slot.badges) {
+            const d = document.createElement('div');
+            d.className = 'badge-dot' + (earned ? ' earned' : '');
+            badgeRow.appendChild(d);
+        }
+    }
+
+    // Zone bar
+    const zoneBar = document.getElementById('zone-bar');
+    if (slot.current_zone_name) {
+        zoneBar.textContent = '📍 ' + slot.current_zone_name;
+        zoneBar.style.display = '';
+    } else {
+        zoneBar.style.display = 'none';
+    }
+
+    // Party cards
+    party.innerHTML = '';
+    if (!slot.party || slot.party.length === 0) {
+        const m = document.createElement('div');
+        m.id = 'status-msg';
+        m.textContent = 'No party data';
+        party.appendChild(m);
+        return;
+    }
+
+    const cap = slot.next_gym ? slot.next_gym.max_level : null;
+
+    for (const mon of slot.party) {
+        const card = document.createElement('div');
+        card.className = 'mon-card' + (mon.dead ? ' dead' : '');
+
+        // Sprite
+        const sw = document.createElement('div');
+        sw.className = 'sprite-wrap';
+        if (mon.sprite) {
+            const img = document.createElement('img');
+            img.className = 'sprite';
+            img.src = mon.sprite;
+            sw.appendChild(img);
+        }
+        card.appendChild(sw);
+
+        // Info block
+        const info = document.createElement('div');
+        info.className = 'mon-info';
+
+        // Top row: name + level
+        const top = document.createElement('div');
+        top.className = 'mon-top';
+
+        const nameEl = document.createElement('span');
+        nameEl.className = 'mon-name';
+        nameEl.textContent = mon.nickname || mon.species_name;
+        top.appendChild(nameEl);
+
+        if (mon.dead) {
+            const db = document.createElement('span');
+            db.className = 'dead-badge';
+            db.textContent = 'DEAD';
+            top.appendChild(db);
+        } else {
+            const lvEl = document.createElement('span');
+            const atCap = cap !== null && mon.level >= cap;
+            lvEl.className = 'mon-lv';
+            lvEl.textContent = (atCap ? '⚠ ' : '') + 'Lv ' + mon.level;
+            if (atCap) lvEl.style.color = '#ff7733';
+            top.appendChild(lvEl);
+        }
+        info.appendChild(top);
+
+        if (!mon.dead) {
+            // HP bar
+            const hpRow = document.createElement('div');
+            hpRow.className = 'mon-hp-row';
+
+            const ratio  = mon.max_hp > 0 ? mon.hp / mon.max_hp : 0;
+            const barCls = ratio > 0.5 ? 'high' : ratio > 0.2 ? 'mid' : 'low';
+
+            const bg   = document.createElement('div'); bg.className = 'hp-bar-bg';
+            const fill = document.createElement('div'); fill.className = 'hp-bar-fill ' + barCls;
+            fill.style.width = Math.round(ratio * 100) + '%';
+            bg.appendChild(fill);
+            hpRow.appendChild(bg);
+
+            const nums = document.createElement('div');
+            nums.className = 'hp-nums';
+            nums.textContent = mon.hp + '/' + mon.max_hp;
+            hpRow.appendChild(nums);
+            info.appendChild(hpRow);
+
+            // Sub-row: nature + status
+            const sub = document.createElement('div');
+            sub.className = 'mon-sub';
+
+            if (mon.nature) {
+                const nt = document.createElement('span');
+                nt.className = 'nature-tag';
+                nt.textContent = mon.nature;
+                sub.appendChild(nt);
+            }
+            if (mon.shiny) {
+                const sh = document.createElement('span');
+                sh.className = 'shiny-star';
+                sh.textContent = '★';
+                sub.appendChild(sh);
+            }
+            const sb = statusBadge(mon.status);
+            if (sb) sub.appendChild(sb);
+            info.appendChild(sub);
+        }
+
+        card.appendChild(info);
+        party.appendChild(card);
+    }
+}
+</script>
+</body>
+</html>
