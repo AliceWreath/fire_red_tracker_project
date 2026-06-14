@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html>
+<!-- THEME_SLOT -->
+<head>
+<meta charset="utf-8">
+<title>Death Counter</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body {
+    background: transparent;
+    font-family: 'Segoe UI', Tahoma, sans-serif;
+    color: #fff;
+    width: 100%; height: 100%;
+    display: flex; align-items: center; justify-content: center;
+    overflow: hidden;
+}
+#panel {
+    background: rgba(20, 5, 5, 0.88);
+    border: 1px solid rgba(200, 60, 60, 0.4);
+    border-radius: 10px;
+    padding: 14px 28px;
+    text-align: center;
+    min-width: 120px;
+    box-shadow: 0 4px 20px rgba(0,0,0,0.7);
+}
+#label {
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: #cc4444;
+    margin-bottom: 6px;
+}
+#count {
+    font-size: 64px;
+    font-weight: 900;
+    color: #ff5555;
+    line-height: 1;
+    text-shadow: 0 0 18px rgba(255, 60, 60, 0.6);
+}
+#player {
+    font-size: 11px;
+    color: #888;
+    margin-top: 6px;
+}
+#disconnected {
+    display: none;
+    font-size: 11px;
+    color: #666;
+    margin-top: 4px;
+}
+html[data-theme=light] #panel {
+    background: rgba(255, 240, 240, 0.92);
+    border-color: rgba(180, 60, 60, 0.5);
+    color: #111;
+}
+html[data-theme=light] #label { color: #b02020; }
+html[data-theme=light] #count { color: #cc2222; text-shadow: none; }
+html[data-theme=light] #player { color: #555; }
+</style>
+</head>
+<body>
+<div id="panel">
+  <div id="label">☠ Deaths</div>
+  <div id="count">–</div>
+  <div id="player"></div>
+  <div id="disconnected">disconnected</div>
+</div>
+<script>
+const _pathParts  = window.location.pathname.split('/').filter(Boolean);
+const _pathIndex  = parseInt(_pathParts[0]);
+const _params     = new URLSearchParams(window.location.search);
+const playerIndex = !isNaN(_pathIndex) ? _pathIndex : parseInt(_params.get('slot') || '0');
+
+function handleState(slots) {
+    const slot = slots[playerIndex];
+    const countEl = document.getElementById('count');
+    const playerEl = document.getElementById('player');
+    const discEl = document.getElementById('disconnected');
+    if (!slot || !slot.connected) {
+        discEl.style.display = '';
+        return;
+    }
+    discEl.style.display = 'none';
+    const deaths = (slot.dead || []).length;
+    countEl.textContent = deaths;
+    playerEl.textContent = slot.label || '';
+}
+
+let ws;
+let reconnectDelay = 1000;
+function connect() {
+    ws = new WebSocket('ws://' + location.host + '/ws?show=deaths');
+    ws.onopen    = () => { reconnectDelay = 1000; };
+    ws.onmessage = e => handleState(JSON.parse(e.data));
+    ws.onclose   = () => { setTimeout(connect, reconnectDelay); reconnectDelay = Math.min(reconnectDelay * 2, 30000); };
+}
+connect();
+</script>
+</body>
+</html>

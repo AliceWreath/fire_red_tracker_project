@@ -1266,6 +1266,8 @@ const MOBILE_HTML: &str = include_str!("mobile.html");
 const TRAINERS_HTML: &str = include_str!("trainers.html");
 const TIMELINE_HTML: &str = include_str!("timeline.html");
 const SPECIES_HTML: &str = include_str!("species.html");
+const DEATHS_HTML: &str = include_str!("deaths.html");
+const ENCOUNTER_COUNT_HTML: &str = include_str!("encounter_count.html");
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -1560,6 +1562,23 @@ fn filter_slots_json(json: &str, show: &str) -> String {
             "dead",
             "caught",
             "db_encounters",
+            "prev_run_encounters",
+        ],
+        // deaths overlay only needs the dead list and run_summary.
+        "deaths" => &[
+            "party",
+            "encounters",
+            "box_pokemon",
+            "caught",
+            "db_encounters",
+            "prev_run_encounters",
+        ],
+        // counter overlay only needs db_encounters for counts.
+        "counter" => &[
+            "party",
+            "encounters",
+            "box_pokemon",
+            "dead",
             "prev_run_encounters",
         ],
         _ => return json.to_owned(),
@@ -1901,6 +1920,31 @@ async fn api_species_stats(State(state): State<WebState>) -> axum::Json<serde_js
 /// `GET /trainers` and `GET /run/:id/trainers` — trainer battle log page.
 async fn serve_trainers(State(state): State<WebState>) -> Html<String> {
     Html(apply_page(TRAINERS_HTML, state.testing))
+}
+
+/// `GET /:index/deaths` — compact death-counter overlay for a small OBS Browser Source.
+///
+/// Shows a large red death count. Subscribes to `?show=deaths` WS filter so
+/// the browser only receives the `dead` list and `run_summary`; no party,
+/// encounter, or box data is transferred.
+async fn serve_deaths_overlay(
+    State(state): State<WebState>,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> Html<String> {
+    let theme = params.get("theme").map(|s| s.as_str());
+    Html(apply_page_with_theme(DEATHS_HTML, state.testing, theme))
+}
+
+/// `GET /:index/encounter_count` — encounter counter overlay for OBS.
+///
+/// Shows the total encounter count for the run with a caught/missed breakdown.
+/// Subscribes to `?show=counter` WS filter (only `db_encounters` transferred).
+async fn serve_encounter_count(
+    State(state): State<WebState>,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> Html<String> {
+    let theme = params.get("theme").map(|s| s.as_str());
+    Html(apply_page_with_theme(ENCOUNTER_COUNT_HTML, state.testing, theme))
 }
 
 /// `GET /api/run/:id/trainers` — trainer battle log JSON for a run.
@@ -3652,11 +3696,436 @@ async fn api_set_pokerus(
     )
 }
 
-/// Broadcasts `end_run` or `new_run` to all connected tracker slots.
+/// `POST /api/slot/:index/set_pp_ups` — set PP-Up counts for all four move slots.
+///
+/// Body: `{ "party_position": <u8 0–5>, "pp0": <u8 0–3>, "pp1": <u8 0–3>,
+///          "pp2": <u8 0–3>, "pp3": <u8 0–3> }`.
+/// Sets the PP-Up bonus for each slot and refills current PP to the new maximum.
+async fn api_set_pp_ups(
+    State(state): State<WebState>,
+    Path(index): Path<usize>,
+    axum::Json(body): axum::Json<serde_json::Value>,
+) -> impl IntoResponse {
+    if !state.allow_injections {
+        return (
+            StatusCode::FORBIDDEN,
+            "injection commands are disabled".to_string(),
+        );
+    }
+    let slots = state.live_slots.lock_or_recover().clone();
+    let slot = match slots.get(index) {
+        Some(s) => s.clone(),
+        None => return (StatusCode::NOT_FOUND, "slot index out of range".to_string()),
+    };
+    if slot.state.lock_or_recover().is_none() {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "slot not connected".to_string(),
+        );
+    }
+    let party_position = match body["party_position"]
+        .as_u64()
+        .and_then(|v| u8::try_from(v).ok())
+    {
+        Some(v) if v < 6 => v,
+        _ => {
+            return (
+                StatusCode::BAD_REQUEST,
+                "party_position must be 0–5".to_string(),
+            );
+        }
+    };
+    let parse_pp = |key: &str| -> Option<u8> {
+        body[key].as_u64().and_then(|v| u8::try_from(v).ok()).filter(|&v| v <= 3)
+    };
+    let pp0 = match parse_pp("pp0") {
+        Some(v) => v,
+        None => return (StatusCode::BAD_REQUEST, "pp0 must be 0–3".to_string()),
+    };
+    let pp1 = match parse_pp("pp1") {
+        Some(v) => v,
+        None => return (StatusCode::BAD_REQUEST, "pp1 must be 0–3".to_string()),
+    };
+    let pp2 = match parse_pp("pp2") {
+        Some(v) => v,
+        None => return (StatusCode::BAD_REQUEST, "pp2 must be 0–3".to_string()),
+    };
+    let pp3 = match parse_pp("pp3") {
+        Some(v) => v,
+        None => return (StatusCode::BAD_REQUEST, "pp3 must be 0–3".to_string()),
+    };
+    slot.command_queue
+        .lock_or_recover()
+        .push_back(ClientMessage::SetPpUps {
+            party_position,
+            pp0,
+            pp1,
+            pp2,
+            pp3,
+        });
+    slot.injection_events
+        .lock_or_recover()
+        .push_back(serde_json::json!({
+            "at": now_secs(), "kind": "set_pp_ups",
+            "label": format!(
+                "party[{party_position}] PP-Ups → ({pp0},{pp1},{pp2},{pp3})"
+            ),
+        }));
+    (
+        StatusCode::OK,
+        format!(
+            "queued set_pp_ups party_position={party_position} \
+             pp0={pp0},pp1={pp1},pp2={pp2},pp3={pp3} for slot {index}"
+        ),
+    )
+}
+
+/// `POST /api/slot/:index/revive_pokemon` — revive a dead Pokémon into a party slot.
+///
+/// Body: `{ "party_position": <u8 0–5>, "personality": <u32> }`.
+/// Looks up the Pokémon by `personality` in the current run's `dead_pokemon`
+/// table and writes it at `party_position` with 1 HP.
+async fn api_revive_pokemon(
+    State(state): State<WebState>,
+    Path(index): Path<usize>,
+    axum::Json(body): axum::Json<serde_json::Value>,
+) -> impl IntoResponse {
+    if !state.allow_injections {
+        return (
+            StatusCode::FORBIDDEN,
+            "injection commands are disabled".to_string(),
+        );
+    }
+    let slots = state.live_slots.lock_or_recover().clone();
+    let slot = match slots.get(index) {
+        Some(s) => s.clone(),
+        None => return (StatusCode::NOT_FOUND, "slot index out of range".to_string()),
+    };
+    if slot.state.lock_or_recover().is_none() {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "slot not connected".to_string(),
+        );
+    }
+    let party_position = match body["party_position"]
+        .as_u64()
+        .and_then(|v| u8::try_from(v).ok())
+    {
+        Some(v) if v < 6 => v,
+        _ => {
+            return (
+                StatusCode::BAD_REQUEST,
+                "party_position must be 0–5".to_string(),
+            );
+        }
+    };
+    let personality = match body["personality"].as_u64().and_then(|v| u32::try_from(v).ok()) {
+        Some(v) if v != 0 => v,
+        _ => {
+            return (
+                StatusCode::BAD_REQUEST,
+                "personality must be a non-zero u32".to_string(),
+            );
+        }
+    };
+    slot.command_queue
+        .lock_or_recover()
+        .push_back(ClientMessage::RevivePokemon {
+            party_position,
+            personality,
+        });
+    slot.injection_events
+        .lock_or_recover()
+        .push_back(serde_json::json!({
+            "at": now_secs(), "kind": "revive_pokemon",
+            "label": format!(
+                "party[{party_position}] ← revive personality={personality:#010x}"
+            ),
+        }));
+    (
+        StatusCode::OK,
+        format!(
+            "queued revive_pokemon party_position={party_position} \
+             personality={personality:#010x} for slot {index}"
+        ),
+    )
+}
+
+/// `GET /api/runs/compare?ids=1,2,3` — side-by-side stats for multiple runs.
+///
+/// Query param `ids` is a comma-separated list of run IDs (max 20).
+async fn api_runs_compare(
+    State(state): State<WebState>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> axum::Json<serde_json::Value> {
+    let conn = require_db!(state);
+    let ids_str = match params.get("ids") {
+        Some(s) => s.clone(),
+        None => return axum::Json(serde_json::json!({ "error": "Missing 'ids' query parameter" })),
+    };
+    let run_ids: Vec<u32> = ids_str
+        .split(',')
+        .filter_map(|s| s.trim().parse::<u32>().ok())
+        .take(20)
+        .collect();
+    if run_ids.is_empty() {
+        return axum::Json(serde_json::json!({ "error": "No valid run IDs provided" }));
+    }
+    let result = tokio::task::spawn_blocking(move || {
+        fire_red_database::run_comparison(&conn, &run_ids)
+    })
+    .await;
+    axum::Json(result.unwrap_or_else(|_| serde_json::json!({ "error": "Task panicked" })))
+}
+
+/// `GET /api/run/:id/luck` — luck/RNG analysis for a single run.
+///
+/// Returns shiny rate vs expected (1/8192), per-area encounter list.
+async fn api_run_luck(
+    State(state): State<WebState>,
+    Path(run_id): Path<u32>,
+) -> axum::Json<serde_json::Value> {
+    let conn = require_db!(state);
+    let result =
+        tokio::task::spawn_blocking(move || fire_red_database::run_luck_stats(&conn, run_id))
+            .await;
+    axum::Json(result.unwrap_or_else(|_| serde_json::json!({ "error": "Task panicked" })))
+}
+
+/// `GET /api/catch_rate?species=X&hp=Y&max_hp=Z&status=W&ball=B`
+///
+/// Computes the Gen III catch probability using the ROM's species catch rate.
+///
+/// - `species` — species ID (1–386)
+/// - `hp` — current HP
+/// - `max_hp` — max HP
+/// - `status` — `none` | `sleep` | `freeze` | `paralyze` | `poison` | `burn`
+///              (default: `none`)
+/// - `ball` — `pokeball` | `greatball` | `ultraball` | `masterball` |
+///            `safariball` | `netball` | `nestball` | `repeatball` |
+///            `timerball` | `diveball` | `premierball` (default: `pokeball`)
+async fn api_catch_rate(
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> axum::Json<serde_json::Value> {
+    let parse_u16 = |key: &str| -> Option<u16> {
+        params.get(key)?.parse::<u16>().ok()
+    };
+    let species = match parse_u16("species") {
+        Some(s) if s > 0 && s <= MAX_NATIONAL_DEX_FIRERED => s,
+        _ => {
+            return axum::Json(
+                serde_json::json!({ "error": "species must be 1–386" }),
+            );
+        }
+    };
+    let hp = match parse_u16("hp") {
+        Some(v) => v,
+        None => return axum::Json(serde_json::json!({ "error": "hp required" })),
+    };
+    let max_hp = match parse_u16("max_hp") {
+        Some(v) if v > 0 => v,
+        _ => return axum::Json(serde_json::json!({ "error": "max_hp must be > 0" })),
+    };
+
+    let status = params.get("status").map(|s| s.as_str()).unwrap_or("none");
+    let (status_num, status_label): (u32, &str) = match status {
+        "sleep" | "freeze" => (15, status),
+        "paralyze" | "poison" | "burn" => (12, status),
+        _ => (10, "none"),
+    };
+
+    let ball = params.get("ball").map(|s| s.as_str()).unwrap_or("pokeball");
+    let (ball_num, ball_label): (u32, &str) = match ball {
+        "masterball"  => (255, "masterball"),
+        "ultraball"   => (20, "ultraball"),   // 2.0 × 10
+        "greatball"   => (15, "greatball"),   // 1.5 × 10
+        "safariball"  => (15, "safariball"),
+        "netball"     => (30, "netball"),     // 3.0 × 10
+        "nestball"    => (10, "nestball"),    // simplified to 1.0
+        "repeatball"  => (30, "repeatball"),  // 3.0 × 10
+        "timerball"   => (40, "timerball"),   // max 4.0 × 10
+        "diveball"    => (35, "diveball"),    // 3.5 × 10
+        "premierball" => (10, "premierball"),
+        _             => (10, "pokeball"),
+    };
+
+    // Look up catch rate from ROM base stats (28 bytes/entry, catch_rate at byte 8).
+    const BASE_STATS_SIZE: usize = 28;
+    const CATCH_RATE_OFFSET: usize = 8;
+    let catch_rate = if let Some(rom) = fire_red_rom_buffer::try_get_rom() {
+        let addrs = fire_red_rom_buffer::get_rom_addresses();
+        let off = addrs.base_stats_addr + species as usize * BASE_STATS_SIZE + CATCH_RATE_OFFSET;
+        rom.get(off).copied().unwrap_or(45)
+    } else {
+        45 // fallback: average catch rate if ROM not loaded
+    };
+
+    // Gen III modified catch rate:
+    //   a = floor((3*M - 2*H) * rate * ball_num/10) / (3*M) * status_num/10
+    // where M=max_hp, H=hp. We use u64 to avoid overflow.
+    let m = max_hp as u64;
+    let h = hp.min(max_hp) as u64;
+    let numer = (3 * m - 2 * h) * (catch_rate as u64) * (ball_num as u64);
+    let denom = 3 * m * 10;
+    let a_raw = numer / denom;
+    let a = (a_raw * status_num as u64 / 10).min(255);
+
+    let guaranteed = a >= 255 || ball_num >= 255 * 10;
+    let catch_probability_pct = if guaranteed {
+        100.0f64
+    } else {
+        // b = floor(65536 / (255/a)^0.25)
+        let b = (65536.0 / (255.0 / a as f64).powf(0.25)) as u64;
+        let b = b.min(65535) as f64;
+        // P = (b/65536)^4
+        let p = (b / 65536.0).powi(4);
+        (p * 10000.0).round() / 100.0
+    };
+
+    axum::Json(serde_json::json!({
+        "species": species,
+        "catch_rate": catch_rate,
+        "hp": hp,
+        "max_hp": max_hp,
+        "status": status_label,
+        "status_bonus": status_num as f64 / 10.0,
+        "ball": ball_label,
+        "ball_bonus": ball_num as f64 / 10.0,
+        "modified_catch_rate": a,
+        "guaranteed": guaranteed,
+        "catch_probability_pct": catch_probability_pct,
+    }))
+}
+
+/// `GET /api/run/:id/closest_calls` — Pokémon that came closest to fainting.
+///
+/// Returns up to 50 entries ordered by lowest HP/max_HP ratio ever observed.
+async fn api_run_closest_calls(
+    State(state): State<WebState>,
+    Path(run_id): Path<u32>,
+) -> axum::Json<serde_json::Value> {
+    let conn = require_db!(state);
+    let result =
+        tokio::task::spawn_blocking(move || fire_red_database::closest_calls(&conn, run_id))
+            .await;
+    axum::Json(result.unwrap_or_else(|_| serde_json::json!({ "error": "Task panicked" })))
+}
+
+/// `GET /api/run/:id/pokemon/:personality/hp_history` — full HP timeline for one Pokémon.
+///
+/// Returns every HP change observed while the Pokémon was in the active party,
+/// ordered oldest-first.
+async fn api_run_pokemon_hp_history(
+    State(state): State<WebState>,
+    Path((run_id, personality)): Path<(u32, u32)>,
+) -> axum::Json<serde_json::Value> {
+    let conn = require_db!(state);
+    let result = tokio::task::spawn_blocking(move || {
+        fire_red_database::get_hp_history(&conn, run_id, personality)
+    })
+    .await;
+    axum::Json(result.unwrap_or_else(|_| serde_json::json!({ "error": "Task panicked" })))
+}
+
+/// `GET /api/run/:id/enemy_hp_log` — enemy Pokémon HP at start and end of each encounter.
+///
+/// Groups by enemy personality. Each entry shows initial HP, final HP, and
+/// total damage dealt. Species name is inferred from the nearest first-encounter record.
+async fn api_run_enemy_hp_log(
+    State(state): State<WebState>,
+    Path(run_id): Path<u32>,
+) -> axum::Json<serde_json::Value> {
+    let conn = require_db!(state);
+    let result =
+        tokio::task::spawn_blocking(move || fire_red_database::get_enemy_hp_log(&conn, run_id))
+            .await;
+    axum::Json(result.unwrap_or_else(|_| serde_json::json!({ "error": "Task panicked" })))
+}
+
+/// `GET /api/run/:id/battle_damage` — per-battle damage summary.
+///
+/// Groups damage events (HP decreases) across all party Pokémon into battles
+/// using a 120-second gap threshold. Returns each battle's time window, which
+/// Pokémon were involved, and how much damage each took.
+async fn api_run_battle_damage(
+    State(state): State<WebState>,
+    Path(run_id): Path<u32>,
+) -> axum::Json<serde_json::Value> {
+    let conn = require_db!(state);
+    let result = tokio::task::spawn_blocking(move || {
+        fire_red_database::get_battle_damage_log(&conn, run_id)
+    })
+    .await;
+    axum::Json(result.unwrap_or_else(|_| serde_json::json!({ "error": "Task panicked" })))
+}
+
+/// `GET /api/run/:id/summary` — Markdown text recap for a completed (or in-progress) run.
+///
+/// Append `?format=text` to receive `text/plain` (Markdown source directly); omit it to
+/// receive `{ "markdown": "..." }` JSON. Returns `404` when the run is not found.
+async fn api_run_summary(
+    State(state): State<WebState>,
+    Path(run_id): Path<u32>,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> impl IntoResponse {
+    let conn = match state.db_conn {
+        Some(s) => s,
+        None => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                axum::response::AppendHeaders([("content-type", "text/plain")]),
+                "No database configured".to_string(),
+            )
+                .into_response()
+        }
+    };
+    let result =
+        tokio::task::spawn_blocking(move || fire_red_database::run_summary_markdown(&conn, run_id))
+            .await
+            .unwrap_or_else(|_| Err("Task panicked".to_string()));
+
+    match result {
+        Err(e) if e.contains("not found") => (
+            StatusCode::NOT_FOUND,
+            axum::response::AppendHeaders([("content-type", "text/plain")]),
+            e,
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            axum::response::AppendHeaders([("content-type", "text/plain")]),
+            e,
+        )
+            .into_response(),
+        Ok(md) => {
+            if params.get("format").map(|s| s.as_str()) == Some("text") {
+                (
+                    StatusCode::OK,
+                    axum::response::AppendHeaders([("content-type", "text/plain; charset=utf-8")]),
+                    md,
+                )
+                    .into_response()
+            } else {
+                axum::Json(serde_json::json!({ "markdown": md })).into_response()
+            }
+        }
+    }
+}
+
+/// Broadcasts a command to all connected tracker slots.
+///
+/// Supported commands (no request body needed — suitable for Stream Deck buttons):
+///
+/// | `cmd`       | Effect                                                   |
+/// |-------------|----------------------------------------------------------|
+/// | `end_run`   | End the active run for every connected player.           |
+/// | `new_run`   | Start a new run for every connected player.              |
+/// | `heal_all`  | Heal HP/PP/status of every party Pokémon for all slots.  |
 async fn api_command(State(state): State<WebState>, Path(cmd): Path<String>) -> impl IntoResponse {
     let msg = match cmd.as_str() {
-        "end_run" => ClientMessage::EndRun,
-        "new_run" => ClientMessage::NewRun,
+        "end_run"  => ClientMessage::EndRun,
+        "new_run"  => ClientMessage::NewRun,
+        "heal_all" => ClientMessage::HealParty,
         other => return (StatusCode::BAD_REQUEST, format!("Unknown command: {other}")),
     };
     let slots = state.live_slots.lock_or_recover().clone();
@@ -3668,6 +4137,30 @@ async fn api_command(State(state): State<WebState>, Path(cmd): Path<String>) -> 
         StatusCode::OK,
         format!("Command '{cmd}' sent to {count} slot(s)"),
     )
+}
+
+/// Sends a no-body command to a single tracker slot. Designed for Stream Deck
+/// buttons where a separate body editor is inconvenient.
+///
+/// Supported per-slot commands:
+///
+/// | `cmd`         | Effect                                                  |
+/// |---------------|---------------------------------------------------------|
+/// | `heal_party`  | Heal HP/PP/status of all party Pokémon for this slot.   |
+async fn api_slot_command(
+    State(state): State<WebState>,
+    Path((index, cmd)): Path<(usize, String)>,
+) -> impl IntoResponse {
+    let msg = match cmd.as_str() {
+        "heal_party" => ClientMessage::HealParty,
+        other => return (StatusCode::BAD_REQUEST, format!("Unknown slot command: {other}")),
+    };
+    let slots = state.live_slots.lock_or_recover();
+    let Some(slot) = slots.get(index) else {
+        return (StatusCode::NOT_FOUND, format!("No slot at index {index}"));
+    };
+    slot.command_queue.lock_or_recover().push_back(msg);
+    (StatusCode::OK, format!("Command '{cmd}' sent to slot {index}"))
 }
 
 /// Runs arbitrary SQL against the database and returns results as JSON.
@@ -3780,6 +4273,8 @@ pub fn run(
             .route("/api/slot/:index/learn_move", post(api_learn_move))
             .route("/api/slot/:index/forget_move", post(api_forget_move))
             .route("/api/slot/:index/set_pokerus", post(api_set_pokerus))
+            .route("/api/slot/:index/set_pp_ups", post(api_set_pp_ups))
+            .route("/api/slot/:index/revive_pokemon", post(api_revive_pokemon))
             .route("/api/bot/:index", get(api_bot_summary))
             .route("/api/command/:cmd", post(api_command))
             .route("/api/db/query", post(api_db_query))
@@ -3832,6 +4327,20 @@ pub fn run(
             .route("/trainers", get(serve_trainers))
             .route("/run/:id/trainers", get(serve_trainers))
             .route("/api/run/:id/trainers", get(api_run_trainers))
+            .route("/api/runs/compare", get(api_runs_compare))
+            .route("/api/run/:id/luck", get(api_run_luck))
+            .route("/api/run/:id/closest_calls", get(api_run_closest_calls))
+            .route("/api/catch_rate", get(api_catch_rate))
+            .route(
+                "/api/run/:id/pokemon/:personality/hp_history",
+                get(api_run_pokemon_hp_history),
+            )
+            .route("/api/run/:id/enemy_hp_log", get(api_run_enemy_hp_log))
+            .route("/api/run/:id/battle_damage", get(api_run_battle_damage))
+            .route("/api/run/:id/summary", get(api_run_summary))
+            .route("/:index/deaths", get(serve_deaths_overlay))
+            .route("/:index/encounter_count", get(serve_encounter_count))
+            .route("/api/slot/:index/command/:cmd", post(api_slot_command))
             .route("/about", get(serve_about))
             .route("/compare", get(serve_compare))
             .with_state(web_state);

@@ -278,7 +278,8 @@ impl WebhookConfig {
 // OBS WebSocket config
 // ---------------------------------------------------------------------------
 
-/// Optional OBS WebSocket integration — saves a replay buffer clip on game events.
+/// Optional OBS WebSocket integration — saves a replay buffer clip on game events
+/// and/or switches OBS scenes.
 ///
 /// Enable in `config.toml`:
 /// ```toml
@@ -286,6 +287,8 @@ impl WebhookConfig {
 /// clip_on_death = true
 /// clip_on_shiny = true
 /// clip_on_wipe  = true
+/// scene_on_death = "Death Cam"
+/// scene_on_wipe  = "End Screen"
 /// # host = "localhost"   # default
 /// # port = 4455          # default (OBS v5 WebSocket)
 /// # password = "secret"  # only if authentication is enabled in OBS
@@ -307,6 +310,21 @@ pub struct ObsConfig {
     /// Save a replay-buffer clip whenever a new badge is earned.
     #[serde(default)]
     pub clip_on_badge: bool,
+    /// Switch to this OBS scene name when a party member dies.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scene_on_death: Option<String>,
+    /// Switch to this OBS scene name on a party wipe.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scene_on_wipe: Option<String>,
+    /// Switch to this OBS scene name on a shiny encounter.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scene_on_shiny: Option<String>,
+    /// Switch to this OBS scene name when a badge is earned.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scene_on_badge: Option<String>,
+    /// Switch to this OBS scene name when a Pokémon is caught.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scene_on_catch: Option<String>,
 }
 
 fn default_obs_host() -> String {
@@ -326,13 +344,26 @@ impl Default for ObsConfig {
             clip_on_shiny: false,
             clip_on_wipe: false,
             clip_on_badge: false,
+            scene_on_death: None,
+            scene_on_wipe: None,
+            scene_on_shiny: None,
+            scene_on_badge: None,
+            scene_on_catch: None,
         }
     }
 }
 
 impl ObsConfig {
     pub fn is_default(&self) -> bool {
-        !self.clip_on_death && !self.clip_on_shiny && !self.clip_on_wipe && !self.clip_on_badge
+        !self.clip_on_death
+            && !self.clip_on_shiny
+            && !self.clip_on_wipe
+            && !self.clip_on_badge
+            && self.scene_on_death.is_none()
+            && self.scene_on_wipe.is_none()
+            && self.scene_on_shiny.is_none()
+            && self.scene_on_badge.is_none()
+            && self.scene_on_catch.is_none()
     }
 }
 
@@ -1097,6 +1128,11 @@ impl eframe::App for SetupApp {
                         clip_on_shiny: self.obs_clip_shiny,
                         clip_on_wipe: self.obs_clip_wipe,
                         clip_on_badge: self.obs_clip_badge,
+                        scene_on_death: None,
+                        scene_on_wipe: None,
+                        scene_on_shiny: None,
+                        scene_on_badge: None,
+                        scene_on_catch: None,
                     },
                     dupes_clause: self.dupes_clause,
                     allow_species_repeats: self.allow_species_repeats,

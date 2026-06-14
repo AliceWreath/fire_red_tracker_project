@@ -55,22 +55,27 @@ A dedicated transparent OBS source (`/:index/alerts`) that shows timed toast not
 
 ### OBS clip trigger
 
-The tracker can automatically save the OBS replay buffer on key events. Configure the optional `[obs]` section in `~/.config/fire_red_tracker/config.toml`:
+The tracker can automatically save the OBS replay buffer and/or switch OBS scenes on key events. Configure the optional `[obs]` section in `~/.config/fire_red_tracker/config.toml`:
 
 ```toml
 [obs]
-host          = "localhost"   # OBS WebSocket host (default: localhost)
-port          = 4455          # OBS WebSocket port (default: 4455)
-password      = "secret"      # omit if OBS authentication is disabled
-clip_on_death = true          # save replay buffer when a party member faints
-clip_on_shiny = true          # save replay buffer on shiny encounter
-clip_on_wipe  = true          # save replay buffer on party wipe
-clip_on_badge = true          # save replay buffer when a gym badge is earned
+host           = "localhost"   # OBS WebSocket host (default: localhost)
+port           = 4455          # OBS WebSocket port (default: 4455)
+password       = "secret"      # omit if OBS authentication is disabled
+clip_on_death  = true          # save replay buffer when a party member faints
+clip_on_shiny  = true          # save replay buffer on shiny encounter
+clip_on_wipe   = true          # save replay buffer on party wipe
+clip_on_badge  = true          # save replay buffer when a gym badge is earned
+scene_on_death = "Death Cam"   # switch to this OBS scene on death (optional)
+scene_on_wipe  = "End Screen"  # switch to this OBS scene on wipe (optional)
+scene_on_shiny = "Shiny Alert" # switch to this OBS scene on shiny encounter (optional)
+scene_on_badge = "Badge Jingle"# switch to this OBS scene when a badge is earned (optional)
+scene_on_catch = "Catch Cam"   # switch to this OBS scene when a Pokémon is caught (optional)
 ```
 
-All four trigger flags default to `false`. The `[obs]` section is omitted from the config file entirely when all four are disabled.
+Clip flags default to `false`; scene fields default to absent (no switch). The `[obs]` section is omitted from the config file entirely when nothing is configured. Scene names must match OBS scene names exactly (case-sensitive).
 
-Clips are fired on the same background thread as webhooks. The tracker connects to OBS via plain TCP WebSocket (OBS WebSocket v5 protocol), authenticates with SHA-256 if a password is set, and sends a `SaveReplayBuffer` request. OBS must have **Replay Buffer** enabled and running (Tools → Replay Buffer → Start). Connection errors are printed to stderr and do not interrupt the game-polling loop.
+Clips and scene switches are fired on the same background thread as webhooks. The tracker connects to OBS via plain TCP WebSocket (OBS WebSocket v5 protocol), authenticates with SHA-256 if a password is set, and sends a `SaveReplayBuffer` or `SetCurrentProgramScene` request. OBS must have **Replay Buffer** enabled and running (Tools → Replay Buffer → Start) for clip triggers to work. Connection errors are printed as warnings and do not interrupt the game-polling loop.
 
 ### Webhooks
 
@@ -174,6 +179,29 @@ wipe_template = '{"content": "☠️ **{player}**'\''s run has ended. Press F."}
 ```
 
 The `*_template` keys are optional even when the corresponding `*_url` is set — omitting a template falls back to the default JSON payload. The `[webhooks]` section is omitted from the config file entirely when all URLs and templates are unset.
+
+### Twitch chat bot
+
+The aggregator can respond to viewer chat commands in a Twitch channel. Configure the optional `[twitch]` section in `~/.config/fire_red_aggregator/config.toml`:
+
+```toml
+[twitch]
+channel = "mychannel"           # channel name without #
+nick    = "my_bot_account"      # Twitch username for the bot account
+token   = "oauth:xxxxxxxxxx"    # OAuth token — get one at twitchapps.com/tmi
+# slot  = 0                     # which tracker slot to read (default: 0)
+```
+
+Supported viewer commands:
+
+| Command     | Response                                                            |
+|-------------|---------------------------------------------------------------------|
+| `!party`    | Current party members: nickname, species, level, HP                 |
+| `!deaths`   | Death count and the five most recent deaths (requires DB)           |
+| `!shinies`  | Shiny count and last shiny name (requires DB)                       |
+| `!status`   | One-liner: `"Player — HP/MaxHP — Zone"`                             |
+
+The bot reconnects automatically on disconnect, with exponential backoff from 2 seconds up to 60 seconds. The OAuth token is stored in plaintext in the TOML config — keep this file private. The `[twitch]` section works in both headless (`--ws-port`) and GUI modes.
 
 #### Delivery mechanics
 
@@ -298,6 +326,10 @@ The following pages are available:
 | `http://localhost:PORT/1/routes` | Player 2's route completion board |
 | `http://localhost:PORT/0/alerts` | Player 1's alerts overlay — transparent OBS source for zone, death, shiny, wipe, and injection-command toasts |
 | `http://localhost:PORT/1/alerts` | Player 2's alerts overlay |
+| `http://localhost:PORT/0/deaths` | Player 1's death counter — large red number, ideal as a compact OBS Browser Source widget |
+| `http://localhost:PORT/1/deaths` | Player 2's death counter |
+| `http://localhost:PORT/0/encounter_count` | Player 1's encounter counter — total encounters this run with caught/missed breakdown |
+| `http://localhost:PORT/1/encounter_count` | Player 2's encounter counter |
 | `http://localhost:PORT/history` | Run history — all past runs with expandable catch / death / encounter logs |
 | `http://localhost:PORT/shiny` | Shiny odds tracker — encounter count since last shiny encounter, last shiny detail card, full encounter list since last shiny |
 | `http://localhost:PORT/memorial` | Memorial grid — dead Pokémon from the active run as sprite cards with nickname, species, level, and death date |
@@ -342,6 +374,8 @@ All endpoints are served on the same port as the WebSocket overlay (`--ws-port`)
 | `/api/slot/:index` | `GET` | Single slot object by zero-based index. Returns `404` if the index is out of range |
 | `/api/command/end_run` | `POST` | Broadcasts `EndRun` to all connected tracker slots. Returns plain text: `"Command 'end_run' sent to N slot(s)"` |
 | `/api/command/new_run` | `POST` | Broadcasts `NewRun` to all connected tracker slots. Returns plain text: `"Command 'new_run' sent to N slot(s)"` |
+| `/api/command/heal_all` | `POST` | Heals HP/PP/status for all party Pokémon across all connected slots. Suitable as a Stream Deck button (no body required) |
+| `/api/slot/:index/command/heal_party` | `POST` | Heals HP/PP/status for all party Pokémon for a single slot. Suitable as a Stream Deck button (no body required) |
 | `/api/db/query` | `POST` | Runs arbitrary SQL against the database. Request body: `{ "sql": "SELECT ..." }`. Response: `{ "columns": ["col1", ...], "rows": [{ "col1": "val", ... }, ...], "rows_affected": N }` or `{ "error": "..." }` on failure. All values are returned as strings. Requires `--db` |
 | `/api/run/:id/stats` | `GET` | Per-run statistics for run `id`. Returns `{ playtime_secs, zones_entered, caught, catch_rate, deaths, avg_death_level, zone_stats: [...], deaths: [...] }`. Requires `--db` |
 | `/api/run/:id/route_stats` | `GET` | Per-route catch statistics for run `id`. Returns `{ run_id, zones: [{ map_group, map_name, area, total, caught, catch_rate_pct }] }`. Requires `--db` |
@@ -352,6 +386,7 @@ All endpoints are served on the same port as the WebSocket overlay (`--ws-port`)
 | `/api/run/:id/soul_link/override/:personality` | `DELETE` | Remove the manual soul-link override for the given personality in run `id`. Requires `--db` |
 | `/api/run/:id/shiny` | `GET` | Shiny encounter statistics for run `id`. Returns `{ total_shinies, encounters_since_last_shiny, last_shiny: {...}, since_last_shiny: [...] }`. Requires `--db` |
 | `/api/run/:id/export` | `GET` | Full run export. Without query params: returns the complete run as JSON (metadata + caught + dead + encounters). With `?format=csv`: returns the same data as three CSV sections (caught, dead, encounters) in a single file with `Content-Disposition: attachment`. Requires `--db` |
+| `/api/run/:id/summary` | `GET` | Markdown text recap. Includes a summary table (zones, caught, deaths, shinies), full death log, and encounter log with caught/shiny flags. Append `?format=text` for `text/plain`; omit for `{ "markdown": "..." }` JSON. Requires `--db` |
 | `/api/run/:id/events` | `GET` | Chronological event log for a run. Returns `{ run_id, events: [{ player_name, event_type, species_name, nickname, old_nickname, level, occurred_at }, ...] }`. `old_nickname` is populated for `nickname_change` events and empty for all others. Event types: `catch`, `death`, `soul_link_death`, `shiny`, `wipe`, `badge`, `nickname_change`. Requires `--db` |
 | `/api/timeline` | `GET` | Chronological event log for the currently active run. Convenience alias for `/api/run/:id/events` on the active run. Each event includes both `occurred_at` (Unix integer) and `occurred_at_human` (formatted string), plus `old_nickname` for `nickname_change` events. Returns `404` when no run is active, `503` when no database is configured, `500` on DB failure. Requires `--db` |
 | `/db.json` | `GET` | Full database snapshot — all four tables (runs, caught, dead, encounters) formatted for the browser viewer. Requires `--db` |
@@ -391,6 +426,8 @@ Pages that only need a subset of the state can append `?show=<mode>` to the `/ws
 | `memorial` | `encounters`, `box_pokemon`, `caught`, `prev_run_encounters`, `db_encounters` |
 | `soullink` | `encounters`, `box_pokemon`, `db_encounters`, `prev_run_encounters` |
 | `types` | `encounters`, `box_pokemon`, `dead`, `caught`, `db_encounters`, `prev_run_encounters` |
+| `deaths` | `party`, `encounters`, `box_pokemon`, `caught`, `db_encounters`, `prev_run_encounters` |
+| `counter` | `party`, `encounters`, `box_pokemon`, `dead`, `prev_run_encounters` |
 | *(omitted or unrecognised)* | No stripping — full payload |
 
 ##### Slot object fields
@@ -973,11 +1010,24 @@ Add `http://localhost:9090/cmd` in a browser tab to manage runs — **End Run** 
 
 ### Possible future features
 
-- **Trainer battle log** — track which named trainers have been defeated per run (data already in ROM via `fire_red_trainer_data`); useful for completionist or bingo Nuzlocke variants.
-- **Death cause analysis** — record the move/type that caused each death by capturing battle state at the moment a party slot goes to 0 HP.
-- **Discord Rich Presence** — push current location + party size to Discord via the local RPC socket (small background thread, no new dependency needed).
-- **LiveSplit integration** — optional TCP connection to LiveSplit to auto-split on gym badges or game clear.
 - **Overlay visual editor** — drag-and-drop config page in the web UI to position/resize overlay widgets without editing TOML.
+
+---
+
+**v0.9.27** — multi-player / social features: Twitch IRC chat bot, session summary export:
+
+- **Twitch IRC chat bot** — optional `[twitch]` section in `~/.config/fire_red_aggregator/config.toml`. Fields: `channel` (without `#`), `nick` (bot account username), `token` (`oauth:xxx` — get one at twitchapps.com/tmi), optional `slot` (which tracker to read, default 0). The bot connects to `irc.chat.twitch.tv:6667` over plain TCP, authenticates, joins the channel, and responds to viewer commands: `!party` (party members with species, level, HP), `!deaths` (death count and most recent deaths), `!shinies` (shiny count and last shiny, requires DB), `!status` (one-liner zone/HP summary). Reconnects automatically on disconnect with exponential backoff. No new dependencies — plain TCP + standard IRC protocol.
+- **`GET /api/run/:id/summary`** — Markdown text recap for a completed (or in-progress) run. Includes a summary table (zones visited, caught count, deaths, shinies), death log, and full encounter log with caught/missed/shiny flags. Append `?format=text` to receive `text/plain` (raw Markdown for download or clipboard); omit to receive `{ "markdown": "..." }` JSON. Returns `404` when the run is not found, `503` when no DB is configured. Requires `--db`.
+
+---
+
+**v0.9.26** — overlay/streaming features: kill counter, encounter counter, OBS scene switching, Stream Deck commands:
+
+- **`/:index/deaths` overlay** — compact death-counter Browser Source page: large red numeral on a dark transparent panel. Subscribes to `?show=deaths` WS filter so only the dead list is transferred; zero bandwidth overhead on the main overlay feed. Supports `?theme=` like all other overlay pages.
+- **`/:index/encounter_count` overlay** — encounter counter Browser Source page: total encounter count with caught/missed breakdown for the active run. Subscribes to `?show=counter` WS filter (only `db_encounters` transferred).
+- **OBS scene switching** — five new `Option<String>` fields in the `[obs]` config section: `scene_on_death`, `scene_on_wipe`, `scene_on_shiny`, `scene_on_badge`, `scene_on_catch`. When set, the tracker switches OBS to the named scene using `SetCurrentProgramScene` (OBS WebSocket v5) on the relevant event. Reuses the same connection/auth code as the existing replay-buffer clip trigger; errors are logged as warnings and do not interrupt polling.
+- **`POST /api/command/heal_all`** — new global command that sends `HealParty` to all connected tracker slots. No request body required; suitable as a Stream Deck button.
+- **`POST /api/slot/:index/command/:cmd`** — new per-slot command route for body-less Stream Deck buttons. Currently supports `heal_party` (heals HP/PP/status for the specified slot's party).
 
 ---
 

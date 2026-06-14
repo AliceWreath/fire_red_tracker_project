@@ -723,6 +723,7 @@ impl AggregatorApp {
                     default_test: s.default_test,
                     test: s.test.clone(),
                     allow_injections: s.allow_injections,
+                    twitch: None,
                 };
                 save_config(&cfg, &self.config_path);
                 self.settings_open = false;

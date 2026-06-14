@@ -435,6 +435,18 @@ fn main() {
             let mut last_trainer_flags: Option<Vec<u8>> = None;
             // Track the last player name to detect save-file switches mid-session.
             let mut last_player_name = String::new();
+            // HP history tracking: remember each party mon's last known HP so we
+            // only write to the DB when it actually changes.
+            let mut last_party_hp: HashMap<u32, u16> = HashMap::new();
+            // Enemy HP tracking: record initial and final HP for each encounter.
+            // gEnemyParty[0] is never cleared between battles; a personality
+            // change signals a new battle rather than presence/absence.
+            // `enemy_warmed_up` starts false so we skip the stale value that
+            // may be in EWRAM at startup (from a previous battle before launch).
+            let mut last_enemy_personality: u32 = 0;
+            let mut last_enemy_hp: u16 = 0;
+            let mut last_enemy_max_hp: u16 = 0;
+            let mut enemy_warmed_up = false;
 
             // Set player name before the startup party scan so records written
             // to caught_pokemon have the correct player attribution. The trainer
@@ -480,6 +492,9 @@ fn main() {
                         map_name_id: 0xFF,
                     };
                     enc_tracker.reset();
+                    last_party_hp.clear();
+                    last_enemy_personality = 0;
+                    enemy_warmed_up = false;
                     std::thread::sleep(std::time::Duration::from_millis(500));
                     continue;
                 }
@@ -549,6 +564,49 @@ fn main() {
                 // aggregator always sees current values without waiting for a
                 // size change or the periodic DB-check interval.
                 fill_party_list(&thread_party);
+
+                // Track the lowest HP ratio seen per Pokémon for closest-call analytics.
+                // Also log every HP change for the full per-Pokémon HP history.
+                for mon in thread_party.lock_or_recover().iter() {
+                    let personality = mon.box_mon.personality;
+                    let hp = mon.hp;
+                    let max_hp = mon.max_hp;
+                    if personality != 0 && hp > 0 && max_hp > 0 {
+                        fire_red_database::update_min_hp_seen(personality, hp, max_hp);
+                        let changed = last_party_hp.get(&personality).map_or(true, |&last| last != hp);
+                        if changed {
+                            fire_red_database::record_hp_observation(personality, hp, max_hp);
+                            last_party_hp.insert(personality, hp);
+                        }
+                    }
+                }
+
+                // Enemy HP tracking: log initial HP at battle start and final HP
+                // when a new personality is detected (previous battle ended).
+                if let Some((enemy_p, enemy_hp, enemy_max_hp)) =
+                    crate::game::read_enemy_slot0_raw()
+                {
+                    if !enemy_warmed_up {
+                        // Discard the first personality seen after (re)load; it may
+                        // be stale from a battle before the tracker started.
+                        last_enemy_personality = enemy_p;
+                        enemy_warmed_up = true;
+                    } else if enemy_p != last_enemy_personality {
+                        // Personality changed → previous battle ended, new one began.
+                        if last_enemy_personality != 0 {
+                            fire_red_database::record_enemy_hp(
+                                last_enemy_personality,
+                                last_enemy_hp,
+                                last_enemy_max_hp,
+                                "final",
+                            );
+                        }
+                        fire_red_database::record_enemy_hp(enemy_p, enemy_hp, enemy_max_hp, "initial");
+                        last_enemy_personality = enemy_p;
+                    }
+                    last_enemy_hp = enemy_hp;
+                    last_enemy_max_hp = enemy_max_hp;
+                }
 
                 if old_party_size != party_size {
                     old_party_size = party_size;

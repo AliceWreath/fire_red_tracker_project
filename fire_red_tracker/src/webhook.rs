@@ -122,6 +122,7 @@ enum WorkerTask {
         run_id: Option<u32>,
     },
     ObsClip,
+    ObsScene(String),
 }
 
 struct WebhookState {
@@ -412,6 +413,7 @@ pub fn init(config: WebhookConfig, obs_config: ObsConfig) {
                     );
                 }
                 WorkerTask::ObsClip => obs_clip_inner(),
+                WorkerTask::ObsScene(scene) => obs_scene_inner(&scene),
             }
         }
     });
@@ -468,41 +470,47 @@ pub fn fire_event(event: WebhookEvent) {
         .unwrap_or_else(|p| p.into_inner())
         .clone();
 
-    let (url, template, obs_clip, event_type_str) = match &event {
+    let (url, template, obs_clip, obs_scene, event_type_str) = match &event {
         WebhookEvent::Death { .. } => (
             config.death_url.as_deref(),
             config.death_template.as_deref(),
             obs_config.clip_on_death,
+            obs_config.scene_on_death.clone(),
             "death",
         ),
         WebhookEvent::Catch { .. } => (
             config.catch_url.as_deref(),
             config.catch_template.as_deref(),
             false,
+            obs_config.scene_on_catch.clone(),
             "catch",
         ),
         WebhookEvent::Shiny { .. } => (
             config.shiny_url.as_deref(),
             config.shiny_template.as_deref(),
             obs_config.clip_on_shiny,
+            obs_config.scene_on_shiny.clone(),
             "shiny",
         ),
         WebhookEvent::Wipe { .. } => (
             config.wipe_url.as_deref(),
             config.wipe_template.as_deref(),
             obs_config.clip_on_wipe,
+            obs_config.scene_on_wipe.clone(),
             "wipe",
         ),
         WebhookEvent::Badge { .. } => (
             config.badge_url.as_deref(),
             config.badge_template.as_deref(),
             obs_config.clip_on_badge,
+            obs_config.scene_on_badge.clone(),
             "badge",
         ),
         WebhookEvent::NicknameChange { .. } => (
             config.nickname_url.as_deref(),
             config.nickname_template.as_deref(),
             false,
+            None,
             "nickname_change",
         ),
     };
@@ -523,6 +531,10 @@ pub fn fire_event(event: WebhookEvent) {
 
     if obs_clip {
         let _ = state.tx.send(WorkerTask::ObsClip);
+    }
+
+    if let Some(scene) = obs_scene {
+        let _ = state.tx.send(WorkerTask::ObsScene(scene));
     }
 }
 
@@ -599,6 +611,88 @@ fn try_obs_clip() -> Result<(), String> {
     ws.send(tungstenite::Message::Text(
         r#"{"op":6,"d":{"requestType":"SaveReplayBuffer","requestId":"clip"}}"#.to_string(),
     ))
+    .map_err(|e| format!("send request: {e}"))?;
+
+    let _ = ws.close(None);
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// OBS WebSocket scene switch (v5 protocol, reuses auth helpers above)
+// ---------------------------------------------------------------------------
+
+fn obs_scene_inner(scene: &str) {
+    if let Err(e) = try_obs_scene_switch(scene) {
+        tracing::warn!("OBS scene switch failed: {e}");
+    }
+}
+
+fn try_obs_scene_switch(scene: &str) -> Result<(), String> {
+    let state = STATE.get().ok_or("webhook not initialized")?;
+    let obs = state
+        .obs_config
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .clone();
+
+    let stream = std::net::TcpStream::connect(format!("{}:{}", obs.host, obs.port))
+        .map_err(|e| format!("TCP connect: {e}"))?;
+    stream
+        .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+        .map_err(|e| format!("set_read_timeout: {e}"))?;
+
+    let (mut ws, _) = tungstenite::client(format!("ws://{}:{}/", obs.host, obs.port), stream)
+        .map_err(|e| format!("WS handshake: {e}"))?;
+
+    // Read Hello (op 0)
+    let hello_text = match ws.read().map_err(|e| format!("read hello: {e}"))? {
+        tungstenite::Message::Text(t) => t,
+        other => return Err(format!("unexpected hello frame: {:?}", other)),
+    };
+    let hello: serde_json::Value =
+        serde_json::from_str(&hello_text).map_err(|e| format!("parse hello: {e}"))?;
+
+    // Build Identify (op 1) with optional authentication.
+    let auth_str: Option<String> = if let (Some(auth_info), Some(password)) = (
+        hello["d"]["authentication"].as_object(),
+        obs.password.as_deref().filter(|p| !p.is_empty()),
+    ) {
+        let salt = auth_info["salt"].as_str().unwrap_or("");
+        let challenge = auth_info["challenge"].as_str().unwrap_or("");
+        use sha2::{Digest, Sha256};
+        let mut h = Sha256::new();
+        h.update(password.as_bytes());
+        h.update(salt.as_bytes());
+        let secret = obs_b64(&h.finalize());
+        let mut h2 = Sha256::new();
+        h2.update(secret.as_bytes());
+        h2.update(challenge.as_bytes());
+        Some(obs_b64(&h2.finalize()))
+    } else {
+        None
+    };
+
+    let identify = match auth_str {
+        Some(auth) => format!(
+            r#"{{"op":1,"d":{{"rpcVersion":1,"authentication":"{}"}}}}"#,
+            auth
+        ),
+        None => r#"{"op":1,"d":{"rpcVersion":1}}"#.to_string(),
+    };
+    ws.send(tungstenite::Message::Text(identify))
+        .map_err(|e| format!("send identify: {e}"))?;
+
+    // Read Identified (op 2)
+    ws.read().map_err(|e| format!("read identified: {e}"))?;
+
+    // Escape scene name for JSON: replace backslash then double-quote.
+    let scene_escaped = scene.replace('\\', "\\\\").replace('"', "\\\"");
+
+    // Send SetCurrentProgramScene request (op 6)
+    ws.send(tungstenite::Message::Text(format!(
+        r#"{{"op":6,"d":{{"requestType":"SetCurrentProgramScene","requestId":"scene","requestData":{{"sceneName":"{}"}}}}}}"#,
+        scene_escaped
+    )))
     .map_err(|e| format!("send request: {e}"))?;
 
     let _ = ws.close(None);

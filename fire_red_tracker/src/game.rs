@@ -776,6 +776,28 @@ pub fn get_wild_enemy_pokemon() -> Option<Pokemon> {
     }
 }
 
+/// Reads personality, current HP, and max HP directly from the EWRAM snapshot
+/// of `gEnemyParty[0]`, bypassing checksum validation and OT-ID filtering.
+///
+/// Use this in the game loop to detect new battles (personality change) and to
+/// record enemy HP at the start and end of each encounter. Returns `None` when
+/// the EWRAM buffer is too small or the personality is zero.
+pub fn read_enemy_slot0_raw() -> Option<(u32, u16, u16)> {
+    let ewram = fire_red_memory::get_ewram();
+    let offset = ENEMY_PARTY_ADDR - EWRAM_BASE;
+    if ewram.len() < offset + 100 {
+        return None;
+    }
+    let personality =
+        u32::from_le_bytes(ewram[offset..offset + 4].try_into().unwrap());
+    if personality == 0 {
+        return None;
+    }
+    let hp = u16::from_le_bytes([ewram[offset + 86], ewram[offset + 87]]);
+    let max_hp = u16::from_le_bytes([ewram[offset + 88], ewram[offset + 89]]);
+    Some((personality, hp, max_hp))
+}
+
 /// Compares the current badge state against `last_mask` (one bit per badge,
 /// LSB = Brock) and fires events/webhooks for any newly obtained badges.
 ///
@@ -4191,6 +4213,377 @@ pub fn set_pokerus(party_position: usize) -> bool {
     }
 }
 
+// ── set_pp_ups ────────────────────────────────────────────────────────────────
+
+/// Pure logic for [`set_pp_ups`]: sets the PP-Up bonus byte in the Growth
+/// substructure and refills each occupied move slot's current PP to the new max.
+///
+/// `data` must be ≥ 80 bytes (the first 80 bytes of a PartyMon). `rom` and
+/// `move_data_addr` are used to look up each move's base PP so the correct max
+/// can be computed after applying the new bonus counts.
+///
+/// `pp0`–`pp3` are clamped to 0–3 internally.
+///
+/// Returns `None` when `personality == 0` (empty slot), `data` is too short,
+/// or the bonuses byte is already equal to the requested value.
+pub(crate) fn compute_set_pp_ups(
+    data: &[u8],
+    pp0: u8,
+    pp1: u8,
+    pp2: u8,
+    pp3: u8,
+    rom: &[u8],
+    move_data_addr: usize,
+) -> Option<([u8; 2], [u8; 48])> {
+    if data.len() < 80 {
+        return None;
+    }
+    let personality = u32::from_le_bytes(data[0..4].try_into().unwrap());
+    let ot_id = u32::from_le_bytes(data[4..8].try_into().unwrap());
+    if personality == 0 {
+        return None;
+    }
+    let enc_key = personality ^ ot_id;
+
+    let mut decrypted = [0u8; 48];
+    for (i, chunk) in data[32..80].chunks_exact(4).enumerate() {
+        let w = u32::from_le_bytes(chunk.try_into().unwrap()) ^ enc_key;
+        decrypted[i * 4..i * 4 + 4].copy_from_slice(&w.to_le_bytes());
+    }
+
+    let g_off = growth_substructure_index(personality) * 12;
+    let a_off = attacks_substructure_index(personality) * 12;
+
+    let old_bonuses = decrypted[g_off + 8];
+    let new_bonuses =
+        (pp0 & 3) | ((pp1 & 3) << 2) | ((pp2 & 3) << 4) | ((pp3 & 3) << 6);
+
+    if old_bonuses == new_bonuses {
+        return None;
+    }
+    decrypted[g_off + 8] = new_bonuses;
+
+    for slot in 0..4usize {
+        let move_id = u16::from_le_bytes([
+            decrypted[a_off + slot * 2],
+            decrypted[a_off + slot * 2 + 1],
+        ]);
+        if move_id == 0 {
+            continue;
+        }
+        let base_pp = base_pp_for_move(rom, move_data_addr, move_id);
+        if base_pp == 0 {
+            continue;
+        }
+        decrypted[a_off + 8 + slot] = max_pp_for_slot(base_pp, new_bonuses, slot);
+    }
+
+    let checksum: u16 = decrypted
+        .chunks_exact(2)
+        .map(|c| u16::from_le_bytes([c[0], c[1]]))
+        .fold(0u16, |acc, w| acc.wrapping_add(w));
+
+    let mut encrypted = [0u8; 48];
+    for (i, chunk) in decrypted.chunks_exact(4).enumerate() {
+        let w = u32::from_le_bytes(chunk.try_into().unwrap()) ^ enc_key;
+        encrypted[i * 4..i * 4 + 4].copy_from_slice(&w.to_le_bytes());
+    }
+    Some((checksum.to_le_bytes(), encrypted))
+}
+
+/// Sets PP-Up bonus counts for all four move slots of party Pokémon at
+/// `party_position` (0–5) and refills each occupied slot to the new maximum PP.
+///
+/// `pp0`–`pp3` are the desired PP-Up counts (0–3) for move slots 0–3. Values
+/// above 3 are clamped to 3.
+///
+/// Returns `true` when the write was dispatched (or bonuses were already equal
+/// to the requested values, which is a no-op).
+pub fn set_pp_ups(
+    party_position: usize,
+    pp0: u8,
+    pp1: u8,
+    pp2: u8,
+    pp3: u8,
+) -> bool {
+    if party_position >= 6 {
+        tracing::warn!(
+            "set_pp_ups: party_position {party_position} out of range (must be 0–5)"
+        );
+        return false;
+    }
+    const PARTY_BASE: u32 = 0x02024284;
+    const MON_SIZE: u32 = 100;
+    let mon_addr = PARTY_BASE + party_position as u32 * MON_SIZE;
+    let socket = match fire_red_retroarch_interfacing::make_socket() {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::warn!("set_pp_ups: socket error: {e}");
+            return false;
+        }
+    };
+    let data = match read_retroarch_bytes(&socket, mon_addr, 80) {
+        Some(b) if b.len() == 80 => b,
+        _ => {
+            tracing::warn!(
+                "set_pp_ups: RetroArch did not respond for party[{party_position}]"
+            );
+            return false;
+        }
+    };
+    let personality = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
+    if personality == 0 {
+        tracing::warn!("set_pp_ups: party[{party_position}] is empty");
+        return false;
+    }
+    let rom = fire_red_rom_buffer::get_rom();
+    let rom_addr = fire_red_rom_buffer::get_rom_addresses();
+    match compute_set_pp_ups(&data, pp0, pp1, pp2, pp3, rom, rom_addr.move_data_addr) {
+        None => {
+            tracing::info!("set_pp_ups: party[{party_position}] pp_bonuses unchanged");
+            true
+        }
+        Some((checksum, encrypted)) => {
+            let mut payload = [0u8; 52];
+            payload[0..2].copy_from_slice(&checksum);
+            payload[2..4].copy_from_slice(&data[30..32]);
+            payload[4..52].copy_from_slice(&encrypted);
+            if !fire_red_retroarch_interfacing::write_to_retroarch(
+                &socket,
+                mon_addr + 28,
+                &payload,
+            ) {
+                tracing::warn!(
+                    "set_pp_ups: encrypted write failed for party[{party_position}]"
+                );
+                return false;
+            }
+            let new_bonuses =
+                (pp0 & 3) | ((pp1 & 3) << 2) | ((pp2 & 3) << 4) | ((pp3 & 3) << 6);
+            tracing::info!(
+                "set_pp_ups: party[{party_position}] pp_bonuses → {new_bonuses:#04x} \
+                 (pp0={pp0},pp1={pp1},pp2={pp2},pp3={pp3})"
+            );
+            true
+        }
+    }
+}
+
+// ── revive_pokemon ────────────────────────────────────────────────────────────
+
+/// Encode `name` into a 7-byte GBA OT-name buffer (0xFF-padded).
+fn encode_ot_name(name: &str) -> [u8; 7] {
+    let mut buf = [0xFFu8; 7];
+    let mut i = 0usize;
+    for c in name.chars() {
+        if i >= 7 {
+            break;
+        }
+        if let Some(b) = ascii_to_gba(c) {
+            buf[i] = b;
+            i += 1;
+        }
+    }
+    buf
+}
+
+/// Pure logic for [`revive_pokemon`]: reconstruct a 100-byte PartyMon from the
+/// fields stored in the dead_pokemon table.
+///
+/// The revived Pokémon is placed at `current_hp = 1`, status = 0 (healthy), and
+/// Pokérus remaining = 0. `pp_bonuses` is always 0 (no PP-Ups). Returns `None`
+/// only when `personality == 0`.
+///
+/// Parameters match the columns of the `dead_pokemon` database table exactly.
+/// `ivs` and `evs` are `(hp, atk, def, spd, spa, spdef)` tuples.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn compute_revive_mon(
+    personality: u32,
+    ot_id: u32,
+    ot_name: &str,
+    nickname: &str,
+    species: u16,
+    experience: u32,
+    friendship: u8,
+    held_item: u16,
+    moves: [u16; 4],
+    pp: [u8; 4],
+    ivs: (u8, u8, u8, u8, u8, u8),
+    evs: (u8, u8, u8, u8, u8, u8),
+    met_location: u8,
+    ability_bit: u8,
+    level: u8,
+    max_hp: u16,
+    attack: u16,
+    defense: u16,
+    speed: u16,
+    sp_attack: u16,
+    sp_defense: u16,
+) -> Option<[u8; 100]> {
+    if personality == 0 {
+        return None;
+    }
+    let enc_key = personality ^ ot_id;
+
+    let g_off = growth_substructure_index(personality) * 12;
+    let a_off = attacks_substructure_index(personality) * 12;
+    let e_off = effort_substructure_index(personality) * 12;
+    let m_off = misc_substructure_index(personality) * 12;
+
+    let mut decrypted = [0u8; 48];
+
+    // Growth substructure
+    decrypted[g_off..g_off + 2].copy_from_slice(&species.to_le_bytes());
+    decrypted[g_off + 2..g_off + 4].copy_from_slice(&held_item.to_le_bytes());
+    decrypted[g_off + 4..g_off + 8].copy_from_slice(&experience.to_le_bytes());
+    decrypted[g_off + 8] = 0; // pp_bonuses = 0 (no PP-Ups on revived mons)
+    decrypted[g_off + 9] = friendship;
+
+    // Attacks substructure
+    for s in 0..4usize {
+        decrypted[a_off + s * 2..a_off + s * 2 + 2].copy_from_slice(&moves[s].to_le_bytes());
+        decrypted[a_off + 8 + s] = pp[s];
+    }
+
+    // Effort substructure (hp, atk, def, spd, spa, spdef)
+    decrypted[e_off] = evs.0;
+    decrypted[e_off + 1] = evs.1;
+    decrypted[e_off + 2] = evs.2;
+    decrypted[e_off + 3] = evs.3;
+    decrypted[e_off + 4] = evs.4;
+    decrypted[e_off + 5] = evs.5;
+
+    // Misc substructure
+    // decrypted[m_off] = 0; // pkrs = 0 (already zero)
+    decrypted[m_off + 1] = met_location;
+    // origins_info @ m_off+2..4 = 0 (already zero)
+    let iv_word = pack_ivs(ivs.0, ivs.1, ivs.2, ivs.3, ivs.4, ivs.5)
+        | ((ability_bit as u32 & 1) << 31);
+    decrypted[m_off + 4..m_off + 8].copy_from_slice(&iv_word.to_le_bytes());
+    // ribbons @ m_off+8..12 = 0 (already zero)
+
+    let checksum: u16 = decrypted
+        .chunks_exact(2)
+        .map(|c| u16::from_le_bytes([c[0], c[1]]))
+        .fold(0u16, |acc, w| acc.wrapping_add(w));
+
+    let mut encrypted = [0u8; 48];
+    for (i, chunk) in decrypted.chunks_exact(4).enumerate() {
+        let w = u32::from_le_bytes(chunk.try_into().unwrap()) ^ enc_key;
+        encrypted[i * 4..i * 4 + 4].copy_from_slice(&w.to_le_bytes());
+    }
+
+    let mut mon = [0u8; 100];
+    mon[0..4].copy_from_slice(&personality.to_le_bytes());
+    mon[4..8].copy_from_slice(&ot_id.to_le_bytes());
+    mon[8..18].copy_from_slice(&encode_nickname(nickname));
+    mon[18] = 0x02; // language = English
+    mon[20..27].copy_from_slice(&encode_ot_name(ot_name));
+    mon[28..30].copy_from_slice(&checksum.to_le_bytes());
+    mon[32..80].copy_from_slice(&encrypted);
+    // status @ 80..84 = 0 (healthy, already zero)
+    mon[84] = level;
+    // pokerus_remaining @ 85 = 0 (already zero)
+    mon[86..88].copy_from_slice(&1u16.to_le_bytes()); // current_hp = 1
+    mon[88..90].copy_from_slice(&max_hp.to_le_bytes());
+    mon[90..92].copy_from_slice(&attack.to_le_bytes());
+    mon[92..94].copy_from_slice(&defense.to_le_bytes());
+    mon[94..96].copy_from_slice(&speed.to_le_bytes());
+    mon[96..98].copy_from_slice(&sp_attack.to_le_bytes());
+    mon[98..100].copy_from_slice(&sp_defense.to_le_bytes());
+
+    Some(mon)
+}
+
+/// Revives the dead Pokémon identified by `personality` (looked up in the
+/// current run's `dead_pokemon` table) and writes it at `party_position` (0–5).
+///
+/// The mon is written with `current_hp = 1`, `status = 0` (healthy), and no
+/// Pokérus or PP-Up bonuses. Returns `true` when the write was dispatched.
+pub fn revive_pokemon(party_position: usize, personality: u32) -> bool {
+    if party_position >= 6 {
+        tracing::warn!(
+            "revive_pokemon: party_position {party_position} out of range (must be 0–5)"
+        );
+        return false;
+    }
+    let dp = match fire_red_database::get_dead_pokemon(personality) {
+        Some(d) => d,
+        None => {
+            tracing::warn!(
+                "revive_pokemon: personality {personality:#010x} not found in dead_pokemon"
+            );
+            return false;
+        }
+    };
+    let mon_bytes = match compute_revive_mon(
+        dp.personality,
+        dp.ot_id,
+        &dp.ot_name,
+        &dp.nickname,
+        dp.species,
+        dp.experience,
+        dp.friendship,
+        dp.held_item,
+        dp.moves,
+        dp.pp,
+        (
+            dp.ivs.hp,
+            dp.ivs.attack,
+            dp.ivs.defense,
+            dp.ivs.speed,
+            dp.ivs.sp_attack,
+            dp.ivs.sp_defense,
+        ),
+        (
+            dp.evs.hp,
+            dp.evs.attack,
+            dp.evs.defense,
+            dp.evs.speed,
+            dp.evs.sp_attack,
+            dp.evs.sp_defense,
+        ),
+        dp.met_location,
+        dp.ability,
+        dp.level,
+        dp.max_hp,
+        dp.attack,
+        dp.defense,
+        dp.speed,
+        dp.sp_attack,
+        dp.sp_defense,
+    ) {
+        Some(b) => b,
+        None => {
+            tracing::warn!(
+                "revive_pokemon: compute_revive_mon returned None for personality \
+                 {personality:#010x}"
+            );
+            return false;
+        }
+    };
+    const PARTY_BASE: u32 = 0x02024284;
+    const MON_SIZE: u32 = 100;
+    let mon_addr = PARTY_BASE + party_position as u32 * MON_SIZE;
+    let socket = match fire_red_retroarch_interfacing::make_socket() {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::warn!("revive_pokemon: socket error: {e}");
+            return false;
+        }
+    };
+    if !fire_red_retroarch_interfacing::write_to_retroarch(&socket, mon_addr, &mon_bytes) {
+        tracing::warn!("revive_pokemon: write failed for party[{party_position}]");
+        return false;
+    }
+    tracing::info!(
+        "revive_pokemon: {} ({}) revived at party[{party_position}] (1 HP)",
+        dp.nickname,
+        dp.species_name
+    );
+    true
+}
+
 /// Reads all four bag pockets from the player's SaveBlock1 and returns a
 /// [`BagPockets`] with quantities already XOR-decrypted.
 ///
@@ -4305,9 +4698,10 @@ mod tests {
         compute_change_held_item, compute_change_move, compute_change_nature,
         compute_change_species, compute_forget_move, compute_give_item_write, compute_increase_evs,
         compute_increase_ivs, compute_learn_move, compute_new_trainer_flags, compute_restore_pp,
-        compute_set_ability_bit, compute_set_evs, compute_set_exp, compute_set_friendship,
-        compute_set_ivs, compute_set_level, compute_set_pokerus, compute_take_item_write,
-        encode_nickname, gen3_min_exp, is_shiny, pack_ivs, trainer_name_for_flag, unpack_ivs,
+        compute_revive_mon, compute_set_ability_bit, compute_set_evs, compute_set_exp,
+        compute_set_friendship, compute_set_ivs, compute_set_level, compute_set_pokerus,
+        compute_set_pp_ups, compute_take_item_write, encode_nickname, gen3_min_exp, is_shiny,
+        pack_ivs, trainer_name_for_flag, unpack_ivs,
     };
 
     // ── is_shiny ─────────────────────────────────────────────────────────────
@@ -6169,6 +6563,156 @@ mod tests {
         let (_, encrypted) = compute_set_pokerus(&data).unwrap();
         let nd = decrypt_block(&encrypted, p, 0);
         assert_eq!(nd[24], 0x14, "PKRS should be at Misc offset 24 for p%24=7");
+    }
+
+    // ── compute_set_pp_ups ────────────────────────────────────────────────────
+
+    #[test]
+    fn set_pp_ups_empty_slot_returns_none() {
+        let data = vec![0u8; 80];
+        let rom = vec![0u8; 512];
+        assert!(compute_set_pp_ups(&data, 3, 3, 3, 3, &rom, 0).is_none());
+    }
+
+    #[test]
+    fn set_pp_ups_same_bonuses_returns_none() {
+        // pp_bonuses already 0 and we request (0,0,0,0) → None
+        let p: u32 = 24;
+        let data = make_mon_data(p, 0, [0u8; 48]);
+        let rom = vec![0u8; 512];
+        assert!(compute_set_pp_ups(&data, 0, 0, 0, 0, &rom, 0).is_none());
+    }
+
+    #[test]
+    fn set_pp_ups_updates_bonuses_byte() {
+        // p%24=0 → Growth at position 0, g_off=0 → pp_bonuses at dec[8]
+        // Request (3,2,1,0) → bonuses = 0b00_01_10_11 = 0x1B
+        let p: u32 = 24;
+        let data = make_mon_data(p, 0, [0u8; 48]);
+        let rom = vec![0u8; 512];
+        let (_, encrypted) = compute_set_pp_ups(&data, 3, 2, 1, 0, &rom, 0).unwrap();
+        let nd = decrypt_block(&encrypted, p, 0);
+        assert_eq!(nd[8], 0b00_01_10_11, "pp_bonuses should be 0x1B");
+    }
+
+    #[test]
+    fn set_pp_ups_sets_current_pp_to_new_max() {
+        // p%24=0: Growth g_off=0, Attacks a_off=12
+        // move_id=1 at slots 0, base_pp=20
+        // Set pp0=3: max = 20 + 20*3/5 = 20 + 12 = 32
+        let p: u32 = 24;
+        let mut dec = [0u8; 48];
+        dec[12..14].copy_from_slice(&1u16.to_le_bytes()); // slot 0 = move 1
+        dec[20] = 20; // current PP = 20
+        let data = make_mon_data(p, 0, dec);
+        let mut rom = vec![0u8; 512];
+        rom[16] = 20; // base PP for move 1 at move_data_addr=0 (offset 1*12+4=16)
+        let (_, encrypted) = compute_set_pp_ups(&data, 3, 0, 0, 0, &rom, 0).unwrap();
+        let nd = decrypt_block(&encrypted, p, 0);
+        assert_eq!(nd[20], 32, "slot 0 PP should be set to new max 32");
+    }
+
+    #[test]
+    fn set_pp_ups_skips_empty_move_slots() {
+        // Only slot 0 has a move; slot 1-3 are empty (move_id=0)
+        let p: u32 = 24;
+        let mut dec = [0u8; 48];
+        dec[12..14].copy_from_slice(&1u16.to_le_bytes());
+        dec[20] = 5; // current PP for slot 0
+        let data = make_mon_data(p, 0, dec);
+        let mut rom = vec![0u8; 512];
+        rom[16] = 20; // base PP for move 1
+        let (_, encrypted) = compute_set_pp_ups(&data, 3, 3, 3, 3, &rom, 0).unwrap();
+        let nd = decrypt_block(&encrypted, p, 0);
+        assert_eq!(nd[20], 32, "slot 0 set to max");
+        assert_eq!(nd[21], 0, "slot 1 unchanged (no move)");
+        assert_eq!(nd[22], 0, "slot 2 unchanged (no move)");
+        assert_eq!(nd[23], 0, "slot 3 unchanged (no move)");
+    }
+
+    // ── compute_revive_mon ────────────────────────────────────────────────────
+
+    #[test]
+    fn revive_mon_zero_personality_returns_none() {
+        assert!(compute_revive_mon(
+            0, 0, "RED", "CHAR", 4, 0, 70, 0,
+            [0; 4], [0; 4],
+            (31, 31, 31, 31, 31, 31), (0, 0, 0, 0, 0, 0),
+            0, 0, 5, 100, 10, 10, 10, 10, 10,
+        ).is_none());
+    }
+
+    #[test]
+    fn revive_mon_current_hp_is_one() {
+        let mon = compute_revive_mon(
+            24, 0, "RED", "CHAR", 4, 125, 70, 0,
+            [33, 0, 0, 0], [15, 0, 0, 0],
+            (20, 20, 20, 20, 20, 20), (0, 0, 0, 0, 0, 0),
+            0, 0, 5, 100, 55, 43, 40, 50, 45,
+        ).unwrap();
+        // current_hp at offset 86 (GBA PartyMon layout)
+        let current_hp = u16::from_le_bytes([mon[86], mon[87]]);
+        assert_eq!(current_hp, 1);
+    }
+
+    #[test]
+    fn revive_mon_max_hp_and_stats_stored_correctly() {
+        let mon = compute_revive_mon(
+            24, 0, "RED", "CHAR", 4, 125, 70, 0,
+            [0; 4], [0; 4],
+            (0, 0, 0, 0, 0, 0), (0, 0, 0, 0, 0, 0),
+            0, 0, 5, 150, 60, 55, 50, 65, 70,
+        ).unwrap();
+        assert_eq!(u16::from_le_bytes([mon[88], mon[89]]), 150, "max_hp");
+        assert_eq!(u16::from_le_bytes([mon[90], mon[91]]), 60, "attack");
+        assert_eq!(u16::from_le_bytes([mon[92], mon[93]]), 55, "defense");
+        assert_eq!(u16::from_le_bytes([mon[94], mon[95]]), 50, "speed");
+        assert_eq!(u16::from_le_bytes([mon[96], mon[97]]), 65, "sp_attack");
+        assert_eq!(u16::from_le_bytes([mon[98], mon[99]]), 70, "sp_defense");
+    }
+
+    #[test]
+    fn revive_mon_level_and_status_fields() {
+        let mon = compute_revive_mon(
+            24, 0, "RED", "CHAR", 4, 125, 70, 0,
+            [0; 4], [0; 4],
+            (0, 0, 0, 0, 0, 0), (0, 0, 0, 0, 0, 0),
+            0, 0, 36, 200, 90, 80, 75, 85, 90,
+        ).unwrap();
+        let status = u32::from_le_bytes([mon[80], mon[81], mon[82], mon[83]]);
+        assert_eq!(status, 0, "status should be healthy");
+        assert_eq!(mon[84], 36, "level");
+        assert_eq!(mon[85], 0, "pokerus_remaining = 0");
+    }
+
+    #[test]
+    fn revive_mon_encrypted_block_decrypts_correctly() {
+        // p%24=0: Growth at offset 0, Attacks at 12
+        // species=4, experience=125, move[0]=33 (Ember), pp[0]=15
+        let p: u32 = 24;
+        let mon = compute_revive_mon(
+            p, 0, "RED", "CHAR", 4, 125, 70, 0,
+            [33, 0, 0, 0], [15, 0, 0, 0],
+            (20, 20, 20, 20, 20, 20), (0, 0, 0, 0, 0, 0),
+            12, 0, 5, 100, 55, 43, 40, 50, 45,
+        ).unwrap();
+        // Decrypt the encrypted block (bytes 32..80)
+        let enc_data: &[u8; 48] = mon[32..80].try_into().unwrap();
+        let decrypted = decrypt_block(enc_data, p, 0);
+        // Growth at g_off=0: species at [0..2]
+        assert_eq!(u16::from_le_bytes([decrypted[0], decrypted[1]]), 4, "species=4");
+        assert_eq!(
+            u32::from_le_bytes(decrypted[4..8].try_into().unwrap()),
+            125,
+            "experience=125"
+        );
+        assert_eq!(decrypted[8], 0, "pp_bonuses=0 (no PP-Ups)");
+        assert_eq!(decrypted[9], 70, "friendship=70");
+        // Attacks at a_off=12: move[0] at [12..14]
+        assert_eq!(u16::from_le_bytes([decrypted[12], decrypted[13]]), 33, "move0=33");
+        assert_eq!(decrypted[20], 15, "pp[0]=15");
+        // Misc at m_off=36: met_location at [37]
+        assert_eq!(decrypted[37], 12, "met_location=12");
     }
 
     // ── live RetroArch integration ────────────────────────────────────────────

@@ -57,6 +57,8 @@ pub const MAX_NATIONAL_DEX_FIRERED: u16 = 386;
 ///  25 = LearnMove
 ///  26 = ForgetMove
 ///  27 = SetPokerus
+///  28 = SetPpUps
+///  29 = RevivePokemon
 #[derive(serde::Serialize, serde::Deserialize, Clone)]
 pub enum ClientMessage {
     RequestTextures(Vec<u16>), // index 0 — do not reorder
@@ -252,6 +254,21 @@ pub enum ClientMessage {
     SetPokerus {
         party_position: u8,
     }, // index 27 — do not reorder
+    /// Set PP-Up bonus counts (0–3 per slot) for all four move slots and refill
+    /// each slot's current PP to the new maximum.
+    SetPpUps {
+        party_position: u8,
+        pp0: u8,
+        pp1: u8,
+        pp2: u8,
+        pp3: u8,
+    }, // index 28 — do not reorder
+    /// Look up `personality` in the current run's `dead_pokemon` table and write
+    /// the revived Pokémon at `party_position` (0–5) with 1 HP.
+    RevivePokemon {
+        party_position: u8,
+        personality: u32,
+    }, // index 29 — do not reorder
                                // Append new variants here only.
 }
 

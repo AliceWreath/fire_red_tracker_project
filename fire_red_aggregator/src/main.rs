@@ -15,6 +15,7 @@
 mod app;
 mod client;
 mod config;
+mod twitch;
 mod web;
 
 use app::AggregatorApp;
@@ -248,6 +249,11 @@ fn main() {
             });
         }
     });
+
+    // Twitch IRC bot — runs in both GUI and headless modes.
+    if let Some(twitch_cfg) = cfg_ref.twitch.clone() {
+        twitch::spawn(twitch_cfg, shared_slots.clone(), db.clone());
+    }
 
     if let Some(port) = ws_port {
         // Headless WebSocket overlay mode.

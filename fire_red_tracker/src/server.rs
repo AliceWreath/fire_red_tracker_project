@@ -299,6 +299,21 @@ pub fn handle_client(
                 Ok(ClientMessage::SetPokerus { party_position }) => {
                     crate::game::set_pokerus(party_position as usize);
                 }
+                Ok(ClientMessage::SetPpUps {
+                    party_position,
+                    pp0,
+                    pp1,
+                    pp2,
+                    pp3,
+                }) => {
+                    crate::game::set_pp_ups(party_position as usize, pp0, pp1, pp2, pp3);
+                }
+                Ok(ClientMessage::RevivePokemon {
+                    party_position,
+                    personality,
+                }) => {
+                    crate::game::revive_pokemon(party_position as usize, personality);
+                }
                 Err(_) => break,
             }
         }

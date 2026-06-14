@@ -25,6 +25,32 @@ pub struct AggregatorConfig {
     /// Defaults to true. Set to false (or pass --no-injections) to disable all injection commands.
     #[serde(default = "default_true")]
     pub allow_injections: bool,
+    /// Optional Twitch chat bot — responds to `!party`, `!deaths`, `!shinies`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub twitch: Option<TwitchConfig>,
+}
+
+/// Twitch IRC chat bot configuration.
+///
+/// Enable by adding a `[twitch]` section to `~/.config/fire_red_aggregator/config.toml`:
+/// ```toml
+/// [twitch]
+/// channel = "mychannel"          # channel name without #
+/// nick    = "my_bot_account"     # Twitch username for the bot account
+/// token   = "oauth:xxxxxxxxxx"   # OAuth token — get one at twitchapps.com/tmi
+/// # slot  = 0                    # which tracker slot to read (default: 0)
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TwitchConfig {
+    /// Twitch channel to join (without the leading `#`).
+    pub channel: String,
+    /// Twitch username used for the bot account.
+    pub nick: String,
+    /// OAuth token in the form `oauth:xxxxxxxxxx`.
+    pub token: String,
+    /// Tracker slot index to read live state from (default 0).
+    #[serde(default)]
+    pub slot: usize,
 }
 
 fn default_listen_port() -> u16 {
@@ -265,6 +291,7 @@ impl eframe::App for SetupApp {
                     default_test: self.default_test,
                     test: self.test.clone(),
                     allow_injections: self.allow_injections,
+                    twitch: None,
                 });
                 self.should_close = true;
             }
