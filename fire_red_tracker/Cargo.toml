@@ -1,6 +1,6 @@
 [package]
 name = "fire_red_tracker"
-version = "0.9.27"
+version = "0.9.28"
 edition = "2024"
 license.workspace = true
 

@@ -3851,6 +3851,53 @@ async fn api_revive_pokemon(
     )
 }
 
+/// `POST /api/slot/:index/undo` — revert the last injection command for the given slot.
+///
+/// Sends [`ClientMessage::UndoLastCommand`] to the tracker, which writes the
+/// bytes that were captured before the last `write_to_retroarch` call back to
+/// RetroArch memory.  No-op if no injection command has been executed since the
+/// tracker connected.
+///
+/// - `200 OK` — command enqueued.
+/// - `403 Forbidden` — injection commands are disabled.
+/// - `404 Not Found` — slot index out of range.
+/// - `503 Service Unavailable` — slot not connected.
+async fn api_undo(
+    State(state): State<WebState>,
+    Path(index): Path<usize>,
+) -> impl IntoResponse {
+    if !state.allow_injections {
+        return (
+            StatusCode::FORBIDDEN,
+            "injection commands are disabled".to_string(),
+        );
+    }
+    let slots = state.live_slots.lock_or_recover().clone();
+    let slot = match slots.get(index) {
+        Some(s) => s.clone(),
+        None => return (StatusCode::NOT_FOUND, "slot index out of range".to_string()),
+    };
+    if slot.state.lock_or_recover().is_none() {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "slot not connected".to_string(),
+        );
+    }
+    slot.command_queue
+        .lock_or_recover()
+        .push_back(ClientMessage::UndoLastCommand);
+    slot.injection_events
+        .lock_or_recover()
+        .push_back(serde_json::json!({
+            "at": now_secs(), "kind": "undo",
+            "label": "undo last command",
+        }));
+    (
+        StatusCode::OK,
+        format!("queued undo for slot {index}"),
+    )
+}
+
 /// `GET /api/runs/compare?ids=1,2,3` — side-by-side stats for multiple runs.
 ///
 /// Query param `ids` is a comma-separated list of run IDs (max 20).
@@ -4275,6 +4322,7 @@ pub fn run(
             .route("/api/slot/:index/set_pokerus", post(api_set_pokerus))
             .route("/api/slot/:index/set_pp_ups", post(api_set_pp_ups))
             .route("/api/slot/:index/revive_pokemon", post(api_revive_pokemon))
+            .route("/api/slot/:index/undo", post(api_undo))
             .route("/api/bot/:index", get(api_bot_summary))
             .route("/api/command/:cmd", post(api_command))
             .route("/api/db/query", post(api_db_query))

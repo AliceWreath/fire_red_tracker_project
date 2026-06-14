@@ -7,7 +7,47 @@
 use fire_red_loop::FireRedState;
 use fire_red_party_monitor::Pokemon;
 use fire_red_states::{BagPockets, ItemSlot, LockOrRecover, MAX_NATIONAL_DEX_FIRERED};
+use std::cell::RefCell;
 use std::sync::{Arc, Mutex};
+
+thread_local! {
+    static LAST_UNDO: RefCell<Vec<(u32, Vec<u8>)>> = const { RefCell::new(Vec::new()) };
+}
+
+fn begin_undo() {
+    LAST_UNDO.with(|u| u.borrow_mut().clear());
+}
+
+fn push_undo(addr: u32, bytes: Vec<u8>) {
+    LAST_UNDO.with(|u| u.borrow_mut().push((addr, bytes)));
+}
+
+/// Reverts the last injection command by writing the bytes that were saved
+/// before that write.  Returns `true` if at least one region was restored.
+pub fn undo_last_command() -> bool {
+    let entries: Vec<(u32, Vec<u8>)> = LAST_UNDO.with(|u| u.borrow().clone());
+    if entries.is_empty() {
+        tracing::warn!("undo_last_command: no undo state recorded");
+        return false;
+    }
+    let socket = match fire_red_retroarch_interfacing::make_socket() {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::warn!("undo_last_command: socket error: {e}");
+            return false;
+        }
+    };
+    let mut ok = true;
+    for (addr, bytes) in &entries {
+        if !fire_red_retroarch_interfacing::write_to_retroarch(&socket, *addr, bytes) {
+            ok = false;
+        }
+    }
+    if ok {
+        tracing::info!("undo_last_command: restored {} memory region(s)", entries.len());
+    }
+    ok
+}
 
 /// GBA address of the packed (map_group, map_name) bytes in EWRAM.
 pub const MAP_GROUP_AND_NAME_ADDR: usize = 0x02031DBC;
@@ -1329,6 +1369,9 @@ pub fn give_item(item_id: u16, quantity: u16) -> bool {
         return false;
     };
 
+    begin_undo();
+    push_undo(pocket_addr, pocket.clone());
+
     let write_addr = pocket_addr + slot as u32 * 4;
     let ok = fire_red_retroarch_interfacing::write_to_retroarch(&socket, write_addr, &payload);
     if ok {
@@ -1408,6 +1451,9 @@ pub fn take_item(item_id: u16, quantity: u16) -> bool {
             return false;
         }
     };
+
+    begin_undo();
+    push_undo(pocket_addr, pocket.clone());
 
     match result {
         TakeItemWrite::UpdateSlot { slot, payload } => {
@@ -1494,6 +1540,9 @@ pub fn make_shiny(party_position: usize) -> bool {
         );
         return true;
     }
+
+    begin_undo();
+    push_undo(mon_addr, data.clone());
 
     let p_high = (personality >> 16) as u16;
     let p_low = (personality & 0xFFFF) as u16;
@@ -1709,6 +1758,8 @@ pub fn change_species(party_position: usize, new_species: u16) -> bool {
             payload[0..2].copy_from_slice(&checksum);
             payload[2..4].copy_from_slice(&data[30..32]); // preserve unknown field
             payload[4..52].copy_from_slice(&encrypted);
+            begin_undo();
+            push_undo(mon_addr, data.clone());
             if !fire_red_retroarch_interfacing::write_to_retroarch(&socket, mon_addr + 28, &payload)
             {
                 tracing::warn!("change_species: failed to write to party[{party_position}]");
@@ -1846,6 +1897,8 @@ pub fn change_ability(party_position: usize, ability_slot: u8) -> bool {
             payload[0..2].copy_from_slice(&checksum);
             payload[2..4].copy_from_slice(&data[30..32]);
             payload[4..52].copy_from_slice(&encrypted);
+            begin_undo();
+            push_undo(mon_addr, data.clone());
             if !fire_red_retroarch_interfacing::write_to_retroarch(&socket, mon_addr + 28, &payload)
             {
                 tracing::warn!("change_ability: failed to write to party[{party_position}]");
@@ -2104,6 +2157,8 @@ pub fn change_gender(party_position: usize, target_gender: u8) -> bool {
             payload[28..30].copy_from_slice(&checksum);
             payload[30..32].copy_from_slice(&data[30..32]);
             payload[32..80].copy_from_slice(&encrypted);
+            begin_undo();
+            push_undo(mon_addr, data.clone());
             if !fire_red_retroarch_interfacing::write_to_retroarch(&socket, mon_addr, &payload) {
                 tracing::warn!("change_gender: write failed for party[{party_position}]");
                 return false;
@@ -2205,6 +2260,10 @@ pub fn change_nickname(party_position: usize, nickname: &str) -> bool {
     }
 
     let gba_name = encode_nickname(nickname);
+    begin_undo();
+    if let Some(old_name) = read_retroarch_bytes(&socket, mon_addr + NICKNAME_OFF, 10) {
+        push_undo(mon_addr + NICKNAME_OFF, old_name);
+    }
     let ok = fire_red_retroarch_interfacing::write_to_retroarch(
         &socket,
         mon_addr + NICKNAME_OFF,
@@ -2327,6 +2386,8 @@ pub fn change_held_item(party_position: usize, item_id: u16) -> bool {
             payload[0..2].copy_from_slice(&checksum);
             payload[2..4].copy_from_slice(&data[30..32]);
             payload[4..52].copy_from_slice(&encrypted);
+            begin_undo();
+            push_undo(mon_addr, data.clone());
             if !fire_red_retroarch_interfacing::write_to_retroarch(&socket, mon_addr + 28, &payload)
             {
                 tracing::warn!("change_held_item: failed to write to party[{party_position}]");
@@ -2369,6 +2430,10 @@ pub fn cure_status(party_position: usize) -> bool {
         }
     };
 
+    begin_undo();
+    if let Some(old_status) = read_retroarch_bytes(&socket, status_addr, 4) {
+        push_undo(status_addr, old_status);
+    }
     let ok = fire_red_retroarch_interfacing::write_to_retroarch(&socket, status_addr, &[0u8; 4]);
     if ok {
         tracing::info!("cure_status: cleared status for party[{party_position}]");
@@ -2596,6 +2661,8 @@ pub fn change_nature(party_position: usize, target_nature: u8) -> bool {
             payload[28..30].copy_from_slice(&checksum);
             payload[30..32].copy_from_slice(&data[30..32]);
             payload[32..80].copy_from_slice(&encrypted);
+            begin_undo();
+            push_undo(mon_addr, data.clone());
             if !fire_red_retroarch_interfacing::write_to_retroarch(&socket, mon_addr, &payload) {
                 tracing::warn!("change_nature: write failed for party[{party_position}]");
                 return false;
@@ -2779,6 +2846,8 @@ pub fn restore_pp(party_position: usize) -> bool {
             payload[0..2].copy_from_slice(&checksum);
             payload[2..4].copy_from_slice(&data[30..32]);
             payload[4..52].copy_from_slice(&encrypted);
+            begin_undo();
+            push_undo(mon_addr, data.clone());
             if !fire_red_retroarch_interfacing::write_to_retroarch(&socket, mon_addr + 28, &payload)
             {
                 tracing::warn!("restore_pp: write failed for party[{party_position}]");
@@ -2887,6 +2956,8 @@ pub fn set_friendship(party_position: usize, friendship: u8) -> bool {
             payload[0..2].copy_from_slice(&checksum);
             payload[2..4].copy_from_slice(&data[30..32]);
             payload[4..52].copy_from_slice(&encrypted);
+            begin_undo();
+            push_undo(mon_addr, data.clone());
             if !fire_red_retroarch_interfacing::write_to_retroarch(&socket, mon_addr + 28, &payload)
             {
                 tracing::warn!("set_friendship: write failed for party[{party_position}]");
@@ -3020,6 +3091,8 @@ pub fn change_move(party_position: usize, slot: u8, move_id: u16) -> bool {
             payload[0..2].copy_from_slice(&checksum);
             payload[2..4].copy_from_slice(&data[30..32]);
             payload[4..52].copy_from_slice(&encrypted);
+            begin_undo();
+            push_undo(mon_addr, data.clone());
             if !fire_red_retroarch_interfacing::write_to_retroarch(&socket, mon_addr + 28, &payload)
             {
                 tracing::warn!("change_move: write failed for party[{party_position}]");
@@ -3140,6 +3213,8 @@ fn write_iv_change(
             payload[0..2].copy_from_slice(&checksum);
             payload[2..4].copy_from_slice(&data[30..32]);
             payload[4..52].copy_from_slice(&encrypted);
+            begin_undo();
+            push_undo(mon_addr, data.to_vec());
             if !fire_red_retroarch_interfacing::write_to_retroarch(socket, mon_addr + 28, &payload)
             {
                 tracing::warn!("{fn_name}: write failed for party[{party_position}]");
@@ -3351,6 +3426,8 @@ fn write_ev_change(
             payload[0..2].copy_from_slice(&checksum);
             payload[2..4].copy_from_slice(&data[30..32]);
             payload[4..52].copy_from_slice(&encrypted);
+            begin_undo();
+            push_undo(mon_addr, data.to_vec());
             if !fire_red_retroarch_interfacing::write_to_retroarch(socket, mon_addr + 28, &payload)
             {
                 tracing::warn!("{fn_name}: write failed for party[{party_position}]");
@@ -3517,6 +3594,9 @@ pub fn restore_hp(party_position: usize) -> bool {
         return true;
     }
 
+    begin_undo();
+    push_undo(mon_addr + 86, current_hp.to_le_bytes().to_vec());
+
     if !fire_red_retroarch_interfacing::write_to_retroarch(
         &socket,
         mon_addr + 86,
@@ -3553,6 +3633,7 @@ pub fn heal_party() -> bool {
     };
 
     let mut healed = 0usize;
+    begin_undo();
     for slot in 0..6usize {
         let mon_addr = PARTY_BASE + slot as u32 * MON_SIZE;
 
@@ -3565,6 +3646,9 @@ pub fn heal_party() -> bool {
         if personality == 0 {
             continue;
         }
+
+        // Save status word + HP bytes for this slot before writing.
+        push_undo(mon_addr + 80, data[80..90].to_vec());
 
         fire_red_retroarch_interfacing::write_to_retroarch(&socket, mon_addr + 80, &[0u8; 4]);
 
@@ -3719,6 +3803,8 @@ pub fn set_exp(party_position: usize, exp: u32) -> bool {
             payload[0..2].copy_from_slice(&checksum);
             payload[2..4].copy_from_slice(&data[30..32]);
             payload[4..52].copy_from_slice(&encrypted);
+            begin_undo();
+            push_undo(mon_addr, data.clone());
             if !fire_red_retroarch_interfacing::write_to_retroarch(&socket, mon_addr + 28, &payload)
             {
                 tracing::warn!("set_exp: write failed for party[{party_position}]");
@@ -3834,6 +3920,9 @@ pub fn set_level(party_position: usize, level: u8) -> bool {
         tracing::info!("set_level: party[{party_position}] already level={level}");
         return true;
     }
+
+    begin_undo();
+    push_undo(mon_addr, data[0..90].to_vec());
 
     let rom = fire_red_rom_buffer::get_rom();
     let rom_addr = fire_red_rom_buffer::get_rom_addresses();
@@ -3987,6 +4076,8 @@ pub fn learn_move(party_position: usize, move_id: u16) -> bool {
             payload[0..2].copy_from_slice(&checksum);
             payload[2..4].copy_from_slice(&data[30..32]);
             payload[4..52].copy_from_slice(&encrypted);
+            begin_undo();
+            push_undo(mon_addr, data.clone());
             if !fire_red_retroarch_interfacing::write_to_retroarch(&socket, mon_addr + 28, &payload)
             {
                 tracing::warn!("learn_move: write failed for party[{party_position}]");
@@ -4102,6 +4193,8 @@ pub fn forget_move(party_position: usize, slot: u8) -> bool {
             payload[0..2].copy_from_slice(&checksum);
             payload[2..4].copy_from_slice(&data[30..32]);
             payload[4..52].copy_from_slice(&encrypted);
+            begin_undo();
+            push_undo(mon_addr, data.clone());
             if !fire_red_retroarch_interfacing::write_to_retroarch(&socket, mon_addr + 28, &payload)
             {
                 tracing::warn!("forget_move: write failed for party[{party_position}]");
@@ -4204,6 +4297,11 @@ pub fn set_pokerus(party_position: usize) -> bool {
             payload[0..2].copy_from_slice(&checksum);
             payload[2..4].copy_from_slice(&data[30..32]);
             payload[4..52].copy_from_slice(&encrypted);
+            begin_undo();
+            push_undo(mon_addr, data.clone());
+            if let Some(old_days) = read_retroarch_bytes(&socket, mon_addr + 85, 1) {
+                push_undo(mon_addr + 85, old_days);
+            }
             if !fire_red_retroarch_interfacing::write_to_retroarch(&socket, mon_addr + 28, &payload)
             {
                 tracing::warn!("set_pokerus: encrypted write failed for party[{party_position}]");
@@ -4354,6 +4452,8 @@ pub fn set_pp_ups(
             payload[0..2].copy_from_slice(&checksum);
             payload[2..4].copy_from_slice(&data[30..32]);
             payload[4..52].copy_from_slice(&encrypted);
+            begin_undo();
+            push_undo(mon_addr, data.clone());
             if !fire_red_retroarch_interfacing::write_to_retroarch(
                 &socket,
                 mon_addr + 28,
@@ -4578,6 +4678,10 @@ pub fn revive_pokemon(party_position: usize, personality: u32) -> bool {
             return false;
         }
     };
+    begin_undo();
+    if let Some(old_slot) = read_retroarch_bytes(&socket, mon_addr, 100) {
+        push_undo(mon_addr, old_slot);
+    }
     if !fire_red_retroarch_interfacing::write_to_retroarch(&socket, mon_addr, &mon_bytes) {
         tracing::warn!("revive_pokemon: write failed for party[{party_position}]");
         return false;

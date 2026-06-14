@@ -269,6 +269,10 @@ pub enum ClientMessage {
         party_position: u8,
         personality: u32,
     }, // index 29 — do not reorder
+    /// Revert the last injection command by writing the bytes that were saved
+    /// before that write to RetroArch memory.  No-op if no command has been
+    /// executed on this connection yet.
+    UndoLastCommand, // index 30 — do not reorder
                                // Append new variants here only.
 }
 

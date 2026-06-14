@@ -314,6 +314,9 @@ pub fn handle_client(
                 }) => {
                     crate::game::revive_pokemon(party_position as usize, personality);
                 }
+                Ok(ClientMessage::UndoLastCommand) => {
+                    crate::game::undo_last_command();
+                }
                 Err(_) => break,
             }
         }
