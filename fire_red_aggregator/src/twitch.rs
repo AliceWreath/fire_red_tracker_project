@@ -17,6 +17,9 @@
 //! | `!badges`  | Badge count and names earned so far                            |
 //! | `!bag`     | Items pocket and ball pocket contents                          |
 //! | `!map`     | Player's current location                                      |
+//! | `!encounter` | Wild encounter table for the current route                   |
+//! | `!luck`    | Shiny luck stats for the active run (requires `--db`)          |
+//! | `!timer`   | Elapsed real-time run duration (requires `--db`)               |
 //!
 //! The bot reconnects automatically on disconnect, with exponential backoff
 //! capped at 60 seconds. Connection errors are logged as warnings and never
@@ -127,15 +130,18 @@ fn handle_privmsg(
     let cmd = msg.trim().to_lowercase();
 
     match cmd.as_str() {
-        "!party"   => Some(cmd_party(slot_idx, slots)),
-        "!deaths"  => Some(cmd_deaths(slot_idx, slots)),
-        "!shinies" => Some(cmd_shinies(slot_idx, slots, db_conn)),
-        "!status"  => Some(cmd_status(slot_idx, slots)),
-        "!moves"   => Some(cmd_moves(slot_idx, slots)),
-        "!ivs"     => Some(cmd_ivs(slot_idx, slots)),
-        "!badges"  => Some(cmd_badges(slot_idx, slots)),
-        "!bag"     => Some(cmd_bag(slot_idx, slots)),
-        "!map"     => Some(cmd_map(slot_idx, slots)),
+        "!party"     => Some(cmd_party(slot_idx, slots)),
+        "!deaths"    => Some(cmd_deaths(slot_idx, slots)),
+        "!shinies"   => Some(cmd_shinies(slot_idx, slots, db_conn)),
+        "!status"    => Some(cmd_status(slot_idx, slots)),
+        "!moves"     => Some(cmd_moves(slot_idx, slots)),
+        "!ivs"       => Some(cmd_ivs(slot_idx, slots)),
+        "!badges"    => Some(cmd_badges(slot_idx, slots)),
+        "!bag"       => Some(cmd_bag(slot_idx, slots)),
+        "!map"       => Some(cmd_map(slot_idx, slots)),
+        "!encounter" => Some(cmd_encounter(slot_idx, slots)),
+        "!luck"      => Some(cmd_luck(slot_idx, slots, db_conn)),
+        "!timer"     => Some(cmd_timer(slot_idx, slots)),
         _ => None,
     }
 }
@@ -451,6 +457,120 @@ fn cmd_status(slot_idx: usize, slots: &SharedSlots) -> String {
         raw_zone.to_string()
     };
     format!("{label} — {hp_str} — {zone_str}")
+}
+
+fn cmd_encounter(slot_idx: usize, slots: &SharedSlots) -> String {
+    let snap = slots.lock_or_recover().clone();
+    let Some(slot) = snap.get(slot_idx) else {
+        return "No tracker connected.".to_string();
+    };
+    let state_guard = slot.state.lock_or_recover();
+    let Some(gs) = state_guard.as_ref() else {
+        return "Tracker not in-game.".to_string();
+    };
+    let h = &gs.encounters;
+    let zone = fire_red_location_names::map_area_name(h.map_group, h.map_num);
+
+    // Build encounter entries for land (grass) encounters.
+    let land = &h.land_mon_encounters;
+    if land.encounter_rate == 0 {
+        let zone_str = if zone.is_empty() {
+            format!("{}:{}", h.map_group, h.map_num)
+        } else {
+            zone.to_string()
+        };
+        return format!("No wild encounters in {zone_str}.");
+    }
+
+    // FireRed grass slots: 12 entries with fixed encounter rates.
+    // Rates (%) indexed by slot position: [20,20,10,10,10,10,5,5,4,4,1,1].
+    const SLOT_RATES: [u8; 12] = [20, 20, 10, 10, 10, 10, 5, 5, 4, 4, 1, 1];
+
+    // Deduplicate species by accumulating their rates.
+    let mut rates: std::collections::HashMap<u16, u8> = std::collections::HashMap::new();
+    for (i, wp) in land.wild_pokemon_list.iter().enumerate() {
+        let rate = SLOT_RATES.get(i).copied().unwrap_or(0);
+        *rates.entry(wp.species).or_insert(0) += rate;
+    }
+
+    // Sort by rate descending, then species ID for stability.
+    let mut entries: Vec<(u16, u8)> = rates.into_iter().collect();
+    entries.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+
+    let parts: Vec<String> = entries
+        .iter()
+        .map(|(species, rate)| {
+            let name = fire_red_text::get_pokemon_name_by_number(*species as usize)
+                .unwrap_or_else(|_| format!("#{species}"));
+            format!("{name} {}%", rate)
+        })
+        .collect();
+
+    let zone_str = if zone.is_empty() {
+        format!("{}:{}", h.map_group, h.map_num)
+    } else {
+        zone.to_string()
+    };
+    let result = format!("{zone_str}: {}", parts.join(", "));
+    if result.len() > 450 {
+        format!("{}…", &result[..449])
+    } else {
+        result
+    }
+}
+
+fn cmd_luck(slot_idx: usize, slots: &SharedSlots, db_conn: Option<&str>) -> String {
+    let Some(conn) = db_conn else {
+        return "Luck stats require a database connection.".to_string();
+    };
+    let snap = slots.lock_or_recover().clone();
+    let Some(slot) = snap.get(slot_idx) else {
+        return "No tracker connected.".to_string();
+    };
+    let run_id = {
+        let Some(ref db) = slot.db else {
+            return "Luck stats require a database connection.".to_string();
+        };
+        match db.active_run_id() {
+            Some(id) => id,
+            None => return "No active run.".to_string(),
+        }
+    };
+    drop(snap);
+
+    let stats = fire_red_database::run_luck_stats(conn, run_id);
+    let total   = stats["total_encounters"].as_u64().unwrap_or(0);
+    let shinies = stats["shiny_count"].as_u64().unwrap_or(0);
+    let expected = stats["expected_shinies"].as_f64().unwrap_or(0.0);
+    if total == 0 {
+        return "No encounters yet this run.".to_string();
+    }
+    format!(
+        "Luck: {shinies} shiny / {total} encounters (expected {:.2}, rate 1/{:.0})",
+        expected,
+        if shinies == 0 { f64::INFINITY } else { total as f64 / shinies as f64 }
+    )
+}
+
+fn cmd_timer(slot_idx: usize, slots: &SharedSlots) -> String {
+    let snap = slots.lock_or_recover().clone();
+    let Some(slot) = snap.get(slot_idx) else {
+        return "No tracker connected.".to_string();
+    };
+    let label = slot.label.lock_or_recover().clone();
+    let Some(ref db) = slot.db else {
+        return "Timer requires a database connection.".to_string();
+    };
+    let Some((_, _, started_at, ended_at, _, _)) = db.run_summary() else {
+        return "No active run.".to_string();
+    };
+    let now = fire_red_database::unix_now();
+    let elapsed = ended_at.unwrap_or(now).saturating_sub(started_at);
+    let h = elapsed / 3600;
+    let m = (elapsed % 3600) / 60;
+    let s = elapsed % 60;
+    let status = if ended_at.is_some() { " (ended)" } else { "" };
+    format!("{label} run timer: {:02}:{:02}:{:02}{status}", h, m, s)
 }
 
 #[cfg(test)]

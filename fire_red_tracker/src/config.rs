@@ -193,6 +193,10 @@ pub struct TrackerConfig {
     /// Discord application client ID for Rich Presence. Leave unset to disable.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub discord_client_id: Option<u64>,
+    /// Twitch Helix API integration — stream markers, polls, and predictions.
+    /// Enable by adding a `[twitch_helix]` section to `config.toml`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub twitch_helix: Option<TwitchHelixConfig>,
 }
 
 fn default_aggregator_host() -> String {
@@ -386,6 +390,68 @@ impl ObsConfig {
             && self.scene_on_catch.is_none()
     }
 }
+
+// ---------------------------------------------------------------------------
+// Twitch Helix API config (tracker-side: stream markers, polls, predictions)
+// ---------------------------------------------------------------------------
+
+/// Twitch Helix API integration for the tracker process.
+///
+/// Enable by adding a `[twitch_helix]` section to `~/.config/fire_red_tracker/config.toml`:
+/// ```toml
+/// [twitch_helix]
+/// client_id     = "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+/// token         = "oauth:xxxxxxxxxxxxxxxxxxxxxxxxxx"   # or raw bearer token
+/// broadcaster_id = "123456789"   # numeric Twitch user ID
+///
+/// marker_on_death = true   # drop a VOD marker on each death
+/// marker_on_shiny = true   # drop a VOD marker on each shiny encounter
+/// marker_on_badge = true   # drop a VOD marker on each badge earned
+///
+/// poll_on_legendary = true   # open "Catch it?" poll on legendary encounters
+/// # poll_duration_secs = 60  # default 60
+///
+/// prediction_on_legendary = true   # open prediction on legendary encounters
+/// # prediction_window_secs = 120   # default 120
+/// ```
+///
+/// The token may be in `oauth:xxxx` form (the `oauth:` prefix is stripped) or
+/// a raw bearer token.  It must have the `channel:manage:broadcast` scope for
+/// stream markers, `channel:manage:polls` for polls, and
+/// `channel:manage:predictions` for predictions.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TwitchHelixConfig {
+    /// Twitch application Client-ID.
+    pub client_id: String,
+    /// OAuth bearer token (with or without `oauth:` prefix).
+    pub token: String,
+    /// Numeric Twitch user ID of the broadcaster (not the username).
+    pub broadcaster_id: String,
+    /// Drop a VOD stream marker when a party member dies.
+    #[serde(default)]
+    pub marker_on_death: bool,
+    /// Drop a VOD stream marker when a shiny encounter is detected.
+    #[serde(default)]
+    pub marker_on_shiny: bool,
+    /// Drop a VOD stream marker when a gym badge is earned.
+    #[serde(default)]
+    pub marker_on_badge: bool,
+    /// Open a "Catch it?" poll when a legendary Pokémon is encountered.
+    #[serde(default)]
+    pub poll_on_legendary: bool,
+    /// Duration of the auto-created poll, in seconds (default: 60).
+    #[serde(default = "default_poll_duration_secs")]
+    pub poll_duration_secs: u32,
+    /// Open a "Will I catch it?" prediction when a legendary Pokémon is encountered.
+    #[serde(default)]
+    pub prediction_on_legendary: bool,
+    /// Prediction voting window, in seconds (default: 120).
+    #[serde(default = "default_prediction_window_secs")]
+    pub prediction_window_secs: u32,
+}
+
+fn default_poll_duration_secs() -> u32 { 60 }
+fn default_prediction_window_secs() -> u32 { 120 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct TrackerTestOverrides {
@@ -1183,6 +1249,7 @@ impl eframe::App for SetupApp {
                     livesplit_split_on_badges: false,
                     livesplit_split_on_clear: true,
                     discord_client_id: None,
+                    twitch_helix: None,
                 };
 
                 *self.result.lock().unwrap() = Some(config);
@@ -1399,6 +1466,7 @@ mod tests {
             livesplit_split_on_badges: false,
             livesplit_split_on_clear: true,
             discord_client_id: None,
+            twitch_helix: None,
         }
     }
 

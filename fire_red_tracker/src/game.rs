@@ -260,6 +260,7 @@ pub fn check_for_dead_pokemon(thread_party: &Arc<Mutex<Vec<Pokemon>>>, run_track
                 nature: fire_red_database::nature_name(personality).to_string(),
             },
         });
+        crate::helix::on_death(&growth.species_string, pokemon.level);
     }
 }
 
@@ -529,6 +530,8 @@ pub fn check_for_run_over(
             player: fire_red_loop::get_trainer_name(),
             timestamp: fire_red_database::unix_now(),
         });
+        // Resolve any open legendary prediction as "Got away" on wipe.
+        crate::helix::resolve_prediction(crate::helix::PredictionResult::No);
         return true;
     }
     false
@@ -898,6 +901,7 @@ pub fn check_for_new_badges(
             timestamp,
             badge_name: badge_name.to_string(),
         });
+        crate::helix::on_badge(badge_name);
         tracing::info!("Badge earned: {}", badge_name);
         if split_on_badges {
             crate::livesplit::split();

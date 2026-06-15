@@ -986,6 +986,7 @@ impl WindowInfo {
                     livesplit_split_on_badges: false,
                     livesplit_split_on_clear: true,
                     discord_client_id: None,
+                    twitch_helix: None,
                 };
                 save_config(&cfg, &self.config_path);
                 self.settings_open = false;

@@ -37,6 +37,8 @@ pub struct EncounterTracker {
     encounter_area: String,
     /// Unix timestamp when the currently-tracked encounter began.
     encounter_started_at: u64,
+    /// Whether the currently-tracked encounter is a legendary Pokémon.
+    encounter_is_legendary: bool,
 }
 
 impl EncounterTracker {
@@ -53,6 +55,7 @@ impl EncounterTracker {
         self.encounter_species.clear();
         self.encounter_area.clear();
         self.encounter_started_at = 0;
+        self.encounter_is_legendary = false;
     }
 
     /// Called when a party wipe ends the run. Clears the ball latch and locks
@@ -191,6 +194,9 @@ impl EncounterTracker {
             let ot_id = enemy.box_mon.ot_id;
             let is_shiny = crate::game::is_shiny(personality, ot_id);
 
+            let species_id = enemy.box_mon.secure.growth.species;
+            let is_legendary = crate::helix::is_legendary(species_id);
+
             if is_shiny {
                 if let Err(e) =
                     fire_red_database::record_event(fire_red_database::EventKind::Shiny {
@@ -211,6 +217,14 @@ impl EncounterTracker {
                         nature: fire_red_database::nature_name(personality).to_string(),
                     },
                 });
+                crate::helix::on_shiny_encounter(
+                    &enemy.box_mon.secure.growth.species_string,
+                    is_legendary,
+                );
+            } else if is_legendary {
+                crate::helix::on_legendary_encounter(
+                    &enemy.box_mon.secure.growth.species_string,
+                );
             }
 
             let is_first = match fire_red_database::record_encounter(fire_red_database::Encounter {
@@ -237,6 +251,7 @@ impl EncounterTracker {
                 // Capture encounter metadata for catch-attempt accounting.
                 self.encounter_ball_start = crate::game::count_pokeballs();
                 self.encounter_species = enemy.box_mon.secure.growth.species_string.clone();
+                self.encounter_is_legendary = is_legendary;
                 let raw_area = fire_red_location_names::map_area_name(map_group, map_name);
                 self.encounter_area = if raw_area.is_empty() {
                     format!("{}:{}", map_group, map_name)
@@ -265,8 +280,12 @@ impl EncounterTracker {
                     true,
                     self.encounter_started_at,
                 );
+                if self.encounter_is_legendary {
+                    crate::helix::resolve_prediction(crate::helix::PredictionResult::Yes);
+                }
                 self.tracked_personality = None;
                 self.enc_map = (0, 0);
+                self.encounter_is_legendary = false;
             }
         }
     }

@@ -194,16 +194,51 @@ token   = "oauth:xxxxxxxxxx"    # OAuth token — get one at twitchapps.com/tmi
 
 Supported viewer commands:
 
-| Command     | Response                                                            |
-|-------------|---------------------------------------------------------------------|
-| `!party`    | Current party members: nickname, species, level, HP                 |
-| `!deaths`   | Death count and the five most recent deaths (requires DB)           |
-| `!shinies`  | Shiny count and last shiny name (requires DB)                       |
-| `!status`   | One-liner: `"Player — HP/MaxHP — Zone"`                             |
+| Command      | Response                                                                         |
+|--------------|----------------------------------------------------------------------------------|
+| `!party`     | Current party members: nickname, species, level, HP                              |
+| `!deaths`    | Death count and the five most recent deaths (requires DB)                        |
+| `!shinies`   | Shiny count and last shiny name (requires DB)                                    |
+| `!status`    | One-liner: `"Player — HP/MaxHP — Zone"`                                          |
+| `!moves`     | Lead Pokémon's move set with current PP for each slot                            |
+| `!ivs`       | Lead Pokémon's IVs for all six stats                                             |
+| `!badges`    | Badge count and names earned so far (Boulder through Earth)                      |
+| `!bag`       | Items and Pokéballs currently in the player's bag                                |
+| `!map`       | Player's current map / location name                                             |
+| `!encounter` | Current route's encounter table — species and percentage rates                   |
+| `!luck`      | Shiny count / total encounters with expected-rate comparison (requires DB)       |
+| `!timer`     | Elapsed HH:MM:SS from run start (requires DB)                                    |
 
 The bot reconnects automatically on disconnect, with exponential backoff from 2 seconds up to 60 seconds. The OAuth token is stored in plaintext in the TOML config — keep this file private. The `[twitch]` section works in both headless (`--ws-port`) and GUI modes.
 
 #### Delivery mechanics
+
+### Twitch Helix API integration
+
+The tracker can call the Twitch Helix API to drop VOD markers, open polls, and create/resolve predictions on key events. Configure the optional `[twitch_helix]` section in `~/.config/fire_red_tracker/config.toml`:
+
+```toml
+[twitch_helix]
+client_id       = "xxxx"           # Twitch application Client-ID
+token           = "oauth:xxxx"     # OAuth token — get one at twitchapps.com/tmi (strips "oauth:" prefix automatically)
+broadcaster_id  = "123456789"      # your numeric Twitch user ID
+
+marker_on_death  = true    # drop a VOD marker when a party member faints
+marker_on_shiny  = true    # drop a VOD marker on a shiny encounter
+marker_on_badge  = true    # drop a VOD marker when a gym badge is earned
+
+poll_on_legendary        = true   # auto-open a poll on legendary encounters ("Catch the Mewtwo?")
+poll_duration_secs       = 60     # how long the poll stays open (default: 60)
+
+prediction_on_legendary  = true   # open a Helix prediction on legendary encounters
+prediction_window_secs   = 120    # prediction window before auto-cancel (default: 120)
+```
+
+Required OAuth scopes: `channel:manage:broadcast` (markers), `channel:manage:polls` (polls), `channel:manage:predictions` (predictions).
+
+Helix calls are dispatched on a background thread and never block the game-polling loop. Predictions are resolved automatically: "Yes" (caught) when the Pokémon joins the party, "No" (escaped) when the party wipes. Legendaries checked: Articuno (144), Zapdos (145), Moltres (146), Mewtwo (150), Mew (151), Raikou (243), Entei (244), Suicune (245), Lugia (249), Ho-Oh (250), Celebi (251).
+
+---
 
 The tracker starts a single long-lived background thread at startup that owns a `reqwest::blocking::Client` with a 5-second timeout. When `fire_event` is called from the game-polling loop it:
 
@@ -330,6 +365,12 @@ The following pages are available:
 | `http://localhost:PORT/1/deaths` | Player 2's death counter |
 | `http://localhost:PORT/0/encounter_count` | Player 1's encounter counter — total encounters this run with caught/missed breakdown |
 | `http://localhost:PORT/1/encounter_count` | Player 2's encounter counter |
+| `http://localhost:PORT/0/hp` | Player 1's party HP bars — sprite, nickname, level, status badge, HP text, and animated colour-coded bar (green >50 %, yellow >25 %, red ≤25 %) |
+| `http://localhost:PORT/1/hp` | Player 2's party HP bars |
+| `http://localhost:PORT/0/badges` | Player 1's badge progress — eight dots (gold = earned, dark = not yet) with count label |
+| `http://localhost:PORT/1/badges` | Player 2's badge progress |
+| `http://localhost:PORT/0/nextgym` | Player 1's next gym panel — upcoming leader name, city, level cap, type badge, and party members highlighted when they have a type advantage |
+| `http://localhost:PORT/1/nextgym` | Player 2's next gym panel |
 | `http://localhost:PORT/history` | Run history — all past runs with expandable catch / death / encounter logs |
 | `http://localhost:PORT/shiny` | Shiny odds tracker — encounter count since last shiny encounter, last shiny detail card, full encounter list since last shiny |
 | `http://localhost:PORT/memorial` | Memorial grid — dead Pokémon from the active run as sprite cards with nickname, species, level, and death date |
@@ -413,6 +454,21 @@ All endpoints are served on the same port as the WebSocket overlay (`--ws-port`)
 | `/api/slot/:index/increase_evs` | `POST` | **Injection.** Same body as `set_evs`. Add each value to the corresponding EV, clamping at 255. Returns `403` when injections are disabled |
 | `/api/slot/:index/restore_hp` | `POST` | **Injection.** Body: `{ "party_position": <u8 0–5> }`. Write the calculated max-HP value (PartyPokemon offset 88–89) to current HP (offset 86–87). No encrypted block is touched. Returns `403` when injections are disabled |
 | `/api/slot/:index/heal_party` | `POST` | **Injection.** No body required. Restore HP and cure status for all six party slots in one pass (single UDP socket). Returns `403` when injections are disabled |
+| `/api/slot/:index/set_pp_ups` | `POST` | **Injection.** Body: `{ "party_position": <u8 0–5>, "pp0": <u8 0–3>, "pp1": <u8 0–3>, "pp2": <u8 0–3>, "pp3": <u8 0–3> }`. Set PP-Up bonus for all four move slots (0 = none, 3 = max). Current PP is refilled to the new max for each occupied slot. Returns `403` when injections are disabled |
+| `/api/slot/:index/revive_pokemon` | `POST` | **Injection.** Body: `{ "party_position": <u8 0–5>, "personality": <u32> }`. Look up a dead Pokémon by its personality value in the current run's death records, reconstruct the full 100-byte party struct (HP=1, status=0), and write it to the specified party slot. Returns `403` when injections are disabled |
+| `/api/slot/:index/undo` | `POST` | **Injection.** No body required. Revert the most recent injection command by replaying the pre-write EWRAM bytes saved before it was applied. No-ops if no undo state is available. Returns `403` when injections are disabled |
+| `/api/run/:id/trainers` | `GET` | Trainer battle log for run `id`. Returns `{ run_id, trainers: [{ flag_index, trainer_name, location, defeated_at }] }`. Requires `--db` |
+| `/api/runs/compare` | `GET` | Compare multiple runs side by side. Query param `?ids=1,2,3`. Returns total encounters, catch count, death count, average death level, and duration for each run. Requires `--db` |
+| `/api/run/:id/luck` | `GET` | Shiny luck statistics for run `id`. Returns `{ total_encounters, shiny_count, expected_shinies, per_area: [...] }`. Requires `--db` |
+| `/api/catch_rate` | `GET` | Gen III catch rate calculator (no DB required). Query params: `?species=<u16>&hp=<u16>&max_hp=<u16>&status=<none\|sleep\|freeze\|poison\|paralysis\|burn>&ball=<pokeball\|greatball\|ultraball\|...>`. Returns `{ modified_catch_rate, guaranteed, catch_probability_pct }` |
+| `/api/run/:id/closest_calls` | `GET` | Up to 50 party Pokémon ordered by the lowest HP/max_HP ratio they reached during the run, closest to fainting first. Requires `--db` |
+| `/api/run/:id/event/:event_id/note` | `PATCH` | Add or update a text annotation on a run event. Body: `{ "note": "..." }`. The `event_id` is the `id` field returned by `/api/run/:id/events`. Requires `--db` |
+| `/api/run/:id/event/:event_id/note` | `DELETE` | Clear the annotation on a run event (sets note to `""`). Requires `--db` |
+| `/api/run/:id/pokepaste` | `GET` | Export the run's surviving and fallen Pokémon as Pokepaste-formatted text. Survivors include stats, IVs, and EVs; fallen include full data with moves. Returns `text/plain`. Requires `--db` |
+| `/api/run/:id/splits` | `GET` | Badge split times for run `id`. Returns each badge with `badge_name`, `earned_at`, `elapsed_secs` (from run start), and `split_secs` (since previous badge). Requires `--db` |
+| `/api/run/:id/catch_log` | `GET` | Catch attempt log for run `id`. Returns `{ total_balls_thrown, most_balls_in_one_encounter, hardest_encounter, attempts: [...] }`. Each attempt records species, area, balls thrown, and whether the Pokémon was caught. Requires `--db` |
+| `/api/run/:id/difficulty` | `GET` | Composite run difficulty score 0–100 for run `id`. Components: death ratio (40 %), HP danger (30 %), catch miss rate (20 %), trainer load (10 %). Returns `{ difficulty, components, raw }`. Requires `--db` |
+| `/api/run/:id/area_times` | `GET` | Per-route time breakdown for run `id`. Areas sorted by total time descending, each with `formatted` duration string and `visits` count. Requires `--db` |
 
 ##### WebSocket payload filtering (`?show=`)
 
@@ -553,7 +609,8 @@ A **Soul Link** is a Nuzlocke variant played with a partner: each player's catch
 | `textures.rs` | `PendingTexture`, sprite compression, `build_sprite_data` |
 | `gui.rs` | `WindowInfo`, `eframe::App` impl, party panel, encounters viewport |
 | `server.rs` | Aggregator connection handler — manages the bidirectional push stream over an established TCP connection |
-| `webhook.rs` | `WebhookEvent` enum, channel-backed background sender, `init` / `fire_event` — HTTP POST dispatch for death, catch, shiny, wipe, badge, and nickname-change events; `render_template` for `{placeholder}` substitution when a custom body template is configured; OBS WebSocket v5 clip trigger (`SaveReplayBuffer`) via plain TCP `tungstenite` with SHA-256 authentication |
+| `webhook.rs` | `WebhookEvent` enum, channel-backed background sender, `init` / `fire_event` — HTTP POST dispatch for death, catch, shiny, wipe, badge, nickname-change, and NuzlockeViolation events; `render_template` for `{placeholder}` substitution; OBS WebSocket v5 clip trigger (`SaveReplayBuffer`) and scene switching (`SetCurrentProgramScene`) via plain TCP `tungstenite` with SHA-256 authentication; `notify-send` desktop notifications for death/shiny/wipe events |
+| `helix.rs` | Twitch Helix API integration. Background worker thread firing stream markers (`POST /streams/markers`), polls (`POST /polls`), and predictions (`POST /predictions` + `PATCH` to resolve). Public entry points: `init`, `on_death`, `on_shiny_encounter`, `on_badge`, `on_legendary_encounter`, `resolve_prediction`, `is_legendary`. Active prediction ID and outcome IDs stored in a `Mutex<Option<ActivePrediction>>` so the create → resolve lifecycle spans multiple game events |
 | `type_coverage.rs` | `TypeCoverage` struct and `compute` function — given a slice of `(type1, type2)` pairs for the living party, returns team types present, types the team is collectively weak to, and types the team can hit super-effectively. Uses the full Gen III 17-type effectiveness table (eighths arithmetic). |
 
 ### Key external dependencies
@@ -861,6 +918,26 @@ Add `http://localhost:9090/cmd` in a browser tab to manage runs — **End Run** 
 
 ## Project status
 
+**v0.9.24** — analytics endpoints and injection commands:
+
+- **`POST /api/slot/:index/set_pp_ups`** — set PP-Up bonus for all four move slots (0–3 each). Current PP is refilled to the new maximum.
+- **`POST /api/slot/:index/revive_pokemon`** — look up a dead Pokémon by personality, reconstruct the full 100-byte party struct (HP=1, status=0), and write it into any party slot.
+- **`GET /api/runs/compare?ids=1,2,3`** — compare multiple runs side by side: total encounters, catch count, death count, average death level, and duration.
+- **`GET /api/run/:id/luck`** — shiny statistics: total encounters, shiny count, expected shinies (count/8192), and per-area breakdown.
+- **`GET /api/catch_rate`** — Gen III catch rate calculator (no DB needed). Accepts `?species`, `?hp`, `?max_hp`, `?status`, `?ball`. Returns modified catch rate, guaranteed flag, and probability percentage.
+- **`GET /api/run/:id/closest_calls`** — up to 50 party Pokémon ranked by the lowest HP/max_HP ratio seen during the run (closest to fainting first).
+- **Schema v12** — adds `min_hp_seen_hp` and `min_hp_seen_max_hp` columns to `caught_pokemon` and `dead_pokemon`. Updated on every game-loop tick for living party members.
+
+---
+
+**v0.9.22** — trainer battle log:
+
+- **Trainer battle detection** — reads flags `0x100`–`0x3DF` from SaveBlock1 on every poll tick. Newly set flags (diffed against the previous snapshot) are recorded in the database with a flag index, trainer name, location, and timestamp. The detection adopts the current flag state silently on the first call after a game load or run reset (same boot-guard pattern as the badge mask).
+- **`GET /api/run/:id/trainers`** — trainer battle log for a run as JSON `{ run_id, trainers: [{ flag_index, trainer_name, location, defeated_at }] }`. Also served as a rendered HTML page at `/trainers` and `/run/:id/trainers`. Requires `--db`.
+- **Schema v11** — new `trainer_battles` table: `(run_id, player_name, flag_index, trainer_name, location, defeated_at)` with a UNIQUE constraint on `(run_id, player_name, flag_index)`.
+
+---
+
 **v0.9.20** — `heal_party` injection command:
 
 - **`POST /api/slot/:index/heal_party`** — restore HP and cure the status condition for all six party slots in a single command. Reuses one UDP socket for the full pass; no request body needed.
@@ -1018,6 +1095,57 @@ Add `http://localhost:9090/cmd` in a browser tab to manage runs — **End Run** 
 
 - **Twitch IRC chat bot** — optional `[twitch]` section in `~/.config/fire_red_aggregator/config.toml`. Fields: `channel` (without `#`), `nick` (bot account username), `token` (`oauth:xxx` — get one at twitchapps.com/tmi), optional `slot` (which tracker to read, default 0). The bot connects to `irc.chat.twitch.tv:6667` over plain TCP, authenticates, joins the channel, and responds to viewer commands: `!party` (party members with species, level, HP), `!deaths` (death count and most recent deaths), `!shinies` (shiny count and last shiny, requires DB), `!status` (one-liner zone/HP summary). Reconnects automatically on disconnect with exponential backoff. No new dependencies — plain TCP + standard IRC protocol.
 - **`GET /api/run/:id/summary`** — Markdown text recap for a completed (or in-progress) run. Includes a summary table (zones visited, caught count, deaths, shinies), death log, and full encounter log with caught/missed/shiny flags. Append `?format=text` to receive `text/plain` (raw Markdown for download or clipboard); omit to receive `{ "markdown": "..." }` JSON. Returns `404` when the run is not found, `503` when no DB is configured. Requires `--db`.
+
+---
+
+**v0.9.33** — Twitch Helix API integration and IRC command additions:
+
+- **Twitch stream markers** — new `[twitch_helix]` section in the tracker config. When `marker_on_death`, `marker_on_shiny`, or `marker_on_badge` is true, the tracker calls `POST /helix/streams/markers` to drop a labelled VOD marker. Dispatched on a background thread; never blocks the game-polling loop.
+- **Twitch Polls on legendary encounters** — when `poll_on_legendary = true`, a Helix poll ("Catch the `<species>`?") opens automatically on Articuno / Zapdos / Moltres / Mewtwo / Mew and the Johto event legends.
+- **Twitch Predictions on legendary encounters** — when `prediction_on_legendary = true`, a Helix prediction ("Will I catch the `<species>`?") opens on legendary encounter, resolves "Yes" (Caught it) when the Pokémon joins the party, and resolves "No" (Got away) on party wipe. Active prediction ID stored in a `Mutex<Option<ActivePrediction>>` to span the create → resolve lifecycle.
+- **`!encounter` Twitch IRC command** — returns the current route's land encounter table with each species and slot-rate percentage. Names resolved via `fire_red_text::get_pokemon_name_by_number`.
+- **`!luck` and `!timer` Twitch IRC commands** — `!luck` reports shiny count / total encounters and expected rate from DB; `!timer` reports elapsed HH:MM:SS from run start.
+
+---
+
+**v0.9.32** — three new OBS overlay pages completing all brainstormed overlay items:
+
+- **`/:index/hp` overlay** — party HP bars Browser Source. Six rows: 40×40 sprite, nickname and level, status badge (SLP/TOX/PSN/BRN/FRZ/PAR), HP text, animated colour-coded bar (green >50 %, yellow >25 %, red ≤25 %). Subscribes to `?show=hp` WS filter.
+- **`/:index/badges` overlay** — badge progress dot bar: eight dots (gold = earned, dark = not yet) with count label below (`X / 8`). Subscribes to `?show=badges` WS filter.
+- **`/:index/nextgym` overlay** — next gym info panel: leader name, city, level cap, type badge (coloured by Gen III type). Party rows show each member's types; members with a type-advantage move get a green highlight and ✓ icon. Shows "Champion Defeated!" when `game_cleared` is true. Subscribes to `?show=nextgym` WS filter.
+
+---
+
+**v0.9.31** — analytics: badge splits, catch attempt log, difficulty score, per-route time breakdown:
+
+- **Badge split times** — `GET /api/run/:id/splits`. Returns each badge with `badge_name`, `earned_at`, `elapsed_secs` (from run start), and `split_secs` (since the previous badge). Computed from the existing `events` table; no new schema needed.
+- **Catch attempt log** — `GET /api/run/:id/catch_log`. `EncounterTracker` now snapshots the ball count at encounter start and records `balls_thrown` + `caught` when the encounter resolves. Includes `total_balls_thrown`, `most_balls_in_one_encounter`, and `hardest_encounter` summary fields.
+- **Run difficulty score** — `GET /api/run/:id/difficulty`. Composite 0–100 score from death ratio (40 %), HP danger (30 %), catch miss rate (20 %), and trainer load (10 %). Returns the composite score, each component, and raw underlying counts.
+- **Per-route time breakdown** — `GET /api/run/:id/area_times`. Main loop opens an `area_visits` row on every map transition and closes it on exit; aggregator sums time per area and returns results sorted by total time descending.
+- **Schema v15** — new `catch_attempts` and `area_visits` tables.
+
+---
+
+**v0.9.30** — QoL tooling: event annotations, Nuzlocke violation webhook, Pokepaste export, desktop notifications:
+
+- **Run event annotations** — `PATCH /api/run/:id/event/:event_id/note` (add/update) and `DELETE /api/run/:id/event/:event_id/note` (clear). The `note` column (schema v14) is included in all `/api/run/:id/events` and `/api/timeline` responses. The event `id` is the `SERIAL` primary key already present in the schema.
+- **Nuzlocke violation webhook** — area-already-encountered, species-repeat, and dupes-clause hits all fire a `WebhookEvent::NuzlockeViolation` (URL key `nuzlocke_url`, template key `nuzlocke_template` with `{violation.message}` placeholder) in addition to the existing overlay toast.
+- **Pokepaste export** — `GET /api/run/:id/pokepaste`. Returns surviving and fallen Pokémon formatted as Pokepaste text (`text/plain`). Survivors show stats, IVs, EVs; fallen include ability, held item, and moves.
+- **Desktop push notifications** — `notify_on_death`, `notify_on_shiny`, `notify_on_wipe` boolean keys in `[webhooks]` config. When set, the tracker calls `notify-send` on the relevant events. Best-effort; errors logged at debug level and do not interrupt polling.
+
+---
+
+**v0.9.29** — Twitch chat commands, Channel Points EventSub, badge overlay toast:
+
+- **Five new IRC commands** — `!moves` (lead Pokémon move set with current PP), `!ivs` (lead Pokémon IVs all six stats), `!badges` (count + names earned), `!bag` (items + balls pocket from ROM lookup), `!map` (current location name).
+- **Channel Points EventSub** — new `eventsub.rs` module in the aggregator. Connects to `wss://eventsub.wss.twitch.tv/ws` and subscribes to channel-point redemptions via Helix API. Config fields added to `[twitch]`: `client_id`, `broadcaster_id`, `reward_commands` (map of reward-ID → command name). Supported commands: `heal_all`, `heal_party`, `new_run`, `end_run`. Requires `channel:read:redemptions` OAuth scope.
+- **Badge-earned overlay toast** — `/:index/alerts` now shows a green toast when a badge flag transitions 0 → 1 (e.g. "Thunder Badge — 3/8 badges earned"). Stays visible for 8 seconds. Badge state tracked via `_prevBadges` array; resets on run start.
+
+---
+
+**v0.9.28** — injection undo:
+
+- **`POST /api/slot/:index/undo`** — reverts the most recent injection command. Before every EWRAM write, the tracker saves the pre-write bytes into a thread-local `LAST_UNDO` buffer (`begin_undo()` + `push_undo(addr, bytes)`). The `undo` endpoint sends `ClientMessage::UndoLastCommand` (index 30) to replay those original bytes. Commands that require a pre-read (e.g. `cure_status`, `change_nickname`, `revive_pokemon`) now capture the old data before writing. Returns `403` when injections are disabled.
 
 ---
 

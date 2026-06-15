@@ -43,6 +43,7 @@ mod discord;
 mod encounter;
 mod game;
 mod gui;
+mod helix;
 mod livesplit;
 mod server;
 mod textures;
@@ -334,6 +335,9 @@ fn main() {
         cfg.livesplit_port.unwrap_or(16834),
     );
     discord::init(cfg.discord_client_id);
+    if let Some(helix_cfg) = cfg.twitch_helix.clone() {
+        helix::init(helix_cfg);
+    }
 
     let is_clean = cfg.clean || cli.clean;
     let poll_ms = Arc::new(AtomicU64::new(cfg.poll_ms.clamp(20, 2000)));

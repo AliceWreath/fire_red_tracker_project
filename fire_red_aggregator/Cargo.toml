@@ -1,6 +1,6 @@
 [package]
 name = "fire_red_aggregator"
-version = "0.9.32"
+version = "0.9.33"
 edition = "2024"
 license.workspace = true
 
@@ -14,6 +14,7 @@ fire_red_states.workspace         = true
 fire_red_database.workspace      = true
 fire_red_party_monitor.workspace = true
 fire_red_pokemon_data.workspace  = true
+fire_red_text.workspace          = true
 fire_red_rom_buffer.workspace    = true
 fire_red_image_data.workspace    = true
 flate2.workspace                 = true
