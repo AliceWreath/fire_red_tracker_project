@@ -1,4 +1,5 @@
 use crate::config::DupesClauseMode;
+use crate::webhook::{WebhookEvent, fire_event};
 use fire_red_loop::FireRedState;
 use fire_red_party_monitor::Pokemon;
 use fire_red_states::LockOrRecover;
@@ -27,6 +28,15 @@ pub struct EncounterTracker {
     /// One-shot clause-enforcement warnings accumulated by `tick`. Drained by
     /// `drain_warnings()` so each warning appears in exactly one `GameState`.
     pending_warnings: Vec<String>,
+    // ── catch-attempt tracking ───────────────────────────────────────────────
+    /// Total Pokéball count at the start of the currently-tracked encounter.
+    encounter_ball_start: u32,
+    /// Species name of the currently-tracked encounter.
+    encounter_species: String,
+    /// Human-readable area name for the currently-tracked encounter.
+    encounter_area: String,
+    /// Unix timestamp when the currently-tracked encounter began.
+    encounter_started_at: u64,
 }
 
 impl EncounterTracker {
@@ -39,6 +49,10 @@ impl EncounterTracker {
         self.tracked_personality = None;
         self.run_tracking_active = false;
         self.wipe_detected = false;
+        self.encounter_ball_start = 0;
+        self.encounter_species.clear();
+        self.encounter_area.clear();
+        self.encounter_started_at = 0;
     }
 
     /// Called when a party wipe ends the run. Clears the ball latch and locks
@@ -93,6 +107,21 @@ impl EncounterTracker {
         if let Some(enemy) = crate::game::get_wild_enemy_pokemon()
             && enemy.box_mon.personality != self.last_enemy_personality
         {
+            // Previous encounter ended without a catch (fled / used Repel / lost).
+            if self.tracked_personality.is_some() {
+                let balls_thrown = self
+                    .encounter_ball_start
+                    .saturating_sub(crate::game::count_pokeballs());
+                fire_red_database::record_catch_attempt(
+                    &self.encounter_species.clone(),
+                    &self.encounter_area.clone(),
+                    balls_thrown,
+                    false,
+                    self.encounter_started_at,
+                );
+                self.tracked_personality = None;
+            }
+
             self.last_enemy_personality = enemy.box_mon.personality;
 
             if !self.run_tracking_active {
@@ -114,17 +143,28 @@ impl EncounterTracker {
                 } else {
                     area.to_string()
                 };
-                self.pending_warnings
-                    .push(format!("Area already encountered: {}", area_label));
+                let msg = format!("Area already encountered: {}", area_label);
+                self.pending_warnings.push(msg.clone());
+                fire_event(WebhookEvent::NuzlockeViolation {
+                    player: fire_red_loop::get_trainer_name(),
+                    timestamp: fire_red_database::unix_now(),
+                    message: msg,
+                });
                 return;
             }
 
             let species = enemy.box_mon.secure.growth.species;
             if !allow_species_repeats && fire_red_database::species_encountered(species) {
-                self.pending_warnings.push(format!(
+                let msg = format!(
                     "Species already encountered: {}",
                     enemy.box_mon.secure.growth.species_string
-                ));
+                );
+                self.pending_warnings.push(msg.clone());
+                fire_event(WebhookEvent::NuzlockeViolation {
+                    player: fire_red_loop::get_trainer_name(),
+                    timestamp: fire_red_database::unix_now(),
+                    message: msg,
+                });
                 return;
             }
             let skip = match dupes_clause {
@@ -133,10 +173,16 @@ impl EncounterTracker {
                 DupesClauseMode::Shared => fire_red_database::species_caught_any(species),
             };
             if skip {
-                self.pending_warnings.push(format!(
+                let msg = format!(
                     "Dupes clause: {} already caught",
                     enemy.box_mon.secure.growth.species_string
-                ));
+                );
+                self.pending_warnings.push(msg.clone());
+                fire_event(WebhookEvent::NuzlockeViolation {
+                    player: fire_red_loop::get_trainer_name(),
+                    timestamp: fire_red_database::unix_now(),
+                    message: msg,
+                });
                 return;
             }
             let now = fire_red_database::unix_now();
@@ -188,6 +234,16 @@ impl EncounterTracker {
             if is_first {
                 self.enc_map = (map_group, map_name);
                 self.tracked_personality = Some(self.last_enemy_personality);
+                // Capture encounter metadata for catch-attempt accounting.
+                self.encounter_ball_start = crate::game::count_pokeballs();
+                self.encounter_species = enemy.box_mon.secure.growth.species_string.clone();
+                let raw_area = fire_red_location_names::map_area_name(map_group, map_name);
+                self.encounter_area = if raw_area.is_empty() {
+                    format!("{}:{}", map_group, map_name)
+                } else {
+                    raw_area.to_string()
+                };
+                self.encounter_started_at = now;
             } else {
                 self.tracked_personality = None;
             }
@@ -199,6 +255,16 @@ impl EncounterTracker {
             drop(party);
             if caught {
                 fire_red_database::set_encounter_caught(self.enc_map.0, self.enc_map.1);
+                let balls_thrown = self
+                    .encounter_ball_start
+                    .saturating_sub(crate::game::count_pokeballs());
+                fire_red_database::record_catch_attempt(
+                    &self.encounter_species.clone(),
+                    &self.encounter_area.clone(),
+                    balls_thrown,
+                    true,
+                    self.encounter_started_at,
+                );
                 self.tracked_personality = None;
                 self.enc_map = (0, 0);
             }

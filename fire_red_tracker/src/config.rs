@@ -255,6 +255,21 @@ pub struct WebhookConfig {
     /// Supported placeholders: `{pokemon.species}`, `{pokemon.old_name}`, `{pokemon.new_name}`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub nickname_template: Option<String>,
+    /// POSTed when a Nuzlocke rule is violated (area already encountered, species repeat, dupes clause).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nuzlocke_url: Option<String>,
+    /// Custom body template for nuzlocke_violation events. Supported placeholder: `{violation.message}`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nuzlocke_template: Option<String>,
+    /// Send a `notify-send` desktop notification on death events (Linux only).
+    #[serde(default)]
+    pub notify_on_death: bool,
+    /// Send a `notify-send` desktop notification on shiny encounter events (Linux only).
+    #[serde(default)]
+    pub notify_on_shiny: bool,
+    /// Send a `notify-send` desktop notification when the party is wiped (Linux only).
+    #[serde(default)]
+    pub notify_on_wipe: bool,
 }
 
 impl WebhookConfig {
@@ -271,6 +286,11 @@ impl WebhookConfig {
             && self.badge_template.is_none()
             && self.nickname_url.is_none()
             && self.nickname_template.is_none()
+            && self.nuzlocke_url.is_none()
+            && self.nuzlocke_template.is_none()
+            && !self.notify_on_death
+            && !self.notify_on_shiny
+            && !self.notify_on_wipe
     }
 }
 
@@ -569,6 +589,11 @@ struct SetupApp {
     badge_template: Option<String>,
     nickname_url: Option<String>,
     nickname_template: Option<String>,
+    nuzlocke_url: Option<String>,
+    nuzlocke_template: Option<String>,
+    notify_on_death: bool,
+    notify_on_shiny: bool,
+    notify_on_wipe: bool,
     obs_clip_badge: bool,
 }
 
@@ -616,6 +641,11 @@ impl SetupApp {
             badge_template: None,
             nickname_url: None,
             nickname_template: None,
+            nuzlocke_url: None,
+            nuzlocke_template: None,
+            notify_on_death: false,
+            notify_on_shiny: false,
+            notify_on_wipe: false,
             obs_clip_badge: false,
         }
     }
@@ -702,6 +732,11 @@ impl SetupApp {
             badge_template: wh.badge_template.clone(),
             nickname_url: wh.nickname_url.clone(),
             nickname_template: wh.nickname_template.clone(),
+            nuzlocke_url: wh.nuzlocke_url.clone(),
+            nuzlocke_template: wh.nuzlocke_template.clone(),
+            notify_on_death: wh.notify_on_death,
+            notify_on_shiny: wh.notify_on_shiny,
+            notify_on_wipe: wh.notify_on_wipe,
             obs_clip_badge: cfg.obs.clip_on_badge,
         }
     }
@@ -1115,6 +1150,11 @@ impl eframe::App for SetupApp {
                         badge_template: self.badge_template.clone(),
                         nickname_url: self.nickname_url.clone(),
                         nickname_template: self.nickname_template.clone(),
+                        nuzlocke_url: self.nuzlocke_url.clone(),
+                        nuzlocke_template: self.nuzlocke_template.clone(),
+                        notify_on_death: self.notify_on_death,
+                        notify_on_shiny: self.notify_on_shiny,
+                        notify_on_wipe: self.notify_on_wipe,
                     },
                     obs: ObsConfig {
                         host: self.obs_host.trim().to_string(),

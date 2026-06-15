@@ -664,7 +664,7 @@ fn db() -> &'static Mutex<DbState> {
 /// `initialize` has already been called.
 /// Increment this whenever a new migration or data-repair statement is added.
 /// `initialize` skips all SQL when the DB already records this version.
-const SCHEMA_VERSION: &str = "13";
+const SCHEMA_VERSION: &str = "15";
 
 pub fn initialize(connection_string: &str) -> Result<(), String> {
     // Accept bare `host/dbname` strings — prepend the scheme so callers don't have to.
@@ -962,6 +962,36 @@ pub fn initialize(connection_string: &str) -> Result<(), String> {
         );
         CREATE INDEX IF NOT EXISTS enemy_hp_log_lookup
             ON enemy_hp_log (run_id, personality);
+
+        -- Migration v14: free-text annotation on individual event log entries.
+        ALTER TABLE events ADD COLUMN IF NOT EXISTS note TEXT NOT NULL DEFAULT '';
+
+        -- Migration v15: catch attempt log and per-area time tracking.
+        CREATE TABLE IF NOT EXISTS catch_attempts (
+            id             SERIAL  PRIMARY KEY,
+            run_id         INTEGER NOT NULL REFERENCES runs(id),
+            player_name    TEXT    NOT NULL DEFAULT '',
+            species_name   TEXT    NOT NULL DEFAULT '',
+            area           TEXT    NOT NULL DEFAULT '',
+            balls_thrown   INTEGER NOT NULL DEFAULT 0,
+            caught         BOOLEAN NOT NULL DEFAULT FALSE,
+            encountered_at BIGINT  NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS catch_attempts_run
+            ON catch_attempts (run_id);
+
+        CREATE TABLE IF NOT EXISTS area_visits (
+            id          SERIAL  PRIMARY KEY,
+            run_id      INTEGER NOT NULL REFERENCES runs(id),
+            player_name TEXT    NOT NULL DEFAULT '',
+            map_group   INTEGER NOT NULL,
+            map_name    INTEGER NOT NULL,
+            area_name   TEXT    NOT NULL DEFAULT '',
+            entered_at  BIGINT  NOT NULL,
+            exited_at   BIGINT
+        );
+        CREATE INDEX IF NOT EXISTS area_visits_run
+            ON area_visits (run_id, entered_at);
     ").map_err(|e| format!("Failed to create database schema: {e}"))?;
 
     // Record the schema version so future startups can skip all migrations.
@@ -2326,6 +2356,83 @@ pub fn set_encounter_caught(map_group: u8, map_name: u8) {
     }
 }
 
+/// Records the outcome of a tracked wild encounter (first-per-area Nuzlocke slot).
+///
+/// Called by the encounter tracker when the encounter resolves — either a catch
+/// or the next battle personality replacing the current one (fled/fainted).
+/// Silently no-ops when there is no active run.
+pub fn record_catch_attempt(
+    species_name: &str,
+    area: &str,
+    balls_thrown: u32,
+    caught: bool,
+    encountered_at: u64,
+) {
+    let mut state = db().lock_or_recover();
+    let active = match state.run_id {
+        Some(id) => id,
+        None => return,
+    };
+    let player = pg_safe(&state.current_player);
+    let spec = pg_safe(species_name);
+    let area_s = pg_safe(area);
+    if let Err(e) = state.client.execute(
+        "INSERT INTO catch_attempts
+             (run_id, player_name, species_name, area, balls_thrown, caught, encountered_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)",
+        &[
+            &(active as i32),
+            &player,
+            &spec,
+            &area_s,
+            &(balls_thrown as i32),
+            &caught,
+            &(encountered_at as i64),
+        ],
+    ) {
+        tracing::warn!("record_catch_attempt: DB error: {e}");
+    }
+}
+
+/// Records the start of a new area visit.  Returns the row `id` so the caller
+/// can later close it with [`close_area_visit`].  Returns `None` when there is
+/// no active run or the insert fails.
+pub fn open_area_visit(map_group: u8, map_name: u8, area_name: &str, entered_at: u64) -> Option<i64> {
+    let mut state = db().lock_or_recover();
+    let active = state.run_id? as i32;
+    let player = pg_safe(&state.current_player);
+    let area_s = pg_safe(area_name);
+    state
+        .client
+        .query_one(
+            "INSERT INTO area_visits (run_id, player_name, map_group, map_name, area_name, entered_at)
+             VALUES ($1, $2, $3, $4, $5, $6)
+             RETURNING id",
+            &[
+                &active,
+                &player,
+                &(map_group as i32),
+                &(map_name as i32),
+                &area_s,
+                &(entered_at as i64),
+            ],
+        )
+        .ok()
+        .map(|row| row.get::<_, i32>(0) as i64)
+}
+
+/// Closes an open area visit by setting `exited_at`.  Silently ignores errors.
+pub fn close_area_visit(visit_id: i64, exited_at: u64) {
+    let Some(db) = DB.get() else { return };
+    let mut state = db.lock_or_recover();
+    if let Err(e) = state.client.execute(
+        "UPDATE area_visits SET exited_at = $1 WHERE id = $2",
+        &[&(exited_at as i64), &(visit_id as i32)],
+    ) {
+        tracing::warn!("close_area_visit: DB error: {e}");
+    }
+}
+
 /// Returns `true` if a Pokémon with this species ID exists in the `caught_pokemon`
 /// table for the active run under any player.
 ///
@@ -3221,6 +3328,284 @@ pub fn route_stats(conn_str: &str, run_id: u32) -> serde_json::Value {
     serde_json::json!({ "run_id": run_id, "zones": zones })
 }
 
+/// Returns badge split times for the given run as JSON.
+///
+/// Each entry in `splits` has `badge_name`, `earned_at` (formatted timestamp),
+/// `elapsed_secs` (seconds since run started), and `split_secs` (seconds since
+/// the previous badge, or since run start for the first badge).
+pub fn badge_splits(conn_str: &str, run_id: u32) -> serde_json::Value {
+    let mut client = match Client::connect(conn_str, NoTls) {
+        Ok(c) => c,
+        Err(e) => return serde_json::json!({ "error": format!("DB connection failed: {e}") }),
+    };
+
+    let started_at: i64 = match client.query_opt(
+        "SELECT started_at FROM runs WHERE id = $1",
+        &[&(run_id as i32)],
+    ) {
+        Ok(Some(r)) => r.get(0),
+        Ok(None) => return serde_json::json!({ "error": "Run not found" }),
+        Err(e) => return serde_json::json!({ "error": format!("Query error: {e}") }),
+    };
+
+    let rows = match client.query(
+        "SELECT species_name, occurred_at
+         FROM events
+         WHERE run_id = $1 AND event_type = 'badge'
+         ORDER BY occurred_at ASC",
+        &[&(run_id as i32)],
+    ) {
+        Ok(r) => r,
+        Err(e) => return serde_json::json!({ "error": format!("Query error: {e}") }),
+    };
+
+    let mut prev_ts = started_at;
+    let splits: Vec<serde_json::Value> = rows
+        .iter()
+        .map(|row| {
+            let badge_name: String = row.get(0);
+            let occurred_at: i64 = row.get(1);
+            let elapsed = (occurred_at - started_at).max(0);
+            let split = (occurred_at - prev_ts).max(0);
+            prev_ts = occurred_at;
+            serde_json::json!({
+                "badge_name":   badge_name,
+                "earned_at":    format_timestamp(occurred_at as u64),
+                "elapsed_secs": elapsed,
+                "split_secs":   split,
+            })
+        })
+        .collect();
+
+    serde_json::json!({ "run_id": run_id, "started_at": format_timestamp(started_at as u64), "splits": splits })
+}
+
+/// Returns catch-attempt log for the given run as JSON.
+///
+/// Each entry covers one wild encounter (Nuzlocke first-per-area only) and
+/// includes `species_name`, `area`, `balls_thrown`, `caught`, and
+/// `encountered_at`.  Summary totals are included at the top level.
+pub fn catch_attempt_log(conn_str: &str, run_id: u32) -> serde_json::Value {
+    let mut client = match Client::connect(conn_str, NoTls) {
+        Ok(c) => c,
+        Err(e) => return serde_json::json!({ "error": format!("DB connection failed: {e}") }),
+    };
+
+    let rows = match client.query(
+        "SELECT player_name, species_name, area, balls_thrown, caught, encountered_at
+         FROM catch_attempts
+         WHERE run_id = $1
+         ORDER BY encountered_at ASC",
+        &[&(run_id as i32)],
+    ) {
+        Ok(r) => r,
+        Err(e) => return serde_json::json!({ "error": format!("Query error: {e}") }),
+    };
+
+    let mut total_balls: i64 = 0;
+    let mut max_balls: i32 = 0;
+    let mut worst_encounter = String::new();
+
+    let attempts: Vec<serde_json::Value> = rows
+        .iter()
+        .map(|row| {
+            let player_name: String = row.get(0);
+            let species_name: String = row.get(1);
+            let area: String = row.get(2);
+            let balls_thrown: i32 = row.get(3);
+            let caught: bool = row.get(4);
+            let encountered_at: i64 = row.get(5);
+            total_balls += balls_thrown as i64;
+            if balls_thrown > max_balls {
+                max_balls = balls_thrown;
+                worst_encounter = format!("{} ({})", species_name, area);
+            }
+            serde_json::json!({
+                "player_name":    player_name,
+                "species_name":   species_name,
+                "area":           area,
+                "balls_thrown":   balls_thrown,
+                "caught":         caught,
+                "encountered_at": format_timestamp(encountered_at as u64),
+            })
+        })
+        .collect();
+
+    serde_json::json!({
+        "run_id":          run_id,
+        "total_balls_thrown": total_balls,
+        "most_balls_in_one_encounter": max_balls,
+        "hardest_encounter": worst_encounter,
+        "attempts":        attempts,
+    })
+}
+
+/// Returns a composite difficulty score (0–100) for the given run, plus the
+/// component breakdown used to compute it.
+///
+/// Components:
+/// - `death_ratio`  (40 %) — deaths / (deaths + survivors) × 100
+/// - `hp_danger`    (30 %) — avg "danger fraction" (1 − min_hp/max_hp) × 100
+/// - `catch_miss`   (20 %) — (total_encounters − caught) / total_encounters × 100
+/// - `trainer_load` (10 %) — min(trainer_count / 80, 1.0) × 100
+pub fn difficulty_score(conn_str: &str, run_id: u32) -> serde_json::Value {
+    let mut client = match Client::connect(conn_str, NoTls) {
+        Ok(c) => c,
+        Err(e) => return serde_json::json!({ "error": format!("DB connection failed: {e}") }),
+    };
+
+    let rid = run_id as i32;
+
+    let death_count: i64 = client
+        .query_one("SELECT COUNT(*) FROM dead_pokemon WHERE run_id = $1", &[&rid])
+        .map(|r| r.get(0))
+        .unwrap_or(0);
+
+    let survivor_count: i64 = client
+        .query_one(
+            "SELECT COUNT(*) FROM caught_pokemon cp
+             WHERE cp.run_id = $1
+               AND NOT EXISTS (
+                   SELECT 1 FROM dead_pokemon dp
+                   WHERE dp.run_id = $1 AND dp.personality = cp.personality
+               )",
+            &[&rid],
+        )
+        .map(|r| r.get(0))
+        .unwrap_or(0);
+
+    let total_pokemon = death_count + survivor_count;
+    let death_ratio = if total_pokemon > 0 {
+        death_count as f64 / total_pokemon as f64 * 100.0
+    } else {
+        0.0
+    };
+
+    // HP danger: average of (1 - min_hp/max_hp) for all mons with recorded HP
+    let hp_rows = client
+        .query(
+            "SELECT min_hp_seen_hp, min_hp_seen_max_hp
+             FROM caught_pokemon
+             WHERE run_id = $1
+               AND min_hp_seen_hp IS NOT NULL
+               AND min_hp_seen_max_hp > 0",
+            &[&rid],
+        )
+        .unwrap_or_default();
+
+    let hp_danger = if hp_rows.is_empty() {
+        0.0
+    } else {
+        let sum: f64 = hp_rows
+            .iter()
+            .map(|r| {
+                let hp: i16 = r.get(0);
+                let max_hp: i16 = r.get(1);
+                1.0 - (hp as f64 / max_hp as f64)
+            })
+            .sum();
+        sum / hp_rows.len() as f64 * 100.0
+    };
+
+    let enc_row = client
+        .query_one(
+            "SELECT COUNT(*), SUM(CASE WHEN caught THEN 1 ELSE 0 END)
+             FROM encounters WHERE run_id = $1",
+            &[&rid],
+        )
+        .ok();
+    let (total_enc, total_caught): (i64, i64) = enc_row
+        .as_ref()
+        .map(|r| (r.get(0), r.get::<_, Option<i64>>(1).unwrap_or(0)))
+        .unwrap_or((0, 0));
+
+    let catch_miss = if total_enc > 0 {
+        (total_enc - total_caught) as f64 / total_enc as f64 * 100.0
+    } else {
+        0.0
+    };
+
+    let trainer_count: i64 = client
+        .query_one(
+            "SELECT COUNT(*) FROM trainer_battles WHERE run_id = $1",
+            &[&rid],
+        )
+        .map(|r| r.get(0))
+        .unwrap_or(0);
+
+    let trainer_load = (trainer_count as f64 / 80.0).min(1.0) * 100.0;
+
+    let score = (0.40 * death_ratio + 0.30 * hp_danger + 0.20 * catch_miss + 0.10 * trainer_load)
+        .clamp(0.0, 100.0);
+
+    serde_json::json!({
+        "run_id":        run_id,
+        "difficulty":    (score * 10.0).round() / 10.0,
+        "components": {
+            "death_ratio_pct":   (death_ratio  * 10.0).round() / 10.0,
+            "hp_danger_pct":     (hp_danger    * 10.0).round() / 10.0,
+            "catch_miss_pct":    (catch_miss   * 10.0).round() / 10.0,
+            "trainer_load_pct":  (trainer_load * 10.0).round() / 10.0,
+        },
+        "raw": {
+            "deaths":         death_count,
+            "survivors":      survivor_count,
+            "total_encounters": total_enc,
+            "total_caught":   total_caught,
+            "trainer_battles": trainer_count,
+        }
+    })
+}
+
+/// Returns time spent per map area for the given run, sorted by total seconds
+/// descending.  Open visits (player still there) use the current time as the
+/// exit.
+pub fn area_time_breakdown(conn_str: &str, run_id: u32) -> serde_json::Value {
+    let mut client = match Client::connect(conn_str, NoTls) {
+        Ok(c) => c,
+        Err(e) => return serde_json::json!({ "error": format!("DB connection failed: {e}") }),
+    };
+
+    let now = unix_now() as i64;
+    let rows = match client.query(
+        "SELECT area_name, map_group, map_name,
+                SUM(COALESCE(exited_at, $2) - entered_at) AS total_secs,
+                COUNT(*) AS visits
+         FROM area_visits
+         WHERE run_id = $1
+         GROUP BY area_name, map_group, map_name
+         ORDER BY total_secs DESC",
+        &[&(run_id as i32), &now],
+    ) {
+        Ok(r) => r,
+        Err(e) => return serde_json::json!({ "error": format!("Query error: {e}") }),
+    };
+
+    let areas: Vec<serde_json::Value> = rows
+        .iter()
+        .map(|row| {
+            let area_name: String = row.get(0);
+            let map_group: i32 = row.get(1);
+            let map_name: i32 = row.get(2);
+            let total_secs: i64 = row.get(3);
+            let visits: i64 = row.get(4);
+            let hours = total_secs / 3600;
+            let mins = (total_secs % 3600) / 60;
+            let secs = total_secs % 60;
+            serde_json::json!({
+                "area_name":   area_name,
+                "map_group":   map_group,
+                "map_name":    map_name,
+                "total_secs":  total_secs,
+                "formatted":   format!("{}h {:02}m {:02}s", hours, mins, secs),
+                "visits":      visits,
+            })
+        })
+        .collect();
+
+    serde_json::json!({ "run_id": run_id, "areas": areas })
+}
+
 /// Returns shiny encounter statistics for the given run ID as JSON.
 ///
 /// Counts total encounters, total shinies, and encounters since the last shiny.
@@ -3949,7 +4334,7 @@ pub fn list_events_json(conn_str: &str, run_id: u32) -> Result<serde_json::Value
     let mut client = Client::connect(conn_str, NoTls)
         .map_err(|e| EventsError::ConnectionFailed(e.to_string()))?;
     let rows = client.query(
-        "SELECT player_name, event_type, species_name, nickname, old_nickname, level, occurred_at
+        "SELECT id, player_name, event_type, species_name, nickname, old_nickname, level, occurred_at, note
          FROM events WHERE run_id = $1 ORDER BY occurred_at ASC",
         &[&(run_id as i32)],
     ).map_err(|e| EventsError::QueryFailed(e.to_string()))?;
@@ -3957,13 +4342,15 @@ pub fn list_events_json(conn_str: &str, run_id: u32) -> Result<serde_json::Value
         .iter()
         .map(|row| {
             serde_json::json!({
-                "player_name":   row.get::<_, String>(0),
-                "event_type":    row.get::<_, String>(1),
-                "species_name":  row.get::<_, String>(2),
-                "nickname":      row.get::<_, String>(3),
-                "old_nickname":  row.get::<_, String>(4),
-                "level":         row.get::<_, i32>(5),
-                "occurred_at":   format_timestamp(row.get::<_, i64>(6) as u64),
+                "id":            row.get::<_, i32>(0),
+                "player_name":   row.get::<_, String>(1),
+                "event_type":    row.get::<_, String>(2),
+                "species_name":  row.get::<_, String>(3),
+                "nickname":      row.get::<_, String>(4),
+                "old_nickname":  row.get::<_, String>(5),
+                "level":         row.get::<_, i32>(6),
+                "occurred_at":   format_timestamp(row.get::<_, i64>(7) as u64),
+                "note":          row.get::<_, String>(8),
             })
         })
         .collect();
@@ -3986,27 +4373,239 @@ pub fn active_run_timeline_json(conn_str: &str) -> Result<serde_json::Value, Eve
         .and_then(|v| v.parse().ok())
         .ok_or(EventsError::NoActiveRun)?;
     let rows = client.query(
-        "SELECT player_name, event_type, species_name, nickname, old_nickname, level, occurred_at
+        "SELECT id, player_name, event_type, species_name, nickname, old_nickname, level, occurred_at, note
          FROM events WHERE run_id = $1 ORDER BY occurred_at ASC",
         &[&(run_id as i32)],
     ).map_err(|e| EventsError::QueryFailed(e.to_string()))?;
     let events: Vec<serde_json::Value> = rows
         .iter()
         .map(|row| {
-            let ts = row.get::<_, i64>(6) as u64;
+            let ts = row.get::<_, i64>(7) as u64;
             serde_json::json!({
-                "player_name":       row.get::<_, String>(0),
-                "event_type":        row.get::<_, String>(1),
-                "species_name":      row.get::<_, String>(2),
-                "nickname":          row.get::<_, String>(3),
-                "old_nickname":      row.get::<_, String>(4),
-                "level":             row.get::<_, i32>(5),
+                "id":                row.get::<_, i32>(0),
+                "player_name":       row.get::<_, String>(1),
+                "event_type":        row.get::<_, String>(2),
+                "species_name":      row.get::<_, String>(3),
+                "nickname":          row.get::<_, String>(4),
+                "old_nickname":      row.get::<_, String>(5),
+                "level":             row.get::<_, i32>(6),
                 "occurred_at":       ts,
                 "occurred_at_human": format_timestamp(ts),
+                "note":              row.get::<_, String>(8),
             })
         })
         .collect();
     Ok(serde_json::json!({ "run_id": run_id, "events": events }))
+}
+
+/// Sets (or clears) the free-text note on an event log entry identified by its
+/// `event_id`. Passing an empty string effectively removes the annotation.
+///
+/// Returns `Ok(())` on success, `Err(message)` if the connection or query fails.
+pub fn set_event_note(conn_str: &str, event_id: i32, note: &str) -> Result<(), String> {
+    let mut client = Client::connect(conn_str, NoTls)
+        .map_err(|e| format!("DB connection failed: {e}"))?;
+    client
+        .execute(
+            "UPDATE events SET note = $1 WHERE id = $2",
+            &[&note, &event_id],
+        )
+        .map_err(|e| format!("Query failed: {e}"))?;
+    Ok(())
+}
+
+/// Exports the living and fallen Pokémon for `run_id` in
+/// [Pokémon Showdown Pokepaste](https://pokepast.es/) format.
+///
+/// Living party members (caught but not dead) appear first in a `# Living Party`
+/// block. Because only the snapshot-at-catch is stored for survivors, move lines
+/// are omitted. Fallen members appear in a `# Fallen` block with full moveset,
+/// ability, and held-item data.
+pub fn pokepaste_export(conn_str: &str, run_id: u32) -> Result<String, String> {
+    let mut client = Client::connect(conn_str, NoTls)
+        .map_err(|e| format!("DB connection failed: {e}"))?;
+    let rid = run_id as i32;
+
+    let living = client.query(
+        "SELECT nickname, species_name, is_shiny, nature, level,
+                iv_hp, iv_attack, iv_defense, iv_speed, iv_sp_attack, iv_sp_defense,
+                ev_hp, ev_attack, ev_defense, ev_speed, ev_sp_attack, ev_sp_defense,
+                gender
+         FROM caught_pokemon
+         WHERE run_id = $1
+           AND personality NOT IN (SELECT personality FROM dead_pokemon WHERE run_id = $1)
+         ORDER BY caught_at",
+        &[&rid],
+    ).map_err(|e| format!("Query failed: {e}"))?;
+
+    let dead = client.query(
+        "SELECT nickname, species_name, is_shiny, nature, level,
+                iv_hp, iv_attack, iv_defense, iv_speed, iv_sp_attack, iv_sp_defense,
+                ev_hp, ev_attack, ev_defense, ev_speed, ev_sp_attack, ev_sp_defense,
+                move1, move2, move3, move4, ability_name, held_item, gender
+         FROM dead_pokemon WHERE run_id = $1 ORDER BY died_at",
+        &[&rid],
+    ).map_err(|e| format!("Query failed: {e}"))?;
+
+    let mut out = String::new();
+
+    if !living.is_empty() {
+        out.push_str("# Living Party\n\n");
+        for row in &living {
+            pokepaste_entry_no_moves(&mut out, row);
+        }
+    }
+
+    if !dead.is_empty() {
+        if !living.is_empty() {
+            out.push('\n');
+        }
+        out.push_str("# Fallen\n\n");
+        for row in &dead {
+            pokepaste_entry_with_moves(&mut out, row);
+        }
+    }
+
+    Ok(out)
+}
+
+fn pokepaste_entry_no_moves(out: &mut String, row: &postgres::Row) {
+    let nickname: String     = row.get(0);
+    let species: String      = row.get(1);
+    let shiny: bool          = row.get(2);
+    let nature: String       = row.get(3);
+    let level: i32           = row.get(4);
+    let iv_hp: i32           = row.get(5);
+    let iv_atk: i32          = row.get(6);
+    let iv_def: i32          = row.get(7);
+    let iv_spe: i32          = row.get(8);
+    let iv_spa: i32          = row.get(9);
+    let iv_spd: i32          = row.get(10);
+    let ev_hp: i32           = row.get(11);
+    let ev_atk: i32          = row.get(12);
+    let ev_def: i32          = row.get(13);
+    let ev_spe: i32          = row.get(14);
+    let ev_spa: i32          = row.get(15);
+    let ev_spd: i32          = row.get(16);
+
+    let header = if nickname == species {
+        species.clone()
+    } else {
+        format!("{nickname} ({species})")
+    };
+    out.push_str(&header);
+    out.push('\n');
+    out.push_str(&format!("Level: {level}\n"));
+    if shiny {
+        out.push_str("Shiny: Yes\n");
+    }
+    out.push_str(&format!("{nature} Nature\n"));
+
+    let evs = pokepaste_stat_line(ev_hp, ev_atk, ev_def, ev_spe, ev_spa, ev_spd);
+    if !evs.is_empty() {
+        out.push_str(&format!("EVs: {evs}\n"));
+    }
+    let ivs = pokepaste_iv_line(iv_hp, iv_atk, iv_def, iv_spe, iv_spa, iv_spd);
+    if !ivs.is_empty() {
+        out.push_str(&format!("IVs: {ivs}\n"));
+    }
+    out.push('\n');
+}
+
+fn pokepaste_entry_with_moves(out: &mut String, row: &postgres::Row) {
+    let nickname: String     = row.get(0);
+    let species: String      = row.get(1);
+    let shiny: bool          = row.get(2);
+    let nature: String       = row.get(3);
+    let level: i32           = row.get(4);
+    let iv_hp: i32           = row.get(5);
+    let iv_atk: i32          = row.get(6);
+    let iv_def: i32          = row.get(7);
+    let iv_spe: i32          = row.get(8);
+    let iv_spa: i32          = row.get(9);
+    let iv_spd: i32          = row.get(10);
+    let ev_hp: i32           = row.get(11);
+    let ev_atk: i32          = row.get(12);
+    let ev_def: i32          = row.get(13);
+    let ev_spe: i32          = row.get(14);
+    let ev_spa: i32          = row.get(15);
+    let ev_spd: i32          = row.get(16);
+    let move1: i32           = row.get(17);
+    let move2: i32           = row.get(18);
+    let move3: i32           = row.get(19);
+    let move4: i32           = row.get(20);
+    let ability: String      = row.get(21);
+    let held_item: i32       = row.get(22);
+
+    let header = if nickname == species {
+        species.clone()
+    } else {
+        format!("{nickname} ({species})")
+    };
+    // Item ID 0 means "no item held".
+    if held_item > 0 {
+        out.push_str(&format!("{header} @ Item #{held_item}\n"));
+    } else {
+        out.push_str(&header);
+        out.push('\n');
+    }
+    if !ability.is_empty() {
+        out.push_str(&format!("Ability: {ability}\n"));
+    }
+    out.push_str(&format!("Level: {level}\n"));
+    if shiny {
+        out.push_str("Shiny: Yes\n");
+    }
+    out.push_str(&format!("{nature} Nature\n"));
+
+    let evs = pokepaste_stat_line(ev_hp, ev_atk, ev_def, ev_spe, ev_spa, ev_spd);
+    if !evs.is_empty() {
+        out.push_str(&format!("EVs: {evs}\n"));
+    }
+    let ivs = pokepaste_iv_line(iv_hp, iv_atk, iv_def, iv_spe, iv_spa, iv_spd);
+    if !ivs.is_empty() {
+        out.push_str(&format!("IVs: {ivs}\n"));
+    }
+    for mv in [move1, move2, move3, move4] {
+        if mv > 0 {
+            out.push_str(&format!("- {}\n", move_name(mv as u16)));
+        }
+    }
+    out.push('\n');
+}
+
+/// Formats non-zero EVs as a Pokepaste EV line (e.g. `"252 HP / 4 Def"`).
+fn pokepaste_stat_line(hp: i32, atk: i32, def: i32, spe: i32, spa: i32, spd: i32) -> String {
+    let parts: Vec<String> = [
+        (hp,  "HP"),
+        (atk, "Atk"),
+        (def, "Def"),
+        (spe, "Spe"),
+        (spa, "SpA"),
+        (spd, "SpD"),
+    ]
+    .into_iter()
+    .filter(|(v, _)| *v != 0)
+    .map(|(v, name)| format!("{v} {name}"))
+    .collect();
+    parts.join(" / ")
+}
+
+/// Formats non-31 IVs as a Pokepaste IV line.
+fn pokepaste_iv_line(hp: i32, atk: i32, def: i32, spe: i32, spa: i32, spd: i32) -> String {
+    let parts: Vec<String> = [
+        (hp,  "HP"),
+        (atk, "Atk"),
+        (def, "Def"),
+        (spe, "Spe"),
+        (spa, "SpA"),
+        (spd, "SpD"),
+    ]
+    .into_iter()
+    .filter(|(v, _)| *v != 31)
+    .map(|(v, name)| format!("{v} {name}"))
+    .collect();
+    parts.join(" / ")
 }
 
 // ---------------------------------------------------------------------------

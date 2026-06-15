@@ -6,12 +6,17 @@
 //!
 //! # Supported commands
 //!
-//! | Command     | Response                                                      |
-//! |-------------|---------------------------------------------------------------|
-//! | `!party`    | Current party members with species, level, and HP             |
-//! | `!deaths`   | Death count and most-recent deaths                           |
-//! | `!shinies`  | Shiny encounter list for the active run (requires `--db`)     |
-//! | `!status`   | One-liner: `"Player — HP/MaxHP — Zone"`                       |
+//! | Command    | Response                                                       |
+//! |------------|----------------------------------------------------------------|
+//! | `!party`   | Current party members with species, level, and HP              |
+//! | `!deaths`  | Death count and most-recent deaths                             |
+//! | `!shinies` | Shiny encounter list for the active run (requires `--db`)      |
+//! | `!status`  | One-liner: `"Player — HP/MaxHP — Zone"`                        |
+//! | `!moves`   | Lead Pokémon's current move set with PP                        |
+//! | `!ivs`     | Lead Pokémon's individual values                               |
+//! | `!badges`  | Badge count and names earned so far                            |
+//! | `!bag`     | Items pocket and ball pocket contents                          |
+//! | `!map`     | Player's current location                                      |
 //!
 //! The bot reconnects automatically on disconnect, with exponential backoff
 //! capped at 60 seconds. Connection errors are logged as warnings and never
@@ -126,6 +131,11 @@ fn handle_privmsg(
         "!deaths"  => Some(cmd_deaths(slot_idx, slots)),
         "!shinies" => Some(cmd_shinies(slot_idx, slots, db_conn)),
         "!status"  => Some(cmd_status(slot_idx, slots)),
+        "!moves"   => Some(cmd_moves(slot_idx, slots)),
+        "!ivs"     => Some(cmd_ivs(slot_idx, slots)),
+        "!badges"  => Some(cmd_badges(slot_idx, slots)),
+        "!bag"     => Some(cmd_bag(slot_idx, slots)),
+        "!map"     => Some(cmd_map(slot_idx, slots)),
         _ => None,
     }
 }
@@ -241,6 +251,178 @@ fn cmd_shinies(slot_idx: usize, slots: &SharedSlots, db_conn: Option<&str>) -> S
         .unwrap_or("Unknown");
     let _ = shinies;
     format!("Shiny encounters: {total} — last shiny was {last} PogChamp")
+}
+
+fn cmd_moves(slot_idx: usize, slots: &SharedSlots) -> String {
+    let snap = slots.lock_or_recover().clone();
+    let Some(slot) = snap.get(slot_idx) else {
+        return "No tracker connected.".to_string();
+    };
+    let state_guard = slot.state.lock_or_recover();
+    let Some(gs) = state_guard.as_ref() else {
+        return "Tracker not in-game.".to_string();
+    };
+    let lead = gs.party.iter().find(|p| p.box_mon.secure.growth.species > 0);
+    let Some(lead) = lead else {
+        return "Party is empty.".to_string();
+    };
+    let nick = lead.box_mon.nickname_string.trim_matches('\0').to_string();
+    let species = lead
+        .box_mon
+        .secure
+        .growth
+        .species_string
+        .trim_matches('\0')
+        .to_string();
+    let name = if nick == species || nick.is_empty() {
+        species
+    } else {
+        format!("{nick} ({species})")
+    };
+    let moves = &lead.box_mon.secure.attack.moves;
+    let pp = &lead.box_mon.secure.attack.pp;
+    let move_strs: Vec<String> = moves
+        .iter()
+        .zip(pp.iter())
+        .filter(|&(&m, _)| m != 0)
+        .map(|(&m, &p)| format!("{} ({}pp)", fire_red_database::move_name(m), p))
+        .collect();
+    if move_strs.is_empty() {
+        return format!("{name} has no moves.");
+    }
+    format!("{name}: {}", move_strs.join(" · "))
+}
+
+fn cmd_ivs(slot_idx: usize, slots: &SharedSlots) -> String {
+    let snap = slots.lock_or_recover().clone();
+    let Some(slot) = snap.get(slot_idx) else {
+        return "No tracker connected.".to_string();
+    };
+    let state_guard = slot.state.lock_or_recover();
+    let Some(gs) = state_guard.as_ref() else {
+        return "Tracker not in-game.".to_string();
+    };
+    let lead = gs.party.iter().find(|p| p.box_mon.secure.growth.species > 0);
+    let Some(lead) = lead else {
+        return "Party is empty.".to_string();
+    };
+    let nick = lead.box_mon.nickname_string.trim_matches('\0').to_string();
+    let species = lead
+        .box_mon
+        .secure
+        .growth
+        .species_string
+        .trim_matches('\0')
+        .to_string();
+    let name = if nick == species || nick.is_empty() {
+        species
+    } else {
+        format!("{nick} ({species})")
+    };
+    let iv = &lead.box_mon.secure.misc.iv_egg_ability;
+    format!(
+        "{name} IVs — HP:{} Atk:{} Def:{} Spe:{} SpA:{} SpD:{}",
+        iv.hp_iv, iv.attack_iv, iv.defense_iv, iv.speed_iv, iv.sp_attack_iv, iv.sp_def_iv
+    )
+}
+
+fn cmd_badges(slot_idx: usize, slots: &SharedSlots) -> String {
+    const BADGE_NAMES: [&str; 8] = [
+        "Boulder", "Cascade", "Thunder", "Rainbow", "Soul", "Marsh", "Volcano", "Earth",
+    ];
+    let snap = slots.lock_or_recover().clone();
+    let Some(slot) = snap.get(slot_idx) else {
+        return "No tracker connected.".to_string();
+    };
+    let label = slot.label.lock_or_recover().clone();
+    let (count, names) = {
+        let state_guard = slot.state.lock_or_recover();
+        let Some(gs) = state_guard.as_ref() else {
+            return format!("{label} — not in-game");
+        };
+        let Some(ref bs) = gs.badge_state else {
+            return format!("{label} — badge data not available");
+        };
+        let earned: Vec<&str> = bs
+            .badges
+            .iter()
+            .zip(BADGE_NAMES.iter())
+            .filter_map(|(&has, &n)| if has { Some(n) } else { None })
+            .collect();
+        (earned.len(), earned.join(", "))
+    };
+    if count == 0 {
+        return format!("{label} has no badges yet.");
+    }
+    format!("{label}: {count}/8 badges — {names}")
+}
+
+fn cmd_bag(slot_idx: usize, slots: &SharedSlots) -> String {
+    let snap = slots.lock_or_recover().clone();
+    let Some(slot) = snap.get(slot_idx) else {
+        return "No tracker connected.".to_string();
+    };
+    let bag_guard = slot.bag_data.lock_or_recover();
+    let Some(ref bag) = *bag_guard else {
+        return "Bag data not yet available.".to_string();
+    };
+    let item_name = |id: u16| -> String {
+        if let Some(rom) = fire_red_rom_buffer::try_get_rom() {
+            fire_red_party_monitor::get_item_string_from_id(rom, id)
+        } else {
+            format!("Item#{id}")
+        }
+    };
+    let items: Vec<String> = bag
+        .items
+        .iter()
+        .map(|s| format!("{} ×{}", item_name(s.item_id), s.quantity))
+        .collect();
+    let balls: Vec<String> = bag
+        .balls
+        .iter()
+        .map(|s| format!("{} ×{}", item_name(s.item_id), s.quantity))
+        .collect();
+    let mut parts: Vec<String> = Vec::new();
+    if !items.is_empty() {
+        parts.push(format!("Items: {}", items.join(", ")));
+    }
+    if !balls.is_empty() {
+        parts.push(format!("Balls: {}", balls.join(", ")));
+    }
+    if parts.is_empty() {
+        return "Bag is empty.".to_string();
+    }
+    let out = parts.join(" | ");
+    // Twitch chat has a ~500-character limit
+    if out.len() > 450 {
+        format!("{}…", &out[..449])
+    } else {
+        out
+    }
+}
+
+fn cmd_map(slot_idx: usize, slots: &SharedSlots) -> String {
+    let snap = slots.lock_or_recover().clone();
+    let Some(slot) = snap.get(slot_idx) else {
+        return "No tracker connected.".to_string();
+    };
+    let label = slot.label.lock_or_recover().clone();
+    let state_guard = slot.state.lock_or_recover();
+    let Some(gs) = state_guard.as_ref() else {
+        return format!("{label} — not in-game");
+    };
+    let zone = if !gs.zone_name.is_empty() {
+        gs.zone_name.clone()
+    } else {
+        let raw = fire_red_location_names::map_area_name(gs.current_map_group, gs.current_map_name);
+        if raw.is_empty() {
+            format!("{}:{}", gs.current_map_group, gs.current_map_name)
+        } else {
+            raw.to_string()
+        }
+    };
+    format!("{label} is in {zone}")
 }
 
 fn cmd_status(slot_idx: usize, slots: &SharedSlots) -> String {

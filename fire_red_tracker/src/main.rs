@@ -447,6 +447,9 @@ fn main() {
             let mut last_enemy_hp: u16 = 0;
             let mut last_enemy_max_hp: u16 = 0;
             let mut enemy_warmed_up = false;
+            // Area visit tracking: record the DB row id of the currently-open
+            // visit so it can be closed when the player changes maps.
+            let mut last_area_visit_id: Option<i64> = None;
 
             // Set player name before the startup party scan so records written
             // to caught_pokemon have the correct player attribution. The trainer
@@ -495,6 +498,9 @@ fn main() {
                     last_party_hp.clear();
                     last_enemy_personality = 0;
                     enemy_warmed_up = false;
+                    if let Some(vid) = last_area_visit_id.take() {
+                        fire_red_database::close_area_visit(vid, fire_red_database::unix_now());
+                    }
                     std::thread::sleep(std::time::Duration::from_millis(500));
                     continue;
                 }
@@ -534,6 +540,17 @@ fn main() {
                     current_state = state;
                     *thread_encounters.lock_or_recover() =
                         get_area_pokemon_id_for_state(&current_state);
+                    // Open the initial area visit.
+                    let zone = fire_red_loop::get_area_name_for(
+                        current_state.map_group_id,
+                        current_state.map_name_id,
+                    );
+                    last_area_visit_id = fire_red_database::open_area_visit(
+                        current_state.map_group_id,
+                        current_state.map_name_id,
+                        &zone,
+                        fire_red_database::unix_now(),
+                    );
                 }
 
                 if state_initialized && current_state != state {
@@ -552,6 +569,17 @@ fn main() {
                     } else {
                         zone.to_string()
                     };
+                    // Close the previous area visit and open a new one.
+                    let now = fire_red_database::unix_now();
+                    if let Some(vid) = last_area_visit_id.take() {
+                        fire_red_database::close_area_visit(vid, now);
+                    }
+                    last_area_visit_id = fire_red_database::open_area_visit(
+                        current_state.map_group_id,
+                        current_state.map_name_id,
+                        &zone,
+                        now,
+                    );
                     discord::update(discord::Presence {
                         details: zone_str,
                         state: format!("Party: {}", party_size),
@@ -650,6 +678,9 @@ fn main() {
                     last_badge_mask = None;
                     last_trainer_flags = None;
                     player_name_set = false;
+                    if let Some(vid) = last_area_visit_id.take() {
+                        fire_red_database::close_area_visit(vid, fire_red_database::unix_now());
+                    }
                 }
 
                 if state_initialized {

@@ -101,6 +101,13 @@ pub enum WebhookEvent {
         old_name: String,
         new_name: String,
     },
+    /// A Nuzlocke rule was violated before an encounter was recorded.
+    /// Fired for area-already-encountered, species-repeat, and dupes-clause hits.
+    NuzlockeViolation {
+        player: String,
+        timestamp: u64,
+        message: String,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -138,7 +145,7 @@ static STATE: OnceLock<WebhookState> = OnceLock::new();
 // ---------------------------------------------------------------------------
 
 fn render_template(template: &str, event: &WebhookEvent) -> String {
-    let (event_name, player, timestamp, pokemon, badge_name_val, old_name_val, new_name_val) =
+    let (event_name, player, timestamp, pokemon, badge_name_val, old_name_val, new_name_val, violation_val) =
         match event {
             WebhookEvent::Death {
                 player,
@@ -149,6 +156,7 @@ fn render_template(template: &str, event: &WebhookEvent) -> String {
                 player.as_str(),
                 *timestamp,
                 Some(pokemon),
+                "",
                 "",
                 "",
                 "",
@@ -165,6 +173,7 @@ fn render_template(template: &str, event: &WebhookEvent) -> String {
                 "",
                 "",
                 "",
+                "",
             ),
             WebhookEvent::Shiny {
                 player,
@@ -178,9 +187,10 @@ fn render_template(template: &str, event: &WebhookEvent) -> String {
                 "",
                 "",
                 "",
+                "",
             ),
             WebhookEvent::Wipe { player, timestamp } => {
-                ("wipe", player.as_str(), *timestamp, None, "", "", "")
+                ("wipe", player.as_str(), *timestamp, None, "", "", "", "")
             }
             WebhookEvent::Badge {
                 player,
@@ -192,6 +202,7 @@ fn render_template(template: &str, event: &WebhookEvent) -> String {
                 *timestamp,
                 None,
                 badge_name.as_str(),
+                "",
                 "",
                 "",
             ),
@@ -209,6 +220,21 @@ fn render_template(template: &str, event: &WebhookEvent) -> String {
                 "",
                 old_name.as_str(),
                 new_name.as_str(),
+                "",
+            ),
+            WebhookEvent::NuzlockeViolation {
+                player,
+                timestamp,
+                message,
+            } => (
+                "nuzlocke_violation",
+                player.as_str(),
+                *timestamp,
+                None,
+                "",
+                "",
+                "",
+                message.as_str(),
             ),
         };
     let ts = timestamp.to_string();
@@ -236,6 +262,7 @@ fn render_template(template: &str, event: &WebhookEvent) -> String {
         ("{badge.name}", badge_name_val),
         ("{pokemon.old_name}", old_name_val),
         ("{pokemon.new_name}", new_name_val),
+        ("{violation.message}", violation_val),
     ];
 
     // Single-pass scan: {{ → {, }} → }, known placeholders → value, else copy.
@@ -470,6 +497,23 @@ pub fn fire_event(event: WebhookEvent) {
         .unwrap_or_else(|p| p.into_inner())
         .clone();
 
+    // Extract notify-send title/body before `event` is potentially moved.
+    let notify_desktop: Option<(String, String)> = match &event {
+        WebhookEvent::Death { pokemon, .. } if config.notify_on_death => Some((
+            "Pokémon fainted".to_string(),
+            format!("{} ({}) fainted", pokemon.nickname, pokemon.species),
+        )),
+        WebhookEvent::Shiny { pokemon, .. } if config.notify_on_shiny => Some((
+            "Shiny encounter!".to_string(),
+            format!("A shiny {} appeared", pokemon.species),
+        )),
+        WebhookEvent::Wipe { .. } if config.notify_on_wipe => Some((
+            "Run wiped!".to_string(),
+            "Your party was wiped".to_string(),
+        )),
+        _ => None,
+    };
+
     let (url, template, obs_clip, obs_scene, event_type_str) = match &event {
         WebhookEvent::Death { .. } => (
             config.death_url.as_deref(),
@@ -513,6 +557,13 @@ pub fn fire_event(event: WebhookEvent) {
             None,
             "nickname_change",
         ),
+        WebhookEvent::NuzlockeViolation { .. } => (
+            config.nuzlocke_url.as_deref(),
+            config.nuzlocke_template.as_deref(),
+            false,
+            None,
+            "nuzlocke_violation",
+        ),
     };
 
     if let Some(url) = url {
@@ -535,6 +586,23 @@ pub fn fire_event(event: WebhookEvent) {
 
     if let Some(scene) = obs_scene {
         let _ = state.tx.send(WorkerTask::ObsScene(scene));
+    }
+
+    if let Some((title, body)) = notify_desktop {
+        notify_send_inner(&title, &body);
+    }
+}
+
+/// Fires a `notify-send` desktop notification (Linux only, best-effort).
+fn notify_send_inner(title: &str, body: &str) {
+    let result = std::process::Command::new("notify-send")
+        .arg("--app-name=FireRed Tracker")
+        .arg("--urgency=normal")
+        .arg(title)
+        .arg(body)
+        .status();
+    if let Err(e) = result {
+        tracing::debug!("notify-send failed (is it installed?): {e}");
     }
 }
 

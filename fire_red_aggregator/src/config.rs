@@ -39,6 +39,14 @@ pub struct AggregatorConfig {
 /// nick    = "my_bot_account"     # Twitch username for the bot account
 /// token   = "oauth:xxxxxxxxxx"   # OAuth token — get one at twitchapps.com/tmi
 /// # slot  = 0                    # which tracker slot to read (default: 0)
+///
+/// # Optional: Channel Points EventSub (reward → command mapping).
+/// # Requires the OAuth token to have the channel:read:redemptions scope.
+/// # client_id    — your Twitch app's Client ID (from dev.twitch.tv)
+/// # broadcaster_id — numeric Twitch user ID of the channel (not the username)
+/// # [twitch.reward_commands]
+/// # "00000000-0000-0000-0000-000000000001" = "heal_all"
+/// # "00000000-0000-0000-0000-000000000002" = "new_run"
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TwitchConfig {
@@ -51,6 +59,16 @@ pub struct TwitchConfig {
     /// Tracker slot index to read live state from (default 0).
     #[serde(default)]
     pub slot: usize,
+    /// Twitch app Client-ID (required for Channel Points EventSub).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_id: Option<String>,
+    /// Numeric Twitch user ID of the broadcaster's channel (required for EventSub).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub broadcaster_id: Option<String>,
+    /// Maps channel-point reward UUIDs to aggregator commands (`heal_all`, `new_run`, `end_run`).
+    /// Omit or leave empty to disable Channel Points redemption handling.
+    #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+    pub reward_commands: std::collections::HashMap<String, String>,
 }
 
 fn default_listen_port() -> u16 {

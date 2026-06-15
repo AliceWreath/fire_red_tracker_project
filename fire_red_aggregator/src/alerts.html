@@ -14,7 +14,7 @@ html, body {
     overflow: hidden;
 }
 /* Shared position and chrome for all alert toasts — top-left */
-#zone-toast, #death-toast, #shiny-toast, #wipe-toast, #inject-toast {
+#zone-toast, #death-toast, #shiny-toast, #wipe-toast, #inject-toast, #badge-toast {
     position: fixed; top: 12px; left: 12px;
     border-radius: 8px; padding: 10px 16px;
     max-width: 340px; min-width: 220px;
@@ -22,13 +22,14 @@ html, body {
     z-index: 9998; pointer-events: none;
     opacity: 0; transition: opacity 0.4s ease;
 }
-#zone-toast.visible, #death-toast.visible, #shiny-toast.visible, #wipe-toast.visible, #inject-toast.visible {
+#zone-toast.visible, #death-toast.visible, #shiny-toast.visible, #wipe-toast.visible, #inject-toast.visible, #badge-toast.visible {
     opacity: 1;
 }
 /* Per-toast colours */
 #zone-toast  { background: rgba(10, 10, 30, 0.93); border: 1px solid rgba(100, 160, 255, 0.35); }
 #death-toast { background: rgba(40,  5,  5, 0.95); border: 1px solid rgba(255,  80,  80, 0.5);  }
 #shiny-toast { background: rgba(30, 25,  5, 0.96); border: 1px solid rgba(255, 210,  50, 0.6);  }
+#badge-toast { background: rgba(5,  30, 10, 0.95); border: 1px solid rgba(80,  220, 120, 0.55); }
 #wipe-toast  { background: rgba(60,  0,  0, 0.97); border: 1px solid #cc2222; text-align: center; transition: opacity 0.5s ease; z-index: 9999; }
 /* Zone toast content */
 .zt-zone        { font-size: 13px; font-weight: bold; color: #8ecfff; margin-bottom: 4px; }
@@ -51,6 +52,10 @@ html, body {
 #inject-toast { background: rgba(5, 25, 10, 0.93); border: 1px solid rgba(80, 200, 120, 0.45); }
 .it-label { font-size: 11px; font-weight: bold; color: #aaa; margin-bottom: 2px; letter-spacing: 0.05em; text-transform: uppercase; }
 .it-msg   { font-size: 13px; color: #7defa0; font-weight: 600; }
+/* Badge toast content */
+.bt-label { font-size: 11px; font-weight: bold; color: #aaa; margin-bottom: 2px; letter-spacing: 0.05em; text-transform: uppercase; }
+.bt-name  { font-size: 14px; font-weight: bold; color: #6dffa0; }
+.bt-count { font-size: 11px; color: #8cc; margin-top: 2px; }
 </style>
 </head>
 <body>
@@ -76,6 +81,11 @@ html, body {
 <div id="inject-toast">
   <div class="it-label">INJECTION</div>
   <div class="it-msg"  id="it-msg"></div>
+</div>
+<div id="badge-toast">
+  <div class="bt-label">BADGE EARNED!</div>
+  <div class="bt-name"  id="bt-name"></div>
+  <div class="bt-count" id="bt-count"></div>
 </div>
 <script>
 // Player slot index — path takes priority (/0/alerts), falls back to ?slot=N, then 0
@@ -158,6 +168,22 @@ let _shinyTimer         = null;
 let _wipeEndSent        = false;
 let _wipeTimer          = null;
 let _prevRunId          = null;
+let _prevBadges         = null;
+let _badgeTimer         = null;
+
+const _BADGE_NAMES = [
+    'Boulder Badge', 'Cascade Badge', 'Thunder Badge', 'Rainbow Badge',
+    'Soul Badge',    'Marsh Badge',   'Volcano Badge', 'Earth Badge'
+];
+
+function showBadgeToast(badgeName, totalCount) {
+    const toast = document.getElementById('badge-toast');
+    document.getElementById('bt-name').textContent  = badgeName;
+    document.getElementById('bt-count').textContent = totalCount + '/8 badges earned';
+    if (_badgeTimer) clearTimeout(_badgeTimer);
+    toast.classList.add('visible');
+    _badgeTimer = setTimeout(() => toast.classList.remove('visible'), 8000);
+}
 
 // Injection toasts queue so rapid-fire calls don't clobber each other.
 function showInjectToast(label) {
@@ -225,9 +251,10 @@ function handleState(slots) {
     const currentRunId = slot.active_run_id;
     const party        = slot.party || [];
 
-    // Reset wipe state when a new run starts.
+    // Reset state when a new run starts.
     if (currentRunId != null && _prevRunId == null) {
         _wipeEndSent = false;
+        _prevBadges  = null;
     }
 
     // Wipe toast: the tracker calls end_run() before broadcasting state, so
@@ -262,6 +289,22 @@ function handleState(slots) {
             if (!_seenEncounterKeys.has(k) && enc.is_shiny) showShinyToast(enc);
         }
         _seenEncounterKeys = encKeys;
+    }
+
+    // Badge earned detection
+    const badges = slot.badges || [];
+    if (_prevBadges === null) {
+        // First tick — snapshot without firing toasts.
+        _prevBadges = badges.slice();
+    } else {
+        for (let i = 0; i < badges.length && i < _BADGE_NAMES.length; i++) {
+            if (badges[i] && !_prevBadges[i]) {
+                const total = badges.filter(Boolean).length;
+                showBadgeToast(_BADGE_NAMES[i], total);
+                break; // show one toast per tick; next ticks will catch others if multiple
+            }
+        }
+        _prevBadges = badges.slice();
     }
 
     const mg  = slot.current_map_group || 0;

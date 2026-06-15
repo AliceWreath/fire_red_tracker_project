@@ -1,6 +1,6 @@
 [package]
 name = "fire_red_aggregator"
-version = "0.9.28"
+version = "0.9.31"
 edition = "2024"
 license.workspace = true
 
@@ -31,3 +31,5 @@ futures-util.workspace           = true
 tracing.workspace                = true
 tracing-subscriber.workspace     = true
 self_update.workspace            = true
+reqwest.workspace                = true
+tungstenite.workspace            = true

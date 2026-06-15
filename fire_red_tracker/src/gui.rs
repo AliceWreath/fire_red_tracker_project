@@ -68,6 +68,12 @@ struct SettingsDraft {
     nickname_url: String,
     nickname_url_enabled: bool,
     nickname_template: String,
+    // Pass-through fields — not exposed in GUI, preserved from config.
+    nuzlocke_url: Option<String>,
+    nuzlocke_template: Option<String>,
+    notify_on_death: bool,
+    notify_on_shiny: bool,
+    notify_on_wipe: bool,
 }
 
 impl SettingsDraft {
@@ -152,6 +158,11 @@ impl SettingsDraft {
             nickname_url: wh.nickname_url.clone().unwrap_or_default(),
             nickname_url_enabled: wh.nickname_url.is_some(),
             nickname_template: wh.nickname_template.clone().unwrap_or_default(),
+            nuzlocke_url: wh.nuzlocke_url.clone(),
+            nuzlocke_template: wh.nuzlocke_template.clone(),
+            notify_on_death: wh.notify_on_death,
+            notify_on_shiny: wh.notify_on_shiny,
+            notify_on_wipe: wh.notify_on_wipe,
         }
     }
 }
@@ -942,6 +953,11 @@ impl WindowInfo {
                         } else {
                             None
                         },
+                        nuzlocke_url: s.nuzlocke_url.clone(),
+                        nuzlocke_template: s.nuzlocke_template.clone(),
+                        notify_on_death: s.notify_on_death,
+                        notify_on_shiny: s.notify_on_shiny,
+                        notify_on_wipe: s.notify_on_wipe,
                     },
                     obs: ObsConfig {
                         host: s.obs_host.trim().to_string(),

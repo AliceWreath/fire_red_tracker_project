@@ -16,7 +16,7 @@ use axum::{
     extract::{ConnectInfo, Path, Query, State},
     http::{StatusCode, header},
     response::{Html, IntoResponse},
-    routing::{delete, get, post},
+    routing::{delete, get, patch, post},
 };
 use fire_red_database::{CaughtPokemon, DeadPokemon};
 use fire_red_states::{
@@ -4159,6 +4159,198 @@ async fn api_run_summary(
     }
 }
 
+/// `PATCH /api/run/:id/event/:event_id/note` — set or replace a free-text
+/// annotation on an event log entry.
+///
+/// Request body: `{ "note": "some text" }`.
+/// Passing an empty string clears the annotation without deleting the event.
+///
+/// Status codes:
+/// - `200 OK`                  — note saved.
+/// - `400 Bad Request`         — body missing or `note` field not a string.
+/// - `503 Service Unavailable` — no database configured.
+/// - `500 Internal Server Error` — DB connection or query failure.
+async fn api_set_event_note(
+    State(state): State<WebState>,
+    Path((_run_id, event_id)): Path<(u32, i32)>,
+    axum::Json(body): axum::Json<serde_json::Value>,
+) -> impl IntoResponse {
+    let Some(conn) = state.db_conn else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            axum::Json(serde_json::json!({ "error": "No database configured" })),
+        )
+            .into_response();
+    };
+    let Some(note) = body.get("note").and_then(|v| v.as_str()).map(|s| s.to_string()) else {
+        return (
+            StatusCode::BAD_REQUEST,
+            axum::Json(serde_json::json!({ "error": "Missing or invalid 'note' field" })),
+        )
+            .into_response();
+    };
+    let result =
+        tokio::task::spawn_blocking(move || fire_red_database::set_event_note(&conn, event_id, &note))
+            .await
+            .unwrap_or_else(|_| Err("Task panicked".into()));
+    match result {
+        Ok(()) => (StatusCode::OK, axum::Json(serde_json::json!({ "ok": true }))).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            axum::Json(serde_json::json!({ "error": e })),
+        )
+            .into_response(),
+    }
+}
+
+/// `DELETE /api/run/:id/event/:event_id/note` — clear the annotation on an
+/// event log entry (equivalent to PATCH with `"note": ""`).
+async fn api_clear_event_note(
+    State(state): State<WebState>,
+    Path((_run_id, event_id)): Path<(u32, i32)>,
+) -> impl IntoResponse {
+    let Some(conn) = state.db_conn else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            axum::Json(serde_json::json!({ "error": "No database configured" })),
+        )
+            .into_response();
+    };
+    let result =
+        tokio::task::spawn_blocking(move || fire_red_database::set_event_note(&conn, event_id, ""))
+            .await
+            .unwrap_or_else(|_| Err("Task panicked".into()));
+    match result {
+        Ok(()) => (StatusCode::OK, axum::Json(serde_json::json!({ "ok": true }))).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            axum::Json(serde_json::json!({ "error": e })),
+        )
+            .into_response(),
+    }
+}
+
+/// `GET /api/run/:id/pokepaste` — export the run's Pokémon in Pokepaste format.
+///
+/// Returns `text/plain` with living party members first (`# Living Party`) and
+/// fallen members second (`# Fallen`). Move data is only available for fallen
+/// members (the surviving-party snapshot is captured at catch time, before moves
+/// are trained). Ideal for sharing party state on [Pokémon Showdown](https://pokepast.es/).
+///
+/// Status codes:
+/// - `200 OK`                  — Pokepaste text returned.
+/// - `503 Service Unavailable` — no database configured.
+/// - `500 Internal Server Error` — DB connection or query failure.
+async fn api_run_pokepaste(
+    State(state): State<WebState>,
+    Path(run_id): Path<u32>,
+) -> impl IntoResponse {
+    let Some(conn) = state.db_conn else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            axum::response::AppendHeaders([("content-type", "text/plain")]),
+            "No database configured".to_string(),
+        )
+            .into_response();
+    };
+    let result =
+        tokio::task::spawn_blocking(move || fire_red_database::pokepaste_export(&conn, run_id))
+            .await
+            .unwrap_or_else(|_| Err("Task panicked".into()));
+    match result {
+        Ok(text) => (
+            StatusCode::OK,
+            axum::response::AppendHeaders([("content-type", "text/plain; charset=utf-8")]),
+            text,
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            axum::response::AppendHeaders([("content-type", "text/plain")]),
+            e,
+        )
+            .into_response(),
+    }
+}
+
+/// `GET /api/run/:id/splits` — badge split times for a run.
+///
+/// Returns the wall-clock timestamp, elapsed seconds from run start, and
+/// seconds since the previous badge for each of the up to 8 gym badges (plus
+/// the game-clear event if recorded).
+async fn api_run_splits(
+    State(state): State<WebState>,
+    Path(run_id): Path<u32>,
+) -> axum::Json<serde_json::Value> {
+    let Some(conn) = state.db_conn else {
+        return axum::Json(serde_json::json!({ "error": "No database configured" }));
+    };
+    let result =
+        tokio::task::spawn_blocking(move || fire_red_database::badge_splits(&conn, run_id))
+            .await
+            .unwrap_or_else(|_| serde_json::json!({ "error": "Task panicked" }));
+    axum::Json(result)
+}
+
+/// `GET /api/run/:id/catch_log` — catch attempt log for a run.
+///
+/// Each Nuzlocke first-encounter attempt (per area) is recorded with the
+/// species name, area, total Pokéballs thrown, and whether the catch succeeded.
+/// Summary totals (`total_balls_thrown`, `most_balls_in_one_encounter`) are
+/// included at the top level.
+async fn api_run_catch_log(
+    State(state): State<WebState>,
+    Path(run_id): Path<u32>,
+) -> axum::Json<serde_json::Value> {
+    let Some(conn) = state.db_conn else {
+        return axum::Json(serde_json::json!({ "error": "No database configured" }));
+    };
+    let result =
+        tokio::task::spawn_blocking(move || fire_red_database::catch_attempt_log(&conn, run_id))
+            .await
+            .unwrap_or_else(|_| serde_json::json!({ "error": "Task panicked" }));
+    axum::Json(result)
+}
+
+/// `GET /api/run/:id/difficulty` — composite difficulty score for a run.
+///
+/// Returns a 0–100 score derived from death ratio (40 %), HP danger (30 %),
+/// catch miss rate (20 %), and trainer battle load (10 %), plus the raw
+/// component values and input counts used to compute them.
+async fn api_run_difficulty(
+    State(state): State<WebState>,
+    Path(run_id): Path<u32>,
+) -> axum::Json<serde_json::Value> {
+    let Some(conn) = state.db_conn else {
+        return axum::Json(serde_json::json!({ "error": "No database configured" }));
+    };
+    let result =
+        tokio::task::spawn_blocking(move || fire_red_database::difficulty_score(&conn, run_id))
+            .await
+            .unwrap_or_else(|_| serde_json::json!({ "error": "Task panicked" }));
+    axum::Json(result)
+}
+
+/// `GET /api/run/:id/area_times` — per-area time breakdown for a run.
+///
+/// Groups `area_visits` rows by area name and sums the total seconds spent in
+/// each area, sorted by time descending. Open visits (player currently in that
+/// area) use the current time as the exit. Each entry also includes a
+/// human-readable `formatted` string and the visit count.
+async fn api_run_area_times(
+    State(state): State<WebState>,
+    Path(run_id): Path<u32>,
+) -> axum::Json<serde_json::Value> {
+    let Some(conn) = state.db_conn else {
+        return axum::Json(serde_json::json!({ "error": "No database configured" }));
+    };
+    let result =
+        tokio::task::spawn_blocking(move || fire_red_database::area_time_breakdown(&conn, run_id))
+            .await
+            .unwrap_or_else(|_| serde_json::json!({ "error": "Task panicked" }));
+    axum::Json(result)
+}
+
 /// Broadcasts a command to all connected tracker slots.
 ///
 /// Supported commands (no request body needed — suitable for Stream Deck buttons):
@@ -4386,6 +4578,15 @@ pub fn run(
             .route("/api/run/:id/enemy_hp_log", get(api_run_enemy_hp_log))
             .route("/api/run/:id/battle_damage", get(api_run_battle_damage))
             .route("/api/run/:id/summary", get(api_run_summary))
+            .route(
+                "/api/run/:id/event/:event_id/note",
+                patch(api_set_event_note).delete(api_clear_event_note),
+            )
+            .route("/api/run/:id/pokepaste", get(api_run_pokepaste))
+            .route("/api/run/:id/splits", get(api_run_splits))
+            .route("/api/run/:id/catch_log", get(api_run_catch_log))
+            .route("/api/run/:id/difficulty", get(api_run_difficulty))
+            .route("/api/run/:id/area_times", get(api_run_area_times))
             .route("/:index/deaths", get(serve_deaths_overlay))
             .route("/:index/encounter_count", get(serve_encounter_count))
             .route("/api/slot/:index/command/:cmd", post(api_slot_command))

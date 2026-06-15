@@ -15,6 +15,7 @@
 mod app;
 mod client;
 mod config;
+mod eventsub;
 mod twitch;
 mod web;
 
@@ -252,7 +253,8 @@ fn main() {
 
     // Twitch IRC bot — runs in both GUI and headless modes.
     if let Some(twitch_cfg) = cfg_ref.twitch.clone() {
-        twitch::spawn(twitch_cfg, shared_slots.clone(), db.clone());
+        twitch::spawn(twitch_cfg.clone(), shared_slots.clone(), db.clone());
+        eventsub::spawn(twitch_cfg, shared_slots.clone());
     }
 
     if let Some(port) = ws_port {
