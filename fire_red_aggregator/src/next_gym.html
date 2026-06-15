@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html>
+<!-- THEME_SLOT -->
+<head>
+<meta charset="utf-8">
+<title>Next Gym</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body {
+    background: transparent;
+    font-family: 'Segoe UI', Tahoma, sans-serif;
+    color: #fff;
+    width: 100%; height: 100%;
+    display: flex; align-items: flex-start; justify-content: flex-start;
+    overflow: hidden;
+}
+#root {
+    padding: 10px 14px;
+    background: rgba(10, 10, 20, 0.88);
+    border: 1px solid rgba(80, 120, 200, 0.3);
+    border-radius: 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    min-width: 200px;
+    box-shadow: 0 4px 20px rgba(0,0,0,0.7);
+}
+#gym-header {
+    display: flex; align-items: center; gap: 8px;
+}
+#gym-name {
+    font-size: 13px; font-weight: 700; color: #eef; flex: 1;
+}
+#gym-city {
+    font-size: 11px; color: #999; font-weight: 500;
+}
+#gym-level {
+    font-size: 11px; color: #ff9944; font-weight: 700; white-space: nowrap;
+}
+.type-badge {
+    display: inline-block; font-size: 10px; font-weight: 700;
+    padding: 2px 8px; border-radius: 3px; text-transform: uppercase;
+    letter-spacing: 0.3px; white-space: nowrap; text-shadow: none;
+}
+#party-list {
+    display: flex; flex-direction: column; gap: 4px;
+}
+.party-row {
+    display: flex; align-items: center; gap: 6px;
+    padding: 3px 6px; border-radius: 5px;
+    background: rgba(255,255,255,0.04);
+}
+.party-row.advantage {
+    background: rgba(50, 180, 80, 0.15);
+    border: 1px solid rgba(50, 200, 80, 0.3);
+}
+.party-sprite {
+    width: 36px; height: 36px; image-rendering: pixelated; flex-shrink: 0;
+    filter: drop-shadow(0 1px 3px rgba(0,0,0,0.9));
+}
+.party-sprite.dead { filter: grayscale(100%) brightness(0.4); }
+.party-info { flex: 1; min-width: 0; }
+.party-name {
+    font-size: 11px; font-weight: 700; color: #dde;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.party-name.dead { color: #c06060; }
+.party-types { display: flex; gap: 3px; margin-top: 2px; }
+.adv-icon {
+    font-size: 11px; color: #50e070; font-weight: 800; flex-shrink: 0;
+}
+.section-empty { font-size: 11px; color: #666; font-style: italic; }
+#game-clear {
+    font-size: 12px; font-weight: 700; color: #ffd040; text-align: center;
+    letter-spacing: 0.05em;
+}
+#disconnected { display: none; font-size: 11px; color: #666; text-align: center; padding: 4px; }
+
+/* Gen III type colours */
+.t0  { background: #a8a878; color: #111; }
+.t1  { background: #c03028; color: #fff; }
+.t2  { background: #6890f0; color: #111; }
+.t3  { background: #a040a0; color: #fff; }
+.t4  { background: #e0c068; color: #111; }
+.t5  { background: #b8a038; color: #111; }
+.t6  { background: #a8b820; color: #111; }
+.t7  { background: #705898; color: #fff; }
+.t8  { background: #b8b8d0; color: #111; }
+.t9  { background: #f08030; color: #111; }
+.t10 { background: #6890f0; color: #111; }
+.t11 { background: #78c850; color: #111; }
+.t12 { background: #f8d030; color: #111; }
+.t13 { background: #f85888; color: #fff; }
+.t14 { background: #98d8d8; color: #111; }
+.t15 { background: #7038f8; color: #fff; }
+.t16 { background: #705848; color: #fff; }
+
+html[data-theme=light] #root {
+    background: rgba(235, 240, 255, 0.93);
+    border-color: rgba(60, 100, 200, 0.35);
+    color: #111;
+}
+html[data-theme=light] #gym-name { color: #111; }
+html[data-theme=light] #gym-city { color: #555; }
+html[data-theme=light] .party-row { background: rgba(0,0,0,0.04); }
+html[data-theme=light] .party-row.advantage { background: rgba(20,140,50,0.12); }
+html[data-theme=light] .party-name { color: #222; }
+html[data-theme=light] .section-empty { color: #999; }
+</style>
+</head>
+<body>
+<div id="root">
+  <div id="gym-header" style="display:none">
+    <div id="gym-name"></div>
+    <div id="gym-city"></div>
+    <div id="gym-type-badge" class="type-badge"></div>
+    <div id="gym-level"></div>
+  </div>
+  <div id="party-list"></div>
+  <div id="game-clear" style="display:none">Champion Defeated!</div>
+  <div id="disconnected">disconnected</div>
+</div>
+<script>
+const _pathParts  = window.location.pathname.split('/').filter(Boolean);
+const _pathIndex  = parseInt(_pathParts[0]);
+const _params     = new URLSearchParams(window.location.search);
+const playerIndex = !isNaN(_pathIndex) ? _pathIndex : parseInt(_params.get('slot') || '0');
+
+const TYPE_NAMES = [
+    'Normal','Fighting','Flying','Poison','Ground','Rock',
+    'Bug','Ghost','Steel','Fire','Water','Grass',
+    'Electric','Psychic','Ice','Dragon','Dark'
+];
+
+// SE_AGAINST[defendingTypeId] = array of attacking type IDs that deal 2x
+const SE_AGAINST = {
+    0:  [],
+    1:  [2, 13],
+    2:  [5, 12, 14],
+    3:  [4, 13],
+    4:  [10, 11, 14],
+    5:  [1, 4, 8, 10, 11],
+    6:  [2, 9, 5],
+    7:  [7, 16],
+    8:  [1, 4, 9],
+    9:  [4, 5, 10],
+    10: [11, 12],
+    11: [2, 3, 6, 9, 14],
+    12: [4],
+    13: [6, 7, 16],
+    14: [1, 5, 8, 9],
+    15: [14, 15],
+    16: [1, 6],
+};
+
+function hasAdvantage(mon, gymTypeId) {
+    const se = SE_AGAINST[gymTypeId] || [];
+    return se.includes(mon.type1) || (mon.type1 !== mon.type2 && se.includes(mon.type2));
+}
+
+function el(tag, cls, text) {
+    const e = document.createElement(tag);
+    if (cls)  e.className = cls;
+    if (text !== undefined) e.textContent = text;
+    return e;
+}
+
+function handleState(slots) {
+    const slot    = slots[playerIndex];
+    const headerEl= document.getElementById('gym-header');
+    const nameEl  = document.getElementById('gym-name');
+    const cityEl  = document.getElementById('gym-city');
+    const typeEl  = document.getElementById('gym-type-badge');
+    const levelEl = document.getElementById('gym-level');
+    const listEl  = document.getElementById('party-list');
+    const clearEl = document.getElementById('game-clear');
+    const discEl  = document.getElementById('disconnected');
+
+    listEl.innerHTML = '';
+    headerEl.style.display = 'none';
+    clearEl.style.display  = 'none';
+
+    if (!slot || !slot.connected) {
+        discEl.style.display = '';
+        return;
+    }
+    discEl.style.display = 'none';
+
+    if (slot.game_cleared) {
+        clearEl.style.display = '';
+    }
+
+    const gym = slot.next_gym;
+    const gymTypeId = gym ? gym.type_id : null;
+
+    if (gym) {
+        headerEl.style.display = '';
+        nameEl.textContent  = gym.leader;
+        cityEl.textContent  = gym.city;
+        levelEl.textContent = 'Lv. cap ' + gym.max_level;
+        const tname = gymTypeId !== null ? (TYPE_NAMES[gymTypeId] || '') : '';
+        typeEl.textContent = tname;
+        typeEl.className   = 'type-badge t' + gymTypeId;
+    }
+
+    for (const mon of (slot.party || [])) {
+        const adv = gymTypeId !== null && !mon.dead && hasAdvantage(mon, gymTypeId);
+        const row = el('div', 'party-row' + (adv ? ' advantage' : ''));
+
+        if (mon.sprite) {
+            const img = document.createElement('img');
+            img.className = 'party-sprite' + (mon.dead ? ' dead' : '');
+            img.src = mon.sprite;
+            row.appendChild(img);
+        } else {
+            row.appendChild(el('div', 'party-sprite'));
+        }
+
+        const info = el('div', 'party-info');
+        info.appendChild(el('div', 'party-name' + (mon.dead ? ' dead' : ''), mon.nickname || mon.species_name));
+        const types = el('div', 'party-types');
+        types.appendChild(el('span', 'type-badge t' + mon.type1, TYPE_NAMES[mon.type1] || ''));
+        if (mon.type2 !== mon.type1) {
+            types.appendChild(el('span', 'type-badge t' + mon.type2, TYPE_NAMES[mon.type2] || ''));
+        }
+        info.appendChild(types);
+        row.appendChild(info);
+
+        if (adv) {
+            row.appendChild(el('span', 'adv-icon', '✓'));
+        }
+
+        listEl.appendChild(row);
+    }
+
+    if ((slot.party || []).length === 0) {
+        listEl.appendChild(el('div', 'section-empty', 'No party data'));
+    }
+}
+
+let ws;
+let reconnectDelay = 1000;
+function connect() {
+    ws = new WebSocket('ws://' + location.host + '/ws?show=nextgym');
+    ws.onopen    = () => { reconnectDelay = 1000; };
+    ws.onmessage = e => handleState(JSON.parse(e.data));
+    ws.onclose   = () => { setTimeout(connect, reconnectDelay); reconnectDelay = Math.min(reconnectDelay * 2, 30000); };
+}
+connect();
+</script>
+</body>
+</html>

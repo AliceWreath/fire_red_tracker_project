@@ -1268,6 +1268,9 @@ const TIMELINE_HTML: &str = include_str!("timeline.html");
 const SPECIES_HTML: &str = include_str!("species.html");
 const DEATHS_HTML: &str = include_str!("deaths.html");
 const ENCOUNTER_COUNT_HTML: &str = include_str!("encounter_count.html");
+const HP_HTML: &str = include_str!("hp.html");
+const BADGES_HTML: &str = include_str!("badges.html");
+const NEXT_GYM_HTML: &str = include_str!("next_gym.html");
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -1579,6 +1582,34 @@ fn filter_slots_json(json: &str, show: &str) -> String {
             "encounters",
             "box_pokemon",
             "dead",
+            "prev_run_encounters",
+        ],
+        // hp overlay only needs party (hp/status) and badges.
+        "hp" => &[
+            "encounters",
+            "box_pokemon",
+            "dead",
+            "caught",
+            "db_encounters",
+            "prev_run_encounters",
+        ],
+        // badges overlay only needs badges.
+        "badges" => &[
+            "party",
+            "encounters",
+            "box_pokemon",
+            "dead",
+            "caught",
+            "db_encounters",
+            "prev_run_encounters",
+        ],
+        // nextgym overlay needs party (types) + next_gym + badges.
+        "nextgym" => &[
+            "encounters",
+            "box_pokemon",
+            "dead",
+            "caught",
+            "db_encounters",
             "prev_run_encounters",
         ],
         _ => return json.to_owned(),
@@ -4424,6 +4455,30 @@ async fn api_db_query(
     axum::Json(result.unwrap_or_else(|_| serde_json::json!({ "error": "Task panicked" })))
 }
 
+async fn serve_hp_overlay(
+    State(state): State<WebState>,
+    Query(params): Query<HashMap<String, String>>,
+) -> Html<String> {
+    let theme = params.get("theme").map(String::as_str);
+    Html(apply_page_with_theme(HP_HTML, state.testing, theme))
+}
+
+async fn serve_badges_overlay(
+    State(state): State<WebState>,
+    Query(params): Query<HashMap<String, String>>,
+) -> Html<String> {
+    let theme = params.get("theme").map(String::as_str);
+    Html(apply_page_with_theme(BADGES_HTML, state.testing, theme))
+}
+
+async fn serve_next_gym_overlay(
+    State(state): State<WebState>,
+    Query(params): Query<HashMap<String, String>>,
+) -> Html<String> {
+    let theme = params.get("theme").map(String::as_str);
+    Html(apply_page_with_theme(NEXT_GYM_HTML, state.testing, theme))
+}
+
 // ---------------------------------------------------------------------------
 // Entry point
 // ---------------------------------------------------------------------------
@@ -4589,6 +4644,9 @@ pub fn run(
             .route("/api/run/:id/area_times", get(api_run_area_times))
             .route("/:index/deaths", get(serve_deaths_overlay))
             .route("/:index/encounter_count", get(serve_encounter_count))
+            .route("/:index/hp", get(serve_hp_overlay))
+            .route("/:index/badges", get(serve_badges_overlay))
+            .route("/:index/nextgym", get(serve_next_gym_overlay))
             .route("/api/slot/:index/command/:cmd", post(api_slot_command))
             .route("/about", get(serve_about))
             .route("/compare", get(serve_compare))

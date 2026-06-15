@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html>
+<!-- THEME_SLOT -->
+<head>
+<meta charset="utf-8">
+<title>Party HP</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body {
+    background: transparent;
+    font-family: 'Segoe UI', Tahoma, sans-serif;
+    color: #fff;
+    width: 100%; height: 100%;
+    display: flex; align-items: flex-start; justify-content: flex-start;
+    overflow: hidden;
+}
+#root {
+    padding: 10px 14px;
+    background: rgba(10, 10, 20, 0.88);
+    border: 1px solid rgba(80, 120, 200, 0.3);
+    border-radius: 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    min-width: 220px;
+    box-shadow: 0 4px 20px rgba(0,0,0,0.7);
+}
+.row {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+}
+.sprite {
+    width: 40px; height: 40px;
+    image-rendering: pixelated;
+    flex-shrink: 0;
+    filter: drop-shadow(0 1px 3px rgba(0,0,0,0.9));
+}
+.sprite.dead { filter: grayscale(100%) brightness(0.4); }
+.info { flex: 1; min-width: 0; }
+.name-row {
+    display: flex; align-items: center; gap: 4px;
+    font-size: 12px; font-weight: 700; color: #eef;
+    overflow: hidden;
+}
+.name-row.dead { color: #c06060; }
+.lv { font-size: 10px; color: #999; font-weight: 600; white-space: nowrap; }
+.hp-text { font-size: 10px; color: #aaa; font-weight: 500; }
+.bar-wrap {
+    width: 100%; height: 5px;
+    background: rgba(255,255,255,0.12);
+    border-radius: 3px; margin-top: 2px;
+    overflow: hidden;
+}
+.bar-fill {
+    height: 100%; border-radius: 3px;
+    transition: width 0.3s ease;
+}
+.bar-high { background: #5de05d; }
+.bar-mid  { background: #ffe040; }
+.bar-low  { background: #ff5050; }
+.status-badge {
+    display: inline-block; font-size: 8px; font-weight: bold;
+    padding: 1px 4px; border-radius: 2px; white-space: nowrap;
+    text-shadow: none; flex-shrink: 0;
+}
+.status-slp { background: #555577; color: #ccccee; }
+.status-psn { background: #7733aa; color: #ddb8ff; }
+.status-brn { background: #aa4400; color: #ffcc99; }
+.status-frz { background: #336688; color: #aaddff; }
+.status-par { background: #887700; color: #ffee88; }
+.status-tox { background: #550077; color: #dd99ff; }
+#disconnected { display: none; font-size: 11px; color: #666; text-align: center; padding: 4px; }
+html[data-theme=light] #root {
+    background: rgba(235, 240, 255, 0.93);
+    border-color: rgba(60, 100, 200, 0.35);
+    color: #111;
+}
+html[data-theme=light] .name-row { color: #222; }
+html[data-theme=light] .lv { color: #666; }
+html[data-theme=light] .hp-text { color: #555; }
+html[data-theme=light] .bar-wrap { background: rgba(0,0,0,0.12); }
+</style>
+</head>
+<body>
+<div id="root">
+  <div id="bars"></div>
+  <div id="disconnected">disconnected</div>
+</div>
+<script>
+const _pathParts  = window.location.pathname.split('/').filter(Boolean);
+const _pathIndex  = parseInt(_pathParts[0]);
+const _params     = new URLSearchParams(window.location.search);
+const playerIndex = !isNaN(_pathIndex) ? _pathIndex : parseInt(_params.get('slot') || '0');
+
+function el(tag, cls, text) {
+    const e = document.createElement(tag);
+    if (cls)  e.className = cls;
+    if (text !== undefined) e.textContent = text;
+    return e;
+}
+
+function statusBadge(status) {
+    let label = '', cls = '';
+    if      (status & 0x07) { label = 'SLP'; cls = 'status-slp'; }
+    else if (status & 0x80) { label = 'TOX'; cls = 'status-tox'; }
+    else if (status & 0x08) { label = 'PSN'; cls = 'status-psn'; }
+    else if (status & 0x10) { label = 'BRN'; cls = 'status-brn'; }
+    else if (status & 0x20) { label = 'FRZ'; cls = 'status-frz'; }
+    else if (status & 0x40) { label = 'PAR'; cls = 'status-par'; }
+    else return null;
+    return el('span', 'status-badge ' + cls, label);
+}
+
+function handleState(slots) {
+    const slot   = slots[playerIndex];
+    const barsEl = document.getElementById('bars');
+    const discEl = document.getElementById('disconnected');
+
+    barsEl.innerHTML = '';
+    if (!slot || !slot.connected) {
+        discEl.style.display = '';
+        return;
+    }
+    discEl.style.display = 'none';
+
+    for (const mon of (slot.party || [])) {
+        const row = el('div', 'row');
+
+        if (mon.sprite) {
+            const img = document.createElement('img');
+            img.className = 'sprite' + (mon.dead ? ' dead' : '');
+            img.src = mon.sprite;
+            row.appendChild(img);
+        } else {
+            row.appendChild(el('div', 'sprite'));
+        }
+
+        const info = el('div', 'info');
+        const nrow = el('div', 'name-row' + (mon.dead ? ' dead' : ''));
+        nrow.appendChild(document.createTextNode(mon.nickname || mon.species_name));
+        nrow.appendChild(el('span', 'lv', ' Lv' + mon.level));
+        if (!mon.dead) {
+            const sb = statusBadge(mon.status || 0);
+            if (sb) nrow.appendChild(sb);
+        }
+        info.appendChild(nrow);
+
+        const hpPct = mon.max_hp > 0 ? mon.hp / mon.max_hp : 0;
+        const barCls = hpPct > 0.5 ? 'bar-high' : hpPct > 0.25 ? 'bar-mid' : 'bar-low';
+        info.appendChild(el('span', 'hp-text', mon.hp + ' / ' + mon.max_hp));
+        const wrap = el('div', 'bar-wrap');
+        const fill = el('div', 'bar-fill ' + barCls);
+        fill.style.width = Math.round(hpPct * 100) + '%';
+        wrap.appendChild(fill);
+        info.appendChild(wrap);
+
+        row.appendChild(info);
+        barsEl.appendChild(row);
+    }
+}
+
+let ws;
+let reconnectDelay = 1000;
+function connect() {
+    ws = new WebSocket('ws://' + location.host + '/ws?show=hp');
+    ws.onopen    = () => { reconnectDelay = 1000; };
+    ws.onmessage = e => handleState(JSON.parse(e.data));
+    ws.onclose   = () => { setTimeout(connect, reconnectDelay); reconnectDelay = Math.min(reconnectDelay * 2, 30000); };
+}
+connect();
+</script>
+</body>
+</html>
