@@ -1,3 +1,8 @@
+//! Global Pokémon name repository, loaded once from ROM data at startup.
+//!
+//! Call [`fill_name_repo`] once with the decoded name table, then use
+//! [`get_name_repo`] anywhere to look up names by species index.
+
 use std::sync::OnceLock;
 
 /// Global repository containing all loaded pokemon names.
@@ -13,7 +18,7 @@ static NAME_REPO: OnceLock<Vec<String>> = OnceLock::new();
 ///
 /// # Arguments
 ///
-/// * `names` - Vector containing pokmeon names indexed by species id.
+/// * `names` - Vector containing pokemon names indexed by species id.
 ///
 /// # Notes
 ///
@@ -41,7 +46,7 @@ pub fn fill_name_repo(names: Vec<String>) {
 ///
 /// # Panics
 ///
-/// Panics if the repo has not yet been initializied.
+/// Panics if the repo has not yet been initialized.
 ///
 /// # Example
 ///
@@ -50,5 +55,5 @@ pub fn fill_name_repo(names: Vec<String>) {
 /// println!("{}", names[1]); // Bulbasaur
 /// ```
 pub fn get_name_repo() -> &'static [String] {
-    NAME_REPO.get().expect("Name repo not initialize.")
+    NAME_REPO.get().expect("Name repo not initialized.")
 }

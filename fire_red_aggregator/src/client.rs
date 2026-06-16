@@ -65,7 +65,7 @@ pub struct PendingTexture {
     /// Which sprite image this packet carries (front or back).
     pub variant: fire_red_states::SpriteVariant,
     /// Decompressed RGBA pixel data (width x height x 4 bytes)
-    pub pixels: Vec<u8>, // decompressed RGBA
+    pub pixels: Vec<u8>,
     /// Image width in pixels
     pub width: u32,
     /// Image height in pixels
@@ -190,7 +190,7 @@ impl MonitorSlot {
 ///
 /// Called on the network thread immediately after receiving a
 /// [`ServerMessage::Textures`] packet, before the data is placed in
-/// `pending_textures`. On failure (turncated data, bad checksum) an empty
+/// `pending_textures`. On failure (truncated data, bad checksum) an empty
 /// `Vec` is returned so the texture pipeline can continue without panicking.
 ///
 /// # Arguments

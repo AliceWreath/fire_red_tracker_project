@@ -1,13 +1,19 @@
+//! Heuristic scanner for wild encounter table headers in a FireRed ROM.
+//!
+//! [`find_wild_headers`] walks the ROM looking for byte patterns that match
+//! the 20-byte wild encounter header struct.  Results feed
+//! `fire_red_pokemon_data` so the overlay can show per-route encounter tables.
+
 use fire_red_get_values::*;
 
 /// Size in bytes of a single wild encounter header entry.
 ///
 /// Each header contains
 ///
-/// - Map group ('u8')
-/// - Map number ('u8')
-/// - Padding ('u16')
-/// - Four encounter table pointers ('u32' each)
+/// - Map group (`u8`)
+/// - Map number (`u8`)
+/// - Padding (`u16`)
+/// - Four encounter table pointers (`u32` each)
 ///
 /// total size: 20 bytes.
 const HEADER_SIZE: usize = 20;
@@ -261,7 +267,7 @@ pub fn find_map_groups_table(rom: &[u8], known_pairs: &[(u8, u8)]) -> Option<usi
 /// # Notes
 ///
 /// This function uses heuristic validation and is designed specifically
-/// around Pokemon FirERed ROM layouts.
+/// around Pokemon FireRed ROM layouts.
 pub fn find_wild_headers(rom: &[u8]) -> Option<usize> {
     let mut i = 0;
 

@@ -64,6 +64,7 @@ enum HelixTask {
     ResolvePrediction { outcome: PredictionResult },
 }
 
+/// Outcome of a Twitch prediction: whether the poll result was "Yes" or "No".
 #[derive(Clone, Copy)]
 pub enum PredictionResult {
     Yes,

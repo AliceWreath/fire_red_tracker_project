@@ -6,9 +6,11 @@ use std::os::raw::c_char;
 
 use fire_red_get_values::*;
 
-/// Highest valid Pokemon species ID in Pokemon FireRed.
+/// Last index in the FireRed ROM Pokémon name table (inclusive).
 ///
-/// Used when building the internal Pokemon name table from ROM data.
+/// `0x019B` = 411 decimal. The ROM name table runs from index 0 through this
+/// value; entries above 386 (the last real Pokémon in Gen III) are blank
+/// padding.  Used as the loop bound when reading all names from ROM data.
 pub static LAST_POKEMON_ID_NUMBER: size_t = 0x019B;
 
 /// Converts a single pokemon firered/gba text byte into a Unicode character.
@@ -110,7 +112,7 @@ pub fn gba_string_to_ascii(buffer: &[u8], len: usize, offset: usize) -> String {
     result
 }
 
-/// FFI-safe arry of C strings.
+/// FFI-safe array of C strings.
 ///
 /// Intended for interoperability with C or other foreign languages.
 ///

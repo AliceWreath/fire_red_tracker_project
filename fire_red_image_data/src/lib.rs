@@ -17,7 +17,7 @@
 //!    with [`decode_palette`]
 //! 5. **Assemble** the final [`ImageBuffer`] in [`get_pokemon_sprite`]
 //!
-//! All pokemon front sprites in FireRed are 64x64 pixles (8x8 tiles of 8x8 pixels each),
+//! All pokemon front sprites in FireRed are 64x64 pixels (8x8 tiles of 8x8 pixels each),
 //! stored in 4bpp tiled format with a 16-color palette.
 use image::{ImageBuffer, Rgba};
 
@@ -25,7 +25,7 @@ use image::{ImageBuffer, Rgba};
 // ROM layout constants
 // ---------------------------------------------------------------------------
 
-/// Base address of the GBA ROM in teh cartridge address space.
+/// Base address of the GBA ROM in the cartridge address space.
 ///
 /// All ROM pointers stored in the file are absolute GBA addresses; subtracting
 /// this constant converts them to byte offsets usable for direct slice indexing.
@@ -44,7 +44,7 @@ const PALETTE_TABLE_PTR: u32 = 0x130;
 
 /// Byte offset within the ROM where the shiny palette pointer table pointer is stored.
 ///
-/// Parallel structure to [`PALLET_TABLE_PTR`] but for alternate shiny palettes.
+/// Parallel structure to [`PALETTE_TABLE_PTR`] but for alternate shiny palettes.
 const SHINY_PALETTE_TABLE_PTR: u32 = 0x134;
 
 /// Byte offset within the ROM where the back-sprite pointer table pointer is stored.

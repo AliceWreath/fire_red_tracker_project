@@ -1,3 +1,5 @@
+//! Aggregator configuration types, TOML loading, and the first-run setup UI.
+
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -110,6 +112,8 @@ fn is_default_retroarch_port(v: &u16) -> bool { *v == 55355 }
 fn default_poll_ms_agg() -> u64 { 100 }
 fn is_default_poll_ms_agg(v: &u64) -> bool { *v == 100 }
 
+/// Config overrides applied when `--test` is active (or `default_test = true`).
+/// All fields are optional; omit a field to inherit the base config value.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct AggregatorTestOverrides {
     pub listen_port: Option<u16>,

@@ -7,6 +7,7 @@ use std::fmt;
 // DupesClauseMode
 // ---------------------------------------------------------------------------
 
+/// Controls how the duplicate-species clause is enforced during a Nuzlocke run.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub enum DupesClauseMode {
     #[default]
@@ -67,6 +68,10 @@ impl fmt::Display for DupesClauseMode {
 // NuzlockePreset
 // ---------------------------------------------------------------------------
 
+/// Pre-configured Nuzlocke rule sets selectable in config.
+///
+/// Each variant maps to a `(DupesClauseMode, allow_species_repeats)` tuple via
+/// [`NuzlockePreset::settings`].
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum NuzlockePreset {
@@ -91,6 +96,11 @@ impl NuzlockePreset {
 // WebhookConfig
 // ---------------------------------------------------------------------------
 
+/// Per-event HTTP webhook configuration.
+///
+/// Each event type has an optional `*_url` (destination) and `*_template`
+/// (body template).  When a template is omitted the default JSON payload is
+/// sent.  See `fire_red_game_loop::webhook` for placeholder documentation.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct WebhookConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -155,6 +165,7 @@ impl WebhookConfig {
 // ObsConfig
 // ---------------------------------------------------------------------------
 
+/// OBS WebSocket v5 integration config for clip triggers and scene switching.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ObsConfig {
     #[serde(default = "default_obs_host")]
@@ -223,6 +234,10 @@ impl ObsConfig {
 // TwitchHelixConfig
 // ---------------------------------------------------------------------------
 
+/// Twitch Helix API config for stream markers, polls, and predictions.
+///
+/// Requires a user-access token with scopes matching the enabled features;
+/// see `fire_red_game_loop::helix` for the scope table.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TwitchHelixConfig {
     pub client_id: String,

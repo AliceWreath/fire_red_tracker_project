@@ -1,3 +1,10 @@
+//! Global ROM buffer, revision detection, and address tables for FireRed/LeafGreen.
+//!
+//! Call [`fill_rom`] (or [`init_rom`]) once at startup.  Every subsequent call to
+//! [`get_rom`] returns a `&'static [u8]` to the loaded bytes. [`get_rom_revision`]
+//! and [`get_rom_addresses`] expose the detected revision and the corresponding
+//! per-revision address table.
+
 use std::sync::OnceLock;
 
 /// Global immutable ROM buffer.
@@ -204,14 +211,18 @@ const LEAFGREEN_USA_REV0: RomAddresses = LEAFGREEN_USA_REV1;
 /// version at offset `0xBC`.  Prints a diagnostic message for unknown ROMs
 /// so the user can tell whether their ROM is supported.
 ///
-/// | Game code | Rev byte | Detected revision        |
-/// |-----------|----------|--------------------------|
-/// | `BPRE`    | `0x01`   | [`FireRedUsaRev1`]       |
-/// | `BPRE`    | `0x00`   | [`FireRedUsaRev0`]       |
-/// | anything else        | [`Unknown`] (falls back to Rev 1 addresses) |
+/// | Game code | Rev byte | Detected revision            |
+/// |-----------|----------|------------------------------|
+/// | `BPRE`    | `0x01`   | [`FireRedUsaRev1`]           |
+/// | `BPRE`    | `0x00`   | [`FireRedUsaRev0`]           |
+/// | `BPGE`    | `0x01`   | [`LeafGreenUsaRev1`]         |
+/// | `BPGE`    | `0x00`   | [`LeafGreenUsaRev0`]         |
+/// | anything else        | [`Unknown`] (falls back to FireRed Rev 1 addresses) |
 ///
 /// [`FireRedUsaRev1`]: RomRevision::FireRedUsaRev1
 /// [`FireRedUsaRev0`]: RomRevision::FireRedUsaRev0
+/// [`LeafGreenUsaRev1`]: RomRevision::LeafGreenUsaRev1
+/// [`LeafGreenUsaRev0`]: RomRevision::LeafGreenUsaRev0
 /// [`Unknown`]: RomRevision::Unknown
 pub fn detect_rom_revision(rom: &[u8]) -> RomRevision {
     let Some(game_code) = rom.get(GAME_CODE_OFFSET..GAME_CODE_OFFSET + 4) else {
@@ -325,15 +336,12 @@ pub fn fill_rom(path_to_file: &str) -> Result<(), String> {
         return Err(String::from("Must pass a valid file path."));
     }
 
-    let rom = std::fs::read(path_to_file);
-    if rom.is_err() {
-        return Err(format!(
+    let rom = std::fs::read(path_to_file).map_err(|_| {
+        format!(
             "Unable to open file {}, check the path.\nROM static not initialized!",
             path_to_file
-        ));
-    }
-
-    let rom = rom.unwrap();
+        )
+    })?;
     fill_static_buffer(rom);
 
     Ok(())

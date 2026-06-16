@@ -1,18 +1,14 @@
 //! # FireRed Map Data Structures
 //!
-//! C-compatible (in the works not completed) (`#[repr(C)]`) structs that mirror the in-memory layout of
-//! pokemon FireRed map data, along with the methods for deserializing them from raw emulate memory reads
-//! and generating follow-up `READ_CORE_MEMORY` commands.
+//! `#[repr(C)]` structs that mirror the in-memory layout of Pokémon FireRed map
+//! data, along with methods for deserializing them from raw ROM bytes.
 //!
 //! ## Parsing convention
 //!
-//! Every `fill_*` method accepts a `buffer: &[&str]` slice of hex byte tokens as returned by the
-//! emulator's `READ_CORE_MEMORY` response. Parsing always starts at index 2 because index 0 is the
-//! command echo and index 1 is the address; the actual data bytes begin at index 2.
-//!
-//! Methods consume `self` and return the populated struct (builder pattern), except for
-//! `fill_allow_esc_run_map_name` which takes `&mut self` because it writes multiple fields from
-//! a single byte.
+//! [`MapHeader::fill_from_bytes`] takes a raw `&[u8]` ROM slice and a map offset
+//! (GBA bus address minus `0x08000000`).  All pointer fields are stored as raw
+//! GBA bus addresses; subtract `ROM_BASE` (`0x08000000`) before using them as
+//! ROM slice indices.
 
 use fire_red_get_values::*;
 #[cfg(feature = "retroarch-parser")]

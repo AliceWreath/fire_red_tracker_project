@@ -59,8 +59,8 @@ fn get_bytes(buffer: &[&str]) -> Vec<u8> {
 /// diagnostic to stderr. Only the first `n` tokens are parsed.
 ///
 /// # Arguments
-/// * `n`               - Number of bytes to read.
-/// * `buffer`          0 Slice of hex byte string tokens.
+/// * `n`      - Number of bytes to read.
+/// * `buffer` - Slice of hex byte string tokens.
 pub fn get_n_bytes(n: usize, buffer: &[&str]) -> Option<Vec<u8>> {
     if buffer.len() < n {
         tracing::warn!(

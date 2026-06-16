@@ -124,8 +124,14 @@ fn run_session(config: &TwitchConfig, slots: &SharedSlots) -> Result<(), String>
 
     // ── Subscribe to channel point redemptions ───────────────────────────────
     let bearer = config.token.trim_start_matches("oauth:");
-    let client_id = config.client_id.as_deref().unwrap();
-    let broadcaster_id = config.broadcaster_id.as_deref().unwrap();
+    let client_id = config
+        .client_id
+        .as_deref()
+        .ok_or("EventSub: client_id missing from twitch config")?;
+    let broadcaster_id = config
+        .broadcaster_id
+        .as_deref()
+        .ok_or("EventSub: broadcaster_id missing from twitch config")?;
 
     let body = serde_json::json!({
         "type": "channel.channel_points_custom_reward_redemption.add",

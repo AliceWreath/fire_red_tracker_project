@@ -29,16 +29,20 @@
 //! When a `*_template` is configured for an event, that string is rendered
 //! and POSTed verbatim (`application/json`). Supported placeholders:
 //!
-//! | Placeholder           | Value                                  |
-//! |-----------------------|----------------------------------------|
-//! | `{event}`             | `death`, `catch`, `shiny`, or `wipe`  |
-//! | `{player}`            | Player name from config                |
-//! | `{timestamp}`         | Unix seconds                           |
-//! | `{pokemon.nickname}`  | Pokémon nickname (empty on wipe)       |
-//! | `{pokemon.species}`   | Pokémon species name (empty on wipe)   |
-//! | `{pokemon.level}`     | Level as integer string (empty on wipe)|
-//! | `{pokemon.shiny}`     | `true` or `false` (empty on wipe)     |
-//! | `{pokemon.nature}`    | Nature name (empty on wipe)            |
+//! | Placeholder            | Value                                              |
+//! |------------------------|----------------------------------------------------|
+//! | `{event}`              | `death`, `catch`, `shiny`, `wipe`, `badge`, etc.  |
+//! | `{player}`             | Player name from config                            |
+//! | `{timestamp}`          | Unix seconds                                       |
+//! | `{pokemon.nickname}`   | Pokémon nickname (empty on non-pokemon events)     |
+//! | `{pokemon.species}`    | Pokémon species name (empty on non-pokemon events) |
+//! | `{pokemon.level}`      | Level as integer string (empty on non-pokemon)     |
+//! | `{pokemon.shiny}`      | `true` or `false` (empty on non-pokemon events)   |
+//! | `{pokemon.nature}`     | Nature name (empty on non-pokemon events)          |
+//! | `{badge.name}`         | Badge name (badge events only)                     |
+//! | `{pokemon.old_name}`   | Previous nickname (nickname_change events only)    |
+//! | `{pokemon.new_name}`   | New nickname (nickname_change events only)         |
+//! | `{violation.message}`  | Rule violation description (nuzlocke events only)  |
 //!
 //! Use `{{` and `}}` to emit a literal `{` or `}` in the output.
 //!
@@ -56,6 +60,7 @@ use std::sync::mpsc::{Sender, channel};
 // Public types
 // ---------------------------------------------------------------------------
 
+/// Pokémon-specific fields included in death, catch, and shiny webhook payloads.
 #[derive(Clone, Serialize)]
 pub struct PokemonInfo {
     pub nickname: String,
@@ -323,6 +328,7 @@ const KNOWN_PLACEHOLDERS: &[&str] = &[
     "{badge.name}",
     "{pokemon.old_name}",
     "{pokemon.new_name}",
+    "{violation.message}",
 ];
 
 /// Returns a list of unrecognized placeholder names found in `template`.

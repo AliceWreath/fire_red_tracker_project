@@ -1,3 +1,10 @@
+//! Shared message types and network serialization for the tracker ↔ aggregator protocol.
+//!
+//! [`ServerMessage`] flows from tracker → aggregator (game state, sprites, box data).
+//! [`ClientMessage`] flows from aggregator → tracker (commands, texture requests).
+//! Both are length-prefixed bincode on a plain TCP stream; see [`send_message`] /
+//! [`recv_message`] for the framing details.
+
 use std::io::{Read, Write};
 use std::net::TcpStream;
 
