@@ -672,7 +672,7 @@ pub fn initialize_noop() {
 /// `initialize` has already been called.
 /// Increment this whenever a new migration or data-repair statement is added.
 /// `initialize` skips all SQL when the DB already records this version.
-const SCHEMA_VERSION: &str = "15";
+const SCHEMA_VERSION: &str = "18";
 
 pub fn initialize(connection_string: &str) -> Result<(), String> {
     // Accept bare `host/dbname` strings — prepend the scheme so callers don't have to.
@@ -1000,6 +1000,35 @@ pub fn initialize(connection_string: &str) -> Result<(), String> {
         );
         CREATE INDEX IF NOT EXISTS area_visits_run
             ON area_visits (run_id, entered_at);
+
+        -- Migration v16: user-defined run goals checklist.
+        CREATE TABLE IF NOT EXISTS run_goals (
+            id         SERIAL  PRIMARY KEY,
+            run_id     INTEGER NOT NULL REFERENCES runs(id),
+            text       TEXT    NOT NULL,
+            completed  BOOLEAN NOT NULL DEFAULT FALSE,
+            created_at BIGINT  NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS run_goals_run
+            ON run_goals (run_id);
+
+        -- Migration v17: named preset party configurations (global, not per-run).
+        -- config stores a JSON array of ClientMessage-compatible command objects.
+        CREATE TABLE IF NOT EXISTS presets (
+            name       TEXT    PRIMARY KEY,
+            config     TEXT    NOT NULL,
+            created_at BIGINT  NOT NULL
+        );
+
+        -- Migration v18: per-run nuzlocke rule flags.
+        CREATE TABLE IF NOT EXISTS run_rules (
+            run_id           INTEGER PRIMARY KEY REFERENCES runs(id),
+            duplicate_clause BOOLEAN NOT NULL DEFAULT FALSE,
+            species_clause   BOOLEAN NOT NULL DEFAULT FALSE,
+            gift_clause      BOOLEAN NOT NULL DEFAULT FALSE,
+            shiny_clause     BOOLEAN NOT NULL DEFAULT FALSE,
+            updated_at       BIGINT  NOT NULL
+        );
     ").map_err(|e| format!("Failed to create database schema: {e}"))?;
 
     // Record the schema version so future startups can skip all migrations.
@@ -1270,7 +1299,7 @@ pub fn set_player_name(name: &str) {
 /// the meta table, which is useful for the `--list-runs` display before
 /// a run has been selected in the current session).
 pub fn active_run_id() -> Option<u32> {
-    let Some(db) = db() else { return None };
+    let db = db()?;
     let mut state = db.lock_or_recover();
     state
         .run_id
@@ -1283,7 +1312,7 @@ pub fn active_run_id() -> Option<u32> {
 ///
 /// Returns the ID of the run that was ended, or `None` if no run was active.
 pub fn end_run() -> Option<u32> {
-    let Some(db) = db() else { return None };
+    let db = db()?;
     let mut state = db.lock_or_recover();
     let id = state.run_id.take()?;
     if let Err(e) = state.client.execute(
@@ -1435,7 +1464,7 @@ pub fn is_dead(personality: u32) -> bool {
 
 /// Returns the stored `DeadPokemon` entry for this personality in the active run.
 pub fn get_dead_pokemon(personality: u32) -> Option<DeadPokemon> {
-    let Some(db) = db() else { return None };
+    let db = db()?;
     let mut state = db.lock_or_recover();
     let active = state.run_id?;
     let row = state.client
@@ -2227,7 +2256,7 @@ pub fn mark_caught(pokemon: CaughtPokemon) -> bool {
 /// or `None` if the name was already up to date, the Pokémon is not found, or
 /// no active run is set.
 pub fn update_caught_nickname(personality: u32, nickname: &str) -> Option<String> {
-    let Some(db) = db() else { return None };
+    let db = db()?;
     let mut state = db.lock_or_recover();
     let active = state.run_id?;
     // Read the current name first so we can return it as the "old" value.
@@ -2429,7 +2458,7 @@ pub fn record_catch_attempt(
 /// can later close it with [`close_area_visit`].  Returns `None` when there is
 /// no active run or the insert fails.
 pub fn open_area_visit(map_group: u8, map_name: u8, area_name: &str, entered_at: u64) -> Option<i64> {
-    let Some(db) = db() else { return None };
+    let db = db()?;
     let mut state = db.lock_or_recover();
     let active = state.run_id? as i32;
     let player = pg_safe(&state.current_player);
@@ -2716,6 +2745,88 @@ pub fn clear_soul_link_override(personality: u32) {
     ) {
         tracing::warn!("clear_soul_link_override: DB error: {e}");
     }
+}
+
+fn normalize_conn_str(s: &str) -> String {
+    if s.starts_with("postgresql://") || s.starts_with("postgres://") || s.contains('=') {
+        s.to_string()
+    } else {
+        format!("postgresql://{s}")
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Run goals — user-defined checklist stored in `run_goals`
+// ---------------------------------------------------------------------------
+
+/// A single user-defined goal row.
+#[derive(Debug, Clone)]
+pub struct GoalRow {
+    pub id: i32,
+    pub text: String,
+    pub completed: bool,
+}
+
+/// Creates a new goal for `run_id` and returns its assigned `id`.
+///
+/// Returns `None` on DB error or when the database is not initialized.
+pub fn create_goal(conn_str: &str, run_id: u32, text: &str) -> Option<i32> {
+    let conn_str = normalize_conn_str(conn_str);
+    let mut client = Client::connect(&conn_str, NoTls).ok()?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    let row = client
+        .query_one(
+            "INSERT INTO run_goals (run_id, text, completed, created_at)
+             VALUES ($1, $2, FALSE, $3) RETURNING id",
+            &[&(run_id as i32), &text, &now],
+        )
+        .ok()?;
+    Some(row.get(0))
+}
+
+/// Marks the goal with `goal_id` as completed.  Returns `true` if a row was updated.
+pub fn complete_goal(conn_str: &str, goal_id: i32) -> bool {
+    let conn_str = normalize_conn_str(conn_str);
+    let Ok(mut client) = Client::connect(&conn_str, NoTls) else { return false };
+    client
+        .execute(
+            "UPDATE run_goals SET completed = TRUE WHERE id = $1",
+            &[&goal_id],
+        )
+        .map(|n| n > 0)
+        .unwrap_or(false)
+}
+
+/// Deletes the goal with `goal_id`.  Returns `true` if a row was deleted.
+pub fn delete_goal(conn_str: &str, goal_id: i32) -> bool {
+    let conn_str = normalize_conn_str(conn_str);
+    let Ok(mut client) = Client::connect(&conn_str, NoTls) else { return false };
+    client
+        .execute("DELETE FROM run_goals WHERE id = $1", &[&goal_id])
+        .map(|n| n > 0)
+        .unwrap_or(false)
+}
+
+/// Returns all goals for `run_id`, ordered by creation time.
+pub fn list_goals_for_run(conn_str: &str, run_id: u32) -> Vec<GoalRow> {
+    let conn_str = normalize_conn_str(conn_str);
+    let Ok(mut client) = Client::connect(&conn_str, NoTls) else { return vec![] };
+    client
+        .query(
+            "SELECT id, text, completed FROM run_goals WHERE run_id = $1 ORDER BY created_at ASC",
+            &[&(run_id as i32)],
+        )
+        .unwrap_or_default()
+        .into_iter()
+        .map(|row| GoalRow {
+            id:        row.get(0),
+            text:      row.get(1),
+            completed: row.get(2),
+        })
+        .collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -3029,6 +3140,33 @@ impl DbReader {
             Err(e) => {
                 tracing::warn!("load_soul_link_overrides: {e}");
                 HashMap::new()
+            }
+        }
+    }
+
+    /// Returns all goals for the current run, ordered by creation time.
+    /// Returns an empty `Vec` when no run is active or the table is empty.
+    pub fn list_goals(&self) -> Vec<GoalRow> {
+        let run_id = match *self.run_id.lock_or_recover() {
+            Some(id) => id,
+            None => return vec![],
+        };
+        let run_i32 = run_id as i32;
+        match self.client.lock_or_recover().query(
+            "SELECT id, text, completed FROM run_goals WHERE run_id = $1 ORDER BY created_at ASC",
+            &[&run_i32],
+        ) {
+            Ok(rows) => rows
+                .iter()
+                .map(|r| GoalRow {
+                    id:        r.get(0),
+                    text:      r.get(1),
+                    completed: r.get(2),
+                })
+                .collect(),
+            Err(e) => {
+                tracing::warn!("list_goals: {e}");
+                vec![]
             }
         }
     }
@@ -5258,6 +5396,290 @@ pub fn run_summary_markdown(conn_str: &str, run_id: u32) -> Result<String, Strin
         env!("CARGO_PKG_VERSION")
     ));
 
+    Ok(out)
+}
+
+// ---------------------------------------------------------------------------
+// Presets (v17)
+// ---------------------------------------------------------------------------
+
+/// Save or replace a named party preset. `config_json` should be a JSON array
+/// of `ClientMessage`-compatible command objects (the caller serialises it).
+pub fn save_preset(conn_str: &str, name: &str, config_json: &str) -> Result<(), String> {
+    let mut client =
+        Client::connect(conn_str, NoTls).map_err(|e| format!("DB connection failed: {e}"))?;
+    let now = unix_now() as i64;
+    client
+        .execute(
+            "INSERT INTO presets (name, config, created_at) VALUES ($1, $2, $3)
+             ON CONFLICT (name) DO UPDATE SET config = EXCLUDED.config, created_at = EXCLUDED.created_at",
+            &[&name, &config_json, &now],
+        )
+        .map_err(|e| format!("Failed to save preset: {e}"))?;
+    Ok(())
+}
+
+/// Return all presets as `{ "presets": [ { "name": ..., "commands": [...], "created_at": ... } ] }`.
+pub fn list_presets(conn_str: &str) -> serde_json::Value {
+    let mut client = match Client::connect(conn_str, NoTls) {
+        Ok(c) => c,
+        Err(e) => return serde_json::json!({ "error": format!("DB connection failed: {e}") }),
+    };
+    let rows = match client.query("SELECT name, config, created_at FROM presets ORDER BY name", &[]) {
+        Ok(r) => r,
+        Err(e) => return serde_json::json!({ "error": format!("Query failed: {e}") }),
+    };
+    let presets: Vec<serde_json::Value> = rows
+        .iter()
+        .map(|r| {
+            let name: String = r.get(0);
+            let config: String = r.get(1);
+            let created_at: i64 = r.get(2);
+            let commands: serde_json::Value =
+                serde_json::from_str(&config).unwrap_or(serde_json::Value::Array(vec![]));
+            serde_json::json!({
+                "name": name,
+                "commands": commands,
+                "created_at": format_timestamp(created_at as u64),
+            })
+        })
+        .collect();
+    serde_json::json!({ "presets": presets })
+}
+
+/// Fetch the command list for a single preset by name.
+/// Returns `None` if the preset does not exist.
+pub fn get_preset(conn_str: &str, name: &str) -> Option<serde_json::Value> {
+    let mut client = Client::connect(conn_str, NoTls).ok()?;
+    let row = client
+        .query_opt("SELECT config FROM presets WHERE name = $1", &[&name])
+        .ok()??;
+    let config: String = row.get(0);
+    serde_json::from_str(&config).ok()
+}
+
+/// Delete a preset by name. Returns `true` if a row was removed.
+pub fn delete_preset(conn_str: &str, name: &str) -> bool {
+    let mut client = match Client::connect(conn_str, NoTls) {
+        Ok(c) => c,
+        Err(_) => return false,
+    };
+    client
+        .execute("DELETE FROM presets WHERE name = $1", &[&name])
+        .map(|n| n > 0)
+        .unwrap_or(false)
+}
+
+// ---------------------------------------------------------------------------
+// Run rules (v18)
+// ---------------------------------------------------------------------------
+
+/// Return the challenge-rule flags for a run.
+/// Inserts a default all-false row on first access.
+pub fn get_run_rules(conn_str: &str, run_id: u32) -> serde_json::Value {
+    let mut client = match Client::connect(conn_str, NoTls) {
+        Ok(c) => c,
+        Err(e) => return serde_json::json!({ "error": format!("DB connection failed: {e}") }),
+    };
+    let rid = run_id as i32;
+    let row = client
+        .query_opt(
+            "SELECT duplicate_clause, species_clause, gift_clause, shiny_clause, updated_at
+             FROM run_rules WHERE run_id = $1",
+            &[&rid],
+        )
+        .unwrap_or(None);
+    match row {
+        Some(r) => serde_json::json!({
+            "run_id": run_id,
+            "duplicate_clause": r.get::<_, bool>(0),
+            "species_clause":   r.get::<_, bool>(1),
+            "gift_clause":      r.get::<_, bool>(2),
+            "shiny_clause":     r.get::<_, bool>(3),
+            "updated_at":       format_timestamp(r.get::<_, i64>(4) as u64),
+        }),
+        None => serde_json::json!({
+            "run_id": run_id,
+            "duplicate_clause": false,
+            "species_clause":   false,
+            "gift_clause":      false,
+            "shiny_clause":     false,
+            "updated_at":       null,
+        }),
+    }
+}
+
+/// Upsert the challenge-rule flags for a run. Only fields present in `patch`
+/// are changed; others keep their current value.
+pub fn set_run_rules(conn_str: &str, run_id: u32, patch: &serde_json::Value) -> serde_json::Value {
+    let mut client = match Client::connect(conn_str, NoTls) {
+        Ok(c) => c,
+        Err(e) => return serde_json::json!({ "error": format!("DB connection failed: {e}") }),
+    };
+    let rid = run_id as i32;
+    let now = unix_now() as i64;
+
+    // Read existing or default.
+    let existing = client
+        .query_opt(
+            "SELECT duplicate_clause, species_clause, gift_clause, shiny_clause
+             FROM run_rules WHERE run_id = $1",
+            &[&rid],
+        )
+        .unwrap_or(None);
+    let (mut dup, mut spc, mut gift, mut shiny) = match existing {
+        Some(r) => (
+            r.get::<_, bool>(0),
+            r.get::<_, bool>(1),
+            r.get::<_, bool>(2),
+            r.get::<_, bool>(3),
+        ),
+        None => (false, false, false, false),
+    };
+
+    if let Some(v) = patch.get("duplicate_clause").and_then(|v| v.as_bool()) { dup = v; }
+    if let Some(v) = patch.get("species_clause").and_then(|v| v.as_bool())   { spc = v; }
+    if let Some(v) = patch.get("gift_clause").and_then(|v| v.as_bool())      { gift = v; }
+    if let Some(v) = patch.get("shiny_clause").and_then(|v| v.as_bool())     { shiny = v; }
+
+    if let Err(e) = client.execute(
+        "INSERT INTO run_rules (run_id, duplicate_clause, species_clause, gift_clause, shiny_clause, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6)
+         ON CONFLICT (run_id) DO UPDATE
+         SET duplicate_clause = EXCLUDED.duplicate_clause,
+             species_clause   = EXCLUDED.species_clause,
+             gift_clause      = EXCLUDED.gift_clause,
+             shiny_clause     = EXCLUDED.shiny_clause,
+             updated_at       = EXCLUDED.updated_at",
+        &[&rid, &dup, &spc, &gift, &shiny, &now],
+    ) {
+        return serde_json::json!({ "error": format!("Failed to upsert run_rules: {e}") });
+    }
+
+    serde_json::json!({
+        "run_id": run_id,
+        "duplicate_clause": dup,
+        "species_clause":   spc,
+        "gift_clause":      gift,
+        "shiny_clause":     shiny,
+        "updated_at":       format_timestamp(now as u64),
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Per-section CSV exports (v0.9.51)
+// ---------------------------------------------------------------------------
+
+/// `GET /api/run/:id/encounters.csv` — first encounters per area.
+pub fn export_encounters_csv(conn_str: &str, run_id: u32) -> Result<String, String> {
+    let mut client =
+        Client::connect(conn_str, NoTls).map_err(|e| format!("DB connection failed: {e}"))?;
+    let rid = run_id as i32;
+    let mut out = String::from(
+        "player_name,species_name,level,map_group,map_name,caught,is_shiny,encountered_at\n",
+    );
+    let rows = client
+        .query(
+            "SELECT player_name, species_name, level, map_group, map_name, caught, is_shiny, encountered_at
+             FROM encounters WHERE run_id = $1 ORDER BY encountered_at",
+            &[&rid],
+        )
+        .unwrap_or_default();
+    for r in &rows {
+        out.push_str(&format!(
+            "{},{},{},{},{},{},{},{}\n",
+            csv_field(r.get::<_, String>(0)),
+            csv_field(r.get::<_, String>(1)),
+            r.get::<_, i32>(2),
+            r.get::<_, i32>(3),
+            r.get::<_, i32>(4),
+            r.get::<_, bool>(5),
+            r.get::<_, bool>(6),
+            csv_field(format_timestamp(r.get::<_, i64>(7) as u64)),
+        ));
+    }
+    Ok(out)
+}
+
+/// `GET /api/run/:id/deaths.csv` — deaths log.
+pub fn export_deaths_csv(conn_str: &str, run_id: u32) -> Result<String, String> {
+    let mut client =
+        Client::connect(conn_str, NoTls).map_err(|e| format!("DB connection failed: {e}"))?;
+    let rid = run_id as i32;
+    let mut out = String::from(
+        "player_name,nickname,species_name,level,nature,is_shiny,gender,\
+met_location,soul_link_death,iv_hp,iv_atk,iv_def,iv_spe,iv_spa,iv_spd,\
+ev_hp,ev_atk,ev_def,ev_spe,ev_spa,ev_spd,died_at\n",
+    );
+    let rows = client
+        .query(
+            "SELECT player_name, nickname, species_name, level, nature, is_shiny, gender,
+                    met_location, is_soul_link_death,
+                    iv_hp, iv_attack, iv_defense, iv_speed, iv_sp_attack, iv_sp_defense,
+                    ev_hp, ev_attack, ev_defense, ev_speed, ev_sp_attack, ev_sp_defense,
+                    died_at
+             FROM dead_pokemon WHERE run_id = $1 ORDER BY died_at",
+            &[&rid],
+        )
+        .unwrap_or_default();
+    for r in &rows {
+        out.push_str(&format!(
+            "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}\n",
+            csv_field(r.get::<_, String>(0)),
+            csv_field(r.get::<_, String>(1)),
+            csv_field(r.get::<_, String>(2)),
+            r.get::<_, i32>(3),
+            csv_field(r.get::<_, String>(4)),
+            r.get::<_, bool>(5),
+            r.get::<_, i32>(6),
+            r.get::<_, i32>(7),
+            r.get::<_, bool>(8),
+            r.get::<_, i32>(9),
+            r.get::<_, i32>(10),
+            r.get::<_, i32>(11),
+            r.get::<_, i32>(12),
+            r.get::<_, i32>(13),
+            r.get::<_, i32>(14),
+            r.get::<_, i32>(15),
+            r.get::<_, i32>(16),
+            r.get::<_, i32>(17),
+            r.get::<_, i32>(18),
+            r.get::<_, i32>(19),
+            r.get::<_, i32>(20),
+            csv_field(format_timestamp(r.get::<_, i64>(21) as u64)),
+        ));
+    }
+    Ok(out)
+}
+
+/// `GET /api/run/:id/events.csv` — full event log.
+pub fn export_events_csv(conn_str: &str, run_id: u32) -> Result<String, String> {
+    let mut client =
+        Client::connect(conn_str, NoTls).map_err(|e| format!("DB connection failed: {e}"))?;
+    let rid = run_id as i32;
+    let mut out = String::from(
+        "player_name,event_type,species_name,nickname,old_nickname,level,note,occurred_at\n",
+    );
+    let rows = client
+        .query(
+            "SELECT player_name, event_type, species_name, nickname, old_nickname, level, note, occurred_at
+             FROM events WHERE run_id = $1 ORDER BY occurred_at",
+            &[&rid],
+        )
+        .unwrap_or_default();
+    for r in &rows {
+        out.push_str(&format!(
+            "{},{},{},{},{},{},{},{}\n",
+            csv_field(r.get::<_, String>(0)),
+            csv_field(r.get::<_, String>(1)),
+            csv_field(r.get::<_, String>(2)),
+            csv_field(r.get::<_, String>(3)),
+            csv_field(r.get::<_, String>(4)),
+            r.get::<_, i32>(5),
+            csv_field(r.get::<_, String>(6)),
+            csv_field(format_timestamp(r.get::<_, i64>(7) as u64)),
+        ));
+    }
     Ok(out)
 }
 

@@ -143,6 +143,15 @@ pub struct RomAddresses {
     /// (i.e., defeats the Champion for the first time).
     /// Source: pokefirered FLAG_SYS_GAME_CLEAR = 0x083
     pub game_clear_flag: usize,
+
+    /// ROM file offset of the `gTrainers` table.
+    ///
+    /// Each entry is 40 bytes (see [`trainer_entry_size`](crate)).
+    /// Used by the vs-leader overlay to read gym leader party data from the ROM
+    /// at runtime, making it randomizer-aware.
+    /// `0` means the table address is unknown for this revision and the overlay
+    /// should display no data.
+    pub trainer_data_addr: usize,
 }
 
 /// Address table confirmed for Pokémon FireRed USA Rev 1.
@@ -166,6 +175,7 @@ const FIRERED_USA_REV1: RomAddresses = RomAddresses {
     box_data_offset: 0x4,
     e4_flag_start: 0x3E3,
     game_clear_flag: 0x083,
+    trainer_data_addr: 0x23CAE0,
 };
 
 /// Address table for Pokémon FireRed USA Rev 0.
@@ -197,6 +207,8 @@ const LEAFGREEN_USA_REV1: RomAddresses = RomAddresses {
     box_data_offset: 0x4,
     e4_flag_start: 0x3E3,
     game_clear_flag: 0x083,
+    // LeafGreen trainer table address not yet confirmed; 0 disables vs_leader.
+    trainer_data_addr: 0,
 };
 
 const LEAFGREEN_USA_REV0: RomAddresses = LEAFGREEN_USA_REV1;

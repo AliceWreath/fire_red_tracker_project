@@ -1,6 +1,6 @@
 [package]
 name = "fire_red_aggregator"
-version = "0.9.48"
+version = "0.9.51"
 edition = "2024"
 license.workspace = true
 
@@ -42,3 +42,6 @@ self_update.workspace            = true
 reqwest.workspace                = true
 tungstenite.workspace            = true
 sha2.workspace                   = true
+
+[dev-dependencies]
+tower           = { version = "0.5", features = ["util"] }

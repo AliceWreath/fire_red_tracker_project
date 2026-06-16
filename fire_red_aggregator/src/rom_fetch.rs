@@ -215,20 +215,20 @@ fn download_pipelined(socket: &UdpSocket) -> Result<Vec<u8>, String> {
             while window_remaining > 0 && Instant::now() < deadline {
                 match socket.recv(&mut buf) {
                     Ok(n) => {
-                        if let Some((addr, bytes)) = parse_read_response(&buf[..n], CHUNK) {
-                            if addr >= ROM_BASE {
-                                let idx = (addr - ROM_BASE) as usize / CHUNK;
-                                if idx < total_chunks && !received[idx] {
-                                    rom[idx * CHUNK..(idx + 1) * CHUNK]
-                                        .copy_from_slice(&bytes);
-                                    received[idx] = true;
-                                    // Advance the window counter only when a
-                                    // chunk from THIS window arrives; late
-                                    // replies from a previous window are still
-                                    // captured above but don't affect progress.
-                                    if window.contains(&idx) {
-                                        window_remaining -= 1;
-                                    }
+                        if let Some((addr, bytes)) = parse_read_response(&buf[..n], CHUNK)
+                            && addr >= ROM_BASE
+                        {
+                            let idx = (addr - ROM_BASE) as usize / CHUNK;
+                            if idx < total_chunks && !received[idx] {
+                                rom[idx * CHUNK..(idx + 1) * CHUNK]
+                                    .copy_from_slice(&bytes);
+                                received[idx] = true;
+                                // Advance the window counter only when a
+                                // chunk from THIS window arrives; late
+                                // replies from a previous window are still
+                                // captured above but don't affect progress.
+                                if window.contains(&idx) {
+                                    window_remaining -= 1;
                                 }
                             }
                         }

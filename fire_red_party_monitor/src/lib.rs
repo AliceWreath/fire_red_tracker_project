@@ -1476,7 +1476,7 @@ mod tests {
         setup();
         for p in 0u32..24 {
             let order = ORDERS[p as usize];
-            let g_off = order.chars().position(|c| c == 'G').unwrap() * 12;
+            let g_off = order.chars().position(|c| c == 'G').expect("ORDERS entry must contain 'G'") * 12;
             let species = 50 + p as u16;
 
             let mut plain = [0u8; 48];
@@ -1496,7 +1496,7 @@ mod tests {
         setup();
         for p in 0u32..24 {
             let order = ORDERS[p as usize];
-            let a_off = order.chars().position(|c| c == 'A').unwrap() * 12;
+            let a_off = order.chars().position(|c| c == 'A').expect("ORDERS entry must contain 'A'") * 12;
             let mv = 100 + p as u16;
 
             let mut plain = [0u8; 48];
@@ -1516,7 +1516,7 @@ mod tests {
         // MiscSubstruct layout: pokerus(1), met_location(1), ...
         for p in 0u32..24 {
             let order = ORDERS[p as usize];
-            let m_off = order.chars().position(|c| c == 'M').unwrap() * 12;
+            let m_off = order.chars().position(|c| c == 'M').expect("ORDERS entry must contain 'M'") * 12;
             let met = (10 + p) as u8;
 
             let mut plain = [0u8; 48];
@@ -1536,7 +1536,7 @@ mod tests {
         // EvConditionSubstruct layout: hp_ev is the first byte of the E-slot.
         for p in 0u32..24 {
             let order = ORDERS[p as usize];
-            let e_off = order.chars().position(|c| c == 'E').unwrap() * 12;
+            let e_off = order.chars().position(|c| c == 'E').expect("ORDERS entry must contain 'E'") * 12;
             let hp_ev = (20 + p) as u8;
 
             let mut plain = [0u8; 48];

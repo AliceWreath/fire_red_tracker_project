@@ -89,6 +89,18 @@ struct SlotDto {
     /// Injection events (give/take item, make shiny, etc.) queued since the last
     /// tick. Drained on every broadcast; alerts.html shows toasts for each entry.
     injection_events: Vec<serde_json::Value>,
+    /// Current Pokédollar balance (decrypted from SaveBlock1).
+    money: u32,
+    /// In-game save-file play time: hours component.
+    play_time_hours: u16,
+    /// In-game save-file play time: minutes component (0–59).
+    play_time_minutes: u8,
+    /// In-game save-file play time: seconds component (0–59).
+    play_time_seconds: u8,
+    /// User-defined run goals from the `run_goals` DB table.
+    goals: Vec<GoalDto>,
+    /// Upcoming gym leader's full party read from ROM (randomizer-aware).
+    leader_party: Vec<LeaderPartyMonDto>,
 }
 
 #[derive(serde::Serialize, Clone)]
@@ -169,11 +181,14 @@ struct BoxMonDto {
 #[derive(serde::Serialize, Clone)]
 struct EncounterGroupDto {
     label: String,
+    /// Party-wide encounter rate (0–255) for this encounter type.
+    encounter_rate: u8,
     mons: Vec<EncounterMonDto>,
 }
 
 #[derive(serde::Serialize, Clone)]
 struct EncounterMonDto {
+    species_name: String,
     min_level: u8,
     max_level: u8,
     sprite: Option<String>,
@@ -187,6 +202,25 @@ struct GymDto {
     /// Primary type ID of the gym leader / Elite 4 member (Gen III ID, 0–16).
     /// Used by overlay pages to pre-highlight relevant matchups.
     type_id: u8,
+}
+
+#[derive(serde::Serialize, Clone)]
+struct GoalDto {
+    id: i32,
+    text: String,
+    completed: bool,
+}
+
+/// One Pokémon on the upcoming gym leader's team, read directly from ROM
+/// so randomizer runs show the actual (post-randomization) team.
+#[derive(serde::Serialize, Clone)]
+struct LeaderPartyMonDto {
+    species_name: String,
+    level: u8,
+    moves: [String; 4],
+    type1: u8,
+    type2: u8,
+    sprite: Option<String>,
 }
 
 #[derive(serde::Serialize, Clone)]
@@ -295,6 +329,119 @@ fn leader_type_id(leader: &str) -> u8 {
     }
 }
 
+/// Maps a gym leader name to their vanilla trainer index in `gTrainers`.
+///
+/// These are the indices for the main (first-encounter) battle in FireRed USA
+/// Rev 1.  Randomizers keep the same indices but replace the party ROM data at
+/// the pointer stored in the trainer entry, so reading from ROM at runtime picks
+/// up the randomized team automatically.
+fn leader_trainer_index(leader: &str) -> Option<usize> {
+    match leader {
+        "Brock" => Some(54),
+        "Misty" => Some(55),
+        "Lt. Surge" => Some(56),
+        "Erika" => Some(57),
+        "Koga" => Some(58),
+        "Sabrina" => Some(59),
+        "Blaine" => Some(60),
+        "Giovanni" => Some(61),
+        "Lorelei" => Some(118),
+        "Bruno" => Some(119),
+        "Agatha" => Some(120),
+        "Lance" => Some(121),
+        "Blue" => Some(148),
+        _ => None,
+    }
+}
+
+/// Trainer entry size in `gTrainers` (40 bytes = 0x28).
+const TRAINER_ENTRY_SIZE: usize = 40;
+
+/// GBA ROM bus base address; subtract to get ROM file offset.
+const ROM_BUS_BASE: u32 = 0x0800_0000;
+
+/// Reads the gym leader's party from the loaded ROM and builds the DTO list.
+///
+/// Handles all four party struct layouts (no-item/custom-moves combinations).
+/// Returns an empty vec if the ROM is not loaded, the trainer index is unknown,
+/// or the ROM file is too small to contain the expected data.
+fn build_leader_party(leader_name: &str) -> Vec<LeaderPartyMonDto> {
+    let trainer_idx = match leader_trainer_index(leader_name) {
+        Some(i) => i,
+        None => return vec![],
+    };
+    let rom = match fire_red_rom_buffer::try_get_rom() {
+        Some(r) => r,
+        None => return vec![],
+    };
+    let trainer_table = fire_red_rom_buffer::get_rom_addresses().trainer_data_addr;
+    if trainer_table == 0 {
+        return vec![];
+    }
+    let entry_off = trainer_table + trainer_idx * TRAINER_ENTRY_SIZE;
+    if rom.len() < entry_off + TRAINER_ENTRY_SIZE {
+        return vec![];
+    }
+    let entry = &rom[entry_off..entry_off + TRAINER_ENTRY_SIZE];
+
+    let party_flags  = u32::from_le_bytes([entry[0], entry[1], entry[2], entry[3]]);
+    let party_size   = entry[0x20] as usize;
+    let party_ptr    = u32::from_le_bytes([entry[0x24], entry[0x25], entry[0x26], entry[0x27]]);
+
+    if party_ptr < ROM_BUS_BASE || party_size == 0 || party_size > 6 {
+        return vec![];
+    }
+    let party_off = (party_ptr - ROM_BUS_BASE) as usize;
+
+    // Struct sizes based on party_flags bits.
+    let has_moves = (party_flags & 0x01) != 0;
+    let has_item  = (party_flags & 0x02) != 0;
+    let entry_bytes: usize = match (has_item, has_moves) {
+        (false, false) => 4,
+        (true,  false) => 8,
+        (false, true)  => 12,
+        (true,  true)  => 16,
+    };
+
+    if rom.len() < party_off + party_size * entry_bytes {
+        return vec![];
+    }
+
+    (0..party_size)
+        .filter_map(|i| {
+            let base = party_off + i * entry_bytes;
+            let b = &rom[base..base + entry_bytes];
+            let level   = b[1];
+            let species = u16::from_le_bytes([b[2], b[3]]);
+            if species == 0 || species > fire_red_states::MAX_NATIONAL_DEX_FIRERED {
+                return None;
+            }
+            let mut moves = [String::new(), String::new(), String::new(), String::new()];
+            if has_moves {
+                let moves_start = if has_item { 6 } else { 4 };
+                for (m, mv) in moves.iter_mut().enumerate() {
+                    let off = moves_start + m * 2;
+                    if off + 1 < entry_bytes {
+                        let id = u16::from_le_bytes([b[off], b[off + 1]]);
+                        *mv = fire_red_database::move_name(id).to_string();
+                    }
+                }
+            }
+            let species_name = fire_red_text::get_pokemon_name_by_number(species as usize)
+                .unwrap_or_else(|e| e);
+            let (type1, type2) = fire_red_party_monitor::species_type_static(species);
+            Some(LeaderPartyMonDto {
+                species_name,
+                level,
+                moves,
+                type1,
+                type2,
+                sprite: None, // sprites are not pre-loaded for leader panel; overlay fetches via /api/sprite
+            })
+        })
+        .collect()
+}
+
 struct BroadcastLoop {
     live_slots: SharedSlots,
     caches: Vec<SlotCache>,
@@ -304,10 +451,27 @@ struct BroadcastLoop {
     soul_link_overrides: HashMap<u32, u32>,
     last_json: String,
     sprites: PngSpriteCache,
+    /// Per-slot: set of (run_id) for which we have already triggered a backup so we
+    /// don't fire again on subsequent ticks.
+    backup_done: HashSet<u32>,
+    /// Per-slot: badge count observed on the previous tick, for LiveSplit split detection.
+    prev_badge_counts: Vec<usize>,
+    /// DB connection string (for auto-backup).
+    db_conn: Option<String>,
+    /// Directory to write auto-backup files into.
+    backup_dir: Option<String>,
+    /// Whether to fire a LiveSplit split on each new badge.
+    livesplit_split_on_badges: bool,
 }
 
 impl BroadcastLoop {
-    fn new(live_slots: SharedSlots, sprites: PngSpriteCache) -> Self {
+    fn new(
+        live_slots: SharedSlots,
+        sprites: PngSpriteCache,
+        db_conn: Option<String>,
+        backup_dir: Option<String>,
+        livesplit_split_on_badges: bool,
+    ) -> Self {
         Self {
             live_slots,
             caches: Vec::new(),
@@ -315,6 +479,11 @@ impl BroadcastLoop {
             soul_link_overrides: HashMap::new(),
             last_json: String::new(),
             sprites,
+            backup_done: HashSet::new(),
+            prev_badge_counts: Vec::new(),
+            db_conn,
+            backup_dir,
+            livesplit_split_on_badges,
         }
     }
 
@@ -913,6 +1082,55 @@ impl BroadcastLoop {
                 .then_with(|| states[i].0.to_lowercase().cmp(&states[j].0.to_lowercase()))
         });
 
+        // Grow per-slot tracking vecs if new slots appeared.
+        while self.prev_badge_counts.len() < n {
+            self.prev_badge_counts.push(0);
+        }
+
+        // LiveSplit badge splits + game-cleared auto-backup.
+        for i in 0..n {
+            let badge_state = states[i].1.as_ref().and_then(|gs| gs.badge_state.as_ref());
+            let badge_count = badge_state
+                .map(|b| b.badges.iter().filter(|&&v| v).count())
+                .unwrap_or(0);
+            let game_cleared = badge_state.map(|b| b.game_complete()).unwrap_or(false);
+            let run_id = slots[i].db.as_ref().and_then(|db| db.active_run_id());
+
+            if self.livesplit_split_on_badges && badge_count > self.prev_badge_counts[i] {
+                fire_red_game_loop::livesplit::split();
+            }
+            self.prev_badge_counts[i] = badge_count;
+
+            if game_cleared {
+                if let (Some(rid), Some(conn), Some(dir)) =
+                    (run_id, self.db_conn.as_ref(), self.backup_dir.as_ref())
+                {
+                    if self.backup_done.insert(rid) {
+                        let conn2 = conn.clone();
+                        let dir2 = dir.clone();
+                        std::thread::spawn(move || {
+                            let json = fire_red_database::export_run(&conn2, rid);
+                            let ts = std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .map(|d| d.as_secs())
+                                .unwrap_or(0);
+                            let path = std::path::Path::new(&dir2)
+                                .join(format!("run_{rid}_{ts}.json"));
+                            if let Err(e) = std::fs::create_dir_all(&dir2) {
+                                tracing::warn!("auto-backup: could not create backup_dir: {e}");
+                            } else if let Err(e) =
+                                std::fs::write(&path, json.to_string())
+                            {
+                                tracing::warn!("auto-backup: write failed: {e}");
+                            } else {
+                                tracing::info!("auto-backup: wrote {}", path.display());
+                            }
+                        });
+                    }
+                }
+            }
+        }
+
         // Build JSON payload
         let slots_dto: Vec<SlotDto> = display_order
             .iter()
@@ -1013,6 +1231,7 @@ impl BroadcastLoop {
                                 .iter()
                                 .filter(|w| w.species > 0 && w.species <= MAX_NATIONAL_DEX_FIRERED)
                                 .map(|w| EncounterMonDto {
+                                    species_name: fire_red_text::get_pokemon_name_by_number(w.species as usize).unwrap_or_else(|e| e),
                                     min_level: w.min_level,
                                     max_level: w.max_level,
                                     sprite: self.sprite_uri(w.species, false),
@@ -1021,10 +1240,12 @@ impl BroadcastLoop {
                             if !land.is_empty() {
                                 encounters.push(EncounterGroupDto {
                                     label: "Land".into(),
+                                    encounter_rate: enc.land_mon_encounters.encounter_rate,
                                     mons: land,
                                 });
                             }
 
+                            let water_rate = enc.water_mon_encounters.encounter_rate.max(enc.fishing_encounters.encounter_rate);
                             let water_fish: Vec<EncounterMonDto> = enc
                                 .water_mon_encounters
                                 .wild_pokemon_list
@@ -1032,6 +1253,7 @@ impl BroadcastLoop {
                                 .chain(enc.fishing_encounters.wild_pokemon_list.iter())
                                 .filter(|w| w.species > 0 && w.species <= MAX_NATIONAL_DEX_FIRERED)
                                 .map(|w| EncounterMonDto {
+                                    species_name: fire_red_text::get_pokemon_name_by_number(w.species as usize).unwrap_or_else(|e| e),
                                     min_level: w.min_level,
                                     max_level: w.max_level,
                                     sprite: self.sprite_uri(w.species, false),
@@ -1040,6 +1262,7 @@ impl BroadcastLoop {
                             if !water_fish.is_empty() {
                                 encounters.push(EncounterGroupDto {
                                     label: "Water / Fishing".into(),
+                                    encounter_rate: water_rate,
                                     mons: water_fish,
                                 });
                             }
@@ -1050,6 +1273,7 @@ impl BroadcastLoop {
                                 .iter()
                                 .filter(|w| w.species > 0 && w.species <= MAX_NATIONAL_DEX_FIRERED)
                                 .map(|w| EncounterMonDto {
+                                    species_name: fire_red_text::get_pokemon_name_by_number(w.species as usize).unwrap_or_else(|e| e),
                                     min_level: w.min_level,
                                     max_level: w.max_level,
                                     sprite: self.sprite_uri(w.species, false),
@@ -1058,6 +1282,7 @@ impl BroadcastLoop {
                             if !rock.is_empty() {
                                 encounters.push(EncounterGroupDto {
                                     label: "Rock Smash".into(),
+                                    encounter_rate: enc.rock_smash_encounters.encounter_rate,
                                     mons: rock,
                                 });
                             }
@@ -1192,6 +1417,24 @@ impl BroadcastLoop {
                     .lock_or_recover()
                     .drain(..)
                     .collect();
+
+                let money = state.as_ref().map_or(0, |gs| gs.money);
+                let play_time_hours = state.as_ref().map_or(0, |gs| gs.play_time_hours);
+                let play_time_minutes = state.as_ref().map_or(0, |gs| gs.play_time_minutes);
+                let play_time_seconds = state.as_ref().map_or(0, |gs| gs.play_time_seconds);
+
+                let goals: Vec<GoalDto> = slots[i]
+                    .db
+                    .as_ref()
+                    .map(|db| db.list_goals().into_iter().map(|g| GoalDto { id: g.id, text: g.text, completed: g.completed }).collect())
+                    .unwrap_or_default();
+
+                let leader_party: Vec<LeaderPartyMonDto> = if let Some(gym) = &next_gym {
+                    build_leader_party(&gym.leader)
+                } else {
+                    vec![]
+                };
+
                 SlotDto {
                     label: label.clone(),
                     connected,
@@ -1213,6 +1456,12 @@ impl BroadcastLoop {
                     e4_progress,
                     game_cleared,
                     injection_events,
+                    money,
+                    play_time_hours,
+                    play_time_minutes,
+                    play_time_seconds,
+                    goals,
+                    leader_party,
                 }
             })
             .collect();
@@ -1272,6 +1521,11 @@ const ENCOUNTER_COUNT_HTML: &str = include_str!("encounter_count.html");
 const HP_HTML: &str = include_str!("hp.html");
 const BADGES_HTML: &str = include_str!("badges.html");
 const NEXT_GYM_HTML: &str = include_str!("next_gym.html");
+const ENCOUNTER_TABLE_HTML: &str = include_str!("encounter_table.html");
+const MONEY_HTML: &str = include_str!("money.html");
+const PLAYTIME_HTML: &str = include_str!("playtime.html");
+const GOALS_HTML: &str = include_str!("goals.html");
+const VS_LEADER_HTML: &str = include_str!("vs_leader.html");
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -1606,6 +1860,54 @@ fn filter_slots_json(json: &str, show: &str) -> String {
         ],
         // nextgym overlay needs party (types) + next_gym + badges.
         "nextgym" => &[
+            "encounters",
+            "box_pokemon",
+            "dead",
+            "caught",
+            "db_encounters",
+            "prev_run_encounters",
+        ],
+        // encounter_table overlay only needs encounters (with species_name/rate).
+        "encounter_table" => &[
+            "party",
+            "box_pokemon",
+            "dead",
+            "caught",
+            "db_encounters",
+            "prev_run_encounters",
+        ],
+        // money overlay only needs the money field.
+        "money" => &[
+            "party",
+            "encounters",
+            "box_pokemon",
+            "dead",
+            "caught",
+            "db_encounters",
+            "prev_run_encounters",
+        ],
+        // playtime overlay needs play_time_* and run_summary (for wall-clock).
+        "playtime" => &[
+            "party",
+            "encounters",
+            "box_pokemon",
+            "dead",
+            "caught",
+            "db_encounters",
+            "prev_run_encounters",
+        ],
+        // goals overlay only needs goals list.
+        "goals" => &[
+            "party",
+            "encounters",
+            "box_pokemon",
+            "dead",
+            "caught",
+            "db_encounters",
+            "prev_run_encounters",
+        ],
+        // vs_leader overlay needs next_gym + leader_party + party types.
+        "vs_leader" => &[
             "encounters",
             "box_pokemon",
             "dead",
@@ -4588,6 +4890,545 @@ async fn serve_next_gym_overlay(
     Html(apply_page_with_theme(NEXT_GYM_HTML, state.testing, theme))
 }
 
+async fn serve_encounter_table_overlay(
+    State(state): State<WebState>,
+    Query(params): Query<HashMap<String, String>>,
+) -> Html<String> {
+    let theme = params.get("theme").map(String::as_str);
+    Html(apply_page_with_theme(ENCOUNTER_TABLE_HTML, state.testing, theme))
+}
+
+async fn serve_money_overlay(
+    State(state): State<WebState>,
+    Query(params): Query<HashMap<String, String>>,
+) -> Html<String> {
+    let theme = params.get("theme").map(String::as_str);
+    Html(apply_page_with_theme(MONEY_HTML, state.testing, theme))
+}
+
+async fn serve_playtime_overlay(
+    State(state): State<WebState>,
+    Query(params): Query<HashMap<String, String>>,
+) -> Html<String> {
+    let theme = params.get("theme").map(String::as_str);
+    Html(apply_page_with_theme(PLAYTIME_HTML, state.testing, theme))
+}
+
+async fn serve_goals_overlay(
+    State(state): State<WebState>,
+    Query(params): Query<HashMap<String, String>>,
+) -> Html<String> {
+    let theme = params.get("theme").map(String::as_str);
+    Html(apply_page_with_theme(GOALS_HTML, state.testing, theme))
+}
+
+async fn serve_vs_leader_overlay(
+    State(state): State<WebState>,
+    Query(params): Query<HashMap<String, String>>,
+) -> Html<String> {
+    let theme = params.get("theme").map(String::as_str);
+    Html(apply_page_with_theme(VS_LEADER_HTML, state.testing, theme))
+}
+
+/// `POST /api/goal` — create a new run goal.
+///
+/// Body: `{"run_id": <u32>, "text": "<string>"}`
+async fn api_post_goal(
+    State(state): State<WebState>,
+    axum::Json(body): axum::Json<serde_json::Value>,
+) -> axum::Json<serde_json::Value> {
+    let conn = require_db!(state);
+    let run_id = match body["run_id"].as_u64() {
+        Some(id) => id as u32,
+        None => return axum::Json(serde_json::json!({ "error": "missing run_id" })),
+    };
+    let text = match body["text"].as_str() {
+        Some(t) if !t.is_empty() => t.to_string(),
+        _ => return axum::Json(serde_json::json!({ "error": "missing or empty text" })),
+    };
+    let result = tokio::task::spawn_blocking(move || {
+        fire_red_database::create_goal(&conn, run_id, &text)
+    })
+    .await;
+    match result {
+        Ok(Some(id)) => axum::Json(serde_json::json!({ "id": id })),
+        _ => axum::Json(serde_json::json!({ "error": "failed to create goal" })),
+    }
+}
+
+/// `PATCH /api/goal/:id/complete` — mark a goal as completed.
+async fn api_complete_goal(
+    State(state): State<WebState>,
+    Path(goal_id): Path<i32>,
+) -> axum::Json<serde_json::Value> {
+    let conn = require_db!(state);
+    let result = tokio::task::spawn_blocking(move || {
+        fire_red_database::complete_goal(&conn, goal_id)
+    })
+    .await;
+    match result {
+        Ok(true) => axum::Json(serde_json::json!({ "ok": true })),
+        _ => axum::Json(serde_json::json!({ "error": "goal not found or update failed" })),
+    }
+}
+
+/// `DELETE /api/goal/:id` — delete a goal.
+async fn api_delete_goal(
+    State(state): State<WebState>,
+    Path(goal_id): Path<i32>,
+) -> axum::Json<serde_json::Value> {
+    let conn = require_db!(state);
+    let result = tokio::task::spawn_blocking(move || {
+        fire_red_database::delete_goal(&conn, goal_id)
+    })
+    .await;
+    match result {
+        Ok(true) => axum::Json(serde_json::json!({ "ok": true })),
+        _ => axum::Json(serde_json::json!({ "error": "goal not found" })),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Batch injection (POST /api/batch)
+// ---------------------------------------------------------------------------
+
+/// `POST /api/batch` — apply an ordered list of injection commands in one request.
+///
+/// Body: a JSON array of `{ "slot": <usize>, "message": <ClientMessage> }` objects.
+/// All commands are validated first, then enqueued atomically (one lock per slot).
+/// Returns `{ "queued": <count> }` on success or `{ "error": "..." }` on the first
+/// validation failure.
+async fn api_batch_inject(
+    State(state): State<WebState>,
+    axum::Json(body): axum::Json<serde_json::Value>,
+) -> axum::Json<serde_json::Value> {
+    if !state.allow_injections {
+        return axum::Json(serde_json::json!({ "error": "injection commands are disabled" }));
+    }
+    let items = match body.as_array() {
+        Some(a) => a,
+        None => return axum::Json(serde_json::json!({ "error": "body must be a JSON array" })),
+    };
+
+    let slots = state.live_slots.lock_or_recover().clone();
+
+    // Validate and decode every item before touching any queue.
+    struct Decoded {
+        slot_idx: usize,
+        msg: ClientMessage,
+    }
+    let mut decoded: Vec<Decoded> = Vec::with_capacity(items.len());
+    for (pos, item) in items.iter().enumerate() {
+        let slot_idx = match item["slot"].as_u64().and_then(|v| usize::try_from(v).ok()) {
+            Some(v) => v,
+            None => return axum::Json(serde_json::json!({
+                "error": format!("item[{pos}]: 'slot' must be a non-negative integer")
+            })),
+        };
+        if slot_idx >= slots.len() {
+            return axum::Json(serde_json::json!({
+                "error": format!("item[{pos}]: slot {slot_idx} out of range")
+            }));
+        }
+        let msg: ClientMessage = match serde_json::from_value(item["message"].clone()) {
+            Ok(m) => m,
+            Err(e) => return axum::Json(serde_json::json!({
+                "error": format!("item[{pos}]: invalid message: {e}")
+            })),
+        };
+        decoded.push(Decoded { slot_idx, msg });
+    }
+
+    // Enqueue all commands. Group by slot to minimise lock acquisitions.
+    let count = decoded.len();
+    for d in decoded {
+        slots[d.slot_idx]
+            .command_queue
+            .lock_or_recover()
+            .push_back(d.msg);
+    }
+    axum::Json(serde_json::json!({ "queued": count }))
+}
+
+// ---------------------------------------------------------------------------
+// Preset party builds
+// ---------------------------------------------------------------------------
+
+/// `POST /api/preset` — save a named party preset.
+///
+/// Body: `{ "name": "<str>", "commands": [<ClientMessage>, ...] }`.
+async fn api_save_preset(
+    State(state): State<WebState>,
+    axum::Json(body): axum::Json<serde_json::Value>,
+) -> axum::Json<serde_json::Value> {
+    let conn = require_db!(state);
+    let name = match body["name"].as_str() {
+        Some(s) if !s.is_empty() => s.to_string(),
+        _ => return axum::Json(serde_json::json!({ "error": "'name' must be a non-empty string" })),
+    };
+    let commands = match body.get("commands") {
+        Some(v) => v.clone(),
+        None => return axum::Json(serde_json::json!({ "error": "missing 'commands' array" })),
+    };
+    let config_json = commands.to_string();
+    let result = tokio::task::spawn_blocking(move || {
+        fire_red_database::save_preset(&conn, &name, &config_json)
+    })
+    .await;
+    match result {
+        Ok(Ok(())) => axum::Json(serde_json::json!({ "ok": true })),
+        Ok(Err(e)) => axum::Json(serde_json::json!({ "error": e })),
+        Err(_) => axum::Json(serde_json::json!({ "error": "Task panicked" })),
+    }
+}
+
+/// `GET /api/presets` — list all saved presets.
+async fn api_list_presets(
+    State(state): State<WebState>,
+) -> axum::Json<serde_json::Value> {
+    let conn = require_db!(state);
+    let result = tokio::task::spawn_blocking(move || fire_red_database::list_presets(&conn)).await;
+    axum::Json(result.unwrap_or_else(|_| serde_json::json!({ "error": "Task panicked" })))
+}
+
+/// `DELETE /api/preset/:name` — delete a preset.
+async fn api_delete_preset(
+    State(state): State<WebState>,
+    Path(name): Path<String>,
+) -> axum::Json<serde_json::Value> {
+    let conn = require_db!(state);
+    let result =
+        tokio::task::spawn_blocking(move || fire_red_database::delete_preset(&conn, &name)).await;
+    match result {
+        Ok(true) => axum::Json(serde_json::json!({ "ok": true })),
+        _ => axum::Json(serde_json::json!({ "error": "preset not found" })),
+    }
+}
+
+/// `POST /api/preset/:name/apply` — enqueue all commands from a preset for a slot.
+///
+/// Body: `{ "slot": <usize> }`.
+async fn api_apply_preset(
+    State(state): State<WebState>,
+    Path(name): Path<String>,
+    axum::Json(body): axum::Json<serde_json::Value>,
+) -> axum::Json<serde_json::Value> {
+    if !state.allow_injections {
+        return axum::Json(serde_json::json!({ "error": "injection commands are disabled" }));
+    }
+    let conn = require_db!(state.clone());
+    let slot_idx = match body["slot"].as_u64().and_then(|v| usize::try_from(v).ok()) {
+        Some(v) => v,
+        None => return axum::Json(serde_json::json!({ "error": "'slot' must be a non-negative integer" })),
+    };
+    let slots = state.live_slots.lock_or_recover().clone();
+    if slot_idx >= slots.len() {
+        return axum::Json(serde_json::json!({ "error": "slot index out of range" }));
+    }
+    let commands_val = match tokio::task::spawn_blocking(move || {
+        fire_red_database::get_preset(&conn, &name)
+    })
+    .await
+    {
+        Ok(Some(v)) => v,
+        Ok(None) => return axum::Json(serde_json::json!({ "error": "preset not found" })),
+        Err(_) => return axum::Json(serde_json::json!({ "error": "Task panicked" })),
+    };
+    let arr = match commands_val.as_array() {
+        Some(a) => a.clone(),
+        None => return axum::Json(serde_json::json!({ "error": "preset 'commands' is not an array" })),
+    };
+    let mut count = 0usize;
+    {
+        let mut queue = slots[slot_idx].command_queue.lock_or_recover();
+        for val in &arr {
+            if let Ok(msg) = serde_json::from_value::<ClientMessage>(val.clone()) {
+                queue.push_back(msg);
+                count += 1;
+            }
+        }
+    }
+    axum::Json(serde_json::json!({ "queued": count }))
+}
+
+// ---------------------------------------------------------------------------
+// Challenge rules (GET/PATCH /api/run/:id/rules)
+// ---------------------------------------------------------------------------
+
+/// `GET /api/run/:id/rules` — fetch nuzlocke variant flags for a run.
+async fn api_get_run_rules(
+    State(state): State<WebState>,
+    Path(run_id): Path<u32>,
+) -> axum::Json<serde_json::Value> {
+    let conn = require_db!(state);
+    let result = tokio::task::spawn_blocking(move || {
+        fire_red_database::get_run_rules(&conn, run_id)
+    })
+    .await;
+    axum::Json(result.unwrap_or_else(|_| serde_json::json!({ "error": "Task panicked" })))
+}
+
+/// `PATCH /api/run/:id/rules` — update one or more nuzlocke variant flags.
+///
+/// Body: any subset of `{ "duplicate_clause": bool, "species_clause": bool,
+/// "gift_clause": bool, "shiny_clause": bool }`. Unspecified fields are unchanged.
+async fn api_patch_run_rules(
+    State(state): State<WebState>,
+    Path(run_id): Path<u32>,
+    axum::Json(body): axum::Json<serde_json::Value>,
+) -> axum::Json<serde_json::Value> {
+    let conn = require_db!(state);
+    let result = tokio::task::spawn_blocking(move || {
+        fire_red_database::set_run_rules(&conn, run_id, &body)
+    })
+    .await;
+    axum::Json(result.unwrap_or_else(|_| serde_json::json!({ "error": "Task panicked" })))
+}
+
+// ---------------------------------------------------------------------------
+// Per-section CSV exports
+// ---------------------------------------------------------------------------
+
+fn csv_response(
+    result: Result<Result<String, String>, tokio::task::JoinError>,
+    run_id: u32,
+    suffix: &str,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    match result {
+        Ok(Ok(csv)) => (
+            [
+                ("content-type", "text/csv".to_string()),
+                (
+                    "content-disposition",
+                    format!("attachment; filename=\"run_{run_id}_{suffix}.csv\""),
+                ),
+            ],
+            csv,
+        )
+            .into_response(),
+        Ok(Err(e)) => (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+        Err(_) => (axum::http::StatusCode::INTERNAL_SERVER_ERROR, "Task panicked").into_response(),
+    }
+}
+
+/// `GET /api/run/:id/encounters.csv` — first encounter per area as CSV.
+async fn api_run_encounters_csv(
+    State(state): State<WebState>,
+    Path(run_id): Path<u32>,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    let conn = match state.db_conn {
+        Some(s) => s,
+        None => {
+            return axum::Json(serde_json::json!({ "error": "No database configured" }))
+                .into_response()
+        }
+    };
+    let result = tokio::task::spawn_blocking(move || {
+        fire_red_database::export_encounters_csv(&conn, run_id)
+    })
+    .await;
+    csv_response(result, run_id, "encounters")
+}
+
+/// `GET /api/run/:id/deaths.csv` — death log as CSV.
+async fn api_run_deaths_csv(
+    State(state): State<WebState>,
+    Path(run_id): Path<u32>,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    let conn = match state.db_conn {
+        Some(s) => s,
+        None => {
+            return axum::Json(serde_json::json!({ "error": "No database configured" }))
+                .into_response()
+        }
+    };
+    let result = tokio::task::spawn_blocking(move || {
+        fire_red_database::export_deaths_csv(&conn, run_id)
+    })
+    .await;
+    csv_response(result, run_id, "deaths")
+}
+
+/// `GET /api/run/:id/events.csv` — event log as CSV.
+async fn api_run_events_csv(
+    State(state): State<WebState>,
+    Path(run_id): Path<u32>,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    let conn = match state.db_conn {
+        Some(s) => s,
+        None => {
+            return axum::Json(serde_json::json!({ "error": "No database configured" }))
+                .into_response()
+        }
+    };
+    let result = tokio::task::spawn_blocking(move || {
+        fire_red_database::export_events_csv(&conn, run_id)
+    })
+    .await;
+    csv_response(result, run_id, "events")
+}
+
+// ---------------------------------------------------------------------------
+// Router construction (extracted for testability)
+// ---------------------------------------------------------------------------
+
+fn build_router(web_state: WebState) -> Router {
+    Router::new()
+        .route("/", get(serve_html))
+        .route("/ws", get(ws_handler))
+        .route("/db", get(serve_db_viewer))
+        .route("/db.json", get(serve_db_json))
+        .route("/db/clear", post(clear_db))
+        .route("/db/query", get(serve_db_query))
+        .route("/cmd", get(serve_cmd))
+        .route("/api/state", get(api_state))
+        .route("/api/slot/:index", get(api_slot))
+        .route("/api/slot/:index/odds", get(api_slot_odds))
+        .route("/api/slot/:index/give_item", post(api_give_item))
+        .route("/api/slot/:index/take_item", post(api_take_item))
+        .route("/api/slot/:index/change_species", post(api_change_species))
+        .route("/api/slot/:index/change_ability", post(api_change_ability))
+        .route("/api/slot/:index/change_gender", post(api_change_gender))
+        .route("/api/slot/:index/make_shiny", post(api_make_shiny))
+        .route(
+            "/api/slot/:index/change_nickname",
+            post(api_change_nickname),
+        )
+        .route(
+            "/api/slot/:index/change_held_item",
+            post(api_change_held_item),
+        )
+        .route("/api/slot/:index/cure_status", post(api_cure_status))
+        .route("/api/slot/:index/change_nature", post(api_change_nature))
+        .route("/api/slot/:index/restore_pp", post(api_restore_pp))
+        .route("/api/slot/:index/set_friendship", post(api_set_friendship))
+        .route("/api/slot/:index/change_move", post(api_change_move))
+        .route("/api/slot/:index/set_ivs", post(api_set_ivs))
+        .route("/api/slot/:index/increase_ivs", post(api_increase_ivs))
+        .route("/api/slot/:index/set_evs", post(api_set_evs))
+        .route("/api/slot/:index/increase_evs", post(api_increase_evs))
+        .route("/api/slot/:index/restore_hp", post(api_restore_hp))
+        .route("/api/slot/:index/heal_party", post(api_heal_party))
+        .route("/api/slot/:index/set_exp", post(api_set_exp))
+        .route("/api/slot/:index/set_level", post(api_set_level))
+        .route("/api/slot/:index/learn_move", post(api_learn_move))
+        .route("/api/slot/:index/forget_move", post(api_forget_move))
+        .route("/api/slot/:index/set_pokerus", post(api_set_pokerus))
+        .route("/api/slot/:index/set_pp_ups", post(api_set_pp_ups))
+        .route("/api/slot/:index/revive_pokemon", post(api_revive_pokemon))
+        .route("/api/slot/:index/undo", post(api_undo))
+        .route("/api/slot/:index/refresh_rom", post(api_refresh_rom))
+        .route("/api/bot/:index", get(api_bot_summary))
+        .route("/api/command/:cmd", post(api_command))
+        .route("/api/db/query", post(api_db_query))
+        .route("/api/runs", get(api_runs))
+        .route("/api/run/import", post(api_run_import))
+        .route("/api/run/:id/stats", get(api_run_stats))
+        .route("/api/run/:id/route_stats", get(api_run_route_stats))
+        .route("/api/run/:id/route_odds", get(api_run_route_odds))
+        .route("/api/run/:id/webhook_log", get(api_run_webhook_log))
+        .route(
+            "/api/run/:id/soul_link/overrides",
+            get(api_run_soul_link_overrides),
+        )
+        .route(
+            "/api/run/:id/soul_link/override",
+            post(api_set_soul_link_override),
+        )
+        .route(
+            "/api/run/:id/soul_link/override/:personality",
+            delete(api_clear_soul_link_override),
+        )
+        .route("/api/run/:id/shiny", get(api_shiny_stats))
+        .route("/api/run/:id/export", get(api_run_export))
+        .route("/api/run/:id/events", get(api_run_events))
+        .route("/api/timeline", get(api_active_timeline))
+        .route("/history", get(serve_history))
+        .route("/shiny", get(serve_shiny))
+        .route("/memorial", get(serve_memorial))
+        .route("/soullink", get(serve_soullink))
+        .route("/soullink/manage", get(serve_soullink_manage))
+        .route("/alerts", get(serve_alerts))
+        .route("/:index/alerts", get(serve_alerts))
+        .route("/:index/routes", get(serve_routes))
+        .route("/:index/party", get(serve_party))
+        .route("/:index/encounters", get(serve_focused))
+        .route("/:index/dead", get(serve_focused))
+        .route("/:index/caught", get(serve_focused))
+        .route("/:index/box", get(serve_focused))
+        .route("/:index/types", get(serve_types_page))
+        .route("/:index/items", get(serve_items))
+        .route("/:index/moves", get(serve_moves_page))
+        .route("/api/slot/:index/bag", get(api_bag))
+        .route("/run/:id/stats", get(serve_run_stats))
+        .route("/run/:id/memorial", get(serve_memorial))
+        .route("/run/:id/timeline", get(serve_timeline))
+        .route("/party/mobile", get(serve_mobile_party))
+        .route("/timeline", get(serve_timeline))
+        .route("/species", get(serve_species))
+        .route("/api/species/stats", get(api_species_stats))
+        .route("/trainers", get(serve_trainers))
+        .route("/run/:id/trainers", get(serve_trainers))
+        .route("/api/run/:id/trainers", get(api_run_trainers))
+        .route("/api/runs/compare", get(api_runs_compare))
+        .route("/api/run/:id/luck", get(api_run_luck))
+        .route("/api/run/:id/closest_calls", get(api_run_closest_calls))
+        .route("/api/catch_rate", get(api_catch_rate))
+        .route(
+            "/api/run/:id/pokemon/:personality/hp_history",
+            get(api_run_pokemon_hp_history),
+        )
+        .route("/api/run/:id/enemy_hp_log", get(api_run_enemy_hp_log))
+        .route("/api/run/:id/battle_damage", get(api_run_battle_damage))
+        .route("/api/run/:id/summary", get(api_run_summary))
+        .route(
+            "/api/run/:id/event/:event_id/note",
+            patch(api_set_event_note).delete(api_clear_event_note),
+        )
+        .route("/api/run/:id/pokepaste", get(api_run_pokepaste))
+        .route("/api/run/:id/splits", get(api_run_splits))
+        .route("/api/run/:id/catch_log", get(api_run_catch_log))
+        .route("/api/run/:id/difficulty", get(api_run_difficulty))
+        .route("/api/run/:id/area_times", get(api_run_area_times))
+        .route("/:index/deaths", get(serve_deaths_overlay))
+        .route("/:index/encounter_count", get(serve_encounter_count))
+        .route("/:index/hp", get(serve_hp_overlay))
+        .route("/:index/badges", get(serve_badges_overlay))
+        .route("/:index/nextgym", get(serve_next_gym_overlay))
+        .route("/:index/encounter_table", get(serve_encounter_table_overlay))
+        .route("/:index/money", get(serve_money_overlay))
+        .route("/:index/playtime", get(serve_playtime_overlay))
+        .route("/:index/goals", get(serve_goals_overlay))
+        .route("/:index/vs_leader", get(serve_vs_leader_overlay))
+        .route("/api/goal", post(api_post_goal))
+        .route("/api/goal/:id/complete", patch(api_complete_goal))
+        .route("/api/goal/:id", delete(api_delete_goal))
+        .route("/api/slot/:index/command/:cmd", post(api_slot_command))
+        .route("/about", get(serve_about))
+        .route("/compare", get(serve_compare))
+        .route("/join", get(serve_join))
+        .route("/api/direct/connect", post(api_direct_connect))
+        .route("/api/direct/hosts", get(api_direct_hosts))
+        // Batch injection
+        .route("/api/batch", post(api_batch_inject))
+        // Presets
+        .route("/api/preset", post(api_save_preset))
+        .route("/api/presets", get(api_list_presets))
+        .route("/api/preset/:name", delete(api_delete_preset))
+        .route("/api/preset/:name/apply", post(api_apply_preset))
+        // Challenge rules
+        .route("/api/run/:id/rules", get(api_get_run_rules).patch(api_patch_run_rules))
+        // Per-section CSV exports
+        .route("/api/run/:id/encounters.csv", get(api_run_encounters_csv))
+        .route("/api/run/:id/deaths.csv", get(api_run_deaths_csv))
+        .route("/api/run/:id/events.csv", get(api_run_events_csv))
+        .with_state(web_state)
+}
+
 // ---------------------------------------------------------------------------
 // Entry point
 // ---------------------------------------------------------------------------
@@ -4599,6 +5440,8 @@ pub fn run(
     testing: bool,
     allow_injections: bool,
     connector: Option<Arc<crate::direct::DirectConnector>>,
+    backup_dir: Option<String>,
+    livesplit_split_on_badges: bool,
 ) {
     let sprites: PngSpriteCache = Arc::new(Mutex::new(HashMap::new()));
 
@@ -4615,9 +5458,17 @@ pub fn run(
     let tx_bg = tx.clone();
     let sprites_loop = sprites.clone();
     let loop_slots = live_slots.clone();
+    let loop_db = db_conn.clone();
+    let loop_backup_dir = backup_dir.clone();
 
     std::thread::spawn(move || {
-        let mut bloop = BroadcastLoop::new(loop_slots, sprites_loop);
+        let mut bloop = BroadcastLoop::new(
+            loop_slots,
+            sprites_loop,
+            loop_db,
+            loop_backup_dir,
+            livesplit_split_on_badges,
+        );
         loop {
             if let Some(json) = bloop.tick() {
                 let _ = tx_bg.send(json);
@@ -4637,135 +5488,7 @@ pub fn run(
 
     let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
     rt.block_on(async move {
-        let app = Router::new()
-            .route("/", get(serve_html))
-            .route("/ws", get(ws_handler))
-            .route("/db", get(serve_db_viewer))
-            .route("/db.json", get(serve_db_json))
-            .route("/db/clear", post(clear_db))
-            .route("/db/query", get(serve_db_query))
-            .route("/cmd", get(serve_cmd))
-            .route("/api/state", get(api_state))
-            .route("/api/slot/:index", get(api_slot))
-            .route("/api/slot/:index/odds", get(api_slot_odds))
-            .route("/api/slot/:index/give_item", post(api_give_item))
-            .route("/api/slot/:index/take_item", post(api_take_item))
-            .route("/api/slot/:index/change_species", post(api_change_species))
-            .route("/api/slot/:index/change_ability", post(api_change_ability))
-            .route("/api/slot/:index/change_gender", post(api_change_gender))
-            .route("/api/slot/:index/make_shiny", post(api_make_shiny))
-            .route(
-                "/api/slot/:index/change_nickname",
-                post(api_change_nickname),
-            )
-            .route(
-                "/api/slot/:index/change_held_item",
-                post(api_change_held_item),
-            )
-            .route("/api/slot/:index/cure_status", post(api_cure_status))
-            .route("/api/slot/:index/change_nature", post(api_change_nature))
-            .route("/api/slot/:index/restore_pp", post(api_restore_pp))
-            .route("/api/slot/:index/set_friendship", post(api_set_friendship))
-            .route("/api/slot/:index/change_move", post(api_change_move))
-            .route("/api/slot/:index/set_ivs", post(api_set_ivs))
-            .route("/api/slot/:index/increase_ivs", post(api_increase_ivs))
-            .route("/api/slot/:index/set_evs", post(api_set_evs))
-            .route("/api/slot/:index/increase_evs", post(api_increase_evs))
-            .route("/api/slot/:index/restore_hp", post(api_restore_hp))
-            .route("/api/slot/:index/heal_party", post(api_heal_party))
-            .route("/api/slot/:index/set_exp", post(api_set_exp))
-            .route("/api/slot/:index/set_level", post(api_set_level))
-            .route("/api/slot/:index/learn_move", post(api_learn_move))
-            .route("/api/slot/:index/forget_move", post(api_forget_move))
-            .route("/api/slot/:index/set_pokerus", post(api_set_pokerus))
-            .route("/api/slot/:index/set_pp_ups", post(api_set_pp_ups))
-            .route("/api/slot/:index/revive_pokemon", post(api_revive_pokemon))
-            .route("/api/slot/:index/undo", post(api_undo))
-            .route("/api/slot/:index/refresh_rom", post(api_refresh_rom))
-            .route("/api/bot/:index", get(api_bot_summary))
-            .route("/api/command/:cmd", post(api_command))
-            .route("/api/db/query", post(api_db_query))
-            .route("/api/runs", get(api_runs))
-            .route("/api/run/import", post(api_run_import))
-            .route("/api/run/:id/stats", get(api_run_stats))
-            .route("/api/run/:id/route_stats", get(api_run_route_stats))
-            .route("/api/run/:id/route_odds", get(api_run_route_odds))
-            .route("/api/run/:id/webhook_log", get(api_run_webhook_log))
-            .route(
-                "/api/run/:id/soul_link/overrides",
-                get(api_run_soul_link_overrides),
-            )
-            .route(
-                "/api/run/:id/soul_link/override",
-                post(api_set_soul_link_override),
-            )
-            .route(
-                "/api/run/:id/soul_link/override/:personality",
-                delete(api_clear_soul_link_override),
-            )
-            .route("/api/run/:id/shiny", get(api_shiny_stats))
-            .route("/api/run/:id/export", get(api_run_export))
-            .route("/api/run/:id/events", get(api_run_events))
-            .route("/api/timeline", get(api_active_timeline))
-            .route("/history", get(serve_history))
-            .route("/shiny", get(serve_shiny))
-            .route("/memorial", get(serve_memorial))
-            .route("/soullink", get(serve_soullink))
-            .route("/soullink/manage", get(serve_soullink_manage))
-            .route("/alerts", get(serve_alerts))
-            .route("/:index/alerts", get(serve_alerts))
-            .route("/:index/routes", get(serve_routes))
-            .route("/:index/party", get(serve_party))
-            .route("/:index/encounters", get(serve_focused))
-            .route("/:index/dead", get(serve_focused))
-            .route("/:index/caught", get(serve_focused))
-            .route("/:index/box", get(serve_focused))
-            .route("/:index/types", get(serve_types_page))
-            .route("/:index/items", get(serve_items))
-            .route("/:index/moves", get(serve_moves_page))
-            .route("/api/slot/:index/bag", get(api_bag))
-            .route("/run/:id/stats", get(serve_run_stats))
-            .route("/run/:id/memorial", get(serve_memorial))
-            .route("/run/:id/timeline", get(serve_timeline))
-            .route("/party/mobile", get(serve_mobile_party))
-            .route("/timeline", get(serve_timeline))
-            .route("/species", get(serve_species))
-            .route("/api/species/stats", get(api_species_stats))
-            .route("/trainers", get(serve_trainers))
-            .route("/run/:id/trainers", get(serve_trainers))
-            .route("/api/run/:id/trainers", get(api_run_trainers))
-            .route("/api/runs/compare", get(api_runs_compare))
-            .route("/api/run/:id/luck", get(api_run_luck))
-            .route("/api/run/:id/closest_calls", get(api_run_closest_calls))
-            .route("/api/catch_rate", get(api_catch_rate))
-            .route(
-                "/api/run/:id/pokemon/:personality/hp_history",
-                get(api_run_pokemon_hp_history),
-            )
-            .route("/api/run/:id/enemy_hp_log", get(api_run_enemy_hp_log))
-            .route("/api/run/:id/battle_damage", get(api_run_battle_damage))
-            .route("/api/run/:id/summary", get(api_run_summary))
-            .route(
-                "/api/run/:id/event/:event_id/note",
-                patch(api_set_event_note).delete(api_clear_event_note),
-            )
-            .route("/api/run/:id/pokepaste", get(api_run_pokepaste))
-            .route("/api/run/:id/splits", get(api_run_splits))
-            .route("/api/run/:id/catch_log", get(api_run_catch_log))
-            .route("/api/run/:id/difficulty", get(api_run_difficulty))
-            .route("/api/run/:id/area_times", get(api_run_area_times))
-            .route("/:index/deaths", get(serve_deaths_overlay))
-            .route("/:index/encounter_count", get(serve_encounter_count))
-            .route("/:index/hp", get(serve_hp_overlay))
-            .route("/:index/badges", get(serve_badges_overlay))
-            .route("/:index/nextgym", get(serve_next_gym_overlay))
-            .route("/api/slot/:index/command/:cmd", post(api_slot_command))
-            .route("/about", get(serve_about))
-            .route("/compare", get(serve_compare))
-            .route("/join", get(serve_join))
-            .route("/api/direct/connect", post(api_direct_connect))
-            .route("/api/direct/hosts", get(api_direct_hosts))
-            .with_state(web_state);
+        let app = build_router(web_state);
 
         let addr = format!("0.0.0.0:{}", port);
         tracing::info!("WebSocket overlay listening on http://{}", addr);
@@ -5051,5 +5774,154 @@ mod tests {
         let out = apply_page_with_theme(SAMPLE_HTML, true, Some("light"));
         assert!(out.contains("[TESTING]"));
         assert!(out.contains(r#"dataset.theme="light""#));
+    }
+
+    // ── API integration tests ────────────────────────────────────────────────
+
+    fn empty_web_state() -> WebState {
+        let (tx, _rx) = tokio::sync::watch::channel(String::new());
+        let live_slots: SharedSlots = Arc::new(Mutex::new(vec![]));
+        WebState {
+            tx,
+            live_slots,
+            db_conn: None,
+            testing: true,
+            allow_injections: false,
+            connector: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn api_state_empty_slots_returns_ok() {
+        use axum::body::Body;
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt;
+
+        let app = build_router(empty_web_state());
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/state")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), 1024)
+            .await
+            .unwrap();
+        assert_eq!(&body[..], b"[]");
+    }
+
+    #[tokio::test]
+    async fn api_slot_out_of_range_returns_404() {
+        use axum::body::Body;
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt;
+
+        let app = build_router(empty_web_state());
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/slot/0")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn serve_html_root_returns_ok() {
+        use axum::body::Body;
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt;
+
+        let app = build_router(empty_web_state());
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn serve_about_returns_ok() {
+        use axum::body::Body;
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt;
+
+        let app = build_router(empty_web_state());
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/about")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn api_runs_no_db_returns_error_json() {
+        use axum::body::Body;
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt;
+
+        let app = build_router(empty_web_state());
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/runs")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&body).expect("body must be JSON");
+        assert!(v.get("error").is_some(), "expected error field when no DB");
+    }
+
+    #[tokio::test]
+    async fn api_catch_rate_missing_params_returns_error_json() {
+        use axum::body::Body;
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt;
+
+        let app = build_router(empty_web_state());
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/catch_rate")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&body).expect("body must be JSON");
+        assert!(v.get("error").is_some(), "expected error field for missing params");
     }
 }

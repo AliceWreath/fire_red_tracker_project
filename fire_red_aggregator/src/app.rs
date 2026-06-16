@@ -111,8 +111,10 @@ struct SettingsDraft {
 impl SettingsDraft {
     fn from_config(cfg: &AggregatorConfig) -> Self {
         let mut all_hosts = cfg.retroarch_hosts.clone();
-        if let Some(h) = &cfg.retroarch_host {
-            if !all_hosts.contains(h) { all_hosts.push(h.clone()); }
+        if let Some(h) = &cfg.retroarch_host
+            && !all_hosts.contains(h)
+        {
+            all_hosts.push(h.clone());
         }
         Self {
             listen_port_str: cfg.listen_port.to_string(),
@@ -722,13 +724,12 @@ impl AggregatorApp {
                                     .desired_width(230.0)
                                     .hint_text("/path/to/firered.gba"),
                             );
-                            if ui.small_button("Browse…").clicked() {
-                                if let Some(p) = rfd::FileDialog::new()
+                            if ui.small_button("Browse…").clicked()
+                                && let Some(p) = rfd::FileDialog::new()
                                     .add_filter("GBA ROM", &["gba"])
                                     .pick_file()
-                                {
-                                    s.rom_path = p.to_string_lossy().into_owned();
-                                }
+                            {
+                                s.rom_path = p.to_string_lossy().into_owned();
                             }
                         });
                         ui.small("required for direct mode");
@@ -831,6 +832,10 @@ impl AggregatorApp {
                     allow_species_repeats: s.allow_species_repeats,
                     run_start_balls: s.run_start_balls_str.trim().parse().ok(),
                     direct_mode: s.direct_mode,
+                    backup_dir: None,
+                    livesplit_host: None,
+                    livesplit_port: 16834,
+                    livesplit_split_on_badges: false,
                 };
                 save_config(&cfg, &self.config_path);
                 self.settings_open = false;

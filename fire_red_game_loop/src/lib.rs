@@ -354,7 +354,7 @@ pub fn spawn_game_loop(
                 last_area_visit_id = fire_red_database::open_area_visit(
                     current_state.map_group_id,
                     current_state.map_name_id,
-                    &zone,
+                    zone,
                     fire_red_database::unix_now(),
                 );
             }
@@ -370,7 +370,7 @@ pub fn spawn_game_loop(
                 last_area_visit_id = fire_red_database::open_area_visit(
                     current_state.map_group_id,
                     current_state.map_name_id,
-                    &zone,
+                    zone,
                     now,
                 );
                 discord::update(discord::Presence {
@@ -533,6 +533,10 @@ pub fn assemble_game_state(
 
     let warnings: Vec<String> = state.warnings.lock_or_recover().drain(..).collect();
 
+    let money = crate::game::read_money();
+    let (play_time_hours, play_time_minutes, play_time_seconds) =
+        fire_red_loop::get_play_time_components();
+
     GameState {
         party,
         encounters,
@@ -543,5 +547,9 @@ pub fn assemble_game_state(
         current_map_name:  pos.map_name_id,
         preferred_player,
         warnings,
+        money,
+        play_time_hours,
+        play_time_minutes,
+        play_time_seconds,
     }
 }

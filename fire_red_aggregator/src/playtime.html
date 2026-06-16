@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html>
+<!-- THEME_SLOT -->
+<head>
+<meta charset="utf-8">
+<title>Playtime</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body {
+    background: transparent;
+    font-family: 'Segoe UI', Tahoma, sans-serif;
+    color: #fff;
+    width: 100%; height: 100%;
+    display: flex; align-items: flex-start; justify-content: flex-start;
+    overflow: hidden;
+}
+#root {
+    padding: 8px 14px;
+    background: rgba(10, 10, 20, 0.88);
+    border: 1px solid rgba(80, 120, 200, 0.3);
+    border-radius: 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    box-shadow: 0 4px 20px rgba(0,0,0,0.7);
+    min-width: 160px;
+}
+.row { display: flex; align-items: center; gap: 8px; }
+.lbl {
+    font-size: 9px; color: #778; font-weight: 600; text-transform: uppercase;
+    letter-spacing: 0.05em; width: 44px; flex-shrink: 0;
+}
+.val {
+    font-size: 16px; font-weight: 800; color: #ddf; font-variant-numeric: tabular-nums;
+    letter-spacing: 0.02em;
+}
+#wall-val { color: #f8c060; }
+.discrepancy {
+    font-size: 9px; color: #f88; font-style: italic; text-align: right;
+}
+#disconnected { font-size: 11px; color: #666; text-align: center; padding: 4px; display: none; }
+
+html[data-theme=light] #root {
+    background: rgba(235, 240, 255, 0.93);
+    border-color: rgba(60, 100, 200, 0.35);
+}
+html[data-theme=light] .lbl   { color: #667; }
+html[data-theme=light] .val   { color: #223; }
+html[data-theme=light] #wall-val { color: #a07000; }
+html[data-theme=light] .discrepancy { color: #c00; }
+</style>
+</head>
+<body>
+<div id="root">
+  <div class="row">
+    <div class="lbl">In-Game</div>
+    <div class="val" id="save-val">—</div>
+  </div>
+  <div class="row">
+    <div class="lbl">Wall Clock</div>
+    <div class="val" id="wall-val">—</div>
+  </div>
+  <div class="discrepancy" id="disc" style="display:none"></div>
+  <div id="disconnected">disconnected</div>
+</div>
+<script>
+const _pathParts  = window.location.pathname.split('/').filter(Boolean);
+const _pathIndex  = parseInt(_pathParts[0]);
+const _params     = new URLSearchParams(window.location.search);
+const playerIndex = !isNaN(_pathIndex) ? _pathIndex : parseInt(_params.get('slot') || '0');
+
+// Wall-clock run timer: ticks from run started_at.
+let wallStart = null;
+let wallInterval = null;
+
+function pad2(n) { return String(n).padStart(2, '0'); }
+function fmtHMS(totalSec) {
+    const h = Math.floor(totalSec / 3600);
+    const m = Math.floor((totalSec % 3600) / 60);
+    const s = totalSec % 60;
+    return h + ':' + pad2(m) + ':' + pad2(s);
+}
+
+function startWallClock(startedAtStr) {
+    if (!startedAtStr) { stopWallClock(); return; }
+    const t = new Date(startedAtStr).getTime();
+    if (isNaN(t)) { stopWallClock(); return; }
+    wallStart = t;
+    if (wallInterval) clearInterval(wallInterval);
+    wallInterval = setInterval(tickWall, 1000);
+    tickWall();
+}
+
+function stopWallClock() {
+    wallStart = null;
+    if (wallInterval) { clearInterval(wallInterval); wallInterval = null; }
+    document.getElementById('wall-val').textContent = '—';
+}
+
+function tickWall() {
+    if (wallStart === null) return;
+    const elapsed = Math.floor((Date.now() - wallStart) / 1000);
+    document.getElementById('wall-val').textContent = fmtHMS(elapsed);
+    updateDisc(elapsed);
+}
+
+let lastSaveSec = 0;
+
+function updateDisc(wallSec) {
+    const discEl = document.getElementById('disc');
+    if (wallSec <= 0 || lastSaveSec <= 0) { discEl.style.display = 'none'; return; }
+    const diff = wallSec - lastSaveSec;
+    if (Math.abs(diff) < 60) { discEl.style.display = 'none'; return; }
+    const sign = diff > 0 ? '+' : '';
+    discEl.textContent = sign + fmtHMS(Math.abs(diff)) + ' menu/pause';
+    discEl.style.display = '';
+}
+
+function handleState(slots) {
+    const slot   = slots[playerIndex];
+    const saveEl = document.getElementById('save-val');
+    const discEl = document.getElementById('disc');
+    const discNe = document.getElementById('disconnected');
+
+    if (!slot || !slot.connected) {
+        discNe.style.display = '';
+        saveEl.textContent   = '—';
+        stopWallClock();
+        return;
+    }
+    discNe.style.display = 'none';
+
+    const h = slot.play_time_hours || 0;
+    const m = slot.play_time_minutes || 0;
+    const s = slot.play_time_seconds || 0;
+    lastSaveSec = h * 3600 + m * 60 + s;
+    saveEl.textContent = h + ':' + pad2(m) + ':' + pad2(s);
+
+    const started = slot.run_summary ? slot.run_summary.started_at : null;
+    if (started) {
+        startWallClock(started);
+    } else {
+        stopWallClock();
+    }
+}
+
+let ws;
+let reconnectDelay = 1000;
+function connect() {
+    ws = new WebSocket('ws://' + location.host + '/ws?show=playtime');
+    ws.onopen    = () => { reconnectDelay = 1000; };
+    ws.onmessage = e => handleState(JSON.parse(e.data));
+    ws.onclose   = () => {
+        stopWallClock();
+        setTimeout(connect, reconnectDelay);
+        reconnectDelay = Math.min(reconnectDelay * 2, 30000);
+    };
+}
+connect();
+</script>
+</body>
+</html>

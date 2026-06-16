@@ -919,7 +919,7 @@ impl eframe::App for SetupApp {
                     twitch_helix: None,
                 };
 
-                *self.result.lock().unwrap() = Some(config);
+                *self.result.lock().unwrap_or_else(|p| p.into_inner()) = Some(config);
                 self.should_close = true;
             }
 
@@ -981,7 +981,7 @@ fn run_setup_window(existing: Option<&TrackerConfig>) -> TrackerConfig {
         Box::new(move |_cc| Ok(Box::new(app))),
     );
 
-    result.lock().unwrap().take().unwrap_or_else(|| {
+    result.lock().unwrap_or_else(|p| p.into_inner()).take().unwrap_or_else(|| {
         println!("Setup cancelled.");
         std::process::exit(0);
     })

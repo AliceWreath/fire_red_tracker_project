@@ -62,6 +62,21 @@ pub struct AggregatorConfig {
     /// Activates the /join page so players can connect on demand.
     #[serde(default)]
     pub direct_mode: bool,
+    /// Directory for automatic JSON run backups written when `game_cleared` is
+    /// first detected (optional). The file is named `run_<id>_<timestamp>.json`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backup_dir: Option<String>,
+    /// LiveSplit One TCP host for the aggregator-side split bridge. Splits fire
+    /// on badge events (when `livesplit_split_on_badges` is true) and on game
+    /// clear (always, when this host is set).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub livesplit_host: Option<String>,
+    /// LiveSplit One TCP port (default 16834).
+    #[serde(default = "default_livesplit_port", skip_serializing_if = "is_default_livesplit_port")]
+    pub livesplit_port: u16,
+    /// Fire a LiveSplit split every time a new gym badge is earned.
+    #[serde(default)]
+    pub livesplit_split_on_badges: bool,
 }
 
 /// Twitch IRC chat bot configuration.
@@ -111,6 +126,8 @@ fn default_retroarch_port() -> u16 { 55355 }
 fn is_default_retroarch_port(v: &u16) -> bool { *v == 55355 }
 fn default_poll_ms_agg() -> u64 { 100 }
 fn is_default_poll_ms_agg(v: &u64) -> bool { *v == 100 }
+fn default_livesplit_port() -> u16 { 16834 }
+fn is_default_livesplit_port(v: &u16) -> bool { *v == 16834 }
 
 /// Config overrides applied when `--test` is active (or `default_test = true`).
 /// All fields are optional; omit a field to inherit the base config value.
@@ -243,8 +260,10 @@ impl SetupApp {
         };
         // Merge legacy single host into the list for display.
         let mut all_hosts = cfg.retroarch_hosts.clone();
-        if let Some(h) = &cfg.retroarch_host {
-            if !all_hosts.contains(h) { all_hosts.push(h.clone()); }
+        if let Some(h) = &cfg.retroarch_host
+            && !all_hosts.contains(h)
+        {
+            all_hosts.push(h.clone());
         }
         Self {
             listen_port_str: cfg.listen_port.to_string(),
@@ -356,13 +375,12 @@ impl eframe::App for SetupApp {
                                     .desired_width(260.0)
                                     .hint_text("/path/to/firered.gba"),
                             );
-                            if ui.small_button("Browse…").clicked() {
-                                if let Some(p) = rfd::FileDialog::new()
+                            if ui.small_button("Browse…").clicked()
+                                && let Some(p) = rfd::FileDialog::new()
                                     .add_filter("GBA ROM", &["gba"])
                                     .pick_file()
-                                {
-                                    self.rom_path = p.to_string_lossy().into_owned();
-                                }
+                            {
+                                self.rom_path = p.to_string_lossy().into_owned();
                             }
                         });
                         ui.small("required for direct mode");
@@ -462,7 +480,7 @@ impl eframe::App for SetupApp {
                         Some(self.rom_path.trim().to_string())
                     };
 
-                    *self.result.lock().unwrap() = Some(AggregatorConfig {
+                    *self.result.lock().unwrap_or_else(|p| p.into_inner()) = Some(AggregatorConfig {
                         listen_port: listen_parse.unwrap_or(7878),
                         db,
                         ws_port,
@@ -479,6 +497,10 @@ impl eframe::App for SetupApp {
                         allow_species_repeats: self.allow_species_repeats,
                         run_start_balls: self.run_start_balls_str.trim().parse().ok(),
                         direct_mode: self.direct_mode,
+                        backup_dir: None,
+                        livesplit_host: None,
+                        livesplit_port: 16834,
+                        livesplit_split_on_badges: false,
                     });
                     self.should_close = true;
                 }
@@ -534,7 +556,7 @@ fn run_setup_window(existing: Option<&AggregatorConfig>) -> AggregatorConfig {
         Box::new(move |_cc| Ok(Box::new(app))),
     );
 
-    result.lock().unwrap().take().unwrap_or_else(|| {
+    result.lock().unwrap_or_else(|p| p.into_inner()).take().unwrap_or_else(|| {
         println!("Setup cancelled.");
         std::process::exit(0);
     })

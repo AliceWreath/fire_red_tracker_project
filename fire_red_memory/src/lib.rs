@@ -396,9 +396,9 @@ fn update_ram_type<T: MemoryType + Default>() -> Option<Vec<u8>> {
         // Acquire a slot — blocks until a running chunk releases one.
         {
             let (lock, cvar) = &*semaphore;
-            let mut slots = lock.lock().unwrap();
+            let mut slots = lock.lock().unwrap_or_else(|p| p.into_inner());
             while *slots == 0 {
-                slots = cvar.wait(slots).unwrap();
+                slots = cvar.wait(slots).unwrap_or_else(|p| p.into_inner());
             }
             *slots -= 1;
         }
@@ -412,7 +412,7 @@ fn update_ram_type<T: MemoryType + Default>() -> Option<Vec<u8>> {
             // Release slot before sending so the dispatcher can proceed
             // without waiting for the channel recv.
             let (lock, cvar) = &*sem;
-            *lock.lock().unwrap() += 1;
+            *lock.lock().unwrap_or_else(|p| p.into_inner()) += 1;
             cvar.notify_one();
             let _ = tx.send(result); // ignored if caller already returned None
         });

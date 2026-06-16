@@ -552,7 +552,7 @@ fn main() {
                     last_area_visit_id = fire_red_database::open_area_visit(
                         current_state.map_group_id,
                         current_state.map_name_id,
-                        &zone,
+                        zone,
                         fire_red_database::unix_now(),
                     );
                 }
@@ -581,7 +581,7 @@ fn main() {
                     last_area_visit_id = fire_red_database::open_area_visit(
                         current_state.map_group_id,
                         current_state.map_name_id,
-                        &zone,
+                        zone,
                         now,
                     );
                     discord::update(discord::Presence {

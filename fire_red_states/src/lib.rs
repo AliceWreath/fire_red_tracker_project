@@ -414,6 +414,23 @@ pub struct GameState {
     /// this tick (e.g. "Species clause: Pidgey already caught").
     /// Drained after each send; never repeated across ticks.
     pub warnings: Vec<String>,
+
+    /// Current Pokédollars read from SaveBlock1 and decrypted with the
+    /// security key.  Defaults to 0 for older tracker versions.
+    #[serde(default)]
+    pub money: u32,
+
+    /// In-game save-file play time: hours component (can exceed 999).
+    #[serde(default)]
+    pub play_time_hours: u16,
+
+    /// In-game save-file play time: minutes component (0–59).
+    #[serde(default)]
+    pub play_time_minutes: u8,
+
+    /// In-game save-file play time: seconds component (0–59).
+    #[serde(default)]
+    pub play_time_seconds: u8,
 }
 
 /// Network operating mode for the tracker.

@@ -348,6 +348,13 @@ pub fn get_play_time() -> String {
     )
 }
 
+/// Returns the raw play-time components `(hours, minutes, seconds)` from the
+/// current save-file clock. Returns `(0, 0, 0)` if trainer data is not yet loaded.
+pub fn get_play_time_components() -> (u16, u8, u8) {
+    let data = fire_red_trainer_data::get_static_trainer_data().load();
+    (data.player_time_hours, data.player_time_minutes, data.player_time_seconds)
+}
+
 // ---------------------------------------------------------------------------
 // Party / box accessors
 // ---------------------------------------------------------------------------

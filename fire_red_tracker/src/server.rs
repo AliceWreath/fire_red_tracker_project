@@ -337,6 +337,9 @@ pub fn handle_client(
         // to SLEEP_DURATION (333 ms) every tick.
         let pos = fire_red_loop::get_value();
         let player_name = fire_red_loop::get_trainer_name();
+        let (play_time_hours, play_time_minutes, play_time_seconds) =
+            fire_red_loop::get_play_time_components();
+        let money = crate::game::read_money();
         let badge_state = if game_loaded.load(Ordering::Acquire) {
             fire_red_badge::read_badge_state()
         } else {
@@ -380,6 +383,10 @@ pub fn handle_client(
                 current_map_name: pos.map_name_id,
                 preferred_player,
                 warnings: server_warnings.lock_or_recover().drain(..).collect(),
+                money,
+                play_time_hours,
+                play_time_minutes,
+                play_time_seconds,
             }
         };
 

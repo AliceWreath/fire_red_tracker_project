@@ -785,6 +785,47 @@ pub fn has_pokeballs_threshold(threshold: u32) -> bool {
     count_pokeballs() >= threshold
 }
 
+/// Byte offset of the encrypted money field within SaveBlock1.
+const MONEY_SAVE_BLOCK_OFFSET: usize = 0x0290;
+
+/// Returns the player's current Pokédollar balance, decrypted from SaveBlock1.
+///
+/// Money is stored as `actual ^ security_key` (full 32-bit XOR, unlike bag
+/// item quantities which only use the lower 16 bits).  Returns 0 on any read
+/// failure so callers can treat the field as "not yet available" without crashing.
+pub fn read_money() -> u32 {
+    let iwram = fire_red_memory::get_iwram();
+    let ewram = fire_red_memory::get_ewram();
+
+    let sb1 = match read_save_block1_ptr(&iwram, &ewram) {
+        Some(p) => p,
+        None => return 0,
+    };
+    let money_off = (sb1 - EWRAM_BASE) + MONEY_SAVE_BLOCK_OFFSET;
+    if ewram.len() < money_off + 4 {
+        return 0;
+    }
+    let stored = u32::from_le_bytes([
+        ewram[money_off],
+        ewram[money_off + 1],
+        ewram[money_off + 2],
+        ewram[money_off + 3],
+    ]);
+
+    let sb2 = read_save_block2_ptr(&iwram, &ewram).unwrap_or(SAVE_BLOCK_2_BASE);
+    let key_off = (sb2 - EWRAM_BASE) + SECURITY_KEY_OFFSET;
+    if ewram.len() < key_off + 4 {
+        return stored;
+    }
+    let key = u32::from_le_bytes([
+        ewram[key_off],
+        ewram[key_off + 1],
+        ewram[key_off + 2],
+        ewram[key_off + 3],
+    ]);
+    stored ^ key
+}
+
 /// Returns the wild Pokémon currently engaged in battle, or `None` when not
 /// in a wild encounter.
 ///

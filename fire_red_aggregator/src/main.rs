@@ -186,8 +186,10 @@ fn main() {
     for h in &cfg.retroarch_hosts {
         if !retroarch_hosts.contains(h) { retroarch_hosts.push(h.clone()); }
     }
-    if let Some(h) = &cfg.retroarch_host {
-        if !retroarch_hosts.contains(h) { retroarch_hosts.push(h.clone()); }
+    if let Some(h) = &cfg.retroarch_host
+        && !retroarch_hosts.contains(h)
+    {
+        retroarch_hosts.push(h.clone());
     }
 
     let rom_path = cli.rom.or_else(|| cfg.rom_path.clone());
@@ -326,9 +328,27 @@ fn main() {
         eventsub::spawn(twitch_cfg, shared_slots.clone());
     }
 
+    // LiveSplit One bridge (aggregator side).
+    let livesplit_split_on_badges = cfg_ref.livesplit_split_on_badges;
+    if let Some(ref host) = cfg_ref.livesplit_host {
+        let port = cfg_ref.livesplit_port;
+        fire_red_game_loop::livesplit::init(Some(host.clone()), port);
+    }
+
+    let backup_dir = cfg_ref.backup_dir.clone();
+
     if let Some(port) = ws_port {
         // Headless WebSocket overlay mode.
-        web::run(shared_slots, port, db, use_test, allow_injections, direct_connector);
+        web::run(
+            shared_slots,
+            port,
+            db,
+            use_test,
+            allow_injections,
+            direct_connector,
+            backup_dir,
+            livesplit_split_on_badges,
+        );
     } else {
         // Normal egui window mode.
         let update_available: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));

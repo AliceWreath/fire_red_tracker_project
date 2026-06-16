@@ -1,0 +1,301 @@
+<!DOCTYPE html>
+<html>
+<!-- THEME_SLOT -->
+<head>
+<meta charset="utf-8">
+<title>Vs. Leader</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body {
+    background: transparent;
+    font-family: 'Segoe UI', Tahoma, sans-serif;
+    color: #fff;
+    width: 100%; height: 100%;
+    display: flex; align-items: flex-start; justify-content: flex-start;
+    overflow: hidden;
+}
+#root {
+    padding: 10px 14px;
+    background: rgba(10, 10, 20, 0.88);
+    border: 1px solid rgba(80, 120, 200, 0.3);
+    border-radius: 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 7px;
+    min-width: 220px;
+    max-width: 340px;
+    box-shadow: 0 4px 20px rgba(0,0,0,0.7);
+}
+#gym-header { display: flex; align-items: center; gap: 8px; }
+#gym-name   { font-size: 13px; font-weight: 700; color: #eef; flex: 1; }
+#gym-city   { font-size: 11px; color: #999; }
+.type-badge {
+    display: inline-block; font-size: 10px; font-weight: 700;
+    padding: 2px 7px; border-radius: 3px; text-transform: uppercase;
+    letter-spacing: 0.3px; white-space: nowrap;
+}
+#leader-list { display: flex; flex-direction: column; gap: 4px; }
+.leader-row {
+    display: flex; align-items: center; gap: 6px;
+    padding: 3px 6px; border-radius: 5px;
+    background: rgba(255,255,255,0.04);
+}
+.leader-row.adv {
+    background: rgba(50, 180, 80, 0.15);
+    border: 1px solid rgba(50, 200, 80, 0.3);
+}
+.leader-sprite {
+    width: 36px; height: 36px; image-rendering: pixelated; flex-shrink: 0;
+    filter: drop-shadow(0 1px 3px rgba(0,0,0,0.9));
+}
+.leader-info { flex: 1; min-width: 0; }
+.leader-name {
+    font-size: 11px; font-weight: 700; color: #dde;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.leader-level { font-size: 10px; color: #fa8; font-weight: 600; }
+.leader-types { display: flex; gap: 3px; margin-top: 2px; }
+.leader-moves {
+    font-size: 9px; color: #889; margin-top: 1px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.adv-icon { font-size: 11px; color: #50e070; font-weight: 800; flex-shrink: 0; }
+#my-party-section { border-top: 1px solid rgba(255,255,255,0.08); padding-top: 5px; }
+#my-party-label { font-size: 9px; color: #778; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 3px; }
+#my-party-list  { display: flex; flex-direction: column; gap: 3px; }
+.my-row {
+    display: flex; align-items: center; gap: 6px;
+    padding: 2px 6px; border-radius: 4px;
+    background: rgba(255,255,255,0.03);
+}
+.my-row.adv {
+    background: rgba(50, 180, 80, 0.12);
+    border: 1px solid rgba(50, 200, 80, 0.25);
+}
+.my-sprite {
+    width: 30px; height: 30px; image-rendering: pixelated; flex-shrink: 0;
+    filter: drop-shadow(0 1px 3px rgba(0,0,0,0.9));
+}
+.my-sprite.dead { filter: grayscale(100%) brightness(0.4); }
+.my-name { font-size: 10px; font-weight: 700; color: #dde; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.my-name.dead { color: #c06060; }
+.my-types { display: flex; gap: 2px; }
+.section-empty { font-size: 11px; color: #666; font-style: italic; }
+#game-clear { font-size: 12px; font-weight: 700; color: #ffd040; text-align: center; letter-spacing: 0.05em; }
+#disconnected { display: none; font-size: 11px; color: #666; text-align: center; padding: 4px; }
+
+/* Gen III type colours */
+.t0  { background: #a8a878; color: #111; }
+.t1  { background: #c03028; color: #fff; }
+.t2  { background: #6890f0; color: #111; }
+.t3  { background: #a040a0; color: #fff; }
+.t4  { background: #e0c068; color: #111; }
+.t5  { background: #b8a038; color: #111; }
+.t6  { background: #a8b820; color: #111; }
+.t7  { background: #705898; color: #fff; }
+.t8  { background: #b8b8d0; color: #111; }
+.t9  { background: #f08030; color: #111; }
+.t10 { background: #6890f0; color: #111; }
+.t11 { background: #78c850; color: #111; }
+.t12 { background: #f8d030; color: #111; }
+.t13 { background: #f85888; color: #fff; }
+.t14 { background: #98d8d8; color: #111; }
+.t15 { background: #7038f8; color: #fff; }
+.t16 { background: #705848; color: #fff; }
+
+html[data-theme=light] #root {
+    background: rgba(235, 240, 255, 0.93);
+    border-color: rgba(60, 100, 200, 0.35);
+    color: #111;
+}
+html[data-theme=light] #gym-name { color: #111; }
+html[data-theme=light] #gym-city { color: #555; }
+html[data-theme=light] .leader-row { background: rgba(0,0,0,0.04); }
+html[data-theme=light] .leader-row.adv { background: rgba(20,140,50,0.12); }
+html[data-theme=light] .leader-name { color: #222; }
+html[data-theme=light] .my-row { background: rgba(0,0,0,0.03); }
+html[data-theme=light] .my-row.adv { background: rgba(20,140,50,0.1); }
+html[data-theme=light] .my-name { color: #222; }
+</style>
+</head>
+<body>
+<div id="root">
+  <div id="gym-header" style="display:none">
+    <div id="gym-name"></div>
+    <div id="gym-city"></div>
+    <div id="gym-type-badge" class="type-badge"></div>
+  </div>
+  <div id="leader-list"></div>
+  <div id="my-party-section" style="display:none">
+    <div id="my-party-label">Your Party</div>
+    <div id="my-party-list"></div>
+  </div>
+  <div id="game-clear" style="display:none">Champion Defeated!</div>
+  <div id="disconnected">disconnected</div>
+</div>
+<script>
+const _pathParts  = window.location.pathname.split('/').filter(Boolean);
+const _pathIndex  = parseInt(_pathParts[0]);
+const _params     = new URLSearchParams(window.location.search);
+const playerIndex = !isNaN(_pathIndex) ? _pathIndex : parseInt(_params.get('slot') || '0');
+
+const TYPE_NAMES = [
+    'Normal','Fighting','Flying','Poison','Ground','Rock',
+    'Bug','Ghost','Steel','Fire','Water','Grass',
+    'Electric','Psychic','Ice','Dragon','Dark'
+];
+
+// SE_AGAINST[defendingTypeId] = array of attacking type IDs that deal 2x
+const SE_AGAINST = {
+    0:  [], 1: [2,13], 2: [5,12,14], 3: [4,13], 4: [10,11,14],
+    5:  [1,4,8,10,11], 6: [2,9,5], 7: [7,16], 8: [1,4,9],
+    9:  [4,5,10], 10: [11,12], 11: [2,3,6,9,14], 12: [4],
+    13: [6,7,16], 14: [1,5,8,9], 15: [14,15], 16: [1,6],
+};
+
+function hasAdvantage(attackerType, defenderTypeId) {
+    const se = SE_AGAINST[defenderTypeId] || [];
+    return se.includes(attackerType);
+}
+function monHasAdv(mon, leaderTypes) {
+    for (const lt of leaderTypes) {
+        if (hasAdvantage(mon.type1, lt) || (mon.type1 !== mon.type2 && hasAdvantage(mon.type2, lt))) return true;
+    }
+    return false;
+}
+function leaderMonVulnerable(lmon, myParty) {
+    for (const mp of myParty) {
+        if (!mp.dead && monHasAdv(mp, [lmon.type1, lmon.type2])) return true;
+    }
+    return false;
+}
+
+function el(tag, cls, text) {
+    const e = document.createElement(tag);
+    if (cls)  e.className = cls;
+    if (text !== undefined) e.textContent = text;
+    return e;
+}
+
+function handleState(slots) {
+    const slot      = slots[playerIndex];
+    const headerEl  = document.getElementById('gym-header');
+    const nameEl    = document.getElementById('gym-name');
+    const cityEl    = document.getElementById('gym-city');
+    const typeEl    = document.getElementById('gym-type-badge');
+    const listEl    = document.getElementById('leader-list');
+    const mySect    = document.getElementById('my-party-section');
+    const myListEl  = document.getElementById('my-party-list');
+    const clearEl   = document.getElementById('game-clear');
+    const discEl    = document.getElementById('disconnected');
+
+    listEl.innerHTML  = '';
+    myListEl.innerHTML= '';
+    headerEl.style.display = 'none';
+    clearEl.style.display  = 'none';
+    mySect.style.display   = 'none';
+
+    if (!slot || !slot.connected) {
+        discEl.style.display = '';
+        return;
+    }
+    discEl.style.display = 'none';
+
+    if (slot.game_cleared) { clearEl.style.display = ''; return; }
+
+    const gym = slot.next_gym;
+    if (!gym) {
+        listEl.appendChild(el('div', 'section-empty', 'No upcoming gym'));
+        return;
+    }
+
+    headerEl.style.display = '';
+    nameEl.textContent = gym.leader;
+    cityEl.textContent = gym.city;
+    const tname = TYPE_NAMES[gym.type_id] || '';
+    typeEl.textContent = tname;
+    typeEl.className   = 'type-badge t' + gym.type_id;
+
+    const myParty = slot.party || [];
+    const leaderParty = slot.leader_party || [];
+
+    if (leaderParty.length === 0) {
+        listEl.appendChild(el('div', 'section-empty', 'Party data unavailable'));
+    } else {
+        for (const lmon of leaderParty) {
+            const vulnerable = leaderMonVulnerable(lmon, myParty);
+            const row = el('div', 'leader-row' + (vulnerable ? ' adv' : ''));
+
+            // sprite placeholder (no pre-loaded sprites for leader panel)
+            row.appendChild(el('div', 'leader-sprite'));
+
+            const info = el('div', 'leader-info');
+            const nameLine = el('div', '');
+            nameLine.style.display = 'flex';
+            nameLine.style.alignItems = 'center';
+            nameLine.style.gap = '6px';
+            nameLine.appendChild(el('span', 'leader-name', lmon.species_name));
+            nameLine.appendChild(el('span', 'leader-level', 'Lv.' + lmon.level));
+            info.appendChild(nameLine);
+
+            const types = el('div', 'leader-types');
+            types.appendChild(el('span', 'type-badge t' + lmon.type1, TYPE_NAMES[lmon.type1] || ''));
+            if (lmon.type2 !== lmon.type1) {
+                types.appendChild(el('span', 'type-badge t' + lmon.type2, TYPE_NAMES[lmon.type2] || ''));
+            }
+            info.appendChild(types);
+
+            const movesStr = lmon.moves.filter(m => m && m !== '—').join(' / ');
+            if (movesStr) {
+                info.appendChild(el('div', 'leader-moves', movesStr));
+            }
+            row.appendChild(info);
+
+            if (vulnerable) row.appendChild(el('span', 'adv-icon', '✓'));
+            listEl.appendChild(row);
+        }
+    }
+
+    // Player party section
+    if (myParty.length > 0) {
+        mySect.style.display = '';
+        const leaderTypes = leaderParty.map(lm => [lm.type1, lm.type2]).flat();
+        for (const mon of myParty) {
+            const adv = !mon.dead && monHasAdv(mon, leaderTypes.filter((_, i) => i % 2 === 0));
+            const row = el('div', 'my-row' + (adv ? ' adv' : ''));
+
+            if (mon.sprite) {
+                const img = document.createElement('img');
+                img.className = 'my-sprite' + (mon.dead ? ' dead' : '');
+                img.src = mon.sprite;
+                row.appendChild(img);
+            } else {
+                row.appendChild(el('div', 'my-sprite'));
+            }
+
+            row.appendChild(el('div', 'my-name' + (mon.dead ? ' dead' : ''), mon.nickname || mon.species_name));
+            const mt = el('div', 'my-types');
+            mt.appendChild(el('span', 'type-badge t' + mon.type1, TYPE_NAMES[mon.type1] || ''));
+            if (mon.type2 !== mon.type1) {
+                mt.appendChild(el('span', 'type-badge t' + mon.type2, TYPE_NAMES[mon.type2] || ''));
+            }
+            row.appendChild(mt);
+
+            if (adv) row.appendChild(el('span', 'adv-icon', '✓'));
+            myListEl.appendChild(row);
+        }
+    }
+}
+
+let ws;
+let reconnectDelay = 1000;
+function connect() {
+    ws = new WebSocket('ws://' + location.host + '/ws?show=vs_leader');
+    ws.onopen    = () => { reconnectDelay = 1000; };
+    ws.onmessage = e => handleState(JSON.parse(e.data));
+    ws.onclose   = () => { setTimeout(connect, reconnectDelay); reconnectDelay = Math.min(reconnectDelay * 2, 30000); };
+}
+connect();
+</script>
+</body>
+</html>

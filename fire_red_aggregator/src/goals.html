@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html>
+<!-- THEME_SLOT -->
+<head>
+<meta charset="utf-8">
+<title>Run Goals</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body {
+    background: transparent;
+    font-family: 'Segoe UI', Tahoma, sans-serif;
+    color: #fff;
+    width: 100%; height: 100%;
+    display: flex; align-items: flex-start; justify-content: flex-start;
+    overflow: hidden;
+}
+#root {
+    padding: 8px 12px;
+    background: rgba(10, 10, 20, 0.88);
+    border: 1px solid rgba(80, 120, 200, 0.3);
+    border-radius: 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    min-width: 180px;
+    max-width: 300px;
+    box-shadow: 0 4px 20px rgba(0,0,0,0.7);
+}
+#header {
+    font-size: 10px; font-weight: 700; color: #aac;
+    text-transform: uppercase; letter-spacing: 0.05em;
+}
+.goal-row {
+    display: flex; align-items: center; gap: 7px;
+}
+.goal-check {
+    width: 12px; height: 12px; border-radius: 2px; flex-shrink: 0;
+    border: 1px solid #558; background: rgba(255,255,255,0.04);
+}
+.goal-check.done {
+    background: #40b860; border-color: #40b860;
+}
+.goal-check.done::after {
+    content: '✓'; display: block; text-align: center;
+    font-size: 9px; line-height: 12px; color: #fff; font-weight: 900;
+}
+.goal-text {
+    font-size: 11px; color: #dde; line-height: 1.3;
+}
+.goal-text.done { color: #668; text-decoration: line-through; }
+#empty { font-size: 11px; color: #556; font-style: italic; }
+#disconnected { font-size: 11px; color: #666; text-align: center; padding: 4px; display: none; }
+
+html[data-theme=light] #root {
+    background: rgba(235, 240, 255, 0.93);
+    border-color: rgba(60, 100, 200, 0.35);
+}
+html[data-theme=light] #header  { color: #334; }
+html[data-theme=light] .goal-text { color: #222; }
+html[data-theme=light] .goal-text.done { color: #999; }
+html[data-theme=light] .goal-check { border-color: #aab; background: rgba(0,0,0,0.04); }
+</style>
+</head>
+<body>
+<div id="root">
+  <div id="header">Run Goals</div>
+  <div id="list"></div>
+  <div id="empty" style="display:none">No goals set</div>
+  <div id="disconnected">disconnected</div>
+</div>
+<script>
+const _pathParts  = window.location.pathname.split('/').filter(Boolean);
+const _pathIndex  = parseInt(_pathParts[0]);
+const _params     = new URLSearchParams(window.location.search);
+const playerIndex = !isNaN(_pathIndex) ? _pathIndex : parseInt(_params.get('slot') || '0');
+
+function el(tag, cls, text) {
+    const e = document.createElement(tag);
+    if (cls)  e.className = cls;
+    if (text !== undefined) e.textContent = text;
+    return e;
+}
+
+function handleState(slots) {
+    const slot   = slots[playerIndex];
+    const listEl = document.getElementById('list');
+    const emptyEl= document.getElementById('empty');
+    const discEl = document.getElementById('disconnected');
+
+    listEl.innerHTML = '';
+
+    if (!slot || !slot.connected) {
+        discEl.style.display = '';
+        emptyEl.style.display = 'none';
+        return;
+    }
+    discEl.style.display = 'none';
+
+    const goals = slot.goals || [];
+    if (goals.length === 0) {
+        emptyEl.style.display = '';
+        return;
+    }
+    emptyEl.style.display = 'none';
+
+    for (const g of goals) {
+        const row = el('div', 'goal-row');
+        const chk = el('div', g.completed ? 'goal-check done' : 'goal-check');
+        row.appendChild(chk);
+        row.appendChild(el('div', g.completed ? 'goal-text done' : 'goal-text', g.text));
+        listEl.appendChild(row);
+    }
+}
+
+let ws;
+let reconnectDelay = 1000;
+function connect() {
+    ws = new WebSocket('ws://' + location.host + '/ws?show=goals');
+    ws.onopen    = () => { reconnectDelay = 1000; };
+    ws.onmessage = e => handleState(JSON.parse(e.data));
+    ws.onclose   = () => { setTimeout(connect, reconnectDelay); reconnectDelay = Math.min(reconnectDelay * 2, 30000); };
+}
+connect();
+</script>
+</body>
+</html>
