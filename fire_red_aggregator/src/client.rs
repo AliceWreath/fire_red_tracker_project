@@ -121,6 +121,22 @@ pub struct MonitorSlot {
     pub box_data: Arc<Mutex<Vec<fire_red_states::BoxEntry>>>,
     /// Latest bag pockets snapshot received from the tracker (~2 s cadence).
     pub bag_data: Arc<Mutex<Option<BagPockets>>>,
+    /// `"host:port"` of the RetroArch instance this slot is polling in direct
+    /// mode, or `None` for tracker-TCP slots.  Read-only after construction.
+    pub direct_host: Option<String>,
+    /// Raw ROM bytes used by the direct-mode sprite loader.  Replaced in-place
+    /// when the caller triggers a ROM force-refresh via the API.
+    pub rom_bytes: Arc<Mutex<Vec<u8>>>,
+    /// Identity string of the ROM currently loaded into `rom_bytes`, formatted
+    /// as `"<title>/<code>/<version>"` (e.g. `"POKEMON FIRE RED/BPRE/1"`).
+    /// Empty until the first ROM is loaded.  Used by the refresh endpoint to
+    /// detect whether the game in RetroArch changed between refreshes.
+    pub rom_identity: Arc<Mutex<String>>,
+    /// Handle to the game loop's live encounter-table buffer for the current
+    /// map area.  `Some` only for direct-mode slots; wired up in `direct.rs`
+    /// after the game loop is started.  Reset to default by the refresh
+    /// endpoint so stale encounter tables from the old ROM are evicted.
+    pub game_encounters: Arc<Mutex<Option<Arc<Mutex<fire_red_pokemon_data::WildPokemonHeader>>>>>,
 }
 
 impl MonitorSlot {
@@ -130,10 +146,16 @@ impl MonitorSlot {
     /// with clones of the inner arcs to start the background network thread.
     ///
     /// # Arguments
-    /// * `index`   - Zero-based slot index; used to generate the display label.
-    /// * `addr`    - TCP address of the tracker server.
-    /// * `db_path` - Optional path to this player's SQLite nuzlocke database.
-    pub fn new(index: usize, addr: String, db_path: Option<String>) -> Self {
+    /// * `index`       - Zero-based slot index; used to generate the display label.
+    /// * `addr`        - TCP address of the tracker server (or `"direct:<host>"` in direct mode).
+    /// * `db_path`     - Optional path to this player's SQLite nuzlocke database.
+    /// * `direct_host` - `Some("host:port")` for direct-mode slots; `None` for tracker-TCP slots.
+    pub fn new(
+        index: usize,
+        addr: String,
+        db_path: Option<String>,
+        direct_host: Option<String>,
+    ) -> Self {
         let db = db_path
             .as_deref()
             .and_then(fire_red_database::DbReader::open);
@@ -152,6 +174,10 @@ impl MonitorSlot {
             run_changed: Arc::new(AtomicBool::new(false)),
             box_data: Arc::new(Mutex::new(Vec::new())),
             bag_data: Arc::new(Mutex::new(None)),
+            direct_host,
+            rom_bytes: Arc::new(Mutex::new(Vec::new())),
+            rom_identity: Arc::new(Mutex::new(String::new())),
+            game_encounters: Arc::new(Mutex::new(None)),
         }
     }
 }

@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "fire_red_aggregator",
+    "fire_red_game_loop",
     "fire_red_location_names",
     "fire_red_badge",
     "fire_red_box_monitor",
@@ -60,6 +61,7 @@ sha2            = "0.10"
 
 # Internal path crates (used as dependencies by other workspace members)
 fire_red_badge                 = { path = "fire_red_badge" }
+fire_red_game_loop             = { path = "fire_red_game_loop" }
 fire_red_map_data              = { path = "fire_red_map_data" }
 fire_red_box_monitor           = { path = "fire_red_box_monitor" }
 fire_red_database              = { path = "fire_red_database" }

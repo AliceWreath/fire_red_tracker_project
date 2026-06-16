@@ -637,11 +637,19 @@ struct DbState {
     current_player: String,
 }
 
-static DB: OnceLock<Mutex<DbState>> = OnceLock::new();
+static DB: OnceLock<Option<Mutex<DbState>>> = OnceLock::new();
 
-fn db() -> &'static Mutex<DbState> {
-    DB.get()
-        .expect("fire_red_database::initialize must be called before any database operation")
+fn db() -> Option<&'static Mutex<DbState>> {
+    DB.get()?.as_ref()
+}
+
+/// Initialize in no-op mode: all database functions return immediately.
+///
+/// Call this when running without a PostgreSQL connection (e.g. aggregator
+/// direct mode with no `--db` flag).  Must be called before any other
+/// function in this crate, exactly like `initialize`.
+pub fn initialize_noop() {
+    let _ = DB.set(None);
 }
 
 /// Connects to the PostgreSQL server and creates the schema if absent.
@@ -699,11 +707,11 @@ pub fn initialize(connection_string: &str) -> Result<(), String> {
 
     if already_current {
         return DB
-            .set(Mutex::new(DbState {
+            .set(Some(Mutex::new(DbState {
                 client,
                 run_id: None,
                 current_player: String::new(),
-            }))
+            })))
             .map_err(|_| "fire_red_database::initialize called more than once".to_string());
     }
 
@@ -1003,11 +1011,11 @@ pub fn initialize(connection_string: &str) -> Result<(), String> {
         )
         .map_err(|e| format!("Failed to write schema_version: {e}"))?;
 
-    DB.set(Mutex::new(DbState {
+    DB.set(Some(Mutex::new(DbState {
         client,
         run_id: None,
         current_player: String::new(),
-    }))
+    })))
     .map_err(|_| "fire_red_database::initialize called more than once".to_string())?;
 
     Ok(())
@@ -1170,7 +1178,8 @@ fn row_to_dead_pokemon(row: &postgres::Row) -> DeadPokemon {
 
 /// Creates a fresh run, sets it as active in this process, and returns its ID.
 pub fn new_run(player_name: &str) -> Result<u32, String> {
-    let mut state = db().lock_or_recover();
+    let Some(db) = db() else { return Ok(0) };
+    let mut state = db.lock_or_recover();
     let row = state
         .client
         .query_one(
@@ -1188,7 +1197,8 @@ pub fn new_run(player_name: &str) -> Result<u32, String> {
 ///
 /// Returns `Ok(false)` if no run with that ID exists.
 pub fn resume_run(id: u32) -> Result<bool, String> {
-    let mut state = db().lock_or_recover();
+    let Some(db) = db() else { return Ok(false) };
+    let mut state = db.lock_or_recover();
     let exists = state
         .client
         .query_opt("SELECT 1 FROM runs WHERE id = $1", &[&(id as i32)])
@@ -1204,7 +1214,8 @@ pub fn resume_run(id: u32) -> Result<bool, String> {
 /// Returns the active run ID for this process, falling back to the most
 /// recently created run. Creates a new run if none exist.
 pub fn get_or_create_run(player_name: &str) -> Result<u32, String> {
-    let mut state = db().lock_or_recover();
+    let Some(db) = db() else { return Ok(0) };
+    let mut state = db.lock_or_recover();
 
     // Already selected in this session — keep it.
     if let Some(id) = state.run_id {
@@ -1242,7 +1253,8 @@ pub fn get_or_create_run(player_name: &str) -> Result<u32, String> {
 /// Stores the name in-process for tagging all subsequent DB writes, and updates
 /// the run row if it still holds the placeholder 'Unknown'.
 pub fn set_player_name(name: &str) {
-    let mut state = db().lock_or_recover();
+    let Some(db) = db() else { return };
+    let mut state = db.lock_or_recover();
     state.current_player = name.to_string();
     if let Some(id) = state.run_id
         && let Err(e) = state.client.execute(
@@ -1258,7 +1270,8 @@ pub fn set_player_name(name: &str) {
 /// the meta table, which is useful for the `--list-runs` display before
 /// a run has been selected in the current session).
 pub fn active_run_id() -> Option<u32> {
-    let mut state = db().lock_or_recover();
+    let Some(db) = db() else { return None };
+    let mut state = db.lock_or_recover();
     state
         .run_id
         .or_else(|| get_meta(&mut state.client, "active_run_id").and_then(|v| v.parse().ok()))
@@ -1270,7 +1283,8 @@ pub fn active_run_id() -> Option<u32> {
 ///
 /// Returns the ID of the run that was ended, or `None` if no run was active.
 pub fn end_run() -> Option<u32> {
-    let mut state = db().lock_or_recover();
+    let Some(db) = db() else { return None };
+    let mut state = db.lock_or_recover();
     let id = state.run_id.take()?;
     if let Err(e) = state.client.execute(
         "UPDATE runs SET ended_at = $1 WHERE id = $2",
@@ -1284,7 +1298,8 @@ pub fn end_run() -> Option<u32> {
 
 /// Returns a summary of every run: `(id, player_name, started_at, dead_count)`.
 pub fn list_runs() -> Result<Vec<(u32, String, u64, usize)>, String> {
-    let mut state = db().lock_or_recover();
+    let Some(db) = db() else { return Ok(vec![]) };
+    let mut state = db.lock_or_recover();
     let rows = state
         .client
         .query(
@@ -1322,7 +1337,8 @@ pub fn list_runs() -> Result<Vec<(u32, String, u64, usize)>, String> {
 /// is no active run (caller should skip the death event silently), and
 /// `Err(e)` on a database error — the caller should log the error and skip.
 pub fn mark_dead(pokemon: DeadPokemon) -> Result<bool, postgres::Error> {
-    let mut state = db().lock_or_recover();
+    let Some(db) = db() else { return Ok(false) };
+    let mut state = db.lock_or_recover();
     let active = match state.run_id {
         Some(id) => id,
         None => return Ok(false),
@@ -1408,7 +1424,8 @@ pub fn mark_dead(pokemon: DeadPokemon) -> Result<bool, postgres::Error> {
 
 /// Returns `true` if the Pokemon with this personality is dead in the active run.
 pub fn is_dead(personality: u32) -> bool {
-    let mut state = db().lock_or_recover();
+    let Some(db) = db() else { return false };
+    let mut state = db.lock_or_recover();
     let active = match state.run_id {
         Some(id) => id,
         None => return false,
@@ -1418,7 +1435,8 @@ pub fn is_dead(personality: u32) -> bool {
 
 /// Returns the stored `DeadPokemon` entry for this personality in the active run.
 pub fn get_dead_pokemon(personality: u32) -> Option<DeadPokemon> {
-    let mut state = db().lock_or_recover();
+    let Some(db) = db() else { return None };
+    let mut state = db.lock_or_recover();
     let active = state.run_id?;
     let row = state.client
         .query_opt(
@@ -1452,7 +1470,8 @@ pub fn update_min_hp_seen(personality: u32, hp: u16, max_hp: u16) {
     if hp == 0 || max_hp == 0 {
         return;
     }
-    let mut state = db().lock_or_recover();
+    let Some(db) = db() else { return };
+    let mut state = db.lock_or_recover();
     let Some(run_id) = state.run_id else { return };
     let hp_i = hp as i32;
     let max_i = max_hp as i32;
@@ -1483,7 +1502,8 @@ pub fn update_min_hp_seen(personality: u32, hp: u16, max_hp: u16) {
 /// Call this whenever the Pokémon's HP differs from the last-recorded value.
 /// Uses the shared DB connection so it is safe to call from the game loop.
 pub fn record_hp_observation(personality: u32, hp: u16, max_hp: u16) {
-    let mut state = db().lock_or_recover();
+    let Some(db) = db() else { return };
+    let mut state = db.lock_or_recover();
     let Some(run_id) = state.run_id else { return };
     let _ = state.client.execute(
         "INSERT INTO hp_history (run_id, personality, observed_at, hp, max_hp)
@@ -1503,7 +1523,8 @@ pub fn record_hp_observation(personality: u32, hp: u16, max_hp: u16) {
 /// `phase` should be `"initial"` (battle start) or `"final"` (battle end).
 /// Uses the shared DB connection.
 pub fn record_enemy_hp(personality: u32, hp: u16, max_hp: u16, phase: &str) {
-    let mut state = db().lock_or_recover();
+    let Some(db) = db() else { return };
+    let mut state = db.lock_or_recover();
     let Some(run_id) = state.run_id else { return };
     let _ = state.client.execute(
         "INSERT INTO enemy_hp_log (run_id, personality, observed_at, hp, max_hp, phase)
@@ -2046,7 +2067,8 @@ impl<'a> EventKind<'a> {
 /// Appends a row to the `events` table. Returns `Ok(())` on success,
 /// `Ok(())` with a no-op when there is no active run, and `Err` on a DB error.
 pub fn record_event(event: EventKind<'_>) -> Result<(), postgres::Error> {
-    let mut state = db().lock_or_recover();
+    let Some(db) = db() else { return Ok(()) };
+    let mut state = db.lock_or_recover();
     let run_id = match state.run_id {
         Some(id) => id,
         None => return Ok(()),
@@ -2077,7 +2099,8 @@ pub fn record_event(event: EventKind<'_>) -> Result<(), postgres::Error> {
 /// (`ON CONFLICT DO NOTHING` on `(run_id, player_name, flag_index)`).
 /// Returns `Ok(true)` when a new row was inserted.
 pub fn record_trainer_defeat(defeat: TrainerDefeat) -> Result<bool, postgres::Error> {
-    let mut state = db().lock_or_recover();
+    let Some(db) = db() else { return Ok(false) };
+    let mut state = db.lock_or_recover();
     let run_id = match state.run_id {
         Some(id) => id,
         None => return Ok(false),
@@ -2139,7 +2162,8 @@ pub fn get_trainer_defeats_json(conn_str: &str, run_id: u32) -> serde_json::Valu
 /// existed (`ON CONFLICT DO NOTHING`) or no active run is set. Callers must
 /// only fire downstream events (event log, webhooks) on `true`.
 pub fn mark_caught(pokemon: CaughtPokemon) -> bool {
-    let mut state = db().lock_or_recover();
+    let Some(db) = db() else { return false };
+    let mut state = db.lock_or_recover();
     let active = match state.run_id {
         Some(id) => id,
         None => return false,
@@ -2203,7 +2227,8 @@ pub fn mark_caught(pokemon: CaughtPokemon) -> bool {
 /// or `None` if the name was already up to date, the Pokémon is not found, or
 /// no active run is set.
 pub fn update_caught_nickname(personality: u32, nickname: &str) -> Option<String> {
-    let mut state = db().lock_or_recover();
+    let Some(db) = db() else { return None };
+    let mut state = db.lock_or_recover();
     let active = state.run_id?;
     // Read the current name first so we can return it as the "old" value.
     // On SELECT error, attempt the UPDATE anyway as a best-effort sync — but
@@ -2242,7 +2267,8 @@ pub fn update_caught_nickname(personality: u32, nickname: &str) -> Option<String
 /// No-op if the Pokémon is not registered, the run is not active, or all EVs
 /// match what is already stored.
 pub fn update_caught_evs(personality: u32, evs: &EVs) {
-    let mut state = db().lock_or_recover();
+    let Some(db) = db() else { return };
+    let mut state = db.lock_or_recover();
     let active = match state.run_id {
         Some(id) => id,
         None => return,
@@ -2269,7 +2295,8 @@ pub fn update_caught_evs(personality: u32, evs: &EVs) {
 
 /// Returns `true` if a Pokemon with this personality has been caught in the active run.
 pub fn is_caught(personality: u32) -> bool {
-    let mut state = db().lock_or_recover();
+    let Some(db) = db() else { return false };
+    let mut state = db.lock_or_recover();
     let active = match state.run_id {
         Some(id) => id,
         None => return false,
@@ -2286,7 +2313,8 @@ pub fn is_caught(personality: u32) -> bool {
 
 /// Returns all caught Pokemon for the active run for the current player.
 pub fn list_caught() -> Vec<CaughtPokemon> {
-    let mut state = db().lock_or_recover();
+    let Some(db) = db() else { return vec![] };
+    let mut state = db.lock_or_recover();
     let active = match state.run_id {
         Some(id) => id,
         None => return vec![],
@@ -2307,7 +2335,8 @@ pub fn list_caught() -> Vec<CaughtPokemon> {
 /// (first encounter for this area), `Ok(false)` when the encounter already
 /// exists or there is no active run, and `Err` on a DB error.
 pub fn record_encounter(encounter: Encounter) -> Result<bool, postgres::Error> {
-    let mut state = db().lock_or_recover();
+    let Some(db) = db() else { return Ok(false) };
+    let mut state = db.lock_or_recover();
     let active = match state.run_id {
         Some(id) => id,
         None => return Ok(false),
@@ -2336,7 +2365,8 @@ pub fn record_encounter(encounter: Encounter) -> Result<bool, postgres::Error> {
 
 /// Marks the current player's encounter for this area as successfully caught.
 pub fn set_encounter_caught(map_group: u8, map_name: u8) {
-    let mut state = db().lock_or_recover();
+    let Some(db) = db() else { return };
+    let mut state = db.lock_or_recover();
     let active = match state.run_id {
         Some(id) => id,
         None => return,
@@ -2368,7 +2398,8 @@ pub fn record_catch_attempt(
     caught: bool,
     encountered_at: u64,
 ) {
-    let mut state = db().lock_or_recover();
+    let Some(db) = db() else { return };
+    let mut state = db.lock_or_recover();
     let active = match state.run_id {
         Some(id) => id,
         None => return,
@@ -2398,7 +2429,8 @@ pub fn record_catch_attempt(
 /// can later close it with [`close_area_visit`].  Returns `None` when there is
 /// no active run or the insert fails.
 pub fn open_area_visit(map_group: u8, map_name: u8, area_name: &str, entered_at: u64) -> Option<i64> {
-    let mut state = db().lock_or_recover();
+    let Some(db) = db() else { return None };
+    let mut state = db.lock_or_recover();
     let active = state.run_id? as i32;
     let player = pg_safe(&state.current_player);
     let area_s = pg_safe(area_name);
@@ -2423,7 +2455,7 @@ pub fn open_area_visit(map_group: u8, map_name: u8, area_name: &str, entered_at:
 
 /// Closes an open area visit by setting `exited_at`.  Silently ignores errors.
 pub fn close_area_visit(visit_id: i64, exited_at: u64) {
-    let Some(db) = DB.get() else { return };
+    let Some(db) = db() else { return };
     let mut state = db.lock_or_recover();
     if let Err(e) = state.client.execute(
         "UPDATE area_visits SET exited_at = $1 WHERE id = $2",
@@ -2440,7 +2472,8 @@ pub fn close_area_visit(visit_id: i64, exited_at: u64) {
 /// the species was already caught at any point in the current run, regardless of
 /// which area it was encountered in.
 pub fn species_caught_any(species: u16) -> bool {
-    let mut state = db().lock_or_recover();
+    let Some(db) = db() else { return false };
+    let mut state = db.lock_or_recover();
     let active = match state.run_id {
         Some(id) => id,
         None => return false,
@@ -2461,7 +2494,8 @@ pub fn species_caught_any(species: u16) -> bool {
 /// Used to enforce the per-player dupes clause: a new encounter is skipped if
 /// this player has already caught the species at any point in the current run.
 pub fn species_caught_by_self(species: u16) -> bool {
-    let mut state = db().lock_or_recover();
+    let Some(db) = db() else { return false };
+    let mut state = db.lock_or_recover();
     let active = match state.run_id {
         Some(id) => id,
         None => return false,
@@ -2481,7 +2515,8 @@ pub fn species_caught_by_self(species: u16) -> bool {
 /// Returns `true` if this species has already been recorded as a first encounter
 /// anywhere in the active run for the current player.
 pub fn species_encountered(species: u16) -> bool {
-    let mut state = db().lock_or_recover();
+    let Some(db) = db() else { return false };
+    let mut state = db.lock_or_recover();
     let active = match state.run_id {
         Some(id) => id,
         None => return false,
@@ -2502,7 +2537,8 @@ pub fn species_encountered(species: u16) -> bool {
 /// Used at startup to seed the pre-ball latch: if the run already has
 /// encounters the player must have had balls at some point this run.
 pub fn has_any_encounters() -> bool {
-    let mut state = db().lock_or_recover();
+    let Some(db) = db() else { return false };
+    let mut state = db.lock_or_recover();
     let active = match state.run_id {
         Some(id) => id,
         None => return false,
@@ -2527,7 +2563,8 @@ pub fn has_encounter_for_any_floor(floors: &[(u8, u8)]) -> bool {
     if floors.is_empty() {
         return false;
     }
-    let mut state = db().lock_or_recover();
+    let Some(db) = db() else { return false };
+    let mut state = db.lock_or_recover();
     let active = match state.run_id {
         Some(id) => id,
         None => return false,
@@ -2575,7 +2612,8 @@ pub fn has_encounter_for_any_floor(floors: &[(u8, u8)]) -> bool {
 
 /// Returns `true` if an encounter has already been recorded for this area by the current player.
 pub fn has_encounter(map_group: u8, map_name: u8) -> bool {
-    let mut state = db().lock_or_recover();
+    let Some(db) = db() else { return false };
+    let mut state = db.lock_or_recover();
     let active = match state.run_id {
         Some(id) => id,
         None => return false,
@@ -2599,7 +2637,8 @@ pub fn has_encounter(map_group: u8, map_name: u8) -> bool {
 
 /// Returns all encounters for the active run, ordered by time.
 pub fn list_encounters() -> Vec<Encounter> {
-    let mut state = db().lock_or_recover();
+    let Some(db) = db() else { return vec![] };
+    let mut state = db.lock_or_recover();
     let active = match state.run_id {
         Some(id) => id,
         None => return vec![],
@@ -2634,7 +2673,8 @@ pub fn list_encounters() -> Vec<Encounter> {
 ///
 /// Replaces any existing override for the same personality in this run.
 pub fn set_soul_link_override(personality: u32, partner_personality: u32) {
-    let mut state = db().lock_or_recover();
+    let Some(db) = db() else { return };
+    let mut state = db.lock_or_recover();
     let active = match state.run_id {
         Some(id) => id,
         None => {
@@ -2662,7 +2702,8 @@ pub fn set_soul_link_override(personality: u32, partner_personality: u32) {
 ///
 /// After this call the automatic met_location / receipt-order pairing resumes.
 pub fn clear_soul_link_override(personality: u32) {
-    let mut state = db().lock_or_recover();
+    let Some(db) = db() else { return };
+    let mut state = db.lock_or_recover();
     let active = match state.run_id {
         Some(id) => id,
         None => return,
@@ -4615,7 +4656,7 @@ fn pokepaste_iv_line(hp: i32, atk: i32, def: i32, spe: i32, spa: i32, spd: i32) 
 /// Returns the `run_id` of the currently active run, or `None` if there is no
 /// active run or the database has not been initialized (tracker process only).
 pub fn get_active_run_id() -> Option<u32> {
-    DB.get()?.lock_or_recover().run_id
+    db()?.lock_or_recover().run_id
 }
 
 /// Records the final outcome of a webhook delivery attempt.
@@ -4630,7 +4671,7 @@ pub fn record_webhook_delivery(
     attempts: u32,
     payload: &str,
 ) {
-    let Some(db) = DB.get() else {
+    let Some(db) = db() else {
         return;
     };
     let mut state = db.lock_or_recover();

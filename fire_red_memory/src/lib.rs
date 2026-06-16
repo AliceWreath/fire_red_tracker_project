@@ -43,6 +43,7 @@
 
 use arc_swap::ArcSwap;
 use fire_red_retroarch_interfacing::{generate_command, get_from_retroarch, make_socket};
+pub use fire_red_retroarch_interfacing::{get_thread_addr_string, set_thread_addr_string};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
@@ -170,7 +171,9 @@ pub fn start_loop() {
     LOADED_EWRAM.get_or_init(|| ArcSwap::from_pointee(Vec::new()));
     LOADED_IWRAM.get_or_init(|| ArcSwap::from_pointee(Vec::new()));
     RUNNING.store(true, Ordering::SeqCst);
-    std::thread::spawn(|| {
+    let ra_addr = get_thread_addr_string();
+    std::thread::spawn(move || {
+        set_thread_addr_string(ra_addr);
         let wait_interval = std::time::Duration::from_secs(5);
         let mut connected = false;
         let mut last_waiting_print = std::time::Instant::now()
@@ -249,12 +252,16 @@ pub fn get_ewram() -> Arc<Vec<u8>> {
 /// Returns `Err` if either region fails after too many consecutive UDP
 /// failures, or if either region thread panics.
 fn update_memory() -> Result<(), &'static str> {
-    let iwram_thread = std::thread::spawn(|| -> Option<()> {
+    let ra_addr = get_thread_addr_string();
+    let ra_addr2 = ra_addr.clone();
+    let iwram_thread = std::thread::spawn(move || -> Option<()> {
+        set_thread_addr_string(ra_addr);
         let data = update_ram_type::<Iwram>()?;
         LOADED_IWRAM.get()?.store(Arc::new(data));
         Some(())
     });
-    let ewram_thread = std::thread::spawn(|| -> Option<()> {
+    let ewram_thread = std::thread::spawn(move || -> Option<()> {
+        set_thread_addr_string(ra_addr2);
         let data = update_ram_type::<Ewram>()?;
         LOADED_EWRAM.get()?.store(Arc::new(data));
         Some(())
@@ -383,6 +390,8 @@ fn update_ram_type<T: MemoryType + Default>() -> Option<Vec<u8>> {
     // the dispatch loop can acquire the next slot without waiting for rx.recv().
     let semaphore = Arc::new((Mutex::new(MAX_CONCURRENT_CHUNKS), Condvar::new()));
 
+    let ra_addr = get_thread_addr_string();
+
     for (chunk_start, chunk_size) in chunks {
         // Acquire a slot — blocks until a running chunk releases one.
         {
@@ -396,7 +405,9 @@ fn update_ram_type<T: MemoryType + Default>() -> Option<Vec<u8>> {
 
         let tx = tx.clone();
         let sem = semaphore.clone();
+        let addr = ra_addr.clone();
         std::thread::spawn(move || {
+            set_thread_addr_string(addr);
             let result = read_chunk(start, chunk_start, chunk_size);
             // Release slot before sending so the dispatcher can proceed
             // without waiting for the channel recv.

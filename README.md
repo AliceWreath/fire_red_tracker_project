@@ -348,6 +348,8 @@ The following pages are available:
 | `http://localhost:PORT/db/query` | SQL query tool — run arbitrary SQL, see results in a sortable table |
 | `http://localhost:PORT/cmd` | Command control — **End Run** / **New Run** buttons with live slot status |
 | `http://localhost:PORT/0/party` | Player 1's party (or run summary if no active run) |
+| `http://localhost:PORT/0/party?plain-view` | Player 1's party — minimalist layout (sprites, nicknames, levels, HP only; no sidebar panels). Combine with `?plain-view&theme=X` for a themed variant. |
+| `http://localhost:PORT/party/mobile` | Mobile-friendly party viewer — touch-optimised card layout with sprites, HP bars, badge dot row, and status badges. Works for all connected slots; slot is selected on the page. |
 | `http://localhost:PORT/0/encounters` | Player 1's area encounters (or DB encounter log if no active run) |
 | `http://localhost:PORT/0/dead` | Player 1's dead Pokémon log (requires `--db`) |
 | `http://localhost:PORT/0/caught` | Player 1's caught Pokémon log (requires `--db`) |
@@ -371,6 +373,15 @@ The following pages are available:
 | `http://localhost:PORT/1/badges` | Player 2's badge progress |
 | `http://localhost:PORT/0/nextgym` | Player 1's next gym panel — upcoming leader name, city, level cap, type badge, and party members highlighted when they have a type advantage |
 | `http://localhost:PORT/1/nextgym` | Player 2's next gym panel |
+| `http://localhost:PORT/0/items` | Player 1's bag contents — tabbed view by pocket (Items, Key Items, Poké Balls, TMs/HMs) with quantities |
+| `http://localhost:PORT/1/items` | Player 2's bag contents |
+| `http://localhost:PORT/0/moves` | Player 1's party moves — transparent OBS overlay showing each Pokémon's four moves in a 2×2 grid with PP and type colour |
+| `http://localhost:PORT/1/moves` | Player 2's party moves overlay |
+| `http://localhost:PORT/timeline` | Run timeline — chronological event log (catches, deaths, badges, zone entries) for the active run as a vertical card list |
+| `http://localhost:PORT/run/:id/timeline` | Run timeline for a specific run by ID |
+| `http://localhost:PORT/trainers` | Trainer battle log — table of every trainer battle recorded for the active run, with trainer name, location, and timestamp |
+| `http://localhost:PORT/run/:id/trainers` | Trainer battle log for a specific run by ID |
+| `http://localhost:PORT/species` | Cross-run species survival stats — all species ever caught across all runs with caught count, death count, and survival rate bar |
 | `http://localhost:PORT/history` | Run history — all past runs with expandable catch / death / encounter logs |
 | `http://localhost:PORT/shiny` | Shiny odds tracker — encounter count since last shiny encounter, last shiny detail card, full encounter list since last shiny |
 | `http://localhost:PORT/memorial` | Memorial grid — dead Pokémon from the active run as sprite cards with nickname, species, level, and death date |
@@ -381,6 +392,7 @@ The following pages are available:
 | `http://localhost:PORT/:index/types` | Type coverage dashboard for one player — party type badges, per-type defensive exposure chart, next gym leader with their primary type highlighted, and Elite 4 progress track |
 | `http://localhost:PORT/alerts` | Slot 0 alerts overlay — shorthand for `/0/alerts`; append `?slot=N` to target a different player |
 | `http://localhost:PORT/about` | Version info and quick reference — tracker version, available pages, themes, and REST API summary |
+| `http://localhost:PORT/join` | Direct mode join page — allows a remote player to connect their RetroArch instance to the aggregator without pre-configuration. Only available when direct mode is enabled (`--direct` flag or `direct_mode = true` in config). |
 
 The per-player pages can all be added as separate Browser Sources in OBS and positioned independently. The alerts overlay is fully transparent when idle — nothing appears until an event fires.
 

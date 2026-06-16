@@ -1798,18 +1798,24 @@ checksum = "5baebc0774151f905a1a2cc41989300b1e6fbb29aff0ceffa1064fdd3088d582"
 
 [[package]]
 name = "fire_red_aggregator"
-version = "0.9.33"
+version = "0.9.48"
 dependencies = [
  "axum",
  "bincode",
  "clap",
  "eframe",
  "egui",
+ "fire_red_badge",
+ "fire_red_box_monitor",
  "fire_red_database",
+ "fire_red_game_loop",
  "fire_red_image_data",
  "fire_red_location_names",
+ "fire_red_loop",
+ "fire_red_memory",
  "fire_red_party_monitor",
  "fire_red_pokemon_data",
+ "fire_red_retroarch_interfacing",
  "fire_red_rom_buffer",
  "fire_red_states",
  "fire_red_text",
@@ -1817,9 +1823,11 @@ dependencies = [
  "futures-util",
  "image",
  "reqwest",
+ "rfd",
  "self_update",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "tokio",
  "toml",
  "tracing",
@@ -1859,6 +1867,30 @@ dependencies = [
  "postgres",
  "serde_json",
  "tracing",
+]
+
+[[package]]
+name = "fire_red_game_loop"
+version = "0.1.0"
+dependencies = [
+ "fire_red_badge",
+ "fire_red_box_monitor",
+ "fire_red_database",
+ "fire_red_location_names",
+ "fire_red_loop",
+ "fire_red_memory",
+ "fire_red_party_monitor",
+ "fire_red_pokemon_data",
+ "fire_red_retroarch_interfacing",
+ "fire_red_rom_buffer",
+ "fire_red_states",
+ "fire_red_text",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tracing",
+ "tungstenite",
 ]
 
 [[package]]
@@ -1994,7 +2026,7 @@ dependencies = [
 
 [[package]]
 name = "fire_red_tracker"
-version = "0.9.33"
+version = "0.9.48"
 dependencies = [
  "bincode",
  "clap",
@@ -2005,6 +2037,7 @@ dependencies = [
  "fire_red_badge",
  "fire_red_box_monitor",
  "fire_red_database",
+ "fire_red_game_loop",
  "fire_red_image_data",
  "fire_red_location_names",
  "fire_red_loop",

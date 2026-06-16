@@ -1,0 +1,28 @@
+[package]
+name = "fire_red_game_loop"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+
+[features]
+dev-tools = []
+
+[dependencies]
+fire_red_loop.workspace                = true
+fire_red_party_monitor.workspace       = true
+fire_red_retroarch_interfacing.workspace = true
+fire_red_rom_buffer.workspace          = true
+fire_red_pokemon_data.workspace        = true
+fire_red_states.workspace              = true
+fire_red_badge.workspace               = true
+fire_red_memory.workspace              = true
+fire_red_box_monitor.workspace         = true
+fire_red_location_names.workspace      = true
+fire_red_database.workspace            = true
+fire_red_text.workspace                = true
+serde.workspace                        = true
+serde_json.workspace                   = true
+tracing.workspace                      = true
+reqwest.workspace                      = true
+tungstenite.workspace                  = true
+sha2.workspace                         = true

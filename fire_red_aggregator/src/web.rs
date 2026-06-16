@@ -1237,6 +1237,7 @@ struct WebState {
     db_conn: Option<String>,
     testing: bool,
     allow_injections: bool,
+    connector: Option<Arc<crate::direct::DirectConnector>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -4436,6 +4437,114 @@ async fn api_slot_command(
 /// Runs arbitrary SQL against the database and returns results as JSON.
 ///
 /// Restricted to loopback connections — returns 403 for any remote caller.
+/// `POST /api/slot/:index/refresh_rom` — force-re-download the cached ROM for a
+/// direct-mode slot from its RetroArch instance.
+///
+/// Deletes the cached `.gba` file, re-fetches the full 16 MiB ROM from RetroArch
+/// over UDP (takes 5–15 s on a typical LAN), and replaces the in-memory ROM
+/// buffer used by the sprite loader so new sprites are decoded from the fresh ROM.
+///
+/// Returns 400 if the slot is not in direct mode, 404 if the slot index is out of
+/// range, or 503 if RetroArch is unreachable.
+async fn api_refresh_rom(
+    State(state): State<WebState>,
+    Path(index): Path<usize>,
+) -> impl IntoResponse {
+    let slots = state.live_slots.lock_or_recover().clone();
+    let slot = match slots.get(index) {
+        Some(s) => s.clone(),
+        None => {
+            return (StatusCode::NOT_FOUND, "slot index out of range".to_string())
+                .into_response()
+        }
+    };
+    let host_port = match &slot.direct_host {
+        Some(hp) => hp.clone(),
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                "slot is not in direct mode — ROM refresh is only available for \
+                 direct-mode connections"
+                    .to_string(),
+            )
+                .into_response()
+        }
+    };
+    let (host, port) = match host_port.rsplit_once(':') {
+        Some((h, p)) => (h.to_string(), p.parse::<u16>().unwrap_or(55355)),
+        None => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("malformed direct_host: {}", host_port),
+            )
+                .into_response()
+        }
+    };
+
+    let rom_bytes_arc    = slot.rom_bytes.clone();
+    let rom_identity_arc = slot.rom_identity.clone();
+    let known_species    = slot.known_species.clone();
+    let pending_textures = slot.pending_textures.clone();
+    let sprite_cache     = slot.sprite_cache.clone();
+    let game_encounters  = slot.game_encounters.clone();
+
+    let result = tokio::task::spawn_blocking(move || {
+        crate::rom_fetch::force_fetch_rom(&host, port)
+            .and_then(|path| std::fs::read(&path).map_err(|e| e.to_string()))
+    })
+    .await;
+
+    match result {
+        Ok(Ok(bytes)) => {
+            let new_id  = crate::direct::rom_identity_from_bytes(&bytes);
+            let old_id  = rom_identity_arc.lock_or_recover().clone();
+            let changed = old_id != new_id && !old_id.is_empty();
+
+            if changed {
+                tracing::info!(
+                    "ROM force-refresh: slot {} — ROM changed from \"{}\" to \"{}\"",
+                    index, old_id, new_id
+                );
+            } else {
+                tracing::info!(
+                    "ROM force-refresh: slot {} — same ROM identity \"{}\" (re-fetched bytes)",
+                    index, new_id
+                );
+            }
+
+            // Update ROM bytes and identity.
+            *rom_identity_arc.lock_or_recover() = new_id.clone();
+            *rom_bytes_arc.lock_or_recover()    = bytes;
+
+            // Clear sprite pipeline so sprites are re-decoded from the new ROM.
+            known_species.lock_or_recover().clear();
+            pending_textures.lock_or_recover().clear();
+            if let Some(cache_arc) = sprite_cache.lock_or_recover().as_ref() {
+                cache_arc.lock_or_recover().clear();
+            }
+
+            // Reset the game loop's encounter-table cache so stale area data
+            // from the old ROM is evicted immediately.
+            if let Some(enc_arc) = game_encounters.lock_or_recover().as_ref() {
+                *enc_arc.lock_or_recover() =
+                    fire_red_pokemon_data::WildPokemonHeader::default();
+            }
+
+            let body = if changed {
+                format!("ROM changed: {} → {}", old_id, new_id)
+            } else {
+                format!("ROM refreshed ({})", new_id)
+            };
+            (StatusCode::OK, body).into_response()
+        }
+        Ok(Err(e)) => {
+            tracing::error!("ROM force-refresh failed for slot {}: {}", index, e);
+            (StatusCode::SERVICE_UNAVAILABLE, e).into_response()
+        }
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
 async fn api_db_query(
     State(state): State<WebState>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
@@ -4489,6 +4598,7 @@ pub fn run(
     db_conn: Option<String>,
     testing: bool,
     allow_injections: bool,
+    connector: Option<Arc<crate::direct::DirectConnector>>,
 ) {
     let sprites: PngSpriteCache = Arc::new(Mutex::new(HashMap::new()));
 
@@ -4522,6 +4632,7 @@ pub fn run(
         db_conn,
         testing,
         allow_injections,
+        connector,
     };
 
     let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
@@ -4570,6 +4681,7 @@ pub fn run(
             .route("/api/slot/:index/set_pp_ups", post(api_set_pp_ups))
             .route("/api/slot/:index/revive_pokemon", post(api_revive_pokemon))
             .route("/api/slot/:index/undo", post(api_undo))
+            .route("/api/slot/:index/refresh_rom", post(api_refresh_rom))
             .route("/api/bot/:index", get(api_bot_summary))
             .route("/api/command/:cmd", post(api_command))
             .route("/api/db/query", post(api_db_query))
@@ -4650,6 +4762,9 @@ pub fn run(
             .route("/api/slot/:index/command/:cmd", post(api_slot_command))
             .route("/about", get(serve_about))
             .route("/compare", get(serve_compare))
+            .route("/join", get(serve_join))
+            .route("/api/direct/connect", post(api_direct_connect))
+            .route("/api/direct/hosts", get(api_direct_hosts))
             .with_state(web_state);
 
         let addr = format!("0.0.0.0:{}", port);
@@ -4668,6 +4783,181 @@ pub fn run(
             tracing::error!("WebSocket server error: {e}");
         }
     });
+}
+
+// ---------------------------------------------------------------------------
+// Direct-mode join page
+// ---------------------------------------------------------------------------
+
+const JOIN_HTML: &str = r#"<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Connect – Fire Red Tracker</title>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:sans-serif;background:#1a1a2e;color:#eee;display:flex;justify-content:center;align-items:center;min-height:100vh}
+  .card{background:#16213e;border:1px solid #0f3460;border-radius:8px;padding:2rem;width:360px}
+  h1{font-size:1.4rem;color:#e94560;margin-bottom:.75rem}
+  p{color:#aaa;font-size:.9rem;line-height:1.5;margin-bottom:1.2rem}
+  label{display:block;font-size:.85rem;color:#ccc;margin-bottom:.3rem}
+  input{width:100%;padding:.5rem .7rem;background:#0f3460;border:1px solid #444;border-radius:4px;color:#eee;font-size:1rem;margin-bottom:1rem}
+  input:focus{outline:none;border-color:#e94560}
+  button{width:100%;padding:.6rem;background:#e94560;border:none;border-radius:4px;color:#fff;font-size:1rem;cursor:pointer}
+  button:hover{background:#c73652}
+  button:disabled{background:#555;cursor:default}
+  .msg{margin-top:1rem;padding:.6rem;border-radius:4px;text-align:center;font-size:.9rem;display:none}
+  .ok{background:#1a4a1a;border:1px solid #2d8a2d;color:#7dce7d;display:block}
+  .err{background:#4a1a1a;border:1px solid #8a2d2d;color:#ce7d7d;display:block}
+  .active-hosts{margin-top:1.2rem;font-size:.8rem;color:#888}
+  .active-hosts ul{margin-top:.4rem;padding-left:1.2rem;color:#aaa}
+</style>
+</head>
+<body>
+<div class="card">
+  <h1>Connect to Tracker</h1>
+  <p>Enter the IP address of the machine where RetroArch is running and make sure <strong>Network Commands</strong> are enabled in RetroArch settings.</p>
+  <form id="f">
+    <label for="host">RetroArch IP address</label>
+    <input id="host" name="host" type="text" placeholder="192.168.1.x" required>
+    <label for="port">Network Commands port</label>
+    <input id="port" name="port" type="number" value="DEFAULT_PORT" min="1" max="65535" required>
+    <button id="btn" type="submit">Connect</button>
+  </form>
+  <div id="msg" class="msg"></div>
+  <div class="active-hosts" id="active" style="display:none">
+    <strong>Currently connected hosts:</strong>
+    <ul id="host-list"></ul>
+  </div>
+</div>
+<script>
+(async function(){
+  try{
+    const r=await fetch('/api/direct/hosts');
+    if(r.ok){
+      const d=await r.json();
+      if(d.hosts&&d.hosts.length>0){
+        const el=document.getElementById('active');
+        const ul=document.getElementById('host-list');
+        d.hosts.forEach(h=>{const li=document.createElement('li');li.textContent=h;ul.appendChild(li);});
+        el.style.display='';
+      }
+    }
+  }catch(e){}
+})();
+
+document.getElementById('f').onsubmit=async function(e){
+  e.preventDefault();
+  const host=document.getElementById('host').value.trim();
+  const port=parseInt(document.getElementById('port').value,10);
+  const msg=document.getElementById('msg');
+  const btn=document.getElementById('btn');
+  msg.className='msg';
+  msg.textContent='Connecting…';
+  btn.disabled=true;
+  try{
+    const r=await fetch('/api/direct/connect',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({host,port})
+    });
+    const d=await r.json();
+    if(r.ok){
+      msg.className='msg ok';
+      msg.textContent=d.message||'Connection request sent. Your slot will appear shortly.';
+    }else{
+      msg.className='msg err';
+      msg.textContent=d.error||'Connection failed.';
+    }
+  }catch(err){
+    msg.className='msg err';
+    msg.textContent='Request failed: '+err.message;
+  }
+  btn.disabled=false;
+};
+</script>
+</body>
+</html>"#;
+
+async fn serve_join(
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    State(state): State<WebState>,
+) -> impl IntoResponse {
+    if state.connector.is_none() {
+        return (
+            StatusCode::NOT_FOUND,
+            [(header::CONTENT_TYPE, "text/html; charset=utf-8")],
+            "<h1>Direct mode is not active.</h1>".to_string(),
+        );
+    }
+    let default_port = state.connector.as_ref().map(|c| c.default_port).unwrap_or(55355);
+    let client_ip = addr.ip().to_string();
+    let html = JOIN_HTML
+        .replace("DEFAULT_PORT", &default_port.to_string())
+        .replace("192.168.1.x", &client_ip);
+    (
+        StatusCode::OK,
+        [(header::CONTENT_TYPE, "text/html; charset=utf-8")],
+        html,
+    )
+}
+
+#[derive(serde::Deserialize)]
+struct DirectConnectBody {
+    host: String,
+    port: Option<u16>,
+}
+
+async fn api_direct_connect(
+    State(state): State<WebState>,
+    axum::Json(body): axum::Json<DirectConnectBody>,
+) -> impl IntoResponse {
+    let Some(connector) = &state.connector else {
+        return (
+            StatusCode::NOT_FOUND,
+            axum::Json(serde_json::json!({"error": "Direct mode is not active."})),
+        );
+    };
+
+    let host = body.host.trim().to_string();
+    if host.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            axum::Json(serde_json::json!({"error": "host must not be empty"})),
+        );
+    }
+
+    let port = body.port.unwrap_or(connector.default_port);
+    let accepted = connector.connect(host.clone(), port);
+
+    if accepted {
+        tracing::info!("Direct mode: /join accepted {}:{}", host, port);
+        (
+            StatusCode::OK,
+            axum::Json(serde_json::json!({
+                "message": "Connection request received. Your slot will appear in a few seconds \
+                            once the ROM is identified."
+            })),
+        )
+    } else {
+        (
+            StatusCode::OK,
+            axum::Json(serde_json::json!({
+                "message": "Already connected.",
+                "already": true
+            })),
+        )
+    }
+}
+
+async fn api_direct_hosts(State(state): State<WebState>) -> impl IntoResponse {
+    let hosts = state
+        .connector
+        .as_ref()
+        .map(|c| c.active_hosts())
+        .unwrap_or_default();
+    axum::Json(serde_json::json!({"hosts": hosts}))
 }
 
 // ---------------------------------------------------------------------------

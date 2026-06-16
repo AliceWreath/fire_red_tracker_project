@@ -97,10 +97,23 @@ struct SettingsDraft {
     default_test: bool,
     test: Option<crate::config::AggregatorTestOverrides>,
     allow_injections: bool,
+    // Direct mode
+    direct_mode: bool,
+    retroarch_hosts_str: String,
+    retroarch_port_str: String,
+    rom_path: String,
+    poll_ms_str: String,
+    dupes_clause: fire_red_game_loop::config::DupesClauseMode,
+    allow_species_repeats: bool,
+    run_start_balls_str: String,
 }
 
 impl SettingsDraft {
     fn from_config(cfg: &AggregatorConfig) -> Self {
+        let mut all_hosts = cfg.retroarch_hosts.clone();
+        if let Some(h) = &cfg.retroarch_host {
+            if !all_hosts.contains(h) { all_hosts.push(h.clone()); }
+        }
         Self {
             listen_port_str: cfg.listen_port.to_string(),
             db: cfg
@@ -121,6 +134,14 @@ impl SettingsDraft {
             default_test: cfg.default_test,
             test: cfg.test.clone(),
             allow_injections: cfg.allow_injections,
+            direct_mode: cfg.direct_mode,
+            retroarch_hosts_str: all_hosts.join("\n"),
+            retroarch_port_str: cfg.retroarch_port.to_string(),
+            rom_path: cfg.rom_path.clone().unwrap_or_default(),
+            poll_ms_str: cfg.poll_ms.to_string(),
+            dupes_clause: cfg.dupes_clause,
+            allow_species_repeats: cfg.allow_species_repeats,
+            run_start_balls_str: cfg.run_start_balls.unwrap_or(5).to_string(),
         }
     }
 }
@@ -639,62 +660,135 @@ impl AggregatorApp {
     }
 
     fn draw_settings(&mut self, ui: &mut egui::Ui) {
+        use fire_red_game_loop::config::DupesClauseMode;
         let s = &mut self.settings;
-        egui::Grid::new("settings_grid")
-            .num_columns(2)
-            .spacing([12.0, 8.0])
-            .min_col_width(130.0)
-            .show(ui, |ui| {
-                ui.label("Listen port:");
-                ui.add(egui::TextEdit::singleline(&mut s.listen_port_str).desired_width(80.0));
-                ui.end_row();
 
-                ui.checkbox(&mut s.db_enabled, "Database:");
-                ui.add_enabled_ui(s.db_enabled, |ui| {
-                    ui.add(
-                        egui::TextEdit::singleline(&mut s.db)
-                            .desired_width(280.0)
-                            .hint_text("localhost/nuzlocke"),
-                    );
-                });
-                ui.end_row();
+        egui::ScrollArea::vertical().max_height(480.0).show(ui, |ui| {
+            egui::Grid::new("settings_grid")
+                .num_columns(2)
+                .spacing([12.0, 8.0])
+                .min_col_width(140.0)
+                .show(ui, |ui| {
+                    ui.label("Listen port:");
+                    ui.add(egui::TextEdit::singleline(&mut s.listen_port_str).desired_width(80.0));
+                    ui.end_row();
 
-                ui.checkbox(&mut s.ws_port_enabled, "WebSocket overlay:");
-                ui.add_enabled_ui(s.ws_port_enabled, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.label("port:");
-                        ui.add(egui::TextEdit::singleline(&mut s.ws_port_str).desired_width(70.0));
+                    ui.checkbox(&mut s.db_enabled, "Database:");
+                    ui.add_enabled_ui(s.db_enabled, |ui| {
+                        ui.add(
+                            egui::TextEdit::singleline(&mut s.db)
+                                .desired_width(280.0)
+                                .hint_text("localhost/nuzlocke"),
+                        );
                     });
+                    ui.end_row();
+
+                    ui.checkbox(&mut s.ws_port_enabled, "WebSocket overlay:");
+                    ui.add_enabled_ui(s.ws_port_enabled, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.label("port:");
+                            ui.add(egui::TextEdit::singleline(&mut s.ws_port_str).desired_width(70.0));
+                        });
+                    });
+                    ui.end_row();
+
+                    ui.checkbox(&mut s.default_test, "Default to test mode:");
+                    ui.small("Uses [test] config overrides on every launch.");
+                    ui.end_row();
+
+                    ui.checkbox(&mut s.allow_injections, "Allow injections:");
+                    ui.small("Enable give_item, make_shiny, change_species, etc.");
+                    ui.end_row();
                 });
-                ui.end_row();
 
-                ui.checkbox(&mut s.default_test, "Default to test mode:");
-                ui.small(
-                    "Uses [test] config overrides on every launch (same as always passing --test).",
-                );
-                ui.end_row();
+            ui.add_space(8.0);
+            ui.label(egui::RichText::new("Direct Mode").strong());
+            ui.add_space(4.0);
 
-                ui.checkbox(&mut s.allow_injections, "Allow injections:");
-                ui.small("Enable give_item, make_shiny, change_species, etc. API endpoints.");
-                ui.end_row();
-            });
+            egui::Grid::new("direct_settings_grid")
+                .num_columns(2)
+                .spacing([12.0, 8.0])
+                .min_col_width(140.0)
+                .show(ui, |ui| {
+                    ui.checkbox(&mut s.direct_mode, "Enable direct mode:");
+                    ui.small("activates /join page — required if no hosts are pre-configured");
+                    ui.end_row();
+
+                    ui.label("ROM path:");
+                    ui.vertical(|ui| {
+                        ui.horizontal(|ui| {
+                            ui.add(
+                                egui::TextEdit::singleline(&mut s.rom_path)
+                                    .desired_width(230.0)
+                                    .hint_text("/path/to/firered.gba"),
+                            );
+                            if ui.small_button("Browse…").clicked() {
+                                if let Some(p) = rfd::FileDialog::new()
+                                    .add_filter("GBA ROM", &["gba"])
+                                    .pick_file()
+                                {
+                                    s.rom_path = p.to_string_lossy().into_owned();
+                                }
+                            }
+                        });
+                        ui.small("required for direct mode");
+                    });
+                    ui.end_row();
+
+                    ui.label("RetroArch hosts:");
+                    ui.vertical(|ui| {
+                        ui.add(
+                            egui::TextEdit::multiline(&mut s.retroarch_hosts_str)
+                                .desired_width(280.0)
+                                .desired_rows(3)
+                                .hint_text("192.168.1.50\n192.168.1.51"),
+                        );
+                        ui.small("one IP per line — players can also connect via /join");
+                    });
+                    ui.end_row();
+
+                    ui.label("RetroArch port:");
+                    ui.add(egui::TextEdit::singleline(&mut s.retroarch_port_str).desired_width(70.0));
+                    ui.end_row();
+
+                    ui.label("Poll interval (ms):");
+                    ui.add(egui::TextEdit::singleline(&mut s.poll_ms_str).desired_width(70.0));
+                    ui.end_row();
+
+                    ui.label("Dupes clause:");
+                    ui.horizontal(|ui| {
+                        ui.radio_value(&mut s.dupes_clause, DupesClauseMode::Off, "Off");
+                        ui.radio_value(&mut s.dupes_clause, DupesClauseMode::PerPlayer, "Per player");
+                        ui.radio_value(&mut s.dupes_clause, DupesClauseMode::Shared, "Shared");
+                    });
+                    ui.end_row();
+
+                    ui.checkbox(&mut s.allow_species_repeats, "Allow species repeats:");
+                    ui.small("for randomizers");
+                    ui.end_row();
+
+                    ui.label("Run-start Pokéballs:");
+                    ui.add(egui::TextEdit::singleline(&mut s.run_start_balls_str).desired_width(50.0));
+                    ui.end_row();
+                });
+        });
 
         ui.add_space(8.0);
         let port_ok = s.listen_port_str.trim().parse::<u16>().is_ok();
         let ws_ok = !s.ws_port_enabled || s.ws_port_str.trim().parse::<u16>().is_ok();
+        let ra_port_ok = s.retroarch_port_str.trim().parse::<u16>().is_ok();
+
         ui.horizontal(|ui| {
             let saved = ui
-                .add_enabled(port_ok && ws_ok, egui::Button::new("Save"))
+                .add_enabled(port_ok && ws_ok && ra_port_ok, egui::Button::new("Save"))
                 .clicked();
-            if !port_ok {
+            for msg in [
+                (!port_ok).then_some("Invalid listen port"),
+                (!ws_ok).then_some("Invalid WebSocket port"),
+                (!ra_port_ok).then_some("Invalid RetroArch port"),
+            ].into_iter().flatten() {
                 ui.label(
-                    egui::RichText::new("Invalid listen port")
-                        .color(egui::Color32::from_rgb(220, 80, 80))
-                        .small(),
-                );
-            } else if !ws_ok {
-                ui.label(
-                    egui::RichText::new("Invalid WebSocket port")
+                    egui::RichText::new(msg)
                         .color(egui::Color32::from_rgb(220, 80, 80))
                         .small(),
                 );
@@ -702,28 +796,41 @@ impl AggregatorApp {
             if saved {
                 let db = if s.db_enabled {
                     let raw = s.db.trim().to_string();
-                    Some(
-                        if raw.starts_with("postgresql://") || raw.starts_with("postgres://") {
-                            raw
-                        } else {
-                            format!("postgresql://{}", raw)
-                        },
-                    )
+                    Some(if raw.starts_with("postgresql://") || raw.starts_with("postgres://") {
+                        raw
+                    } else {
+                        format!("postgresql://{}", raw)
+                    })
                 } else {
                     None
+                };
+                let hosts: Vec<String> = s.retroarch_hosts_str
+                    .lines()
+                    .map(|l| l.trim().to_string())
+                    .filter(|l| !l.is_empty())
+                    .collect();
+                let rom = if s.rom_path.trim().is_empty() {
+                    None
+                } else {
+                    Some(s.rom_path.trim().to_string())
                 };
                 let cfg = AggregatorConfig {
                     listen_port: s.listen_port_str.trim().parse().unwrap_or(7878),
                     db,
-                    ws_port: if s.ws_port_enabled {
-                        s.ws_port_str.trim().parse().ok()
-                    } else {
-                        None
-                    },
+                    ws_port: if s.ws_port_enabled { s.ws_port_str.trim().parse().ok() } else { None },
                     default_test: s.default_test,
                     test: s.test.clone(),
                     allow_injections: s.allow_injections,
                     twitch: None,
+                    retroarch_host: None,
+                    retroarch_hosts: hosts,
+                    retroarch_port: s.retroarch_port_str.trim().parse().unwrap_or(55355),
+                    rom_path: rom,
+                    poll_ms: s.poll_ms_str.trim().parse::<u64>().unwrap_or(100).clamp(20, 2000),
+                    dupes_clause: s.dupes_clause,
+                    allow_species_repeats: s.allow_species_repeats,
+                    run_start_balls: s.run_start_balls_str.trim().parse().ok(),
+                    direct_mode: s.direct_mode,
                 };
                 save_config(&cfg, &self.config_path);
                 self.settings_open = false;

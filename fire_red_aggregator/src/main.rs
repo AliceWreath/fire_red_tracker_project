@@ -15,7 +15,9 @@
 mod app;
 mod client;
 mod config;
+mod direct;
 mod eventsub;
+mod rom_fetch;
 mod twitch;
 mod web;
 
@@ -66,6 +68,25 @@ struct Cli {
     /// Overrides allow_injections = true in the config file.
     #[arg(long)]
     no_injections: bool,
+
+    /// Enable direct mode without pre-configuring hosts.
+    /// Activates the /join page so players can connect on demand.
+    #[arg(long)]
+    direct: bool,
+
+    /// Direct mode: poll RetroArch at this host instead of waiting for a tracker.
+    /// Repeat to poll multiple hosts simultaneously (one slot per host).
+    /// Requires --rom (and --ws-port for headless web serving).
+    #[arg(long = "retroarch-host", value_name = "HOST", action = clap::ArgAction::Append)]
+    retroarch_host: Vec<String>,
+
+    /// RetroArch network-commands UDP port (default 55355).
+    #[arg(long = "retroarch-port", value_name = "PORT")]
+    retroarch_port: Option<u16>,
+
+    /// Path to the FireRed ROM (required for direct mode).
+    #[arg(long, value_name = "PATH")]
+    rom: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -159,8 +180,56 @@ fn main() {
     // --no-injections overrides allow_injections = true in config; config false always wins.
     let allow_injections = cfg.allow_injections && !cli.no_injections;
 
+    // Direct-mode RetroArch hosts: merge CLI args + config list + legacy single field.
+    let retroarch_port = cli.retroarch_port.unwrap_or(cfg.retroarch_port);
+    let mut retroarch_hosts: Vec<String> = cli.retroarch_host;
+    for h in &cfg.retroarch_hosts {
+        if !retroarch_hosts.contains(h) { retroarch_hosts.push(h.clone()); }
+    }
+    if let Some(h) = &cfg.retroarch_host {
+        if !retroarch_hosts.contains(h) { retroarch_hosts.push(h.clone()); }
+    }
+
+    let rom_path = cli.rom.or_else(|| cfg.rom_path.clone());
+    let poll_ms  = cfg.poll_ms.clamp(20, 2000);
+    let dupes_clause          = cfg.dupes_clause;
+    let allow_species_repeats = cfg.allow_species_repeats;
+    let run_start_balls       = cfg.run_start_balls.unwrap_or(5) as u32;
+
+    // Initialize database — or no-op if no DB connection string is configured.
+    if let Some(ref db_url) = db {
+        if let Err(e) = fire_red_database::initialize(db_url) {
+            tracing::error!("Database initialization failed: {}", e);
+            std::process::exit(1);
+        }
+    } else {
+        fire_red_database::initialize_noop();
+    }
+
     // Shared slot list — grown as trackers connect.
     let shared_slots: SharedSlots = Arc::new(std::sync::Mutex::new(Vec::new()));
+
+    // Direct mode activates when hosts are explicitly configured or a ROM path
+    // is set.  Discovery and retries are handled inside direct::spawn — the
+    // background scanner runs immediately then every 30 s, so RetroArch
+    // instances that aren't running at startup are picked up automatically.
+    let want_direct = cli.direct || cfg.direct_mode || !retroarch_hosts.is_empty() || rom_path.is_some();
+
+    let direct_connector = if want_direct {
+        Some(direct::spawn(
+            retroarch_hosts,
+            retroarch_port,
+            rom_path,
+            poll_ms,
+            dupes_clause,
+            allow_species_repeats,
+            run_start_balls,
+            db.clone(),
+            shared_slots.clone(),
+        ))
+    } else {
+        None
+    };
 
     // TCP listener — accepts incoming tracker connections.
     let listener = TcpListener::bind(format!("0.0.0.0:{}", listen_port)).unwrap_or_else(|e| {
@@ -206,7 +275,7 @@ fn main() {
                     s
                 } else {
                     let idx = slots.len();
-                    let new = Arc::new(MonitorSlot::new(idx, peer.clone(), listener_db.clone()));
+                    let new = Arc::new(MonitorSlot::new(idx, peer.clone(), listener_db.clone(), None));
                     slots.push(new.clone());
                     new
                 }
@@ -259,7 +328,7 @@ fn main() {
 
     if let Some(port) = ws_port {
         // Headless WebSocket overlay mode.
-        web::run(shared_slots, port, db, use_test, allow_injections);
+        web::run(shared_slots, port, db, use_test, allow_injections, direct_connector);
     } else {
         // Normal egui window mode.
         let update_available: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));

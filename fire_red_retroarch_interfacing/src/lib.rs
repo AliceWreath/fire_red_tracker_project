@@ -8,7 +8,7 @@
 //!
 //! RetroArch must have "Network Commands" enabled:
 //! Settings → Network → Network Commands → ON
-//! The default port is 55355, which matches [`RETROARCH_ADDR`].
+//! The default port is 55355.
 //!
 //! # Protocol
 //!
@@ -35,18 +35,58 @@
 //! response-stealing problem that arises when multiple threads share a single
 //! UDP socket.
 
+use std::cell::RefCell;
 use std::net::UdpSocket;
 
-/// RetroArch UDP network command interface address.
+// Per-thread RetroArch UDP address. Threads that never call set_thread_addr
+// default to "127.0.0.1:55355" (same machine, tracker case).
+thread_local! {
+    static RETROARCH_ADDR: RefCell<String> = RefCell::new("127.0.0.1:55355".to_string());
+}
+
+/// Set the RetroArch address for the **current thread only**.
 ///
-/// Must match the port configured in RetroArch under
-/// Settings → Network → Network Commands Port.
-static RETROARCH_ADDR: &str = "127.0.0.1:55355";
+/// Call this at the very start of each game-polling thread, before any socket
+/// operation. Multiple threads (one per RetroArch host) each call this with
+/// their own host, so they never share or overwrite each other's address.
+///
+/// # Arguments
+/// * `host` — hostname or IP address of the machine running RetroArch.
+/// * `port` — RetroArch network commands port (default 55355).
+pub fn set_thread_addr(host: &str, port: u16) {
+    RETROARCH_ADDR.with(|a| *a.borrow_mut() = format!("{}:{}", host, port));
+}
+
+/// Returns a clone of the current thread's RetroArch address string.
+///
+/// Capture this before spawning a child thread, then pass the value to
+/// [`set_thread_addr_string`] at the start of the child thread so the child
+/// inherits the parent's address (thread-locals are not inherited automatically).
+pub fn get_thread_addr_string() -> String {
+    RETROARCH_ADDR.with(|a| a.borrow().clone())
+}
+
+/// Set the RetroArch address from a pre-formatted `"host:port"` string.
+///
+/// Use in spawned threads together with [`get_thread_addr_string`] to propagate
+/// the parent thread's address.
+pub fn set_thread_addr_string(addr: String) {
+    RETROARCH_ADDR.with(|a| *a.borrow_mut() = addr);
+}
+
+/// Calls `f` with a borrow of the current thread's RetroArch address string.
+fn with_addr<R>(f: impl FnOnce(&str) -> R) -> R {
+    RETROARCH_ADDR.with(|a| f(a.borrow().as_str()))
+}
+
+/// Returns true if the current thread's RetroArch target is on the local machine.
+fn is_local() -> bool {
+    with_addr(|addr| {
+        addr.starts_with("127.") || addr.starts_with("[::1]") || addr.starts_with("localhost")
+    })
+}
 
 /// GBA memory address holding the current map group and map number.
-///
-/// The value is a packed `u32`: high byte = map group, low byte = map number.
-/// Used to determine the player's current location in FireRed.
 static MAP_GROUP_AND_NAME_ADDR: u32 = 0x02031DBC;
 
 /// UDP receive buffer size in bytes.
@@ -119,7 +159,7 @@ pub fn generate_write_command(ptr: u32, bytes: &[u8]) -> String {
 /// `false` on send failure.
 pub fn write_to_retroarch(socket: &UdpSocket, addr: u32, bytes: &[u8]) -> bool {
     let command = generate_write_command(addr, bytes);
-    if let Err(e) = socket.send_to(command.as_bytes(), RETROARCH_ADDR) {
+    if let Err(e) = with_addr(|ra| socket.send_to(command.as_bytes(), ra)) {
         tracing::warn!("Failed to send WRITE_CORE_MEMORY to RetroArch: {}", e);
         return false;
     }
@@ -131,32 +171,21 @@ pub fn write_to_retroarch(socket: &UdpSocket, addr: u32, bytes: &[u8]) -> bool {
     true
 }
 
-/// Creates a new UDP socket bound to the loopback interface for RetroArch
-/// communication.
+/// Creates a new UDP socket for RetroArch communication.
 ///
-/// Each socket is bound to `127.0.0.1:0` (OS-assigned ephemeral port) with a
-/// 500 ms read timeout.
+/// Binds to `0.0.0.0:0` when the configured RetroArch host is a remote
+/// machine, or `127.0.0.1:0` when it is localhost, so the OS assigns an
+/// ephemeral port on the correct interface. Read timeout is 500 ms.
 ///
-/// # Why one socket per thread?
-///
-/// UDP is connectionless — when two threads share one socket and both call
-/// `recv_from`, either thread can receive the other's response. By giving each
-/// thread its own socket on its own port, RetroArch's reply is guaranteed to
-/// arrive at the correct socket.
-///
-/// # Why not `connect()`?
-///
-/// Calling `connect()` on a UDP socket in Linux causes the kernel to filter
-/// incoming datagrams to only those from the connected address. In testing,
-/// this caused all `recv` calls to time out even though RetroArch was replying
-/// correctly. Using `send_to`/`recv_from` on an unconnected socket avoids
-/// this issue.
+/// One socket per thread is required: UDP is connectionless so sharing a
+/// socket between threads causes responses to land on the wrong receiver.
 ///
 /// # Errors
 ///
 /// Returns an `Err` if the OS cannot bind the socket or set the read timeout.
 pub fn make_socket() -> std::io::Result<UdpSocket> {
-    let socket = UdpSocket::bind("127.0.0.1:0")?;
+    let bind_addr = if is_local() { "127.0.0.1:0" } else { "0.0.0.0:0" };
+    let socket = UdpSocket::bind(bind_addr)?;
     socket.set_read_timeout(Some(std::time::Duration::from_millis(500)))?;
     Ok(socket)
 }
@@ -211,7 +240,7 @@ pub fn get_from_retroarch(
     command: &str,
     expected_token_count: usize,
 ) -> Option<Vec<String>> {
-    if let Err(e) = socket.send_to(command.as_bytes(), RETROARCH_ADDR) {
+    if let Err(e) = with_addr(|ra| socket.send_to(command.as_bytes(), ra)) {
         tracing::warn!("Failed to send command to RetroArch: {}", e);
         return None;
     }
@@ -285,12 +314,11 @@ mod tests {
     }
 
     #[test]
-    fn make_socket_binds_to_loopback_with_ephemeral_port() {
+    fn make_socket_binds_with_ephemeral_port() {
         let sock = make_socket().expect("make_socket should succeed");
         let addr = sock
             .local_addr()
             .expect("socket should have a local address");
-        assert_eq!(addr.ip().to_string(), "127.0.0.1");
         assert_ne!(addr.port(), 0);
     }
 
