@@ -888,6 +888,7 @@ impl eframe::App for SetupApp {
                         notify_on_death: self.notify_on_death,
                         notify_on_shiny: self.notify_on_shiny,
                         notify_on_wipe: self.notify_on_wipe,
+                        discord_webhook_url: None,
                     },
                     obs: ObsConfig {
                         host: self.obs_host.trim().to_string(),

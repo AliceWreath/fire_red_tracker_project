@@ -228,6 +228,7 @@ pub fn check_for_dead_pokemon(thread_party: &Arc<Mutex<Vec<Pokemon>>>, run_track
             is_soul_link_death: false,
             killed_by_species,
             killed_by_move: None,
+            area_name: fire_red_loop::get_area_name().to_string(),
         }) {
             Ok(v) => v,
             Err(e) => {
@@ -897,6 +898,7 @@ pub fn check_for_new_badges(
     last_mask: Option<u8>,
     split_on_badges: bool,
     split_on_clear: bool,
+    party: &Arc<Mutex<Vec<Pokemon>>>,
 ) -> Option<u8> {
     let Some(bs) = fire_red_badge::read_badge_state() else {
         return last_mask;
@@ -947,13 +949,39 @@ pub fn check_for_new_badges(
         if split_on_badges {
             crate::livesplit::split();
         }
+        // Log party level snapshot at this badge milestone for level-curve analytics.
+        {
+            let levels: Vec<u8> = party.lock_or_recover()
+                .iter()
+                .filter(|p| p.box_mon.secure.growth.species != 0)
+                .map(|p| p.level)
+                .collect();
+            fire_red_database::log_party_snapshot(
+                &player,
+                i,
+                badge_name,
+                timestamp,
+                &levels,
+            );
+        }
     }
 
-    // Fire a "game clear" split when all 8 badges are now held.
+    // Fire a "game clear" split + webhook when all 8 badges are now held.
     // This uses the Earth Badge (badge 8) as a proxy for completion since
     // detecting the Champion defeat requires additional EWRAM research.
-    if split_on_clear && current_mask == 0xFF {
-        crate::livesplit::split();
+    if current_mask == 0xFF {
+        let started_at = fire_red_database::get_active_run_id()
+            .and_then(fire_red_database::get_run_info)
+            .map(|(_, s)| s)
+            .unwrap_or(0);
+        crate::webhook::fire_event(crate::webhook::WebhookEvent::GameCleared {
+            player: player.clone(),
+            timestamp,
+            started_at,
+        });
+        if split_on_clear {
+            crate::livesplit::split();
+        }
     }
 
     Some(current_mask)

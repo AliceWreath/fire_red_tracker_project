@@ -77,6 +77,36 @@ pub struct AggregatorConfig {
     /// Fire a LiveSplit split every time a new gym badge is earned.
     #[serde(default)]
     pub livesplit_split_on_badges: bool,
+    /// Discord Application Commands (slash commands) integration.
+    /// Register with `POST /interactions` as your interactions endpoint URL.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub discord_slash: Option<DiscordSlashConfig>,
+}
+
+/// Discord Application Commands configuration.
+///
+/// Add a `[discord_slash]` section to `~/.config/fire_red_aggregator/config.toml`:
+/// ```toml
+/// [discord_slash]
+/// app_id     = 123456789012345678       # Application ID from Discord dev portal
+/// public_key = "abc123..."              # Ed25519 public key (hex) from dev portal
+/// token      = "Bot MTc..."             # Bot token for registering commands
+/// guild_id   = 987654321098765432       # Guild ID (omit for global commands)
+/// ```
+/// Then set your interactions endpoint URL in the Discord dev portal to
+/// `https://your-aggregator-host/interactions`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DiscordSlashConfig {
+    /// Discord Application ID.
+    pub app_id: u64,
+    /// Ed25519 public key (lowercase hex) from the Discord dev portal.
+    pub public_key: String,
+    /// Bot token for registering slash commands at startup.
+    pub token: String,
+    /// Guild ID for guild-scoped commands (faster to update than global commands).
+    /// If omitted, commands are registered globally (takes up to 1 hour to propagate).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub guild_id: Option<u64>,
 }
 
 /// Twitch IRC chat bot configuration.
@@ -501,6 +531,7 @@ impl eframe::App for SetupApp {
                         livesplit_host: None,
                         livesplit_port: 16834,
                         livesplit_split_on_badges: false,
+                        discord_slash: None,
                     });
                     self.should_close = true;
                 }

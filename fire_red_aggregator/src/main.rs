@@ -337,18 +337,23 @@ fn main() {
 
     let backup_dir = cfg_ref.backup_dir.clone();
 
+    // Discord slash commands — register at startup if configured.
+    let discord_slash = cfg_ref.discord_slash.clone();
+    if let Some(ref slash_cfg) = discord_slash {
+        web::register_slash_commands(slash_cfg);
+    }
+
     if let Some(port) = ws_port {
         // Headless WebSocket overlay mode.
-        web::run(
-            shared_slots,
-            port,
-            db,
-            use_test,
+        web::run(shared_slots, port, web::WebRunConfig {
+            db_conn: db,
+            testing: use_test,
             allow_injections,
-            direct_connector,
+            connector: direct_connector,
             backup_dir,
             livesplit_split_on_badges,
-        );
+            discord_slash,
+        });
     } else {
         // Normal egui window mode.
         let update_available: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));

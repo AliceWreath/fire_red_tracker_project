@@ -703,6 +703,7 @@ fn main() {
                         last_badge_mask,
                         livesplit_split_on_badges,
                         livesplit_split_on_clear,
+                        &thread_party,
                     );
                     last_trainer_flags = check_for_new_trainer_battles(last_trainer_flags);
                 }

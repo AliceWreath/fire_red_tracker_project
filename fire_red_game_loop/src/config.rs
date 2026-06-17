@@ -137,6 +137,11 @@ pub struct WebhookConfig {
     pub notify_on_shiny: bool,
     #[serde(default)]
     pub notify_on_wipe: bool,
+    /// Discord webhook URL for rich embed notifications.
+    /// When set, death/shiny/badge/game-cleared events POST a colour-coded
+    /// Discord embed (no bot token required — uses the Webhook Execute API).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub discord_webhook_url: Option<String>,
 }
 
 impl WebhookConfig {
@@ -158,6 +163,7 @@ impl WebhookConfig {
             && !self.notify_on_death
             && !self.notify_on_shiny
             && !self.notify_on_wipe
+            && self.discord_webhook_url.is_none()
     }
 }
 

@@ -836,6 +836,7 @@ impl AggregatorApp {
                     livesplit_host: None,
                     livesplit_port: 16834,
                     livesplit_split_on_badges: false,
+                    discord_slash: None,
                 };
                 save_config(&cfg, &self.config_path);
                 self.settings_open = false;
@@ -1392,6 +1393,7 @@ mod tests {
             is_soul_link_death: false,
             killed_by_species: None,
             killed_by_move: None,
+            area_name: String::new(),
         }
     }
 

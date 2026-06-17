@@ -565,6 +565,9 @@ pub struct DeadPokemon {
     pub killed_by_species: Option<String>,
     /// Move name used by the enemy for the killing blow, if known.
     pub killed_by_move: Option<String>,
+    /// Map area name where the Pokémon died (e.g. "Route 1"). Empty for
+    /// records from before v19 or when the location is not yet determined.
+    pub area_name: String,
 }
 
 /// A wild Pokémon encounter — the first one per area per player is stored for Nuzlocke tracking.
@@ -672,7 +675,7 @@ pub fn initialize_noop() {
 /// `initialize` has already been called.
 /// Increment this whenever a new migration or data-repair statement is added.
 /// `initialize` skips all SQL when the DB already records this version.
-const SCHEMA_VERSION: &str = "18";
+const SCHEMA_VERSION: &str = "22";
 
 pub fn initialize(connection_string: &str) -> Result<(), String> {
     // Accept bare `host/dbname` strings — prepend the scheme so callers don't have to.
@@ -1029,6 +1032,50 @@ pub fn initialize(connection_string: &str) -> Result<(), String> {
             shiny_clause     BOOLEAN NOT NULL DEFAULT FALSE,
             updated_at       BIGINT  NOT NULL
         );
+
+        -- Migration v19: record the map area where each pokemon died.
+        ALTER TABLE dead_pokemon ADD COLUMN IF NOT EXISTS area_name TEXT NOT NULL DEFAULT '';
+
+        -- Migration v20: party level snapshots at each badge milestone (for level curve).
+        CREATE TABLE IF NOT EXISTS party_snapshots (
+            id          SERIAL   PRIMARY KEY,
+            run_id      INTEGER  NOT NULL REFERENCES runs(id),
+            player_name TEXT     NOT NULL DEFAULT '',
+            badge_index SMALLINT NOT NULL,
+            badge_name  TEXT     NOT NULL,
+            occurred_at BIGINT   NOT NULL,
+            avg_level   REAL     NOT NULL,
+            levels      TEXT     NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS party_snapshots_run ON party_snapshots (run_id);
+
+        -- Migration v21: per-pokemon move use counts derived from PP-delta detection.
+        CREATE TABLE IF NOT EXISTS move_uses (
+            id          SERIAL   PRIMARY KEY,
+            run_id      INTEGER  NOT NULL REFERENCES runs(id),
+            player_name TEXT     NOT NULL DEFAULT '',
+            personality BIGINT   NOT NULL,
+            move_slot   SMALLINT NOT NULL,
+            move_id     SMALLINT NOT NULL,
+            move_name   TEXT     NOT NULL DEFAULT '',
+            use_count   INTEGER  NOT NULL DEFAULT 0,
+            updated_at  BIGINT   NOT NULL,
+            UNIQUE (run_id, player_name, personality, move_slot)
+        );
+        CREATE INDEX IF NOT EXISTS move_uses_run ON move_uses (run_id);
+
+        -- Migration v22: friendship change log; threshold alerts at 220.
+        CREATE TABLE IF NOT EXISTS friendship_log (
+            id           BIGSERIAL PRIMARY KEY,
+            run_id       INTEGER   NOT NULL REFERENCES runs(id),
+            player_name  TEXT      NOT NULL DEFAULT '',
+            personality  BIGINT    NOT NULL,
+            nickname     TEXT      NOT NULL DEFAULT '',
+            species_name TEXT      NOT NULL DEFAULT '',
+            friendship   SMALLINT  NOT NULL,
+            logged_at    BIGINT    NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS friendship_log_run ON friendship_log (run_id, personality);
     ").map_err(|e| format!("Failed to create database schema: {e}"))?;
 
     // Record the schema version so future startups can skip all migrations.
@@ -1198,6 +1245,7 @@ fn row_to_dead_pokemon(row: &postgres::Row) -> DeadPokemon {
         is_soul_link_death: row.get(44),
         killed_by_species: row.get(45),
         killed_by_move: row.get(46),
+        area_name: row.try_get::<_, String>(47).unwrap_or_default(),
     }
 }
 
@@ -1306,6 +1354,17 @@ pub fn active_run_id() -> Option<u32> {
         .or_else(|| get_meta(&mut state.client, "active_run_id").and_then(|v| v.parse().ok()))
 }
 
+/// Returns `(player_name, started_at)` for the given run ID using the global DB connection.
+pub fn get_run_info(run_id: u32) -> Option<(String, u64)> {
+    let db = db()?;
+    let mut state = db.lock_or_recover();
+    let row = state.client.query_opt(
+        "SELECT player_name, started_at FROM runs WHERE id = $1",
+        &[&(run_id as i32)],
+    ).ok()??;
+    Some((row.get(0), row.get::<_, i64>(1) as u64))
+}
+
 /// Ends the active run by recording its end timestamp and clearing the
 /// in-process run ID. Subsequent writes (deaths, encounters, catches)
 /// will be silently dropped until a new run is started.
@@ -1377,6 +1436,7 @@ pub fn mark_dead(pokemon: DeadPokemon) -> Result<bool, postgres::Error> {
     let nickname = pg_safe(&pokemon.nickname);
     let spec_name = pg_safe(&pokemon.species_name);
     let ability_name = pg_safe(&pokemon.ability_name);
+    let area_name = pg_safe(&pokemon.area_name);
     let n = state.client.execute(
         "INSERT INTO dead_pokemon (
             run_id, player_name, personality, ot_id, ot_name, nickname,
@@ -1387,13 +1447,13 @@ pub fn mark_dead(pokemon: DeadPokemon) -> Result<bool, postgres::Error> {
             iv_hp, iv_attack, iv_defense, iv_speed, iv_sp_attack, iv_sp_defense,
             ev_hp, ev_attack, ev_defense, ev_speed, ev_sp_attack, ev_sp_defense,
             held_item, ability, ability_name, friendship, met_location, died_at, gender,
-            is_soul_link_death, killed_by_species, killed_by_move
+            is_soul_link_death, killed_by_species, killed_by_move, area_name
         ) VALUES (
             $1,  $2,  $3,  $4,  $5,  $6,  $7,  $8,  $9,  $10, $11,
             $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22,
             $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33,
             $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45,
-            $46, $47, $48
+            $46, $47, $48, $49
         ) ON CONFLICT (run_id, personality) DO NOTHING",
         &[
             &(active as i32),
@@ -1444,6 +1504,7 @@ pub fn mark_dead(pokemon: DeadPokemon) -> Result<bool, postgres::Error> {
             &pokemon.is_soul_link_death,
             &pokemon.killed_by_species,
             &pokemon.killed_by_move,
+            &area_name, // $49
         ],
     )?;
     // execute() returns the number of rows affected. ON CONFLICT DO NOTHING yields 0,
@@ -1476,7 +1537,8 @@ pub fn get_dead_pokemon(personality: u32) -> Option<DeadPokemon> {
                 iv_hp, iv_attack, iv_defense, iv_speed, iv_sp_attack, iv_sp_defense,
                 ev_hp, ev_attack, ev_defense, ev_speed, ev_sp_attack, ev_sp_defense,
                 held_item, ability, ability_name, friendship, met_location, died_at, gender,
-                is_soul_link_death, killed_by_species, killed_by_move
+                is_soul_link_death, killed_by_species, killed_by_move,
+                COALESCE(area_name, '') AS area_name
              FROM dead_pokemon
              WHERE run_id = $1 AND personality = $2",
             &[&(active as i32), &(personality as i64)],
@@ -2967,7 +3029,8 @@ impl DbReader {
                     iv_hp, iv_attack, iv_defense, iv_speed, iv_sp_attack, iv_sp_defense,
                     ev_hp, ev_attack, ev_defense, ev_speed, ev_sp_attack, ev_sp_defense,
                     held_item, ability, ability_name, friendship, met_location, died_at, gender,
-                    is_soul_link_death, killed_by_species, killed_by_move
+                    is_soul_link_death, killed_by_species, killed_by_move,
+                    COALESCE(area_name, '') AS area_name
                  FROM dead_pokemon WHERE run_id = $1 AND player_name = $2",
                 &[&(run_id as i32), &player_name],
             )
@@ -5681,6 +5744,233 @@ pub fn export_events_csv(conn_str: &str, run_id: u32) -> Result<String, String> 
         ));
     }
     Ok(out)
+}
+
+// ---------------------------------------------------------------------------
+// Analytics functions (v19-v22 features)
+// ---------------------------------------------------------------------------
+
+/// `GET /api/run/:id/death_map` — deaths grouped by the area they occurred in.
+///
+/// Returns `[{ "area": "Route 1", "count": 3 }, ...]` sorted descending by count.
+pub fn death_map(conn_str: &str, run_id: u32) -> serde_json::Value {
+    let mut client = match Client::connect(conn_str, NoTls) {
+        Ok(c) => c,
+        Err(e) => return serde_json::json!({ "error": format!("DB connection failed: {e}") }),
+    };
+    let rows = match client.query(
+        "SELECT COALESCE(NULLIF(area_name, ''), 'Unknown') AS area, COUNT(*) AS count
+         FROM dead_pokemon
+         WHERE run_id = $1
+         GROUP BY area
+         ORDER BY count DESC",
+        &[&(run_id as i32)],
+    ) {
+        Ok(r) => r,
+        Err(e) => return serde_json::json!({ "error": format!("Query failed: {e}") }),
+    };
+    let areas: Vec<serde_json::Value> = rows.iter().map(|r| {
+        serde_json::json!({ "area": r.get::<_, String>(0), "count": r.get::<_, i64>(1) })
+    }).collect();
+    serde_json::json!(areas)
+}
+
+/// `GET /api/run/:id/level_curve` — average party level at each badge milestone.
+///
+/// Returns `[{ "badge_index": 0, "badge_name": "Boulder Badge", "avg_level": 14.2,
+///             "levels": [12,14,15,...], "occurred_at": 1748000000 }, ...]`.
+pub fn level_curve(conn_str: &str, run_id: u32) -> serde_json::Value {
+    let mut client = match Client::connect(conn_str, NoTls) {
+        Ok(c) => c,
+        Err(e) => return serde_json::json!({ "error": format!("DB connection failed: {e}") }),
+    };
+    let rows = match client.query(
+        "SELECT badge_index, badge_name, occurred_at, avg_level, levels
+         FROM party_snapshots
+         WHERE run_id = $1
+         ORDER BY occurred_at ASC",
+        &[&(run_id as i32)],
+    ) {
+        Ok(r) => r,
+        Err(e) => return serde_json::json!({ "error": format!("Query failed: {e}") }),
+    };
+    let snapshots: Vec<serde_json::Value> = rows.iter().map(|r| {
+        let levels_str: String = r.get(4);
+        let levels: serde_json::Value = serde_json::from_str(&levels_str).unwrap_or(serde_json::json!([]));
+        serde_json::json!({
+            "badge_index": r.get::<_, i16>(0),
+            "badge_name":  r.get::<_, String>(1),
+            "occurred_at": r.get::<_, i64>(2),
+            "avg_level":   r.get::<_, f32>(3),
+            "levels":      levels,
+        })
+    }).collect();
+    serde_json::json!(snapshots)
+}
+
+/// `GET /api/run/:id/move_usage` — move use counts per mon per slot.
+///
+/// Returns `[{ "personality": 123, "move_slot": 0, "move_name": "Tackle",
+///             "use_count": 14 }, ...]` ordered by use_count descending.
+pub fn move_usage(conn_str: &str, run_id: u32) -> serde_json::Value {
+    let mut client = match Client::connect(conn_str, NoTls) {
+        Ok(c) => c,
+        Err(e) => return serde_json::json!({ "error": format!("DB connection failed: {e}") }),
+    };
+    let rows = match client.query(
+        "SELECT personality, move_slot, move_id, move_name, use_count, player_name
+         FROM move_uses
+         WHERE run_id = $1
+         ORDER BY use_count DESC",
+        &[&(run_id as i32)],
+    ) {
+        Ok(r) => r,
+        Err(e) => return serde_json::json!({ "error": format!("Query failed: {e}") }),
+    };
+    let uses: Vec<serde_json::Value> = rows.iter().map(|r| {
+        serde_json::json!({
+            "personality": r.get::<_, i64>(0) as u32,
+            "move_slot":   r.get::<_, i16>(1),
+            "move_id":     r.get::<_, i16>(2),
+            "move_name":   r.get::<_, String>(3),
+            "use_count":   r.get::<_, i32>(4),
+            "player_name": r.get::<_, String>(5),
+        })
+    }).collect();
+    serde_json::json!(uses)
+}
+
+/// `GET /api/run/:id/friendship` — friendship change history per mon.
+///
+/// Returns grouped by personality: `[{ "personality": 123, "nickname": "Squirtle",
+///   "species_name": "Squirtle", "history": [{ "friendship": 70, "logged_at": ... }] }]`.
+pub fn friendship_history(conn_str: &str, run_id: u32) -> serde_json::Value {
+    let mut client = match Client::connect(conn_str, NoTls) {
+        Ok(c) => c,
+        Err(e) => return serde_json::json!({ "error": format!("DB connection failed: {e}") }),
+    };
+    let rows = match client.query(
+        "SELECT personality, nickname, species_name, friendship, logged_at, player_name
+         FROM friendship_log
+         WHERE run_id = $1
+         ORDER BY logged_at ASC",
+        &[&(run_id as i32)],
+    ) {
+        Ok(r) => r,
+        Err(e) => return serde_json::json!({ "error": format!("Query failed: {e}") }),
+    };
+    // Group by personality.
+    let mut by_mon: std::collections::HashMap<u32, serde_json::Value> = std::collections::HashMap::new();
+    for r in &rows {
+        let personality = r.get::<_, i64>(0) as u32;
+        let entry = by_mon.entry(personality).or_insert_with(|| serde_json::json!({
+            "personality": personality,
+            "nickname":     r.get::<_, String>(1),
+            "species_name": r.get::<_, String>(2),
+            "player_name":  r.get::<_, String>(5),
+            "history":      serde_json::json!([]),
+        }));
+        entry["history"].as_array_mut().unwrap().push(serde_json::json!({
+            "friendship": r.get::<_, i16>(3),
+            "logged_at":  r.get::<_, i64>(4),
+        }));
+    }
+    serde_json::json!(by_mon.into_values().collect::<Vec<_>>())
+}
+
+/// Log a party-level snapshot at a badge milestone. Uses the global DB connection.
+pub fn log_party_snapshot(
+    player_name: &str,
+    badge_index: u8,
+    badge_name: &str,
+    occurred_at: u64,
+    levels: &[u8],
+) {
+    let Some(db) = db() else { return };
+    let mut state = db.lock_or_recover();
+    let Some(run_id) = state.run_id else { return };
+    if levels.is_empty() { return; }
+    let avg = levels.iter().map(|&l| l as f32).sum::<f32>() / levels.len() as f32;
+    let levels_json = serde_json::to_string(levels).unwrap_or_else(|_| "[]".to_string());
+    if let Err(e) = state.client.execute(
+        "INSERT INTO party_snapshots (run_id, player_name, badge_index, badge_name, occurred_at, avg_level, levels)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)",
+        &[
+            &(run_id as i32),
+            &player_name,
+            &(badge_index as i16),
+            &badge_name,
+            &(occurred_at as i64),
+            &avg,
+            &levels_json,
+        ],
+    ) {
+        tracing::warn!("log_party_snapshot: {e}");
+    }
+}
+
+/// Increment a move use counter for a party Pokémon. Uses the global DB connection.
+pub fn log_move_use(
+    player_name: &str,
+    personality: u32,
+    move_slot: u8,
+    move_id: u16,
+    move_name: &str,
+    uses: i32,
+) {
+    let Some(db) = db() else { return };
+    let mut state = db.lock_or_recover();
+    let Some(run_id) = state.run_id else { return };
+    let now = unix_now();
+    if let Err(e) = state.client.execute(
+        "INSERT INTO move_uses (run_id, player_name, personality, move_slot, move_id, move_name, use_count, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+         ON CONFLICT (run_id, player_name, personality, move_slot)
+         DO UPDATE SET use_count = move_uses.use_count + EXCLUDED.use_count,
+                       move_name = EXCLUDED.move_name,
+                       updated_at = EXCLUDED.updated_at",
+        &[
+            &(run_id as i32),
+            &player_name,
+            &(personality as i64),
+            &(move_slot as i16),
+            &(move_id as i16),
+            &move_name,
+            &uses,
+            &(now as i64),
+        ],
+    ) {
+        tracing::warn!("log_move_use: {e}");
+    }
+}
+
+/// Append a friendship observation for a party Pokémon. Uses the global DB connection.
+pub fn log_friendship(
+    player_name: &str,
+    personality: u32,
+    nickname: &str,
+    species_name: &str,
+    friendship: u8,
+) {
+    let Some(db) = db() else { return };
+    let mut state = db.lock_or_recover();
+    let Some(run_id) = state.run_id else { return };
+    let now = unix_now();
+    if let Err(e) = state.client.execute(
+        "INSERT INTO friendship_log (run_id, player_name, personality, nickname, species_name, friendship, logged_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)",
+        &[
+            &(run_id as i32),
+            &player_name,
+            &(personality as i64),
+            &nickname,
+            &species_name,
+            &(friendship as i16),
+            &(now as i64),
+        ],
+    ) {
+        tracing::warn!("log_friendship: {e}");
+    }
 }
 
 #[cfg(test)]

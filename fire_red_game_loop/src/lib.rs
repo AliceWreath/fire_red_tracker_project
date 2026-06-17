@@ -278,6 +278,8 @@ pub fn spawn_game_loop(
         let mut last_trainer_flags: Option<Vec<u8>> = None;
         let mut last_player_name   = String::new();
         let mut last_party_hp: HashMap<u32, u16> = HashMap::new();
+        let mut last_pp: HashMap<u32, [u8; 4]> = HashMap::new();
+        let mut last_friendship: HashMap<u32, u8> = HashMap::new();
         let mut last_enemy_personality: u32 = 0;
         let mut last_enemy_hp: u16  = 0;
         let mut last_enemy_max_hp: u16 = 0;
@@ -401,6 +403,60 @@ pub fn spawn_game_loop(
                 }
             }
 
+            // PP-delta move tracking and friendship change logging.
+            for mon in thread_party.lock_or_recover().iter() {
+                let personality = mon.box_mon.personality;
+                if personality == 0 || mon.box_mon.secure.growth.species == 0 {
+                    continue;
+                }
+                let cur_pp = mon.box_mon.secure.attack.pp;
+                let moves  = mon.box_mon.secure.attack.moves;
+                if let Some(&prev_pp) = last_pp.get(&personality) {
+                    for slot in 0..4usize {
+                        let move_id = moves[slot];
+                        if move_id == 0 { continue; }
+                        if cur_pp[slot] < prev_pp[slot] {
+                            let uses = (prev_pp[slot] - cur_pp[slot]) as i32;
+                            fire_red_database::log_move_use(
+                                &fire_red_loop::get_trainer_name(),
+                                personality,
+                                slot as u8,
+                                move_id,
+                                fire_red_database::move_name(move_id),
+                                uses,
+                            );
+                        }
+                    }
+                }
+                last_pp.insert(personality, cur_pp);
+
+                let cur_friendship = mon.box_mon.secure.growth.friendship;
+                let prev_friendship = last_friendship.get(&personality).copied();
+                if prev_friendship != Some(cur_friendship) {
+                    let is_first = prev_friendship.is_none();
+                    let crossed_220 = !is_first
+                        && prev_friendship.is_some_and(|p| p < 220)
+                        && cur_friendship >= 220;
+                    fire_red_database::log_friendship(
+                        &fire_red_loop::get_trainer_name(),
+                        personality,
+                        &mon.box_mon.nickname_string,
+                        &mon.box_mon.secure.growth.species_string,
+                        cur_friendship,
+                    );
+                    if crossed_220 {
+                        crate::webhook::fire_event(crate::webhook::WebhookEvent::FriendshipThreshold {
+                            player: fire_red_loop::get_trainer_name(),
+                            timestamp: fire_red_database::unix_now(),
+                            nickname: mon.box_mon.nickname_string.clone(),
+                            species: mon.box_mon.secure.growth.species_string.clone(),
+                            friendship: cur_friendship,
+                        });
+                    }
+                    last_friendship.insert(personality, cur_friendship);
+                }
+            }
+
             if let Some((enemy_p, enemy_hp, enemy_max_hp)) = game::read_enemy_slot0_raw() {
                 if !enemy_warmed_up {
                     last_enemy_personality = enemy_p;
@@ -454,6 +510,8 @@ pub fn spawn_game_loop(
                 last_badge_mask    = None;
                 last_trainer_flags = None;
                 player_name_set    = false;
+                last_pp.clear();
+                last_friendship.clear();
                 if let Some(vid) = last_area_visit_id.take() {
                     fire_red_database::close_area_visit(vid, fire_red_database::unix_now());
                 }
@@ -475,6 +533,7 @@ pub fn spawn_game_loop(
                     last_badge_mask,
                     cfg.livesplit_split_on_badges,
                     cfg.livesplit_split_on_clear,
+                    &thread_party,
                 );
                 last_trainer_flags = game::check_for_new_trainer_battles(last_trainer_flags);
             }

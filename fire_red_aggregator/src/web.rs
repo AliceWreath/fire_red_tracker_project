@@ -1101,11 +1101,10 @@ impl BroadcastLoop {
             }
             self.prev_badge_counts[i] = badge_count;
 
-            if game_cleared {
-                if let (Some(rid), Some(conn), Some(dir)) =
+            if game_cleared
+                && let (Some(rid), Some(conn), Some(dir)) =
                     (run_id, self.db_conn.as_ref(), self.backup_dir.as_ref())
-                {
-                    if self.backup_done.insert(rid) {
+                    && self.backup_done.insert(rid) {
                         let conn2 = conn.clone();
                         let dir2 = dir.clone();
                         std::thread::spawn(move || {
@@ -1127,8 +1126,6 @@ impl BroadcastLoop {
                             }
                         });
                     }
-                }
-            }
         }
 
         // Build JSON payload
@@ -1487,6 +1484,7 @@ struct WebState {
     testing: bool,
     allow_injections: bool,
     connector: Option<Arc<crate::direct::DirectConnector>>,
+    discord_slash: Option<crate::config::DiscordSlashConfig>,
 }
 
 // ---------------------------------------------------------------------------
@@ -4685,6 +4683,110 @@ async fn api_run_area_times(
     axum::Json(result)
 }
 
+async fn api_run_death_map(
+    State(state): State<WebState>,
+    Path(run_id): Path<u32>,
+) -> axum::Json<serde_json::Value> {
+    let Some(conn) = state.db_conn else {
+        return axum::Json(serde_json::json!({ "error": "No database configured" }));
+    };
+    let result =
+        tokio::task::spawn_blocking(move || fire_red_database::death_map(&conn, run_id))
+            .await
+            .unwrap_or_else(|_| serde_json::json!({ "error": "Task panicked" }));
+    axum::Json(result)
+}
+
+async fn api_run_level_curve(
+    State(state): State<WebState>,
+    Path(run_id): Path<u32>,
+) -> axum::Json<serde_json::Value> {
+    let Some(conn) = state.db_conn else {
+        return axum::Json(serde_json::json!({ "error": "No database configured" }));
+    };
+    let result =
+        tokio::task::spawn_blocking(move || fire_red_database::level_curve(&conn, run_id))
+            .await
+            .unwrap_or_else(|_| serde_json::json!({ "error": "Task panicked" }));
+    axum::Json(result)
+}
+
+async fn api_run_move_usage(
+    State(state): State<WebState>,
+    Path(run_id): Path<u32>,
+) -> axum::Json<serde_json::Value> {
+    let Some(conn) = state.db_conn else {
+        return axum::Json(serde_json::json!({ "error": "No database configured" }));
+    };
+    let result =
+        tokio::task::spawn_blocking(move || fire_red_database::move_usage(&conn, run_id))
+            .await
+            .unwrap_or_else(|_| serde_json::json!({ "error": "Task panicked" }));
+    axum::Json(result)
+}
+
+async fn api_run_friendship(
+    State(state): State<WebState>,
+    Path(run_id): Path<u32>,
+) -> axum::Json<serde_json::Value> {
+    let Some(conn) = state.db_conn else {
+        return axum::Json(serde_json::json!({ "error": "No database configured" }));
+    };
+    let result =
+        tokio::task::spawn_blocking(move || fire_red_database::friendship_history(&conn, run_id))
+            .await
+            .unwrap_or_else(|_| serde_json::json!({ "error": "Task panicked" }));
+    axum::Json(result)
+}
+
+async fn api_slot_ev_progress(
+    State(state): State<WebState>,
+    Path(slot_index): Path<usize>,
+) -> axum::Json<serde_json::Value> {
+    let slots = state.live_slots.lock_or_recover();
+    let Some(slot) = slots.get(slot_index) else {
+        return axum::Json(serde_json::json!({ "error": "Slot index out of range" }));
+    };
+    let game_state = slot.state.lock_or_recover();
+    let Some(ref gs) = *game_state else {
+        return axum::Json(serde_json::json!({ "error": "Slot not connected" }));
+    };
+    let ev_list: Vec<serde_json::Value> = gs.party.iter()
+        .filter(|p| p.box_mon.secure.growth.species != 0)
+        .map(|p| {
+            let ev = &p.box_mon.secure.ev_condition;
+            let total = ev.hp_ev as u32
+                + ev.attack_ev as u32
+                + ev.defense_ev as u32
+                + ev.speed_ev as u32
+                + ev.sp_attack_ev as u32
+                + ev.sp_defense_ev as u32;
+            let remaining_total = 510u32.saturating_sub(total);
+            serde_json::json!({
+                "personality": p.box_mon.personality,
+                "nickname":    p.box_mon.nickname_string,
+                "species":     p.box_mon.secure.growth.species_string,
+                "hp":         ev.hp_ev,
+                "attack":     ev.attack_ev,
+                "defense":    ev.defense_ev,
+                "speed":      ev.speed_ev,
+                "sp_attack":  ev.sp_attack_ev,
+                "sp_defense": ev.sp_defense_ev,
+                "total":      total,
+                "remaining":  remaining_total,
+                "hp_capped":         ev.hp_ev >= 252,
+                "attack_capped":     ev.attack_ev >= 252,
+                "defense_capped":    ev.defense_ev >= 252,
+                "speed_capped":      ev.speed_ev >= 252,
+                "sp_attack_capped":  ev.sp_attack_ev >= 252,
+                "sp_defense_capped": ev.sp_defense_ev >= 252,
+                "fully_trained": total >= 510,
+            })
+        })
+        .collect();
+    axum::Json(serde_json::json!(ev_list))
+}
+
 /// Broadcasts a command to all connected tracker slots.
 ///
 /// Supported commands (no request body needed — suitable for Stream Deck buttons):
@@ -5273,6 +5375,225 @@ async fn api_run_events_csv(
 }
 
 // ---------------------------------------------------------------------------
+// Discord slash-command interactions endpoint
+// ---------------------------------------------------------------------------
+
+/// Body of a Discord Interactions POST (we only need a handful of fields).
+#[derive(serde::Deserialize)]
+struct DiscordInteraction {
+    #[serde(rename = "type")]
+    kind: u8,
+    data: Option<DiscordInteractionData>,
+}
+
+#[derive(serde::Deserialize)]
+struct DiscordInteractionData {
+    name: Option<String>,
+}
+
+/// `POST /interactions` — Discord Interactions endpoint.
+///
+/// Verifies the Ed25519 signature, responds to ping (type 1), and handles
+/// `/party`, `/status`, `/deaths` application commands (type 2) ephemerally.
+async fn discord_interactions(
+    State(state): State<WebState>,
+    headers: axum::http::HeaderMap,
+    body: axum::body::Bytes,
+) -> impl IntoResponse {
+    // ── Signature verification ──────────────────────────────────────────────
+    let public_key_hex = state
+        .discord_slash
+        .as_ref()
+        .map(|c| c.public_key.as_str())
+        .unwrap_or("");
+
+    let sig_header = headers
+        .get("x-signature-ed25519")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    let ts_header = headers
+        .get("x-signature-timestamp")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+
+    if !verify_discord_signature(public_key_hex, sig_header, ts_header, &body) {
+        return (StatusCode::UNAUTHORIZED, axum::Json(serde_json::json!({ "error": "invalid signature" }))).into_response();
+    }
+
+    // ── Parse body ─────────────────────────────────────────────────────────
+    let interaction: DiscordInteraction = match serde_json::from_slice(&body) {
+        Ok(v) => v,
+        Err(_) => return (StatusCode::BAD_REQUEST, axum::Json(serde_json::json!({ "error": "bad body" }))).into_response(),
+    };
+
+    // ── Handle ping (type 1) ───────────────────────────────────────────────
+    if interaction.kind == 1 {
+        return axum::Json(serde_json::json!({ "type": 1 })).into_response();
+    }
+
+    // ── Handle application command (type 2) ────────────────────────────────
+    if interaction.kind == 2 {
+        let cmd_name = interaction
+            .data
+            .as_ref()
+            .and_then(|d| d.name.as_deref())
+            .unwrap_or("");
+
+        let content = {
+            let slots = state.live_slots.lock_or_recover();
+            build_slash_response(cmd_name, &slots)
+        };
+
+        // Ephemeral message response (type 4, flags 64)
+        return axum::Json(serde_json::json!({
+            "type": 4,
+            "data": {
+                "content": content,
+                "flags": 64
+            }
+        })).into_response();
+    }
+
+    (StatusCode::BAD_REQUEST, axum::Json(serde_json::json!({ "error": "unknown interaction type" }))).into_response()
+}
+
+fn verify_discord_signature(public_key_hex: &str, signature_hex: &str, timestamp: &str, body: &[u8]) -> bool {
+    use ed25519_dalek::{Signature, VerifyingKey};
+
+    let pub_bytes = match hex_decode(public_key_hex) {
+        Some(b) if b.len() == 32 => b,
+        _ => return false,
+    };
+    let sig_bytes = match hex_decode(signature_hex) {
+        Some(b) if b.len() == 64 => b,
+        _ => return false,
+    };
+
+    let key = match VerifyingKey::from_bytes(pub_bytes[..32].try_into().unwrap_or(&[0u8; 32])) {
+        Ok(k) => k,
+        Err(_) => return false,
+    };
+    let sig = Signature::from_bytes(sig_bytes[..64].try_into().unwrap_or(&[0u8; 64]));
+
+    let mut message = timestamp.as_bytes().to_vec();
+    message.extend_from_slice(body);
+
+    use ed25519_dalek::Verifier;
+    key.verify(&message, &sig).is_ok()
+}
+
+fn hex_decode(s: &str) -> Option<Vec<u8>> {
+    if !s.len().is_multiple_of(2) { return None; }
+    (0..s.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&s[i..i + 2], 16).ok())
+        .collect()
+}
+
+fn build_slash_response(cmd: &str, slots: &[Arc<crate::client::MonitorSlot>]) -> String {
+    match cmd {
+        "party" => {
+            if slots.is_empty() {
+                return "No trackers connected.".to_string();
+            }
+            let mut lines = Vec::new();
+            for (i, slot) in slots.iter().enumerate() {
+                let gs = slot.state.lock_or_recover();
+                if let Some(gs) = gs.as_ref() {
+                    let members: Vec<String> = gs.party.iter()
+                        .filter(|m| m.box_mon.secure.growth.species > 0)
+                        .map(|m| format!("{} Lv.{}", m.box_mon.secure.growth.species_string, m.level))
+                        .collect();
+                    if !members.is_empty() {
+                        lines.push(format!("**Slot {}** ({}): {}", i + 1, gs.player_name, members.join(", ")));
+                    }
+                }
+            }
+            if lines.is_empty() { "No party data available.".to_string() } else { lines.join("\n") }
+        }
+        "status" => {
+            if slots.is_empty() {
+                return "No trackers connected.".to_string();
+            }
+            let slot = &slots[0];
+            let gs = slot.state.lock_or_recover();
+            if let Some(gs) = gs.as_ref() {
+                let badges = gs.badge_state.as_ref()
+                    .map(|b| b.badges.iter().filter(|&&v| v).count())
+                    .unwrap_or(0);
+                let zone = if gs.zone_name.is_empty() { "unknown".to_string() } else { gs.zone_name.clone() };
+                format!("**{}** — {} badge(s) — currently at {}", gs.player_name, badges, zone)
+            } else {
+                "Tracker connected but no game data yet.".to_string()
+            }
+        }
+        "deaths" => {
+            let total: usize = slots.iter().map(|slot| {
+                slot.db.as_ref()
+                    .and_then(|db| db.active_run_id())
+                    .map(|_| {
+                        let player = slot.state.lock_or_recover()
+                            .as_ref()
+                            .map(|gs| gs.player_name.clone())
+                            .unwrap_or_default();
+                        if let Some(db) = slot.db.as_ref() {
+                            db.list_dead_with_records(&player).len()
+                        } else { 0 }
+                    })
+                    .unwrap_or(0)
+            }).sum();
+            format!("Total deaths across all slots: **{}**", total)
+        }
+        _ => format!("Unknown command: {cmd}"),
+    }
+}
+
+/// Register `/party`, `/status`, `/deaths` slash commands with Discord.
+/// Called once at startup when `[discord_slash]` is configured.
+pub fn register_slash_commands(cfg: &crate::config::DiscordSlashConfig) {
+    let commands = serde_json::json!([
+        { "name": "party", "description": "Show the current party for all connected slots", "type": 1 },
+        { "name": "status", "description": "Show run status (badges, location) for slot 0", "type": 1 },
+        { "name": "deaths", "description": "Show total death count across all slots", "type": 1 }
+    ]);
+
+    let url = if let Some(guild_id) = cfg.guild_id {
+        format!(
+            "https://discord.com/api/v10/applications/{}/guilds/{}/commands",
+            cfg.app_id, guild_id
+        )
+    } else {
+        format!(
+            "https://discord.com/api/v10/applications/{}/commands",
+            cfg.app_id
+        )
+    };
+
+    let token = cfg.token.clone();
+    let commands_str = commands.to_string();
+    std::thread::spawn(move || {
+        let client = reqwest::blocking::Client::new();
+        match client
+            .put(&url)
+            .header("Authorization", format!("Bot {}", token))
+            .header("content-type", "application/json")
+            .body(commands_str)
+            .send()
+        {
+            Ok(r) if r.status().is_success() => {
+                tracing::info!("Discord slash commands registered successfully.");
+            }
+            Ok(r) => {
+                tracing::warn!("Discord slash command registration failed: HTTP {}", r.status());
+            }
+            Err(e) => {
+                tracing::warn!("Discord slash command registration error: {e}");
+            }
+        }
+    });
+}
+
+// ---------------------------------------------------------------------------
 // Router construction (extracted for testability)
 // ---------------------------------------------------------------------------
 
@@ -5394,6 +5715,11 @@ fn build_router(web_state: WebState) -> Router {
         .route("/api/run/:id/catch_log", get(api_run_catch_log))
         .route("/api/run/:id/difficulty", get(api_run_difficulty))
         .route("/api/run/:id/area_times", get(api_run_area_times))
+        .route("/api/run/:id/death_map", get(api_run_death_map))
+        .route("/api/run/:id/level_curve", get(api_run_level_curve))
+        .route("/api/run/:id/move_usage", get(api_run_move_usage))
+        .route("/api/run/:id/friendship", get(api_run_friendship))
+        .route("/api/slot/:index/ev_progress", get(api_slot_ev_progress))
         .route("/:index/deaths", get(serve_deaths_overlay))
         .route("/:index/encounter_count", get(serve_encounter_count))
         .route("/:index/hp", get(serve_hp_overlay))
@@ -5426,6 +5752,8 @@ fn build_router(web_state: WebState) -> Router {
         .route("/api/run/:id/encounters.csv", get(api_run_encounters_csv))
         .route("/api/run/:id/deaths.csv", get(api_run_deaths_csv))
         .route("/api/run/:id/events.csv", get(api_run_events_csv))
+        // Discord slash-command interactions endpoint
+        .route("/interactions", post(discord_interactions))
         .with_state(web_state)
 }
 
@@ -5433,16 +5761,28 @@ fn build_router(web_state: WebState) -> Router {
 // Entry point
 // ---------------------------------------------------------------------------
 
-pub fn run(
-    live_slots: SharedSlots,
-    port: u16,
-    db_conn: Option<String>,
-    testing: bool,
-    allow_injections: bool,
-    connector: Option<Arc<crate::direct::DirectConnector>>,
-    backup_dir: Option<String>,
-    livesplit_split_on_badges: bool,
-) {
+/// Optional configuration passed to [`run`] — bundles flags that are not
+/// needed by every call site.
+pub struct WebRunConfig {
+    pub db_conn: Option<String>,
+    pub testing: bool,
+    pub allow_injections: bool,
+    pub connector: Option<Arc<crate::direct::DirectConnector>>,
+    pub backup_dir: Option<String>,
+    pub livesplit_split_on_badges: bool,
+    pub discord_slash: Option<crate::config::DiscordSlashConfig>,
+}
+
+pub fn run(live_slots: SharedSlots, port: u16, cfg: WebRunConfig) {
+    let WebRunConfig {
+        db_conn,
+        testing,
+        allow_injections,
+        connector,
+        backup_dir,
+        livesplit_split_on_badges,
+        discord_slash,
+    } = cfg;
     let sprites: PngSpriteCache = Arc::new(Mutex::new(HashMap::new()));
 
     // Wire the shared sprite cache into any already-connected slots and keep
@@ -5484,6 +5824,7 @@ pub fn run(
         testing,
         allow_injections,
         connector,
+        discord_slash,
     };
 
     let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
@@ -5788,6 +6129,7 @@ mod tests {
             testing: true,
             allow_injections: false,
             connector: None,
+            discord_slash: None,
         }
     }
 

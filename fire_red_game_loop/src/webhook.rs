@@ -113,6 +113,21 @@ pub enum WebhookEvent {
         timestamp: u64,
         message: String,
     },
+    /// All 8 badges obtained — run considered complete.
+    GameCleared {
+        player: String,
+        timestamp: u64,
+        /// Unix seconds when the run started — used to compute elapsed time.
+        started_at: u64,
+    },
+    /// A party member's friendship crossed the 220 evolution threshold.
+    FriendshipThreshold {
+        player: String,
+        timestamp: u64,
+        nickname: String,
+        species: String,
+        friendship: u8,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -132,6 +147,10 @@ enum WorkerTask {
         body: PostBody,
         event_type: String,
         run_id: Option<u32>,
+    },
+    DiscordEmbed {
+        url: String,
+        payload: String,
     },
     ObsClip,
     ObsScene(String),
@@ -240,6 +259,26 @@ fn render_template(template: &str, event: &WebhookEvent) -> String {
                 "",
                 "",
                 message.as_str(),
+            ),
+            WebhookEvent::GameCleared { player, timestamp, .. } => (
+                "game_cleared",
+                player.as_str(),
+                *timestamp,
+                None,
+                "",
+                "",
+                "",
+                "",
+            ),
+            WebhookEvent::FriendshipThreshold { player, timestamp, .. } => (
+                "friendship_threshold",
+                player.as_str(),
+                *timestamp,
+                None,
+                "",
+                "",
+                "",
+                "",
             ),
         };
     let ts = timestamp.to_string();
@@ -445,6 +484,15 @@ pub fn init(config: WebhookConfig, obs_config: ObsConfig) {
                         run_id, &event_type, &url, success, attempts.max(1), &payload,
                     );
                 }
+                WorkerTask::DiscordEmbed { url, payload } => {
+                    let result = client.post(&url)
+                        .header("content-type", "application/json")
+                        .body(payload.clone())
+                        .send();
+                    if let Err(e) = result {
+                        tracing::warn!("Discord embed POST to {url} failed: {e}");
+                    }
+                }
                 WorkerTask::ObsClip => obs_clip_inner(),
                 WorkerTask::ObsScene(scene) => obs_scene_inner(&scene),
             }
@@ -570,7 +618,25 @@ pub fn fire_event(event: WebhookEvent) {
             None,
             "nuzlocke_violation",
         ),
+        WebhookEvent::GameCleared { .. } => (
+            None,
+            None,
+            false,
+            None,
+            "game_cleared",
+        ),
+        WebhookEvent::FriendshipThreshold { .. } => (
+            None,
+            None,
+            false,
+            None,
+            "friendship_threshold",
+        ),
     };
+
+    // Discord rich embed — built before `event` is potentially consumed below.
+    let discord_embed = config.discord_webhook_url.as_ref()
+        .and_then(|url| build_discord_embed(&event).map(|p| (url.clone(), p)));
 
     if let Some(url) = url {
         let run_id = fire_red_database::get_active_run_id();
@@ -597,6 +663,103 @@ pub fn fire_event(event: WebhookEvent) {
     if let Some((title, body)) = notify_desktop {
         notify_send_inner(&title, &body);
     }
+
+    // Dispatch the pre-built Discord embed (if any).
+    if let Some((discord_url, payload)) = discord_embed {
+        let _ = state.tx.send(WorkerTask::DiscordEmbed { url: discord_url, payload });
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Discord embed builder
+// ---------------------------------------------------------------------------
+
+fn sprite_url(species: &str) -> String {
+    format!(
+        "https://img.pokemondb.net/sprites/home/normal/{}.png",
+        species.to_lowercase().replace(' ', "-").replace('.', "")
+    )
+}
+
+fn format_elapsed(secs: u64) -> String {
+    let h = secs / 3600;
+    let m = (secs % 3600) / 60;
+    if h > 0 { format!("{h}h {m}m") } else { format!("{m}m") }
+}
+
+/// Builds a Discord embed JSON payload for death/shiny/badge/game_cleared events.
+/// Returns `None` for events that don't warrant a Discord embed (catch, nickname_change, etc.).
+fn build_discord_embed(event: &WebhookEvent) -> Option<String> {
+    // Colors: death=red, shiny=gold, badge=blurple, game_cleared=green
+    let (title, description, color, thumbnail, run_id): (&str, String, u32, Option<String>, Option<u32>) =
+        match event {
+            WebhookEvent::Death { player, pokemon, .. } => (
+                "💀 Pokémon Fainted",
+                format!(
+                    "**{}** the {} (Lv.{}) has fainted in **{}**'s run",
+                    pokemon.nickname, pokemon.species, pokemon.level, player
+                ),
+                0xED4245,
+                Some(sprite_url(&pokemon.species)),
+                fire_red_database::get_active_run_id(),
+            ),
+            WebhookEvent::Shiny { player, pokemon, .. } => (
+                "✨ Shiny Encounter!",
+                format!(
+                    "A shiny **{}** (Lv.{}) appeared in **{}**'s run!",
+                    pokemon.species, pokemon.level, player
+                ),
+                0xFFD700,
+                Some(sprite_url(&pokemon.species)),
+                fire_red_database::get_active_run_id(),
+            ),
+            WebhookEvent::Badge { player, badge_name, .. } => (
+                "🏅 Badge Earned",
+                format!("**{}** earned the **{}**!", player, badge_name),
+                0x5865F2,
+                None,
+                fire_red_database::get_active_run_id(),
+            ),
+            WebhookEvent::GameCleared { player, timestamp, started_at } => {
+                let elapsed = format_elapsed(timestamp.saturating_sub(*started_at));
+                (
+                    "🏆 Run Complete!",
+                    format!("**{}** has defeated the Champion! Elapsed: {}", player, elapsed),
+                    0x57F287,
+                    None,
+                    fire_red_database::get_active_run_id(),
+                )
+            }
+            _ => return None,
+        };
+
+    // Optionally enrich with run name from DB.
+    let footer_text = run_id
+        .and_then(fire_red_database::get_run_info)
+        .map(|(name, _)| format!("Run: {name}"));
+
+    let embed = if let Some(url) = thumbnail {
+        serde_json::json!({
+            "embeds": [{
+                "title": title,
+                "description": description,
+                "color": color,
+                "thumbnail": { "url": url },
+                "footer": footer_text.as_deref().map(|t| serde_json::json!({ "text": t }))
+            }]
+        })
+    } else {
+        serde_json::json!({
+            "embeds": [{
+                "title": title,
+                "description": description,
+                "color": color,
+                "footer": footer_text.as_deref().map(|t| serde_json::json!({ "text": t }))
+            }]
+        })
+    };
+
+    Some(embed.to_string())
 }
 
 /// Fires a `notify-send` desktop notification (Linux only, best-effort).
