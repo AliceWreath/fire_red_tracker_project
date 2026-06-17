@@ -93,6 +93,7 @@ POSTs are fire-and-forget: dispatched on a dedicated background thread with a 5-
 | `wipe` | Every party member is dead and the run ends | `wipe_url` | `wipe_template` |
 | `badge` | A gym badge flag transitions from 0 → 1 in SaveBlock1 | `badge_url` | `badge_template` |
 | `nickname_change` | A party Pokémon's in-game nickname differs from the value stored in the database | `nickname_url` | `nickname_template` |
+| `friendship_threshold` | A party member's friendship byte crosses 220 (evolution / happiness threshold) | *(no URL config)* | *(no URL config)* |
 
 #### Default payload format
 
@@ -481,6 +482,11 @@ All endpoints are served on the same port as the WebSocket overlay (`--ws-port`)
 | `/api/run/:id/catch_log` | `GET` | Catch attempt log for run `id`. Returns `{ total_balls_thrown, most_balls_in_one_encounter, hardest_encounter, attempts: [...] }`. Each attempt records species, area, balls thrown, and whether the Pokémon was caught. Requires `--db` |
 | `/api/run/:id/difficulty` | `GET` | Composite run difficulty score 0–100 for run `id`. Components: death ratio (40 %), HP danger (30 %), catch miss rate (20 %), trainer load (10 %). Returns `{ difficulty, components, raw }`. Requires `--db` |
 | `/api/run/:id/area_times` | `GET` | Per-route time breakdown for run `id`. Areas sorted by total time descending, each with `formatted` duration string and `visits` count. Requires `--db` |
+| `/api/run/:id/death_map` | `GET` | Deaths grouped by area for run `id`. Returns `[{ "area": "...", "count": N }]` sorted descending. Areas recorded at death time; historical records without an area show as `"Unknown"`. Requires `--db` |
+| `/api/run/:id/level_curve` | `GET` | Average party level at each badge milestone for run `id`. Returns `[{ "badge_index", "badge_name", "avg_level", "levels": [...], "occurred_at" }]`. Requires `--db` |
+| `/api/run/:id/move_usage` | `GET` | Move use counts per Pokémon per slot for run `id`. Returns `[{ "personality", "move_slot", "move_name", "use_count" }]` sorted by `use_count` descending. Requires `--db` |
+| `/api/run/:id/friendship` | `GET` | Friendship change history for run `id` grouped by Pokémon. Returns `[{ "personality", "nickname", "species_name", "history": [{ "friendship", "logged_at" }] }]`. Requires `--db` |
+| `/api/slot/:index/ev_progress` | `GET` | Live EV totals for all party Pokémon in slot `index`. Returns per-mon `{ personality, nickname, species, hp, attack, defense, speed, sp_attack, sp_defense, total, remaining, *_capped, fully_trained }`. No DB required |
 
 ##### WebSocket payload filtering (`?show=`)
 
@@ -929,6 +935,17 @@ Add `http://localhost:9090/cmd` in a browser tab to manage runs — **End Run** 
 ---
 
 ## Project status
+
+**v0.9.53** — analytics: death heat map, level curve, move usage, friendship tracker, EV efficiency overlay:
+
+- **`GET /api/run/:id/death_map`** — deaths grouped by the area they occurred in, sorted descending by count. Returns `[{ "area": "Route 1", "count": 3 }]`. The `area_name` field on `dead_pokemon` is populated at death time via `get_area_name()`; historical records default to an empty string shown as "Unknown".
+- **`GET /api/run/:id/level_curve`** — average party level at each badge milestone. `check_for_new_badges` now logs a `party_snapshots` row whenever a badge is earned. Returns `[{ "badge_index": 0, "badge_name": "Boulder Badge", "avg_level": 14.2, "levels": [12,14,15], "occurred_at": 1748000000 }]`.
+- **`GET /api/run/:id/move_usage`** — move use counts per Pokémon per slot, sorted by `use_count` descending. PP-delta detection in the main loop tick upserts a `move_uses` row when current PP drops below the previous value. Returns `[{ "personality": …, "move_slot": 0, "move_name": "Tackle", "use_count": 14 }]`.
+- **`GET /api/run/:id/friendship`** — friendship change history grouped by Pokémon. The main loop appends a `friendship_log` row whenever a party member's friendship byte changes. When the value crosses 220 (evolution threshold), a `WebhookEvent::FriendshipThreshold` fires.
+- **`GET /api/slot/:index/ev_progress`** — live EV totals read directly from party memory (no DB). Returns per-mon `hp`/`attack`/`defense`/`speed`/`sp_attack`/`sp_defense` EVs, `total`, `remaining` cap, per-stat `*_capped` booleans (≥ 252), and `fully_trained` (total ≥ 510).
+- **Schema v19–v22** — `dead_pokemon.area_name` TEXT column (v19); `party_snapshots` table (v20); `move_uses` table with UNIQUE on `(run_id, player_name, personality, move_slot)` (v21); `friendship_log` table (v22).
+
+---
 
 **v0.9.24** — analytics endpoints and injection commands:
 
