@@ -62,6 +62,7 @@ enum HelixTask {
     CreatePoll { title: String, choices: Vec<String>, duration_secs: u32 },
     CreatePrediction { title: String, outcome_yes: String, outcome_no: String, window_secs: u32 },
     ResolvePrediction { outcome: PredictionResult },
+    CreateClip,
 }
 
 /// Outcome of a Twitch prediction: whether the poll result was "Yes" or "No".
@@ -97,17 +98,20 @@ pub fn init(config: TwitchHelixConfig) {
     }
 }
 
-/// Drop a VOD stream marker if `marker_on_death` is set.
+/// Drop a VOD stream marker (and optionally create a clip) if configured.
 pub fn on_death(species: &str, level: u8) {
     let Some(state) = STATE.get() else { return };
-    if !state.config.marker_on_death { return }
-    send(&state.tx, HelixTask::StreamMarker {
-        description: format!("Death: {} Lv.{}", species, level),
-    });
+    if state.config.marker_on_death {
+        send(&state.tx, HelixTask::StreamMarker {
+            description: format!("Death: {} Lv.{}", species, level),
+        });
+    }
+    if state.config.clip_on_death {
+        send(&state.tx, HelixTask::CreateClip);
+    }
 }
 
-/// Drop a VOD stream marker (and optionally open a poll/prediction) on shiny
-/// encounter. Call with `is_legendary = true` for legendary Pokémon.
+/// Drop a VOD stream marker and/or create a clip on shiny encounter.
 pub fn on_shiny_encounter(species: &str, is_legendary: bool) {
     let Some(state) = STATE.get() else { return };
     if state.config.marker_on_shiny {
@@ -115,17 +119,22 @@ pub fn on_shiny_encounter(species: &str, is_legendary: bool) {
             description: format!("Shiny {}!", species),
         });
     }
+    if state.config.clip_on_shiny {
+        send(&state.tx, HelixTask::CreateClip);
+    }
     maybe_poll_legendary(state, species, is_legendary);
 }
 
-/// Drop a VOD stream marker if `marker_on_badge` is set. Also resolves any
-/// open prediction with a "Yes" outcome (caught/won).
+/// Drop a VOD stream marker and/or create a clip when a badge is earned.
 pub fn on_badge(badge_name: &str) {
     let Some(state) = STATE.get() else { return };
     if state.config.marker_on_badge {
         send(&state.tx, HelixTask::StreamMarker {
             description: format!("{} Badge earned", badge_name),
         });
+    }
+    if state.config.clip_on_badge {
+        send(&state.tx, HelixTask::CreateClip);
     }
 }
 
@@ -200,6 +209,9 @@ fn run_worker(rx: std::sync::mpsc::Receiver<HelixTask>, config: &TwitchHelixConf
             }
             HelixTask::ResolvePrediction { outcome } => {
                 patch_prediction(&client, &bearer, config, outcome);
+            }
+            HelixTask::CreateClip => {
+                post_clip(&client, &bearer, config);
             }
         }
     }
@@ -379,5 +391,29 @@ fn patch_prediction(
             tracing::warn!("Twitch prediction resolve HTTP {status}: {text}");
         }
         Err(e) => tracing::warn!("Twitch prediction resolve request failed: {e}"),
+    }
+}
+
+fn post_clip(
+    client: &reqwest::blocking::Client,
+    bearer: &str,
+    config: &TwitchHelixConfig,
+) {
+    const HELIX_CLIPS: &str = "https://api.twitch.tv/helix/clips";
+    let url = format!("{HELIX_CLIPS}?broadcaster_id={}", config.broadcaster_id);
+    let result = helix_headers(client.post(&url), bearer, &config.client_id)
+        .header("Content-Length", "0")
+        .send();
+    match result {
+        Ok(r) if r.status().is_success() => {
+            let body = r.text().unwrap_or_default();
+            tracing::info!("Twitch clip created: {body}");
+        }
+        Ok(r) => {
+            let status = r.status();
+            let text = r.text().unwrap_or_default();
+            tracing::warn!("Twitch clip HTTP {status}: {text}");
+        }
+        Err(e) => tracing::warn!("Twitch clip request failed: {e}"),
     }
 }

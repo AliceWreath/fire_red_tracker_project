@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html>
+<!-- THEME_SLOT -->
+<head>
+<meta charset="utf-8">
+<title>Pokédex Counter</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body {
+    background: transparent;
+    font-family: 'Segoe UI', Tahoma, sans-serif;
+    color: #fff;
+    width: 100%; height: 100%;
+    display: flex; align-items: center; justify-content: center;
+    overflow: hidden;
+}
+#panel {
+    background: rgba(5, 15, 30, 0.88);
+    border: 1px solid rgba(80, 200, 120, 0.35);
+    border-radius: 10px;
+    padding: 14px 28px;
+    text-align: center;
+    min-width: 160px;
+    box-shadow: 0 4px 20px rgba(0,0,0,0.7);
+}
+#label {
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: #44cc88;
+    margin-bottom: 6px;
+}
+#count {
+    font-size: 56px;
+    font-weight: 900;
+    color: #66dd99;
+    line-height: 1;
+    text-shadow: 0 0 16px rgba(80, 200, 120, 0.5);
+}
+#total {
+    font-size: 18px;
+    font-weight: 600;
+    color: #448866;
+    margin-top: 2px;
+}
+#player { font-size: 11px; color: #555; margin-top: 6px; }
+#disconnected { display: none; font-size: 11px; color: #666; margin-top: 4px; }
+html[data-theme=light] #panel {
+    background: rgba(235, 255, 245, 0.92);
+    border-color: rgba(40, 160, 80, 0.4);
+    color: #111;
+}
+html[data-theme=light] #label  { color: #1a7a44; }
+html[data-theme=light] #count  { color: #1a8844; text-shadow: none; }
+html[data-theme=light] #total  { color: #2a5533; }
+html[data-theme=light] #player { color: #555; }
+</style>
+</head>
+<body>
+<div id="panel">
+  <div id="label">Pokédex</div>
+  <div id="count">–</div>
+  <div id="total"></div>
+  <div id="player"></div>
+  <div id="disconnected">disconnected</div>
+</div>
+<script>
+const _pathParts  = window.location.pathname.split('/').filter(Boolean);
+const _pathIndex  = parseInt(_pathParts[0]);
+const _params     = new URLSearchParams(window.location.search);
+const playerIndex = !isNaN(_pathIndex) ? _pathIndex : parseInt(_params.get('slot') || '0');
+
+let currentRunId = null;
+
+async function fetchDex(runId) {
+    try {
+        const r = await fetch('/api/run/' + runId + '/dex');
+        const d = await r.json();
+        if (d.count !== undefined) {
+            document.getElementById('count').textContent = d.count;
+            document.getElementById('total').textContent = '/ 151';
+        }
+    } catch (_) {}
+}
+
+function handleState(slots) {
+    const slot   = slots[playerIndex];
+    const discEl = document.getElementById('disconnected');
+    const plEl   = document.getElementById('player');
+    if (!slot || !slot.connected) {
+        discEl.style.display = '';
+        return;
+    }
+    discEl.style.display = 'none';
+    plEl.textContent = slot.label || '';
+
+    const runId = slot.active_run_id;
+    if (runId && runId !== currentRunId) {
+        currentRunId = runId;
+        fetchDex(runId);
+    }
+}
+
+// Refresh dex count every 30 seconds while a run is active.
+setInterval(() => { if (currentRunId) fetchDex(currentRunId); }, 30000);
+
+let ws;
+let reconnectDelay = 1000;
+function connect() {
+    ws = new WebSocket('ws://' + location.host + '/ws');
+    ws.onopen    = () => { reconnectDelay = 1000; };
+    ws.onmessage = e => handleState(JSON.parse(e.data));
+    ws.onclose   = () => { setTimeout(connect, reconnectDelay); reconnectDelay = Math.min(reconnectDelay * 2, 30000); };
+}
+connect();
+</script>
+</body>
+</html>

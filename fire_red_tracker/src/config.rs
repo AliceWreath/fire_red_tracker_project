@@ -889,6 +889,7 @@ impl eframe::App for SetupApp {
                         notify_on_shiny: self.notify_on_shiny,
                         notify_on_wipe: self.notify_on_wipe,
                         discord_webhook_url: None,
+                        hmac_secret: None,
                     },
                     obs: ObsConfig {
                         host: self.obs_host.trim().to_string(),

@@ -959,6 +959,7 @@ impl WindowInfo {
                         notify_on_shiny: s.notify_on_shiny,
                         notify_on_wipe: s.notify_on_wipe,
                         discord_webhook_url: None,
+                        hmac_secret: None,
                     },
                     obs: ObsConfig {
                         host: s.obs_host.trim().to_string(),

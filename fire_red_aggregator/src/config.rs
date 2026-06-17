@@ -81,6 +81,18 @@ pub struct AggregatorConfig {
     /// Register with `POST /interactions` as your interactions endpoint URL.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub discord_slash: Option<DiscordSlashConfig>,
+    /// Discord persistent live-status embed. The bot edits a pinned message in a
+    /// channel every `update_interval_secs` seconds with current party/run info.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub discord_live_embed: Option<DiscordLiveEmbedConfig>,
+    /// Discord run thread: creates a new thread in a channel at run start and
+    /// posts milestone messages (badge, death, shiny, game_cleared) as replies.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub discord_run_thread: Option<DiscordRunThreadConfig>,
+    /// YouTube Live chat bot. Polls the YouTube Data API for new chat messages
+    /// and responds to `!party`, `!deaths`, `!shinies`, `!status`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub youtube_chat: Option<YouTubeChatConfig>,
 }
 
 /// Discord Application Commands configuration.
@@ -154,6 +166,71 @@ fn default_listen_port() -> u16 { 7878 }
 fn default_true() -> bool { true }
 fn default_retroarch_port() -> u16 { 55355 }
 fn is_default_retroarch_port(v: &u16) -> bool { *v == 55355 }
+/// Discord persistent live-status embed configuration.
+///
+/// ```toml
+/// [discord_live_embed]
+/// bot_token     = "Bot MTc..."
+/// channel_id    = 123456789012345678   # channel that holds the pinned message
+/// message_id    = 987654321098765432   # ID of the existing message to edit
+/// update_interval_secs = 30            # how often to refresh (default 30)
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DiscordLiveEmbedConfig {
+    /// Discord bot token (must have `Send Messages` and `Read Message History` in the channel).
+    pub bot_token: String,
+    /// Channel ID where the status message lives.
+    pub channel_id: u64,
+    /// ID of the existing message to edit. Create the initial message manually, then copy its ID.
+    pub message_id: u64,
+    /// How often to update the embed in seconds (default 30, minimum 10).
+    #[serde(default = "default_embed_interval")]
+    pub update_interval_secs: u64,
+}
+
+fn default_embed_interval() -> u64 { 30 }
+
+/// Discord run thread configuration.
+///
+/// ```toml
+/// [discord_run_thread]
+/// bot_token  = "Bot MTc..."
+/// channel_id = 123456789012345678   # channel to create threads in
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DiscordRunThreadConfig {
+    /// Discord bot token (must have `Create Public Threads` in the channel).
+    pub bot_token: String,
+    /// Channel ID where run threads will be created.
+    pub channel_id: u64,
+}
+
+/// YouTube Live chat bot configuration.
+///
+/// ```toml
+/// [youtube_chat]
+/// api_key      = "AIza..."                # YouTube Data API v3 key
+/// broadcast_id = "LIVE_BROADCAST_ID"      # YouTube Live broadcast ID (from the URL)
+/// slot         = 0                        # tracker slot index (default 0)
+/// poll_secs    = 15                       # polling interval in seconds (default 15)
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct YouTubeChatConfig {
+    /// YouTube Data API v3 key (restricted to YouTube Data API v3).
+    pub api_key: String,
+    /// YouTube Live broadcast ID. Found in the live broadcast URL:
+    /// `https://www.youtube.com/watch?v=<broadcast_id>`.
+    pub broadcast_id: String,
+    /// Tracker slot index to read live state from (default 0).
+    #[serde(default)]
+    pub slot: usize,
+    /// How often to poll the YouTube API in seconds (default 15, min 5).
+    #[serde(default = "default_yt_poll_secs")]
+    pub poll_secs: u64,
+}
+
+fn default_yt_poll_secs() -> u64 { 15 }
+
 fn default_poll_ms_agg() -> u64 { 100 }
 fn is_default_poll_ms_agg(v: &u64) -> bool { *v == 100 }
 fn default_livesplit_port() -> u16 { 16834 }
@@ -532,6 +609,9 @@ impl eframe::App for SetupApp {
                         livesplit_port: 16834,
                         livesplit_split_on_badges: false,
                         discord_slash: None,
+                        discord_live_embed: None,
+                        discord_run_thread: None,
+                        youtube_chat: None,
                     });
                     self.should_close = true;
                 }

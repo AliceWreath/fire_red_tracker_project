@@ -16,10 +16,12 @@ mod app;
 mod client;
 mod config;
 mod direct;
+mod discord_live;
 mod eventsub;
 mod rom_fetch;
 mod twitch;
 mod web;
+mod youtube_chat;
 
 use app::AggregatorApp;
 use clap::Parser;
@@ -337,6 +339,21 @@ fn main() {
 
     let backup_dir = cfg_ref.backup_dir.clone();
 
+    // YouTube Live chat bot.
+    if let Some(yt_cfg) = cfg_ref.youtube_chat.clone() {
+        youtube_chat::spawn(yt_cfg, shared_slots.clone(), db.clone());
+    }
+
+    // Discord persistent live embed.
+    if let Some(embed_cfg) = cfg_ref.discord_live_embed.clone() {
+        discord_live::spawn_live_embed(embed_cfg, shared_slots.clone());
+    }
+
+    // Discord run thread.
+    if let Some(thread_cfg) = cfg_ref.discord_run_thread.clone() {
+        discord_live::spawn_run_thread(thread_cfg, shared_slots.clone());
+    }
+
     // Discord slash commands — register at startup if configured.
     let discord_slash = cfg_ref.discord_slash.clone();
     if let Some(ref slash_cfg) = discord_slash {
@@ -353,6 +370,7 @@ fn main() {
             backup_dir,
             livesplit_split_on_badges,
             discord_slash,
+            config_path: Some(config_path.to_string_lossy().into_owned()),
         });
     } else {
         // Normal egui window mode.

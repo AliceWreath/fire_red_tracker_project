@@ -181,6 +181,16 @@ wipe_template = '{"content": "☠️ **{player}**'\''s run has ended. Press F."}
 
 The `*_template` keys are optional even when the corresponding `*_url` is set — omitting a template falls back to the default JSON payload. The `[webhooks]` section is omitted from the config file entirely when all URLs and templates are unset.
 
+#### Webhook HMAC signing
+
+Set the optional `hmac_secret` key in `[webhooks]` to enable request signing. When set, every outbound POST includes an `X-Hub-Signature-256` header containing `sha256=<hex>` where `<hex>` is the HMAC-SHA256 of the raw request body keyed with the secret. Receiving services should verify this header before processing the payload.
+
+```toml
+[webhooks]
+hmac_secret    = "mysecret"
+death_url      = "https://example.com/webhook"
+```
+
 ### Twitch chat bot
 
 The aggregator can respond to viewer chat commands in a Twitch channel. Configure the optional `[twitch]` section in `~/.config/fire_red_aggregator/config.toml`:
@@ -208,7 +218,9 @@ Supported viewer commands:
 | `!map`       | Player's current map / location name                                             |
 | `!encounter` | Current route's encounter table — species and percentage rates                   |
 | `!luck`      | Shiny count / total encounters with expected-rate comparison (requires DB)       |
-| `!timer`     | Elapsed HH:MM:SS from run start (requires DB)                                    |
+| `!timer`     | Elapsed HH:MM:SS from run start (requires DB)                                   |
+| `!box`       | PC box Pokémon count with species list (requires DB)                             |
+| `!run`       | Current run ID, caught count, and death count (requires DB)                      |
 
 The bot reconnects automatically on disconnect, with exponential backoff from 2 seconds up to 60 seconds. The OAuth token is stored in plaintext in the TOML config — keep this file private. The `[twitch]` section works in both headless (`--ws-port`) and GUI modes.
 
@@ -228,6 +240,10 @@ marker_on_death  = true    # drop a VOD marker when a party member faints
 marker_on_shiny  = true    # drop a VOD marker on a shiny encounter
 marker_on_badge  = true    # drop a VOD marker when a gym badge is earned
 
+clip_on_death  = true      # create a Twitch clip when a party member faints
+clip_on_shiny  = true      # create a Twitch clip on a shiny encounter
+clip_on_badge  = true      # create a Twitch clip when a gym badge is earned
+
 poll_on_legendary        = true   # auto-open a poll on legendary encounters ("Catch the Mewtwo?")
 poll_duration_secs       = 60     # how long the poll stays open (default: 60)
 
@@ -238,6 +254,46 @@ prediction_window_secs   = 120    # prediction window before auto-cancel (defaul
 Required OAuth scopes: `channel:manage:broadcast` (markers), `channel:manage:polls` (polls), `channel:manage:predictions` (predictions).
 
 Helix calls are dispatched on a background thread and never block the game-polling loop. Predictions are resolved automatically: "Yes" (caught) when the Pokémon joins the party, "No" (escaped) when the party wipes. Legendaries checked: Articuno (144), Zapdos (145), Moltres (146), Mewtwo (150), Mew (151), Raikou (243), Entei (244), Suicune (245), Lugia (249), Ho-Oh (250), Celebi (251).
+
+### Discord live status embed
+
+The aggregator can maintain a pinned Discord message that shows the current party state for all connected trackers. Configure the optional `[discord_live_embed]` section in `~/.config/fire_red_aggregator/config.toml`:
+
+```toml
+[discord_live_embed]
+bot_token            = "Bot xxxx"       # Discord bot token (prefix "Bot " is optional)
+channel_id           = 123456789012345678
+message_id           = 987654321098765432  # ID of the existing pinned message to edit
+update_interval_secs = 30               # how often to push an update (minimum: 10)
+```
+
+The bot edits the pinned message with an embed showing each player's badge count and current party. Requires `Send Messages` + `Read Message History` permissions in the target channel. Create the initial message manually; the bot only edits, never creates.
+
+### Discord run threads
+
+The aggregator can open a dedicated Discord thread for each new Nuzlocke run and post badge milestone messages as the run progresses. Configure the optional `[discord_run_thread]` section:
+
+```toml
+[discord_run_thread]
+bot_token  = "Bot xxxx"
+channel_id = 123456789012345678   # forum or text channel where threads are created
+```
+
+A new thread named `"Run #N — PlayerName"` is created when a new run ID is detected. Subsequent badge events post milestone replies (e.g. "🏅 Badge #3 earned!") into the thread. Requires `Create Public Threads` permission.
+
+### YouTube Live chat bot
+
+The aggregator can poll a YouTube Live Chat and respond to viewer commands. Configure the optional `[youtube_chat]` section:
+
+```toml
+[youtube_chat]
+api_key      = "AIza..."        # YouTube Data API v3 key
+broadcast_id = "dQw4w9WgXcQ"   # YouTube video ID for the live broadcast
+slot         = 0                # which tracker slot to read (default: 0)
+poll_secs    = 5                # polling interval (default: 5)
+```
+
+Supported commands match the Twitch IRC bot: `!party`, `!deaths`, `!shinies`, `!status`. Responses are posted back to the live chat using the same API key (requires `youtube.force-ssl` OAuth scope if posting; read-only polling requires only an API key). The bot polls for new messages on a background thread with no impact on the game-polling loop.
 
 ---
 
@@ -394,6 +450,10 @@ The following pages are available:
 | `http://localhost:PORT/alerts` | Slot 0 alerts overlay — shorthand for `/0/alerts`; append `?slot=N` to target a different player |
 | `http://localhost:PORT/about` | Version info and quick reference — tracker version, available pages, themes, and REST API summary |
 | `http://localhost:PORT/join` | Direct mode join page — allows a remote player to connect their RetroArch instance to the aggregator without pre-configuration. Only available when direct mode is enabled (`--direct` flag or `direct_mode = true` in config). |
+| `http://localhost:PORT/0/dex` | Player 1's Pokédex caught-species counter — species count for the active run, updated every 30 seconds |
+| `http://localhost:PORT/1/dex` | Player 2's Pokédex caught-species counter |
+| `http://localhost:PORT/0/typechart` | Gen III 17×17 type effectiveness chart — static overlay, no WebSocket needed |
+| `http://localhost:PORT/1/typechart` | Same type chart for player 2's browser source slot |
 
 The per-player pages can all be added as separate Browser Sources in OBS and positioned independently. The alerts overlay is fully transparent when idle — nothing appears until an event fires.
 
@@ -487,6 +547,16 @@ All endpoints are served on the same port as the WebSocket overlay (`--ws-port`)
 | `/api/run/:id/move_usage` | `GET` | Move use counts per Pokémon per slot for run `id`. Returns `[{ "personality", "move_slot", "move_name", "use_count" }]` sorted by `use_count` descending. Requires `--db` |
 | `/api/run/:id/friendship` | `GET` | Friendship change history for run `id` grouped by Pokémon. Returns `[{ "personality", "nickname", "species_name", "history": [{ "friendship", "logged_at" }] }]`. Requires `--db` |
 | `/api/slot/:index/ev_progress` | `GET` | Live EV totals for all party Pokémon in slot `index`. Returns per-mon `{ personality, nickname, species, hp, attack, defense, speed, sp_attack, sp_defense, total, remaining, *_capped, fully_trained }`. No DB required |
+| `/api/run/:id/type_matchups` | `GET` | Move-type usage heatmap for run `id` — 17-type distribution of move types recorded across all `move_uses` entries. Requires `--db` |
+| `/api/run/:id/vs/:ghost_id` | `GET` | Ghost-run comparison for run `id` against `ghost_id`. Returns badge-milestone timing and average party level at each badge for both runs side-by-side. Requires `--db` |
+| `/api/slot/:index/shiny_pressure` | `GET` | Cumulative shiny pressure for the active run on slot `index` — encounters-without-shiny count per area. No DB required |
+| `/api/run/:id/status_log` | `GET` | Status condition event log for run `id`. Returns `[{ personality, nickname, status_name, event (onset\|clear), occurred_at }]`. Requires `--db` |
+| `/api/run/:id/dex` | `GET` | Pokédex progress for run `id`. Returns `{ count, species: [{ species_id, species_name }] }` — distinct species caught during the run. Requires `--db` |
+| `/api/run/:id/share` | `POST` | Create a 24-hour public share token for run `id`. Returns `{ "token": "...", "expires_at": <unix> }`. Token is stored as a `meta` key. Requires `--db` |
+| `/share/:token/state` | `GET` | Resolve a share token and return run stats for the linked run. Returns `404` when the token is expired or not found. No authentication required |
+| `/api/config/reload` | `POST` | Re-read and validate the aggregator config file from disk. Returns `{ "ok": true, "path": "...", "db": bool }` or an error description. No live state is hot-swapped |
+| `/api/webhook/donation` | `POST` | Donation trigger bridge. Body: `{ "type": "...", "amount": <f64>, "name": "..." }`. Broadcasts a `donation` WebSocket event to all overlay clients. Append `?heal_on_donation=true` to also queue `HealParty` for all connected slots. No DB required |
+| `/api/savefile` | `POST` | Parse a raw Gen III `.sav` file (raw bytes, `Content-Type: application/octet-stream`). Returns `{ "player_name": "..." }` decoded from the save header. No DB required |
 
 ##### WebSocket payload filtering (`?show=`)
 
@@ -654,7 +724,7 @@ A **Soul Link** is a Nuzlocke variant played with a partner: each player's catch
 | `once_cell` | Lazy static initialisation for shared name buffers and ROM data |
 | `reqwest` | Blocking HTTP client used by the tracker's webhook sender to POST event payloads; TLS via rustls |
 | `tungstenite` | Plain TCP WebSocket client (no TLS, no default features) used by the OBS clip trigger in `webhook.rs` to speak the OBS WebSocket v5 protocol |
-| `sha2` | SHA-256 implementation used when computing OBS WebSocket authentication tokens |
+| `sha2` | SHA-256 used for OBS WebSocket authentication, webhook HMAC-SHA256 signing (`X-Hub-Signature-256`), and share-token generation in `fire_red_database` |
 
 ---
 
@@ -935,6 +1005,28 @@ Add `http://localhost:9090/cmd` in a browser tab to manage runs — **End Run** 
 ---
 
 ## Project status
+
+**v0.9.54** — streaming integrations, analytics heatmaps, Pokédex overlay, share tokens, donation bridge:
+
+- **Discord live status embed** — `[discord_live_embed]` in `~/.config/fire_red_aggregator/config.toml`. A background thread edits a pinned Discord message every N seconds with the current badge count and party for all connected trackers.
+- **Discord run threads** — `[discord_run_thread]`. Creates a Discord thread per run and posts badge milestone messages (e.g. "🏅 Badge #3 earned!") as the run progresses.
+- **YouTube Live chat bot** — `[youtube_chat]`. Polls the YouTube Live Chat API and responds to `!party`, `!deaths`, `!shinies`, `!status` using the same logic as the Twitch IRC bot.
+- **Twitch clip triggers** — `clip_on_death`, `clip_on_shiny`, `clip_on_badge` in `[twitch_helix]`. Calls `POST /helix/clips` on the relevant event to create a VOD clip.
+- **`!box` and `!run` Twitch / YouTube IRC commands** — `!box` lists PC box Pokémon count and species; `!run` returns the current run ID, caught count, and death count.
+- **Webhook HMAC signing** — `hmac_secret` in `[webhooks]`. When set, every outbound webhook POST includes `X-Hub-Signature-256: sha256=<hex>` for receiver verification.
+- **Donation trigger bridge** — `POST /api/webhook/donation`. Accepts `{ type, amount, name }` from a donation alert service, broadcasts a WS event to overlays, and optionally heals the party (`?heal_on_donation=true`).
+- **Status condition log** — `GET /api/run/:id/status_log`. The game loop tracks SLP/PSN/BRN/FRZ/PAR/TOX onset/clear per Pokémon each tick and writes to a new `status_events` table (schema v23).
+- **Type matchup heatmap** — `GET /api/run/:id/type_matchups`. Aggregates `move_uses` data into a 17-type distribution showing which move types the team relied on most.
+- **Ghost-run comparison** — `GET /api/run/:id/vs/:ghost_id`. Compares badge-milestone timing and average party level curves for two runs side-by-side.
+- **Cumulative shiny pressure** — `GET /api/slot/:index/shiny_pressure`. Per-area encounters-without-shiny count for the active run.
+- **Pokédex REST endpoint** — `GET /api/run/:id/dex`. Returns the count and list of distinct species caught during the run.
+- **Pokédex counter overlay** — `GET /:index/dex`. OBS Browser Source displaying the Pokédex caught-species count; auto-refreshes every 30 seconds via REST.
+- **Type chart overlay** — `GET /:index/typechart`. Static Gen III 17×17 type effectiveness chart rendered in-browser; no WebSocket required.
+- **Config hot-reload** — `POST /api/config/reload`. Validates the aggregator config file on disk and reports parsed field summary without requiring a restart.
+- **Public share URL** — `POST /api/run/:id/share` issues a 24-hour token; `GET /share/:token/state` returns run stats with no authentication for sharing with viewers.
+- **Savefile snapshot import** — `POST /api/savefile`. Parses a raw Gen III `.sav` file and returns the decoded player name.
+
+---
 
 **v0.9.53** — analytics: death heat map, level curve, move usage, friendship tracker, EV efficiency overlay:
 

@@ -142,6 +142,8 @@ fn handle_privmsg(
         "!encounter" => Some(cmd_encounter(slot_idx, slots)),
         "!luck"      => Some(cmd_luck(slot_idx, slots, db_conn)),
         "!timer"     => Some(cmd_timer(slot_idx, slots)),
+        "!run"       => Some(cmd_run(slot_idx, slots)),
+        _ if cmd.starts_with("!box") => Some(cmd_box(slot_idx, slots, &cmd)),
         _ => None,
     }
 }
@@ -150,7 +152,7 @@ fn handle_privmsg(
 // Command implementations
 // ---------------------------------------------------------------------------
 
-fn cmd_party(slot_idx: usize, slots: &SharedSlots) -> String {
+pub(crate) fn cmd_party(slot_idx: usize, slots: &SharedSlots) -> String {
     let snap = slots.lock_or_recover().clone();
     let Some(slot) = snap.get(slot_idx) else {
         return "No tracker connected.".to_string();
@@ -190,7 +192,7 @@ fn cmd_party(slot_idx: usize, slots: &SharedSlots) -> String {
     }
 }
 
-fn cmd_deaths(slot_idx: usize, slots: &SharedSlots) -> String {
+pub(crate) fn cmd_deaths(slot_idx: usize, slots: &SharedSlots) -> String {
     let snap = slots.lock_or_recover().clone();
     let Some(slot) = snap.get(slot_idx) else {
         return "No tracker connected.".to_string();
@@ -225,7 +227,7 @@ fn cmd_deaths(slot_idx: usize, slots: &SharedSlots) -> String {
     )
 }
 
-fn cmd_shinies(slot_idx: usize, slots: &SharedSlots, db_conn: Option<&str>) -> String {
+pub(crate) fn cmd_shinies(slot_idx: usize, slots: &SharedSlots, db_conn: Option<&str>) -> String {
     let Some(conn) = db_conn else {
         return "Shinies require a database connection.".to_string();
     };
@@ -431,7 +433,7 @@ fn cmd_map(slot_idx: usize, slots: &SharedSlots) -> String {
     format!("{label} is in {zone}")
 }
 
-fn cmd_status(slot_idx: usize, slots: &SharedSlots) -> String {
+pub(crate) fn cmd_status(slot_idx: usize, slots: &SharedSlots) -> String {
     let snap = slots.lock_or_recover().clone();
     let Some(slot) = snap.get(slot_idx) else {
         return "No tracker connected.".to_string();
@@ -571,6 +573,77 @@ fn cmd_timer(slot_idx: usize, slots: &SharedSlots) -> String {
     let s = elapsed % 60;
     let status = if ended_at.is_some() { " (ended)" } else { "" };
     format!("{label} run timer: {:02}:{:02}:{:02}{status}", h, m, s)
+}
+
+fn cmd_run(slot_idx: usize, slots: &SharedSlots) -> String {
+    let snap = slots.lock_or_recover().clone();
+    let Some(slot) = snap.get(slot_idx) else {
+        return "No tracker connected.".to_string();
+    };
+    let Some(ref db) = slot.db else {
+        return "Run info requires a database connection.".to_string();
+    };
+    let Some((run_id, player_name, started_at, ended_at, death_count, _catch_count)) =
+        db.run_summary()
+    else {
+        return "No active run.".to_string();
+    };
+    let now = fire_red_database::unix_now();
+    let elapsed = ended_at.unwrap_or(now).saturating_sub(started_at);
+    let h = elapsed / 3600;
+    let m = (elapsed % 3600) / 60;
+    let s = elapsed % 60;
+    let badge_count = {
+        let state_guard = slot.state.lock_or_recover();
+        state_guard
+            .as_ref()
+            .and_then(|gs| gs.badge_state.as_ref())
+            .map(|b| b.badges.iter().filter(|&&v| v).count())
+            .unwrap_or(0)
+    };
+    let ended_marker = if ended_at.is_some() { " [ended]" } else { "" };
+    format!(
+        "Run #{run_id} ({player_name}) — {h:02}:{m:02}:{s:02}{ended_marker} — {death_count} deaths — {badge_count}/8 badges"
+    )
+}
+
+fn cmd_box(slot_idx: usize, slots: &SharedSlots, cmd: &str) -> String {
+    let snap = slots.lock_or_recover().clone();
+    let Some(slot) = snap.get(slot_idx) else {
+        return "No tracker connected.".to_string();
+    };
+    // Parse box number: "!box 3" or "!box3"
+    let n: usize = cmd
+        .trim_start_matches("!box")
+        .trim()
+        .parse::<usize>()
+        .unwrap_or(1)
+        .saturating_sub(1); // convert 1-based to 0-based
+
+    let box_data = slot.box_data.lock_or_recover().clone();
+    let in_box: Vec<String> = box_data
+        .iter()
+        .filter(|e| e.box_index as usize == n)
+        .map(|e| {
+            let species = e.species_name.trim_matches('\0');
+            let nick = e.nickname.trim_matches('\0');
+            if nick.is_empty() || nick == species {
+                species.to_string()
+            } else {
+                format!("{nick} ({species})")
+            }
+        })
+        .collect();
+
+    if in_box.is_empty() {
+        return format!("Box {} is empty.", n + 1);
+    }
+    let result = format!("Box {}: {}", n + 1, in_box.join(", "));
+    if result.len() > 450 {
+        format!("{}…", &result[..449])
+    } else {
+        result
+    }
 }
 
 #[cfg(test)]

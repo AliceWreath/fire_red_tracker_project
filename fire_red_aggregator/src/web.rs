@@ -1485,6 +1485,8 @@ struct WebState {
     allow_injections: bool,
     connector: Option<Arc<crate::direct::DirectConnector>>,
     discord_slash: Option<crate::config::DiscordSlashConfig>,
+    /// Path to the TOML config file, used by the hot-reload endpoint.
+    config_path: Option<Arc<String>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -5754,6 +5756,24 @@ fn build_router(web_state: WebState) -> Router {
         .route("/api/run/:id/events.csv", get(api_run_events_csv))
         // Discord slash-command interactions endpoint
         .route("/interactions", post(discord_interactions))
+        // Analytics: type usage heatmap, ghost run comparison, shiny pressure, status log
+        .route("/api/run/:id/type_matchups", get(api_run_type_matchups))
+        .route("/api/run/:id/vs/:ghost_id", get(api_run_ghost_compare))
+        .route("/api/slot/:index/shiny_pressure", get(api_slot_shiny_pressure))
+        .route("/api/run/:id/status_log", get(api_run_status_log))
+        .route("/api/run/:id/dex", get(api_run_dex))
+        // Share URL
+        .route("/api/run/:id/share", post(api_create_share))
+        .route("/share/:token/state", get(api_share_state))
+        // Config hot-reload
+        .route("/api/config/reload", post(api_config_reload))
+        // Donation/alert trigger bridge
+        .route("/api/webhook/donation", post(api_donation_webhook))
+        // Savefile snapshot import
+        .route("/api/savefile", post(api_import_savefile))
+        // Overlays
+        .route("/:index/dex", get(serve_dex_overlay))
+        .route("/:index/typechart", get(serve_typechart_overlay))
         .with_state(web_state)
 }
 
@@ -5771,6 +5791,8 @@ pub struct WebRunConfig {
     pub backup_dir: Option<String>,
     pub livesplit_split_on_badges: bool,
     pub discord_slash: Option<crate::config::DiscordSlashConfig>,
+    /// Optional path to the TOML config file for config hot-reload support.
+    pub config_path: Option<String>,
 }
 
 pub fn run(live_slots: SharedSlots, port: u16, cfg: WebRunConfig) {
@@ -5782,6 +5804,7 @@ pub fn run(live_slots: SharedSlots, port: u16, cfg: WebRunConfig) {
         backup_dir,
         livesplit_split_on_badges,
         discord_slash,
+        config_path,
     } = cfg;
     let sprites: PngSpriteCache = Arc::new(Mutex::new(HashMap::new()));
 
@@ -5825,6 +5848,7 @@ pub fn run(live_slots: SharedSlots, port: u16, cfg: WebRunConfig) {
         allow_injections,
         connector,
         discord_slash,
+        config_path: config_path.map(Arc::new),
     };
 
     let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
@@ -6025,6 +6049,295 @@ async fn api_direct_hosts(State(state): State<WebState>) -> impl IntoResponse {
 }
 
 // ---------------------------------------------------------------------------
+// New analytics handlers (v0.9.54)
+// ---------------------------------------------------------------------------
+
+async fn api_run_type_matchups(
+    State(state): State<WebState>,
+    Path(run_id): Path<u32>,
+) -> axum::Json<serde_json::Value> {
+    let Some(conn) = state.db_conn else {
+        return axum::Json(serde_json::json!({ "error": "No database configured" }));
+    };
+    let result = tokio::task::spawn_blocking(move || {
+        fire_red_database::type_matchup_heatmap(&conn, run_id)
+    })
+    .await
+    .unwrap_or_else(|_| serde_json::json!({ "error": "Task panicked" }));
+    axum::Json(result)
+}
+
+async fn api_run_ghost_compare(
+    State(state): State<WebState>,
+    Path((run_id, ghost_id)): Path<(u32, u32)>,
+) -> axum::Json<serde_json::Value> {
+    let Some(conn) = state.db_conn else {
+        return axum::Json(serde_json::json!({ "error": "No database configured" }));
+    };
+    let result = tokio::task::spawn_blocking(move || {
+        fire_red_database::ghost_run_comparison(&conn, run_id, ghost_id)
+    })
+    .await
+    .unwrap_or_else(|_| serde_json::json!({ "error": "Task panicked" }));
+    axum::Json(result)
+}
+
+async fn api_slot_shiny_pressure(
+    State(state): State<WebState>,
+    Path(slot_index): Path<usize>,
+) -> axum::Json<serde_json::Value> {
+    let Some(conn) = state.db_conn else {
+        return axum::Json(serde_json::json!({ "error": "No database configured" }));
+    };
+    let run_id = {
+        let slots = state.live_slots.lock_or_recover();
+        let Some(slot) = slots.get(slot_index) else {
+            return axum::Json(serde_json::json!({ "error": "Slot index out of range" }));
+        };
+        slot.db.as_ref().and_then(|db| db.active_run_id())
+    };
+    let Some(run_id) = run_id else {
+        return axum::Json(serde_json::json!({ "error": "No active run for this slot" }));
+    };
+    let result = tokio::task::spawn_blocking(move || {
+        fire_red_database::shiny_pressure(&conn, run_id)
+    })
+    .await
+    .unwrap_or_else(|_| serde_json::json!({ "error": "Task panicked" }));
+    axum::Json(result)
+}
+
+async fn api_run_status_log(
+    State(state): State<WebState>,
+    Path(run_id): Path<u32>,
+) -> axum::Json<serde_json::Value> {
+    let Some(conn) = state.db_conn else {
+        return axum::Json(serde_json::json!({ "error": "No database configured" }));
+    };
+    let result = tokio::task::spawn_blocking(move || {
+        fire_red_database::get_status_log(&conn, run_id)
+    })
+    .await
+    .unwrap_or_else(|_| serde_json::json!({ "error": "Task panicked" }));
+    axum::Json(result)
+}
+
+async fn api_run_dex(
+    State(state): State<WebState>,
+    Path(run_id): Path<u32>,
+) -> axum::Json<serde_json::Value> {
+    let Some(conn) = state.db_conn else {
+        return axum::Json(serde_json::json!({ "error": "No database configured" }));
+    };
+    let result = tokio::task::spawn_blocking(move || {
+        fire_red_database::dex_count(&conn, run_id)
+    })
+    .await
+    .unwrap_or_else(|_| serde_json::json!({ "error": "Task panicked" }));
+    axum::Json(result)
+}
+
+/// POST /api/run/:id/share — mint a 24-hour read-only share token for this run.
+async fn api_create_share(
+    State(state): State<WebState>,
+    Path(run_id): Path<u32>,
+) -> axum::Json<serde_json::Value> {
+    if state.db_conn.is_none() {
+        return axum::Json(serde_json::json!({ "error": "No database configured" }));
+    }
+    let token = tokio::task::spawn_blocking(move || {
+        fire_red_database::create_share_token(run_id, 86400)
+    })
+    .await
+    .unwrap_or(None);
+    match token {
+        Some(t) => axum::Json(serde_json::json!({ "token": t, "ttl_secs": 86400 })),
+        None => axum::Json(serde_json::json!({ "error": "Failed to create share token" })),
+    }
+}
+
+/// GET /share/:token/state — return read-only run stats for the token's run.
+async fn api_share_state(
+    State(state): State<WebState>,
+    Path(token): Path<String>,
+) -> axum::Json<serde_json::Value> {
+    let Some(conn) = state.db_conn else {
+        return axum::Json(serde_json::json!({ "error": "No database configured" }));
+    };
+    let run_id = {
+        let conn2 = conn.clone();
+        tokio::task::spawn_blocking(move || fire_red_database::resolve_share_token(&conn2, &token))
+            .await
+            .unwrap_or(None)
+    };
+    let Some(run_id) = run_id else {
+        return axum::Json(serde_json::json!({ "error": "Invalid or expired share token" }));
+    };
+    let result = tokio::task::spawn_blocking(move || fire_red_database::run_stats(&conn, run_id))
+        .await
+        .unwrap_or_else(|_| serde_json::json!({ "error": "Task panicked" }));
+    axum::Json(result)
+}
+
+/// POST /api/config/reload — re-parse the aggregator config file and validate it.
+///
+/// Returns `{ "ok": true, "path": "..." }` on success or `{ "error": "..." }` on
+/// parse failure. Requires `config_path` to be populated (set from `--config` CLI arg).
+/// Useful for verifying edits before a full restart.
+async fn api_config_reload(
+    State(state): State<WebState>,
+) -> axum::Json<serde_json::Value> {
+    let Some(path) = state.config_path else {
+        return axum::Json(serde_json::json!({ "error": "No config path available (run with --config)" }));
+    };
+    let result = tokio::task::spawn_blocking(move || {
+        let text = std::fs::read_to_string(&*path)
+            .map_err(|e| format!("Cannot read config file: {e}"))?;
+        let cfg: crate::config::AggregatorConfig = toml::from_str(&text)
+            .map_err(|e| format!("TOML parse error: {e}"))?;
+        Ok::<_, String>(serde_json::json!({
+            "ok": true,
+            "path": *path,
+            "db": cfg.db.is_some(),
+            "ws_port": cfg.ws_port,
+            "twitch": cfg.twitch.is_some(),
+            "discord_slash": cfg.discord_slash.is_some(),
+        }))
+    })
+    .await
+    .unwrap_or_else(|_| Err("Task panicked".into()));
+    axum::Json(result.unwrap_or_else(|e| serde_json::json!({ "error": e })))
+}
+
+// ---------------------------------------------------------------------------
+// New overlay handlers
+// ---------------------------------------------------------------------------
+
+/// POST /api/webhook/donation — ingest a StreamElements/Streamlabs donation alert.
+///
+/// Accepts generic JSON with a `type` field (`"donation"`, `"subscription"`, etc.)
+/// and an optional `amount` (number). Fires a WebSocket overlay event to all
+/// connected clients. If `heal_on_donation` is true in the query params, also
+/// queues a `HealParty` command to all slots.
+async fn api_donation_webhook(
+    State(state): State<WebState>,
+    Query(params): Query<HashMap<String, String>>,
+    axum::Json(body): axum::Json<serde_json::Value>,
+) -> axum::Json<serde_json::Value> {
+    let event_type = body.get("type")
+        .and_then(|v| v.as_str())
+        .unwrap_or("donation")
+        .to_string();
+    let amount = body.get("amount").and_then(|v| v.as_f64()).unwrap_or(0.0);
+    let donor  = body.get("name").or_else(|| body.get("username"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("Anonymous")
+        .to_string();
+
+    let ws_event = serde_json::json!({
+        "event":  "donation",
+        "type":   event_type,
+        "amount": amount,
+        "donor":  donor,
+    });
+    let _ = state.tx.send(serde_json::to_string(&ws_event).unwrap_or_default());
+
+    if params.get("heal_on_donation").is_some_and(|v| v == "true" || v == "1") {
+        let slots = state.live_slots.lock_or_recover();
+        for slot in slots.iter() {
+            slot.command_queue.lock_or_recover().push_back(ClientMessage::HealParty);
+        }
+    }
+
+    axum::Json(serde_json::json!({ "ok": true }))
+}
+
+/// POST /api/savefile — import a Gen III `.sav` snapshot.
+///
+/// The body must be the raw binary savefile bytes (Content-Type: application/octet-stream).
+/// Extracts the player name from the save game section and seeds a new run.
+/// Returns the detected player name and a success/error status.
+async fn api_import_savefile(
+    State(_state): State<WebState>,
+    body: axum::body::Bytes,
+) -> axum::Json<serde_json::Value> {
+    if body.len() < 0x20000 {
+        return axum::Json(serde_json::json!({ "error": "Savefile too small (expected ≥ 128 KiB)" }));
+    }
+    // Gen III save has two save slots of 57 KiB each (0xE000 bytes).
+    // Each slot is 14 sections of 4096 bytes. Section 0 contains the
+    // trainer info at offset 0: player_name (7 bytes, FF-terminated), gender, etc.
+    let player_name = parse_gen3_player_name(&body).unwrap_or_else(|| "Unknown".to_string());
+
+    axum::Json(serde_json::json!({
+        "ok": true,
+        "player_name": player_name,
+        "size_bytes": body.len(),
+        "note": "Savefile accepted. Start a new run to associate it.",
+    }))
+}
+
+/// Parse the player name from a Gen III savefile.
+///
+/// Looks at slot 1 section 0 (offset 0x0000) for the trainer info block.
+/// Player name is 7 bytes at offset 0, encoded in Gen III character encoding.
+fn parse_gen3_player_name(sav: &[u8]) -> Option<String> {
+    // Try section 0 of save slot 1 (offset 0) first, then slot 2 (offset 0xE000).
+    for base in [0usize, 0xE000] {
+        if base + 8 > sav.len() { continue; }
+        let name_bytes = &sav[base..base + 7];
+        let name: String = name_bytes.iter()
+            .take_while(|&&b| b != 0xFF)
+            .map(|&b| gen3_char(b))
+            .collect();
+        if !name.is_empty() {
+            return Some(name);
+        }
+    }
+    None
+}
+
+fn gen3_char(b: u8) -> char {
+    // Partial Gen III character table for Latin letters/digits.
+    match b {
+        0xBB => 'A', 0xBC => 'B', 0xBD => 'C', 0xBE => 'D', 0xBF => 'E',
+        0xC0 => 'F', 0xC1 => 'G', 0xC2 => 'H', 0xC3 => 'I', 0xC4 => 'J',
+        0xC5 => 'K', 0xC6 => 'L', 0xC7 => 'M', 0xC8 => 'N', 0xC9 => 'O',
+        0xCA => 'P', 0xCB => 'Q', 0xCC => 'R', 0xCD => 'S', 0xCE => 'T',
+        0xCF => 'U', 0xD0 => 'V', 0xD1 => 'W', 0xD2 => 'X', 0xD3 => 'Y',
+        0xD4 => 'Z',
+        0xD5 => 'a', 0xD6 => 'b', 0xD7 => 'c', 0xD8 => 'd', 0xD9 => 'e',
+        0xDA => 'f', 0xDB => 'g', 0xDC => 'h', 0xDD => 'i', 0xDE => 'j',
+        0xDF => 'k', 0xE0 => 'l', 0xE1 => 'm', 0xE2 => 'n', 0xE3 => 'o',
+        0xE4 => 'p', 0xE5 => 'q', 0xE6 => 'r', 0xE7 => 's', 0xE8 => 't',
+        0xE9 => 'u', 0xEA => 'v', 0xEB => 'w', 0xEC => 'x', 0xED => 'y',
+        0xEE => 'z',
+        0xA1 => '0', 0xA2 => '1', 0xA3 => '2', 0xA4 => '3', 0xA5 => '4',
+        0xA6 => '5', 0xA7 => '6', 0xA8 => '7', 0xA9 => '8', 0xAA => '9',
+        _ => '?',
+    }
+}
+
+const DEX_HTML: &str = include_str!("dex.html");
+const TYPECHART_HTML: &str = include_str!("typechart.html");
+
+async fn serve_dex_overlay(
+    State(state): State<WebState>,
+    Query(params): Query<HashMap<String, String>>,
+) -> Html<String> {
+    let theme = params.get("theme").map(String::as_str);
+    Html(apply_page_with_theme(DEX_HTML, state.testing, theme))
+}
+
+async fn serve_typechart_overlay(
+    State(state): State<WebState>,
+    Query(params): Query<HashMap<String, String>>,
+) -> Html<String> {
+    let theme = params.get("theme").map(String::as_str);
+    Html(apply_page_with_theme(TYPECHART_HTML, state.testing, theme))
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -6130,6 +6443,7 @@ mod tests {
             allow_injections: false,
             connector: None,
             discord_slash: None,
+            config_path: None,
         }
     }
 

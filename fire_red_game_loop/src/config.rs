@@ -142,6 +142,11 @@ pub struct WebhookConfig {
     /// Discord embed (no bot token required — uses the Webhook Execute API).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub discord_webhook_url: Option<String>,
+    /// Optional HMAC-SHA256 signing secret. When set, every outgoing webhook
+    /// POST includes an `X-Tracker-Signature: sha256=<hex>` header so receivers
+    /// can verify payloads originated from this tracker.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hmac_secret: Option<String>,
 }
 
 impl WebhookConfig {
@@ -164,6 +169,7 @@ impl WebhookConfig {
             && !self.notify_on_shiny
             && !self.notify_on_wipe
             && self.discord_webhook_url.is_none()
+            && self.hmac_secret.is_none()
     }
 }
 
@@ -263,6 +269,15 @@ pub struct TwitchHelixConfig {
     pub prediction_on_legendary: bool,
     #[serde(default = "default_prediction_window_secs")]
     pub prediction_window_secs: u32,
+    /// Create a Twitch clip automatically on each death event (requires `clips:edit` scope).
+    #[serde(default)]
+    pub clip_on_death: bool,
+    /// Create a Twitch clip automatically on each shiny encounter.
+    #[serde(default)]
+    pub clip_on_shiny: bool,
+    /// Create a Twitch clip automatically when a new badge is earned.
+    #[serde(default)]
+    pub clip_on_badge: bool,
 }
 
 fn default_poll_duration_secs() -> u32 { 60 }

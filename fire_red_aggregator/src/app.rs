@@ -837,6 +837,9 @@ impl AggregatorApp {
                     livesplit_port: 16834,
                     livesplit_split_on_badges: false,
                     discord_slash: None,
+                    discord_live_embed: None,
+                    discord_run_thread: None,
+                    youtube_chat: None,
                 };
                 save_config(&cfg, &self.config_path);
                 self.settings_open = false;

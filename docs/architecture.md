@@ -156,26 +156,40 @@ Both modes can be running simultaneously — the aggregator detects whether `ws_
 |---------|--------|---------|--------|
 | tracker | memory | UDP snapshot of EWRAM + IWRAM | 100 ms |
 | tracker | box monitor | Reads all 420 box slots from EWRAM | 250 ms |
-| tracker | game-polling | Map, party, encounters, encounter detection, badge events | 100 ms |
+| tracker | game-polling | Map, party, encounters, encounter detection, badge/status events | 100 ms |
 | tracker | network (connected) | Reconnect loop; `handle_client` reader + writer | on connect |
+| tracker | webhook worker | Drains webhook channel; fires HTTP POSTs with retry + HMAC signing | event-driven |
+| tracker | Twitch Helix worker | Markers, polls, predictions, clip creation (optional) | event-driven |
 | aggregator | TCP listener | Accepts incoming tracker connections | blocking |
 | aggregator | per-tracker | `handle_tracker_connection` writer + reader | on connect |
 | aggregator | broadcast | Drains sprites, builds JSON, WS broadcast | 100 ms |
+| aggregator | Twitch IRC bot | IRC connection; dispatches `!party`/`!deaths`/`!shinies`/`!status`/`!box`/`!run` (optional) | event-driven |
+| aggregator | Channel Points EventSub | Twitch EventSub WebSocket; redeems mapped to run commands (optional) | event-driven |
+| aggregator | Discord live embed | Edits pinned Discord message with party/badge state (optional) | configurable interval |
+| aggregator | Discord run thread | Creates per-run threads; posts badge milestones (optional) | 5 s poll |
+| aggregator | YouTube chat bot | Polls YouTube Live Chat; responds to viewer commands (optional) | configurable poll |
 
 ## Database Schema Notes
 
-### Table inventory (schema v9)
+### Table inventory (schema v23)
 
 | Table | Key columns | Notes |
 |---|---|---|
 | `runs` | `id`, `player_name`, `started_at`, `ended_at` | One row per Nuzlocke run |
-| `dead_pokemon` | `run_id`, `player_name`, `personality`, `species_name`, `nickname`, `level`, `died_at`, IVs/EVs/stats | `ON CONFLICT (run_id, personality) DO NOTHING` |
-| `caught_pokemon` | `run_id`, `player_name`, `personality`, `species_name`, `nickname`, `level`, `met_location`, `caught_at`, IVs | `ON CONFLICT (run_id, personality) DO NOTHING` |
+| `dead_pokemon` | `run_id`, `player_name`, `personality`, `species_name`, `nickname`, `level`, `died_at`, `area_name`, IVs/EVs/stats | `ON CONFLICT (run_id, personality) DO NOTHING`; `area_name` added v19 |
+| `caught_pokemon` | `run_id`, `player_name`, `personality`, `species_name`, `nickname`, `level`, `met_location`, `caught_at`, IVs, `min_hp_seen_hp`, `min_hp_seen_max_hp` | `ON CONFLICT (run_id, personality) DO NOTHING`; HP-danger columns added v12 |
 | `encounters` | `run_id`, `player_name`, `map_group`, `map_name`, `species_name`, `level`, `caught`, `is_shiny`, `encountered_at` | First encounter per area; `ON CONFLICT DO NOTHING` |
-| `events` | `id`, `run_id`, `player_name`, `event_type`, `species_name`, `nickname`, `old_nickname`, `level`, `occurred_at` | `old_nickname` only populated for `nickname_change` events |
-| `webhook_log` | `run_id`, `event_type`, `url`, `success`, `attempts`, `payload`, `fired_at` | Written by webhook worker after every delivery attempt; indexed on `run_id` |
-| `soul_link_overrides` | `run_id`, `personality`, `partner_personality`, `created_at` | Manual soul-link pairings; takes precedence over auto-detection; cleared when a new run starts |
-| `meta` | `key`, `value` | Key-value store; `active_run_id` is the only key currently used |
+| `events` | `id`, `run_id`, `player_name`, `event_type`, `species_name`, `nickname`, `old_nickname`, `level`, `occurred_at`, `note` | `old_nickname` for `nickname_change`; `note` annotation column added v14 |
+| `webhook_log` | `run_id`, `event_type`, `url`, `success`, `attempts`, `payload`, `fired_at` | Written by webhook worker after every delivery attempt; indexed on `run_id` (v8) |
+| `soul_link_overrides` | `run_id`, `personality`, `partner_personality`, `created_at` | Manual soul-link pairings; cleared when a new run starts (v9) |
+| `trainer_battles` | `run_id`, `player_name`, `flag_index`, `trainer_name`, `location`, `defeated_at` | UNIQUE on `(run_id, player_name, flag_index)`; flags 0x100–0x3DF (v11) |
+| `catch_attempts` | `run_id`, `player_name`, `map_group`, `map_name`, `species_name`, `balls_thrown`, `caught`, `attempted_at` | One row per encounter resolution (v15) |
+| `area_visits` | `run_id`, `player_name`, `map_group`, `map_name`, `entered_at`, `exited_at` | Opened on map transition, closed on exit; used by `/api/run/:id/area_times` (v15) |
+| `party_snapshots` | `run_id`, `player_name`, `badge_index`, `badge_name`, `occurred_at`, `avg_level` | One row per badge earned; used by level-curve endpoint (v20) |
+| `move_uses` | `run_id`, `player_name`, `personality`, `move_slot`, `move_name`, `use_count` | UNIQUE on `(run_id, player_name, personality, move_slot)`; upserted on PP delta (v21) |
+| `friendship_log` | `run_id`, `player_name`, `personality`, `friendship`, `logged_at` | Appended when friendship byte changes; threshold event at 220 (v22) |
+| `status_events` | `run_id`, `player_name`, `personality`, `nickname`, `status_name`, `event_type`, `occurred_at` | `event_type` is `onset` or `clear`; indexed on `run_id` (v23) |
+| `meta` | `key`, `value` | Key-value store; `active_run_id` is the primary key; share tokens stored as `share:<token>` → `<run_id>:<expires_unix>` |
 
 ### Badge boot guard
 

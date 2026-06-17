@@ -57,6 +57,52 @@ use std::sync::OnceLock;
 use std::sync::mpsc::{Sender, channel};
 
 // ---------------------------------------------------------------------------
+// HMAC-SHA256 (no extra crate — implemented directly over sha2)
+// ---------------------------------------------------------------------------
+
+fn hmac_sha256(key: &[u8], data: &[u8]) -> [u8; 32] {
+    use sha2::{Digest, Sha256};
+    // Keys longer than the SHA-256 block size (64 bytes) are hashed first.
+    let key_hash;
+    let k: &[u8] = if key.len() > 64 {
+        key_hash = Sha256::digest(key);
+        &key_hash
+    } else {
+        key
+    };
+    let mut key_block = [0u8; 64];
+    key_block[..k.len()].copy_from_slice(k);
+    let mut ipad = key_block;
+    let mut opad = key_block;
+    for i in 0..64 {
+        ipad[i] ^= 0x36;
+        opad[i] ^= 0x5C;
+    }
+    let inner_hash = {
+        let mut h = Sha256::new();
+        h.update(ipad);
+        h.update(data);
+        h.finalize()
+    };
+    let outer_hash = {
+        let mut h = Sha256::new();
+        h.update(opad);
+        h.update(inner_hash);
+        h.finalize()
+    };
+    outer_hash.into()
+}
+
+fn hmac_hex(key: &[u8], data: &[u8]) -> String {
+    let mac = hmac_sha256(key, data);
+    mac.iter().fold(String::with_capacity(64), |mut s, b| {
+        use std::fmt::Write;
+        let _ = write!(s, "{b:02x}");
+        s
+    })
+}
+
+// ---------------------------------------------------------------------------
 // Public types
 // ---------------------------------------------------------------------------
 
@@ -147,6 +193,8 @@ enum WorkerTask {
         body: PostBody,
         event_type: String,
         run_id: Option<u32>,
+        /// Pre-computed HMAC-SHA256 hex string (empty string = no signature).
+        signature: String,
     },
     DiscordEmbed {
         url: String,
@@ -450,7 +498,7 @@ pub fn init(config: WebhookConfig, obs_config: ObsConfig) {
             .unwrap_or_else(|_| reqwest::blocking::Client::new());
         for task in rx {
             match task {
-                WorkerTask::Webhook { url, body, event_type, run_id } => {
+                WorkerTask::Webhook { url, body, event_type, run_id, signature } => {
                     // Serialize the payload once; Raw already has a string.
                     let payload = match &body {
                         PostBody::Raw(t)    => t.clone(),
@@ -460,12 +508,28 @@ pub fn init(config: WebhookConfig, obs_config: ObsConfig) {
                     let mut attempts = 0u32;
                     let mut success  = false;
                     loop {
+                        let sig_header = if signature.is_empty() {
+                            None
+                        } else {
+                            Some(format!("sha256={signature}"))
+                        };
                         let result = match &body {
-                            PostBody::Json(event) => client.post(&url).json(event).send(),
-                            PostBody::Raw(_)      => client.post(&url)
-                                .header("content-type", "application/json")
-                                .body(raw_text.clone().unwrap_or_default())
-                                .send(),
+                            PostBody::Json(event) => {
+                                let mut rb = client.post(&url).json(event);
+                                if let Some(ref sig) = sig_header {
+                                    rb = rb.header("X-Tracker-Signature", sig);
+                                }
+                                rb.send()
+                            }
+                            PostBody::Raw(_) => {
+                                let mut rb = client.post(&url)
+                                    .header("content-type", "application/json")
+                                    .body(raw_text.clone().unwrap_or_default());
+                                if let Some(ref sig) = sig_header {
+                                    rb = rb.header("X-Tracker-Signature", sig);
+                                }
+                                rb.send()
+                            }
                         };
                         match result {
                             Ok(_) => { success = true; break; }
@@ -475,7 +539,6 @@ pub fn init(config: WebhookConfig, obs_config: ObsConfig) {
                                     tracing::warn!("Webhook POST to {url} failed after {attempts} attempt(s): {e}");
                                     break;
                                 }
-                                // Exponential backoff: 1 s, 2 s between retries.
                                 std::thread::sleep(std::time::Duration::from_secs(1 << (attempts - 1)));
                             }
                         }
@@ -644,11 +707,20 @@ pub fn fire_event(event: WebhookEvent) {
             Some(t) => PostBody::Raw(render_template(t, &event)),
             None => PostBody::Json(event),
         };
+        // Pre-compute HMAC before moving `body` into the task.
+        let signature = config.hmac_secret.as_deref().map(|secret| {
+            let payload_str = match &body {
+                PostBody::Raw(t)   => t.clone(),
+                PostBody::Json(ev) => serde_json::to_string(ev).unwrap_or_default(),
+            };
+            hmac_hex(secret.as_bytes(), payload_str.as_bytes())
+        }).unwrap_or_default();
         let _ = state.tx.send(WorkerTask::Webhook {
             url: url.to_string(),
             body,
             event_type: event_type_str.to_string(),
             run_id,
+            signature,
         });
     }
 

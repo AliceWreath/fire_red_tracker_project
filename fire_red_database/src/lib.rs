@@ -1,5 +1,6 @@
 use fire_red_states::LockOrRecover;
 use postgres::{Client, NoTls};
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 
@@ -675,7 +676,7 @@ pub fn initialize_noop() {
 /// `initialize` has already been called.
 /// Increment this whenever a new migration or data-repair statement is added.
 /// `initialize` skips all SQL when the DB already records this version.
-const SCHEMA_VERSION: &str = "22";
+const SCHEMA_VERSION: &str = "23";
 
 pub fn initialize(connection_string: &str) -> Result<(), String> {
     // Accept bare `host/dbname` strings — prepend the scheme so callers don't have to.
@@ -1076,6 +1077,23 @@ pub fn initialize(connection_string: &str) -> Result<(), String> {
             logged_at    BIGINT    NOT NULL
         );
         CREATE INDEX IF NOT EXISTS friendship_log_run ON friendship_log (run_id, personality);
+
+        -- Migration v23: status condition change log (burn/paralysis/poison/freeze/sleep).
+        -- status_value is the raw Gen III status bitmask (bits 0-2=sleep, 3=PSN, 4=BRN, 5=FRZ, 6=PAR, 7=TOX).
+        -- event_type is 'onset' or 'clear'.
+        CREATE TABLE IF NOT EXISTS status_events (
+            id           BIGSERIAL PRIMARY KEY,
+            run_id       INTEGER   NOT NULL REFERENCES runs(id),
+            player_name  TEXT      NOT NULL DEFAULT '',
+            personality  BIGINT    NOT NULL,
+            nickname     TEXT      NOT NULL DEFAULT '',
+            species_name TEXT      NOT NULL DEFAULT '',
+            status_name  TEXT      NOT NULL DEFAULT '',
+            status_value INTEGER   NOT NULL DEFAULT 0,
+            event_type   TEXT      NOT NULL DEFAULT 'onset',
+            occurred_at  BIGINT    NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS status_events_run ON status_events (run_id, personality);
     ").map_err(|e| format!("Failed to create database schema: {e}"))?;
 
     // Record the schema version so future startups can skip all migrations.
@@ -5971,6 +5989,434 @@ pub fn log_friendship(
     ) {
         tracing::warn!("log_friendship: {e}");
     }
+}
+
+/// Log a status condition onset or clear. Uses the global DB connection.
+///
+/// `status_name` is a human-readable string such as `"BRN"`, `"PAR"`, `"PSN"`, etc.
+/// `event_type` is either `"onset"` or `"clear"`.
+pub fn log_status_event(
+    player_name: &str,
+    personality: u32,
+    nickname: &str,
+    species_name: &str,
+    status_name: &str,
+    status_value: u32,
+    event_type: &str,
+) {
+    let Some(db) = db() else { return };
+    let mut state = db.lock_or_recover();
+    let Some(run_id) = state.run_id else { return };
+    let now = unix_now();
+    if let Err(e) = state.client.execute(
+        "INSERT INTO status_events
+             (run_id, player_name, personality, nickname, species_name, status_name, status_value, event_type, occurred_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+        &[
+            &(run_id as i32),
+            &player_name,
+            &(personality as i64),
+            &nickname,
+            &species_name,
+            &status_name,
+            &(status_value as i32),
+            &event_type,
+            &(now as i64),
+        ],
+    ) {
+        tracing::warn!("log_status_event: {e}");
+    }
+}
+
+/// Returns the full status condition log for a run.
+///
+/// Each entry: `{ personality, nickname, species_name, status_name, event_type, occurred_at }`.
+pub fn get_status_log(conn_str: &str, run_id: u32) -> serde_json::Value {
+    let mut client = match Client::connect(conn_str, NoTls) {
+        Ok(c) => c,
+        Err(e) => return serde_json::json!({ "error": format!("DB connection failed: {e}") }),
+    };
+    let rows = match client.query(
+        "SELECT personality, nickname, species_name, status_name, status_value, event_type, occurred_at
+         FROM status_events
+         WHERE run_id = $1
+         ORDER BY occurred_at ASC",
+        &[&(run_id as i32)],
+    ) {
+        Ok(r) => r,
+        Err(e) => return serde_json::json!({ "error": format!("Query error: {e}") }),
+    };
+
+    let entries: Vec<serde_json::Value> = rows
+        .iter()
+        .map(|row| {
+            let at: i64 = row.get(6);
+            serde_json::json!({
+                "personality": row.get::<_, i64>(0) as u32,
+                "nickname":    row.get::<_, String>(1),
+                "species_name": row.get::<_, String>(2),
+                "status_name": row.get::<_, String>(3),
+                "status_value": row.get::<_, i32>(4),
+                "event_type":  row.get::<_, String>(5),
+                "occurred_at": at,
+                "timestamp":   format_timestamp(at as u64),
+            })
+        })
+        .collect();
+
+    serde_json::json!({ "run_id": run_id, "status_log": entries })
+}
+
+/// Gen III FireRed move type lookup table.
+///
+/// Index = move ID (1–354), value = type ID using the same 0–16 encoding as
+/// `fire_red_party_monitor::type_name` (0=Normal … 8=Steel, 9=Fire … 16=Dark).
+/// Index 0 is unused (no move has ID 0).
+#[rustfmt::skip]
+static MOVE_TYPES: [u8; 355] = [
+    //  0:unused
+    0,
+    //  1–10
+    0,  1,  0,  0,  0,  0,  9, 14, 12,  0,
+    //  11–20
+    0,  0,  0,  0,  0,  2,  2,  0,  2,  0,
+    //  21–30
+    0, 11,  0,  1,  0,  1,  1,  4,  0,  0,
+    //  31–40
+    0,  0,  0,  0,  0,  0,  0,  0,  0,  3,
+    //  41–50
+    6,  6,  0, 16,  0,  0,  0,  0,  0,  0,
+    //  51–60
+    3,  9,  9, 14, 10, 10, 10, 14, 14, 13,
+    //  61–70
+    10, 14,  0,  2,  2,  1,  1,  1,  1,  0,
+    //  71–80
+    11, 11, 11,  0, 11, 11,  3, 11, 11, 11,
+    //  81–90
+    6, 15,  9, 12, 12, 12, 12,  5,  4,  4,
+    //  91–100
+    4,  3, 13, 13, 13, 13, 13,  0,  0, 13,
+    // 101–110
+    7,  0,  0,  0,  0,  0,  0,  0,  7, 10,
+    // 111–120
+    0, 13, 13, 14, 13,  0,  0,  0,  2,  0,
+    // 121–130
+    0,  7,  3,  3,  4,  9, 10, 10,  0,  0,
+    // 131–140
+    0,  0, 13, 13,  0,  1,  0, 13,  3,  0,
+    // 141–150
+    6,  0,  2,  0, 10,  0, 11,  0, 13,  0,
+    // 151–160
+    3, 10,  0,  0,  4, 13,  5,  0,  0,  0,
+    // 161–170
+    0,  0,  0,  0,  0,  0,  1, 16,  6,  0,
+    // 171–180
+    7,  9,  0,  7,  0,  0,  2, 11,  1,  7,
+    // 181–190
+    14,  0,  1,  0, 16,  0,  0,  3,  4, 10,
+    // 191–200
+    4, 12,  0,  7,  0, 14,  1,  4,  0, 15,
+    // 201–210
+    5, 11,  0,  0,  5,  0,  0,  0, 12,  6,
+    // 211–220
+    8,  0,  0,  0,  0,  0,  0,  0,  0,  0,
+    // 221–230
+    9,  4,  1,  6, 15,  0,  0, 16,  0,  0,
+    // 231–240
+    8,  8,  1,  0, 11,  0,  0,  1, 15, 10,
+    // 241–250
+    9, 16, 13,  0,  0,  5,  7, 13,  1, 10,
+    // 251–260
+    16,  0,  0,  0,  0,  0,  9, 14, 16, 16,
+    // 261–270
+    9, 16,  0,  1,  0,  0,  0, 12, 16,  0,
+    // 271–280
+    13, 13,  0,  0, 11,  1, 13,  0,  1,  1,
+    // 281–290
+    0, 16,  0,  9, 13, 13,  0,  7, 16,  0,
+    // 291–300
+    10,  1,  0,  6, 13, 13,  2,  0,  9,  4,
+    // 301–310
+    14, 11,  0,  0,  3,  0,  9, 10,  8,  7,
+    // 311–320
+    0, 11, 16,  2,  9,  0,  5,  6,  8, 11,
+    // 321–330
+    0, 13, 10,  6,  7, 13,  1,  4, 14, 10,
+    // 331–340
+    11,  2, 14,  8,  0,  0, 15, 11,  1,  2,
+    // 341–350
+    4,  3,  0, 12, 11, 10, 13, 11, 15,  5,
+    // 351–354
+    12, 10,  8, 13,
+];
+
+fn move_type_for_id(move_id: u16) -> u8 {
+    MOVE_TYPES.get(move_id as usize).copied().unwrap_or(0)
+}
+
+/// Returns a type-usage breakdown derived from recorded move uses.
+///
+/// Aggregates `move_uses` by move ID → attacking type using a static Gen III
+/// move-type table, returning sorted totals per type.
+/// Type IDs follow Gen III encoding (Normal=0 … Dark=16).
+pub fn type_matchup_heatmap(conn_str: &str, run_id: u32) -> serde_json::Value {
+    let mut client = match Client::connect(conn_str, NoTls) {
+        Ok(c) => c,
+        Err(e) => return serde_json::json!({ "error": format!("DB connection failed: {e}") }),
+    };
+
+    let rows = match client.query(
+        "SELECT move_id, SUM(use_count)::bigint AS total_uses
+         FROM move_uses
+         WHERE run_id = $1 AND move_id > 0
+         GROUP BY move_id",
+        &[&(run_id as i32)],
+    ) {
+        Ok(r) => r,
+        Err(e) => return serde_json::json!({ "error": format!("Query error: {e}") }),
+    };
+
+    let mut type_uses: std::collections::HashMap<u8, i64> = std::collections::HashMap::new();
+    for row in &rows {
+        let move_id: i16 = row.get(0);
+        let uses: i64 = row.get(1);
+        let atk_type = move_type_for_id(move_id as u16);
+        *type_uses.entry(atk_type).or_insert(0) += uses;
+    }
+
+    const TYPE_NAMES: [&str; 17] = [
+        "Normal","Fighting","Flying","Poison","Ground","Rock","Bug","Ghost",
+        "Steel","Fire","Water","Grass","Electric","Psychic","Ice","Dragon","Dark",
+    ];
+
+    let entries: Vec<serde_json::Value> = type_uses
+        .into_iter()
+        .map(|(type_id, uses)| {
+            let name = TYPE_NAMES.get(type_id as usize).copied().unwrap_or("???");
+            serde_json::json!({
+                "type_id":    type_id,
+                "type_name":  name,
+                "total_uses": uses,
+            })
+        })
+        .collect();
+
+    let mut sorted = entries;
+    sorted.sort_by(|a, b| b["total_uses"].as_i64().cmp(&a["total_uses"].as_i64()));
+
+    serde_json::json!({ "run_id": run_id, "type_usage": sorted })
+}
+
+/// Ghost-run milestone comparison.
+///
+/// Returns a side-by-side diff of the current run vs a ghost run, aligned on
+/// badge milestones. For each badge milestone (0–7) present in either run,
+/// returns the elapsed time, deaths, and average party level at that point.
+pub fn ghost_run_comparison(conn_str: &str, run_id: u32, ghost_id: u32) -> serde_json::Value {
+    let mut client = match Client::connect(conn_str, NoTls) {
+        Ok(c) => c,
+        Err(e) => return serde_json::json!({ "error": format!("DB connection failed: {e}") }),
+    };
+
+    let snapshots_for = |c: &mut Client, rid: u32| -> Vec<(i16, String, i64, f32)> {
+        c.query(
+            "SELECT ps.badge_index, ps.badge_name, ps.occurred_at, ps.avg_level
+             FROM party_snapshots ps
+             WHERE ps.run_id = $1
+             ORDER BY ps.badge_index ASC",
+            &[&(rid as i32)],
+        )
+        .unwrap_or_default()
+        .into_iter()
+        .map(|row| (row.get(0), row.get(1), row.get(2), row.get(3)))
+        .collect()
+    };
+
+    let deaths_before = |c: &mut Client, rid: u32, ts: i64| -> i64 {
+        c.query_one(
+            "SELECT COUNT(*) FROM dead_pokemon WHERE run_id = $1 AND died_at <= $2",
+            &[&(rid as i32), &ts],
+        )
+        .map(|r| r.get::<_, i64>(0))
+        .unwrap_or(0)
+    };
+
+    let started_at = |c: &mut Client, rid: u32| -> i64 {
+        c.query_one("SELECT started_at FROM runs WHERE id = $1", &[&(rid as i32)])
+            .map(|r| r.get::<_, i64>(0))
+            .unwrap_or(0)
+    };
+
+    let run_start   = started_at(&mut client, run_id);
+    let ghost_start = started_at(&mut client, ghost_id);
+    let run_snaps   = snapshots_for(&mut client, run_id);
+    let ghost_snaps = snapshots_for(&mut client, ghost_id);
+
+    let all_badges: std::collections::BTreeSet<i16> = run_snaps
+        .iter()
+        .chain(ghost_snaps.iter())
+        .map(|(i, _, _, _)| *i)
+        .collect();
+
+    let milestones: Vec<serde_json::Value> = all_badges
+        .iter()
+        .map(|&badge_idx| {
+            let run_entry   = run_snaps.iter().find(|(i, _, _, _)| *i == badge_idx);
+            let ghost_entry = ghost_snaps.iter().find(|(i, _, _, _)| *i == badge_idx);
+
+            let badge_name = run_entry
+                .or(ghost_entry)
+                .map(|(_, n, _, _)| n.as_str())
+                .unwrap_or("Badge");
+
+            let make_side = |entry: Option<&(i16, String, i64, f32)>, run_start: i64, c: &mut Client, rid: u32| {
+                entry.map(|(_, _, at, avg_lv)| {
+                    let elapsed = (at - run_start).max(0) as u64;
+                    let deaths  = deaths_before(c, rid, *at);
+                    serde_json::json!({
+                        "elapsed_secs": elapsed,
+                        "elapsed_human": format!("{}h {:02}m {:02}s", elapsed / 3600, (elapsed % 3600) / 60, elapsed % 60),
+                        "deaths":        deaths,
+                        "avg_level":     avg_lv,
+                    })
+                })
+            };
+
+            let current = make_side(run_entry,   run_start,   &mut client, run_id);
+            let ghost   = make_side(ghost_entry, ghost_start, &mut client, ghost_id);
+
+            serde_json::json!({
+                "badge_index": badge_idx,
+                "badge_name":  badge_name,
+                "current":     current,
+                "ghost":       ghost,
+            })
+        })
+        .collect();
+
+    serde_json::json!({
+        "run_id":   run_id,
+        "ghost_id": ghost_id,
+        "milestones": milestones,
+    })
+}
+
+/// Cumulative shiny encounter probability for a run.
+///
+/// Returns the number of encounters logged and the cumulative probability of
+/// having seen at least one shiny (P = 1 − (1 − 1/8192)^n).
+pub fn shiny_pressure(conn_str: &str, run_id: u32) -> serde_json::Value {
+    let mut client = match Client::connect(conn_str, NoTls) {
+        Ok(c) => c,
+        Err(e) => return serde_json::json!({ "error": format!("DB connection failed: {e}") }),
+    };
+    let row = match client.query_one(
+        "SELECT COUNT(*), SUM(CASE WHEN is_shiny THEN 1 ELSE 0 END)::bigint
+         FROM encounters WHERE run_id = $1",
+        &[&(run_id as i32)],
+    ) {
+        Ok(r) => r,
+        Err(e) => return serde_json::json!({ "error": format!("Query error: {e}") }),
+    };
+    let total: i64 = row.get(0);
+    let shinies: i64 = row.get(1);
+    // P(≥1 shiny in n encounters) = 1 - (1 - 1/8192)^n
+    let prob_at_least_one = if total > 0 {
+        1.0 - (1.0f64 - 1.0 / 8192.0).powi(total as i32)
+    } else {
+        0.0
+    };
+    let expected_at = if shinies == 0 { 8192i64 } else { total / shinies };
+    serde_json::json!({
+        "run_id":           run_id,
+        "total_encounters": total,
+        "shiny_count":      shinies,
+        "probability_pct":  (prob_at_least_one * 10000.0).round() / 100.0,
+        "expected_at":      expected_at,
+        "unlucky":          shinies == 0 && total >= 8192,
+    })
+}
+
+/// Pokédex completion count for a run.
+///
+/// Returns the number of unique species caught (`caught = true`) across all
+/// encounters for the run, plus a list of species IDs / names.
+pub fn dex_count(conn_str: &str, run_id: u32) -> serde_json::Value {
+    let mut client = match Client::connect(conn_str, NoTls) {
+        Ok(c) => c,
+        Err(e) => return serde_json::json!({ "error": format!("DB connection failed: {e}") }),
+    };
+    let rows = match client.query(
+        "SELECT DISTINCT species, species_name
+         FROM encounters
+         WHERE run_id = $1 AND caught = TRUE
+         ORDER BY species ASC",
+        &[&(run_id as i32)],
+    ) {
+        Ok(r) => r,
+        Err(e) => return serde_json::json!({ "error": format!("Query error: {e}") }),
+    };
+    let caught: Vec<serde_json::Value> = rows
+        .iter()
+        .map(|row| serde_json::json!({
+            "species": row.get::<_, i32>(0),
+            "species_name": row.get::<_, String>(1),
+        }))
+        .collect();
+    serde_json::json!({
+        "run_id":  run_id,
+        "count":   caught.len(),
+        "species": caught,
+    })
+}
+
+/// Create a time-limited read-only share token for a run.
+///
+/// Stores the token in the `meta` table under key `share:<token>` with value
+/// `<run_id>:<expires_at_unix>`. Returns the token string.
+pub fn create_share_token(run_id: u32, ttl_secs: u64) -> Option<String> {
+    let db = db()?;
+    let mut state = db.lock_or_recover();
+    // Generate a 32-byte random token encoded as hex.
+    // Use the system time + run_id + a counter as entropy (no rand crate needed).
+    let now = unix_now();
+    let expires = now + ttl_secs;
+    let raw = format!("{run_id}-{now}-{expires}");
+    let hash = Sha256::digest(raw.as_bytes());
+    let token: String = hash.iter().fold(String::new(), |mut s, b| {
+        use std::fmt::Write;
+        let _ = write!(s, "{b:02x}");
+        s
+    });
+    let key = format!("share:{token}");
+    let value = format!("{run_id}:{expires}");
+    if let Err(e) = state.client.execute(
+        "INSERT INTO meta (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value",
+        &[&key, &value],
+    ) {
+        tracing::warn!("create_share_token: {e}");
+        return None;
+    }
+    Some(token)
+}
+
+/// Resolve a share token to a run ID, returning None if expired or not found.
+pub fn resolve_share_token(conn_str: &str, token: &str) -> Option<u32> {
+    let mut client = Client::connect(conn_str, NoTls).ok()?;
+    let key = format!("share:{token}");
+    let row = client
+        .query_opt("SELECT value FROM meta WHERE key = $1", &[&key])
+        .ok()??;
+    let value: String = row.get(0);
+    let mut parts = value.splitn(2, ':');
+    let run_id: u32 = parts.next()?.parse().ok()?;
+    let expires: u64 = parts.next()?.parse().ok()?;
+    if unix_now() > expires {
+        // Token expired — clean up silently.
+        let _ = client.execute("DELETE FROM meta WHERE key = $1", &[&key]);
+        return None;
+    }
+    Some(run_id)
 }
 
 #[cfg(test)]

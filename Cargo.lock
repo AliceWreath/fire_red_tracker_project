@@ -1798,7 +1798,7 @@ checksum = "5baebc0774151f905a1a2cc41989300b1e6fbb29aff0ceffa1064fdd3088d582"
 
 [[package]]
 name = "fire_red_aggregator"
-version = "0.9.53"
+version = "0.9.54"
 dependencies = [
  "axum",
  "bincode",
@@ -1868,6 +1868,7 @@ dependencies = [
  "fire_red_states",
  "postgres",
  "serde_json",
+ "sha2 0.10.9",
  "tracing",
 ]
 
@@ -2028,7 +2029,7 @@ dependencies = [
 
 [[package]]
 name = "fire_red_tracker"
-version = "0.9.53"
+version = "0.9.54"
 dependencies = [
  "bincode",
  "clap",

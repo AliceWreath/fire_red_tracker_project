@@ -110,6 +110,19 @@ impl Default for GameLoopState {
 // Box data helper
 // ---------------------------------------------------------------------------
 
+/// Returns the most significant status name from a Gen III status bitmask.
+///
+/// Bit 3=PSN, 4=BRN, 5=FRZ, 6=PAR, 7=TOX; bits 0-2=sleep turn counter.
+fn status_name_for(status: u32) -> &'static str {
+    if status & (1 << 6) != 0 { return "PAR"; }
+    if status & (1 << 5) != 0 { return "FRZ"; }
+    if status & (1 << 4) != 0 { return "BRN"; }
+    if status & (1 << 7) != 0 { return "TOX"; }
+    if status & (1 << 3) != 0 { return "PSN"; }
+    if status & 0b111 != 0    { return "SLP"; }
+    "OK"
+}
+
 fn build_box_entries() -> Vec<BoxEntry> {
     fire_red_box_monitor::get_box_entries_positioned()
         .into_iter()
@@ -280,6 +293,7 @@ pub fn spawn_game_loop(
         let mut last_party_hp: HashMap<u32, u16> = HashMap::new();
         let mut last_pp: HashMap<u32, [u8; 4]> = HashMap::new();
         let mut last_friendship: HashMap<u32, u8> = HashMap::new();
+        let mut last_status: HashMap<u32, u32> = HashMap::new();
         let mut last_enemy_personality: u32 = 0;
         let mut last_enemy_hp: u16  = 0;
         let mut last_enemy_max_hp: u16 = 0;
@@ -455,6 +469,24 @@ pub fn spawn_game_loop(
                     }
                     last_friendship.insert(personality, cur_friendship);
                 }
+
+                // Status condition onset / clear detection.
+                let cur_status = mon.status;
+                let prev_status = last_status.get(&personality).copied().unwrap_or(0);
+                if prev_status != cur_status {
+                    let status_name = status_name_for(cur_status.max(prev_status));
+                    let event_type  = if cur_status == 0 { "clear" } else { "onset" };
+                    fire_red_database::log_status_event(
+                        &fire_red_loop::get_trainer_name(),
+                        personality,
+                        &mon.box_mon.nickname_string,
+                        &mon.box_mon.secure.growth.species_string,
+                        status_name,
+                        cur_status,
+                        event_type,
+                    );
+                    last_status.insert(personality, cur_status);
+                }
             }
 
             if let Some((enemy_p, enemy_hp, enemy_max_hp)) = game::read_enemy_slot0_raw() {
@@ -512,6 +544,7 @@ pub fn spawn_game_loop(
                 player_name_set    = false;
                 last_pp.clear();
                 last_friendship.clear();
+                last_status.clear();
                 if let Some(vid) = last_area_visit_id.take() {
                     fire_red_database::close_area_visit(vid, fire_red_database::unix_now());
                 }
