@@ -273,6 +273,7 @@ html[data-theme=minimal] .mon-sprite,html[data-theme=minimal] .enc-sprite,html[d
 (function(){const t=new URLSearchParams(window.location.search).get('theme');if(t==='light'||t==='minimal'||t==='dark')document.documentElement.dataset.theme=t;}());
 const READONLY   = !new URLSearchParams(window.location.search).has('manage');
 const SHOW_PARAM = new URLSearchParams(window.location.search).get('show');
+const RUN_PARAM  = parseInt(new URLSearchParams(window.location.search).get('run') || '0') || null;
 const SHOW_BOX    = SHOW_PARAM === 'box';
 const SHOW_DEAD   = SHOW_PARAM === 'dead';
 const SHOW_CAUGHT = SHOW_PARAM === 'caught';
@@ -301,20 +302,29 @@ const slotCache = [];
 function render(slots) {
     const root = document.getElementById('root');
 
-    // Drop extra columns when a slot disconnects
-    while (root.children.length > slots.length) root.removeChild(root.lastChild);
+    const visible = RUN_PARAM
+        ? slots.filter(s => s.active_run_id === RUN_PARAM)
+        : slots;
 
-    for (let i = 0; i < slots.length; i++) {
-        const json = JSON.stringify(slots[i]);
+    // Drop extra columns when a slot disconnects or run filter reduces count
+    while (root.children.length > visible.length) root.removeChild(root.lastChild);
+
+    for (let i = 0; i < visible.length; i++) {
+        const json = JSON.stringify(visible[i]);
         if (slotCache[i] === json && root.children[i]) continue;
         slotCache[i] = json;
 
-        const col = buildCol(slots[i], i);
+        const col = buildCol(visible[i], i);
         if (root.children[i]) {
             root.replaceChild(col, root.children[i]);
         } else {
             root.appendChild(col);
         }
+    }
+
+    if (RUN_PARAM && visible.length === 0 && root.children.length === 0) {
+        const msg = el('div', 'disconnected', 'Run #' + RUN_PARAM + ' is not active on any connected tracker.');
+        root.appendChild(msg);
     }
 }
 

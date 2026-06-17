@@ -203,7 +203,8 @@ const parts = window.location.pathname.split('/').filter(Boolean);
 const playerIndex = parseInt(parts[0]);
 const section = parts[1]; // 'party' or 'encounters'
 
-const READONLY = !new URLSearchParams(window.location.search).has('manage');
+const READONLY  = !new URLSearchParams(window.location.search).has('manage');
+const RUN_PARAM = parseInt(new URLSearchParams(window.location.search).get('run') || '0') || null;
 
 // --- XP to next level helpers ---
 function expForLevel(growthRate, n) {
@@ -288,6 +289,14 @@ function render(slots) {
     if (!slot || (!slot.connected && !runEnded)) {
         root.appendChild(el('div', 'disconnected', '⚠ Disconnected'));
         return;
+    }
+
+    if (RUN_PARAM && slot.active_run_id !== RUN_PARAM) {
+        const notice = el('div', 'disconnected');
+        notice.style.cssText = 'background:rgba(80,60,0,0.5);border:1px solid #806020;color:#e0c060;padding:8px 12px;border-radius:6px;font-size:13px;margin-bottom:8px';
+        notice.textContent = 'Run #' + RUN_PARAM + ' is not active here (active: ' +
+            (slot.active_run_id != null ? '#' + slot.active_run_id : 'none') + ')';
+        root.appendChild(notice);
     }
 
     if (section === 'party') {

@@ -1006,6 +1006,15 @@ Add `http://localhost:9090/cmd` in a browser tab to manage runs — **End Run** 
 
 ## Project status
 
+**v0.9.55** — run select page and `?run=` filtering across all pages:
+
+- **`/join` run select page** — works in all modes (not just direct mode). Loads `/api/runs` and lists every run with per-run action buttons. Active runs show an **Overlay** button linking to `/?run=<id>`; all runs link to `/history?run=<id>`, `/memorial?run=<id>`, and `/shiny?run=<id>`. Quick-action buttons: **Start New Run** (`POST /api/command/new_run`) and **View Most Recent**. The RetroArch IP connect form is shown only when direct mode is active.
+- **`?run=<id>` on the main overlay (`/`)** — filters the rendered slot columns to only the slot whose `active_run_id` matches. Shows `"Run #X is not active on any connected tracker."` if nothing matches.
+- **`?run=<id>` on focused pages (`/:index/party`, `/:index/encounters`, `/:index/dead`, `/:index/caught`, etc.)** — if the slot's active run does not match the requested ID, a yellow banner is shown: `"Run #X is not active here (active: #Y)"`.
+- **`?run=<id>` on `/history`** — shows only that run's card, auto-expanded, with a "← All Runs" link in the header. `/memorial` and `/shiny` already supported this parameter.
+
+---
+
 **v0.9.54** — streaming integrations, analytics heatmaps, Pokédex overlay, share tokens, donation bridge:
 
 - **Discord live status embed** — `[discord_live_embed]` in `~/.config/fire_red_aggregator/config.toml`. A background thread edits a pinned Discord message every N seconds with the current badge count and party for all connected trackers.

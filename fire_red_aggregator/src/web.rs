@@ -6004,6 +6004,7 @@ function renderRuns(runs){
       '<td><span class="catches">'+(run.catches??0)+'</span></td>'+
       '<td><span class="deaths">'+(run.deaths??0)+'</span></td>'+
       '<td class="td-actions">'+
+        (active?'<a class="btn btn-primary btn-sm" href="/?run='+run.id+'">Overlay</a>':'')+
         '<a class="btn btn-secondary btn-sm" href="/history?run='+run.id+'">History</a>'+
         '<a class="btn btn-secondary btn-sm" href="/memorial?run='+run.id+'">Deaths</a>'+
         '<a class="btn btn-secondary btn-sm" href="/shiny?run='+run.id+'">Shinies</a>'+
