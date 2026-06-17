@@ -5874,7 +5874,7 @@ pub fn run(live_slots: SharedSlots, port: u16, cfg: WebRunConfig) {
 }
 
 // ---------------------------------------------------------------------------
-// Direct-mode join page
+// Run select / join page
 // ---------------------------------------------------------------------------
 
 const JOIN_HTML: &str = r#"<!DOCTYPE html>
@@ -5882,51 +5882,96 @@ const JOIN_HTML: &str = r#"<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1.0">
-<title>Connect – Fire Red Tracker</title>
+<title>Run Select – Fire Red Tracker</title>
 <style>
   *{box-sizing:border-box;margin:0;padding:0}
-  body{font-family:sans-serif;background:#1a1a2e;color:#eee;display:flex;justify-content:center;align-items:center;min-height:100vh}
-  .card{background:#16213e;border:1px solid #0f3460;border-radius:8px;padding:2rem;width:360px}
-  h1{font-size:1.4rem;color:#e94560;margin-bottom:.75rem}
-  p{color:#aaa;font-size:.9rem;line-height:1.5;margin-bottom:1.2rem}
+  body{font-family:sans-serif;background:#1a1a2e;color:#eee;min-height:100vh;padding:2rem 1rem}
+  .container{max-width:760px;margin:0 auto}
+  h1{font-size:1.5rem;color:#e94560;margin-bottom:1.5rem}
+  .section{background:#16213e;border:1px solid #0f3460;border-radius:8px;padding:1.5rem;margin-bottom:1.5rem}
+  .section-title{font-size:.95rem;font-weight:700;color:#ccc;margin-bottom:1rem;padding-bottom:.5rem;border-bottom:1px solid #1e3a6e}
+  .quick-actions{display:flex;gap:.75rem;flex-wrap:wrap;margin-bottom:1.2rem}
+  .btn{display:inline-block;padding:.45rem 1.1rem;border:none;border-radius:4px;font-size:.875rem;cursor:pointer;text-decoration:none;line-height:1.4}
+  .btn-primary{background:#e94560;color:#fff}
+  .btn-primary:hover{background:#c73652}
+  .btn-primary:disabled{background:#555;cursor:default}
+  .btn-secondary{background:#1e3a6e;color:#aad;border:1px solid #2d5499}
+  .btn-secondary:hover{background:#253d6a}
+  .btn-sm{padding:.28rem .65rem;font-size:.78rem}
+  table{width:100%;border-collapse:collapse;font-size:.85rem}
+  th{text-align:left;color:#888;font-weight:600;font-size:.72rem;text-transform:uppercase;letter-spacing:.4px;padding:.4rem .6rem;border-bottom:1px solid #1e3a6e}
+  td{padding:.42rem .6rem;border-bottom:1px solid rgba(255,255,255,0.04);vertical-align:middle}
+  tr:hover td{background:rgba(255,255,255,0.03)}
+  .run-id{color:#5090e0;font-weight:600}
+  .run-active{color:#60e060;font-size:.75rem;font-weight:700}
+  .deaths{color:#e06060}
+  .catches{color:#60d060}
   label{display:block;font-size:.85rem;color:#ccc;margin-bottom:.3rem}
-  input{width:100%;padding:.5rem .7rem;background:#0f3460;border:1px solid #444;border-radius:4px;color:#eee;font-size:1rem;margin-bottom:1rem}
+  input[type=text],input[type=number]{width:100%;padding:.5rem .7rem;background:#0f3460;border:1px solid #444;border-radius:4px;color:#eee;font-size:1rem;margin-bottom:1rem}
   input:focus{outline:none;border-color:#e94560}
-  button{width:100%;padding:.6rem;background:#e94560;border:none;border-radius:4px;color:#fff;font-size:1rem;cursor:pointer}
-  button:hover{background:#c73652}
-  button:disabled{background:#555;cursor:default}
-  .msg{margin-top:1rem;padding:.6rem;border-radius:4px;text-align:center;font-size:.9rem;display:none}
+  .msg{margin-top:.75rem;padding:.55rem;border-radius:4px;text-align:center;font-size:.875rem;display:none}
   .ok{background:#1a4a1a;border:1px solid #2d8a2d;color:#7dce7d;display:block}
   .err{background:#4a1a1a;border:1px solid #8a2d2d;color:#ce7d7d;display:block}
-  .active-hosts{margin-top:1.2rem;font-size:.8rem;color:#888}
-  .active-hosts ul{margin-top:.4rem;padding-left:1.2rem;color:#aaa}
+  .empty{color:#666;font-size:.85rem;text-align:center;padding:1.5rem 0}
+  .loading{color:#888;font-size:.85rem}
+  .td-actions{text-align:right;white-space:nowrap}
+  .td-actions a+a{margin-left:4px}
 </style>
 </head>
 <body>
-<div class="card">
-  <h1>Connect to Tracker</h1>
-  <p>Enter the IP address of the machine where RetroArch is running and make sure <strong>Network Commands</strong> are enabled in RetroArch settings.</p>
-  <form id="f">
-    <label for="host">RetroArch IP address</label>
-    <input id="host" name="host" type="text" placeholder="192.168.1.x" required>
-    <label for="port">Network Commands port</label>
-    <input id="port" name="port" type="number" value="DEFAULT_PORT" min="1" max="65535" required>
-    <button id="btn" type="submit">Connect</button>
-  </form>
-  <div id="msg" class="msg"></div>
-  <div class="active-hosts" id="active" style="display:none">
-    <strong>Currently connected hosts:</strong>
-    <ul id="host-list"></ul>
+<div class="container">
+  <h1>Run Select</h1>
+
+  <div class="section">
+    <div class="section-title">Choose a Run</div>
+    <div class="quick-actions">
+      <button class="btn btn-primary" id="new-run-btn" onclick="startNewRun()">+ Start New Run</button>
+      <a class="btn btn-secondary" id="latest-link" href="/history">View Most Recent</a>
+      <a class="btn btn-secondary" href="/history">All Run History</a>
+    </div>
+    <div id="runs-status" class="loading">Loading runs…</div>
+    <table id="runs-table" style="display:none">
+      <thead>
+        <tr>
+          <th>#</th><th>Player</th><th>Started</th><th>Status</th><th>Caught</th><th>Deaths</th><th></th>
+        </tr>
+      </thead>
+      <tbody id="runs-body"></tbody>
+    </table>
+    <div id="msg-run" class="msg"></div>
+  </div>
+
+  <div class="section" id="direct-section" style="display:DIRECT_SECTION_DISPLAY">
+    <div class="section-title">Connect to RetroArch</div>
+    <p style="color:#aaa;font-size:.875rem;line-height:1.5;margin-bottom:1.2rem">Enter the IP of the machine running RetroArch. Make sure <strong>Network Commands</strong> are enabled in RetroArch settings.</p>
+    <form id="connect-form">
+      <label for="host">RetroArch IP address</label>
+      <input id="host" type="text" placeholder="192.168.1.x" required>
+      <label for="port">Network Commands port</label>
+      <input id="port" type="number" value="DEFAULT_PORT" min="1" max="65535" required>
+      <button class="btn btn-primary" id="connect-btn" type="submit" style="width:100%">Connect</button>
+    </form>
+    <div id="msg-connect" class="msg"></div>
+    <div id="active-hosts" style="display:none;margin-top:1.2rem;font-size:.8rem;color:#888">
+      <strong>Currently connected hosts:</strong>
+      <ul id="host-list" style="margin-top:.4rem;padding-left:1.2rem;color:#aaa"></ul>
+    </div>
   </div>
 </div>
 <script>
-(async function(){
+(async function init(){
+  try{
+    const r=await fetch('/api/runs');
+    if(r.ok){const d=await r.json();renderRuns(d.runs||[]);}
+    else{document.getElementById('runs-status').textContent='No database connected.';}
+  }catch(e){document.getElementById('runs-status').textContent='Could not load runs.';}
+
   try{
     const r=await fetch('/api/direct/hosts');
     if(r.ok){
       const d=await r.json();
       if(d.hosts&&d.hosts.length>0){
-        const el=document.getElementById('active');
+        const el=document.getElementById('active-hosts');
         const ul=document.getElementById('host-list');
         d.hosts.forEach(h=>{const li=document.createElement('li');li.textContent=h;ul.appendChild(li);});
         el.style.display='';
@@ -5935,29 +5980,68 @@ const JOIN_HTML: &str = r#"<!DOCTYPE html>
   }catch(e){}
 })();
 
-document.getElementById('f').onsubmit=async function(e){
+function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
+function fmtDate(iso){if(!iso)return'—';try{return new Date(iso).toLocaleDateString();}catch{return iso;}}
+
+function renderRuns(runs){
+  const status=document.getElementById('runs-status');
+  const table=document.getElementById('runs-table');
+  const tbody=document.getElementById('runs-body');
+  if(runs.length===0){status.textContent='No runs yet. Start one above.';return;}
+  status.style.display='none';
+  table.style.display='';
+  const latest=runs[0];
+  if(latest){document.getElementById('latest-link').href='/history?run='+latest.id;}
+  tbody.innerHTML='';
+  for(const run of runs){
+    const active=run.ended_at==null;
+    const tr=document.createElement('tr');
+    tr.innerHTML=
+      '<td><span class="run-id">#'+run.id+'</span></td>'+
+      '<td>'+esc(run.player_name||'—')+'</td>'+
+      '<td style="color:#888;font-size:.8rem">'+fmtDate(run.started_at)+'</td>'+
+      '<td>'+(active?'<span class="run-active">● Active</span>':'<span style="color:#555;font-size:.8rem">ended</span>')+'</td>'+
+      '<td><span class="catches">'+(run.catches??0)+'</span></td>'+
+      '<td><span class="deaths">'+(run.deaths??0)+'</span></td>'+
+      '<td class="td-actions">'+
+        '<a class="btn btn-secondary btn-sm" href="/history?run='+run.id+'">History</a>'+
+        '<a class="btn btn-secondary btn-sm" href="/memorial?run='+run.id+'">Deaths</a>'+
+        '<a class="btn btn-secondary btn-sm" href="/shiny?run='+run.id+'">Shinies</a>'+
+      '</td>';
+    tbody.appendChild(tr);
+  }
+}
+
+async function startNewRun(){
+  const btn=document.getElementById('new-run-btn');
+  const msg=document.getElementById('msg-run');
+  btn.disabled=true;
+  try{
+    const r=await fetch('/api/command/new_run',{method:'POST'});
+    const text=await r.text();
+    msg.className='msg '+(r.ok?'ok':'err');
+    msg.textContent=r.ok?'New run started.':'Error: '+text;
+    if(r.ok)setTimeout(()=>location.reload(),900);
+  }catch(e){
+    msg.className='msg err';
+    msg.textContent='Request failed: '+e.message;
+  }
+  btn.disabled=false;
+}
+
+document.getElementById('connect-form').onsubmit=async function(e){
   e.preventDefault();
   const host=document.getElementById('host').value.trim();
   const port=parseInt(document.getElementById('port').value,10);
-  const msg=document.getElementById('msg');
-  const btn=document.getElementById('btn');
+  const msg=document.getElementById('msg-connect');
+  const btn=document.getElementById('connect-btn');
   msg.className='msg';
-  msg.textContent='Connecting…';
   btn.disabled=true;
   try{
-    const r=await fetch('/api/direct/connect',{
-      method:'POST',
-      headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({host,port})
-    });
+    const r=await fetch('/api/direct/connect',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({host,port})});
     const d=await r.json();
-    if(r.ok){
-      msg.className='msg ok';
-      msg.textContent=d.message||'Connection request sent. Your slot will appear shortly.';
-    }else{
-      msg.className='msg err';
-      msg.textContent=d.error||'Connection failed.';
-    }
+    msg.className='msg '+(r.ok?'ok':'err');
+    msg.textContent=r.ok?(d.message||'Connection request sent.'): (d.error||'Connection failed.');
   }catch(err){
     msg.className='msg err';
     msg.textContent='Request failed: '+err.message;
@@ -5972,16 +6056,11 @@ async fn serve_join(
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     State(state): State<WebState>,
 ) -> impl IntoResponse {
-    if state.connector.is_none() {
-        return (
-            StatusCode::NOT_FOUND,
-            [(header::CONTENT_TYPE, "text/html; charset=utf-8")],
-            "<h1>Direct mode is not active.</h1>".to_string(),
-        );
-    }
+    let direct_visible = if state.connector.is_some() { "block" } else { "none" };
     let default_port = state.connector.as_ref().map(|c| c.default_port).unwrap_or(55355);
     let client_ip = addr.ip().to_string();
     let html = JOIN_HTML
+        .replace("DIRECT_SECTION_DISPLAY", direct_visible)
         .replace("DEFAULT_PORT", &default_port.to_string())
         .replace("192.168.1.x", &client_ip);
     (

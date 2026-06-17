@@ -139,8 +139,9 @@ html, body {
 <body>
 <div id="root">
     <div class="page-header">
-        <div class="page-title">Run History</div>
+        <div class="page-title" id="page-title">Run History</div>
         <div class="status" id="status">Loading...</div>
+        <a id="all-runs-link" href="/history" style="display:none;font-size:12px;color:#7090cc;text-decoration:none;margin-right:4px">← All Runs</a>
         <button class="refresh-btn" onclick="loadData()">↺ Refresh</button>
     </div>
     <div id="runs"></div>
@@ -152,15 +153,24 @@ function gSym(g) {
     return '';
 }
 
+function getRunFilter() {
+    return parseInt(new URLSearchParams(location.search).get('run') || '0') || null;
+}
+
 async function loadData() {
     document.getElementById('status').textContent = 'Loading...';
+    const runFilter = getRunFilter();
+    if (runFilter) {
+        document.getElementById('page-title').textContent = 'Run #' + runFilter + ' History';
+        document.getElementById('all-runs-link').style.display = '';
+    }
     try {
         const res  = await fetch('/db.json');
         const data = await res.json();
         if (data.error) throw new Error(data.error);
         document.getElementById('status').textContent =
             'Last fetched: ' + new Date().toLocaleTimeString();
-        render(data);
+        render(data, runFilter);
     } catch (e) {
         document.getElementById('status').textContent = 'Error';
         document.getElementById('runs').innerHTML =
@@ -168,7 +178,7 @@ async function loadData() {
     }
 }
 
-function render(data) {
+function render(data, runFilter) {
     const container = document.getElementById('runs');
     if (!data.runs || data.runs.length === 0) {
         container.innerHTML = '<div class="empty">No runs recorded yet.</div>';
@@ -186,8 +196,17 @@ function render(data) {
 
     container.innerHTML = '';
 
-    // Newest run first
-    const sorted = Object.values(byRun).sort((a, b) => b.run.id - a.run.id);
+    // Newest run first; filter to a single run if ?run= is set
+    let sorted = Object.values(byRun).sort((a, b) => b.run.id - a.run.id);
+    if (runFilter) {
+        sorted = sorted.filter(x => x.run.id === runFilter);
+        if (sorted.length === 0) {
+            container.innerHTML = '<div class="empty">Run #' + runFilter + ' not found.</div>';
+            return;
+        }
+    }
+
+    const autoExpand = runFilter != null || sorted.length === 1;
 
     for (const { run, caught, dead, encounters } of sorted) {
         const active = run.ended == null;
@@ -262,6 +281,11 @@ function render(data) {
         card.appendChild(hdr);
         card.appendChild(body);
         container.appendChild(card);
+
+        if (autoExpand) {
+            body.classList.add('open');
+            chev.classList.add('open');
+        }
     }
 }
 
