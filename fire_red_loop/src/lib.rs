@@ -42,7 +42,7 @@ use std::ffi::{CStr, CString, c_uchar};
 use std::os::raw::c_char;
 use std::os::raw::c_int;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
 // ---------------------------------------------------------------------------
 // State
@@ -288,6 +288,135 @@ pub extern "C" fn stop_loop() {
     {
         tracing::error!("Error joining map-polling thread: {:?}", e);
     }
+}
+
+// ---------------------------------------------------------------------------
+// Per-connection loop management
+// ---------------------------------------------------------------------------
+
+/// Initializes all ROM-derived caches and starts per-connection subsystem
+/// threads.
+///
+/// Unlike [`start_loop`], this function does **not** check the global `RUNNING`
+/// flag, so it can be called concurrently for multiple RetroArch connections.
+/// Each connection supplies its own context objects; the global singleton
+/// storage is never written.
+///
+/// ROM loading and ROM scanning are protected by [`OnceLock`] internally, so
+/// calling this from multiple threads simultaneously is safe — only the first
+/// caller performs the I/O; subsequent callers return immediately.
+///
+/// # Arguments
+///
+/// * `file_path`   — Path to the FireRed ROM.
+/// * `_is_clean`   — Kept for call-site compatibility; not used.
+/// * `mem_ctx`     — Per-connection EWRAM/IWRAM snapshot context.
+/// * `party_ctx`   — Per-connection party data context.
+/// * `trainer_ctx` — Per-connection trainer/player data context.
+///
+/// # Returns
+///
+/// `Ok(box_running)` where `box_running` is the shutdown flag for the
+/// per-connection box monitor thread.  Store `false` into it (via the
+/// returned `Arc<AtomicBool>`) to stop that thread when disconnecting.
+///
+/// `Err(code)` on failure:
+/// * `-1` — Empty file path.
+/// * `-2` — ROM failed to load.
+/// * `-3` — Wild-encounter headers could not be located.
+pub fn start_loop_ctx(
+    file_path: &str,
+    _is_clean: bool,
+    mem_ctx: Arc<fire_red_memory::MemoryContext>,
+    party_ctx: Arc<fire_red_party_monitor::PartyContext>,
+    trainer_ctx: Arc<fire_red_trainer_data::TrainerContext>,
+) -> Result<Arc<AtomicBool>, i32> {
+    if file_path.is_empty() {
+        tracing::error!("Must pass a path to the file!");
+        return Err(-1);
+    }
+
+    if let Err(e) = fill_rom(file_path) {
+        tracing::error!("Failed to load ROM: {:?}", e);
+        return Err(-2);
+    }
+
+    tracing::info!("Scanning for WildMonHeaders...");
+    let start_wild_header_offset = match find_wild_headers(get_rom()) {
+        Some(offset) => {
+            tracing::info!("Found WildMonHeaders at 0x{:08X}!", offset);
+            offset
+        }
+        None => {
+            tracing::error!("Could not locate WildMonHeaders — aborting.");
+            return Err(-3);
+        }
+    };
+
+    tracing::info!(
+        "ROM revision: {:?}",
+        fire_red_rom_buffer::get_rom_revision()
+    );
+
+    fill_static_pokemon_header_list(get_rom(), start_wild_header_offset);
+    fill_static_name_repo(
+        get_rom(),
+        fire_red_rom_buffer::get_rom_addresses().pokemon_names_addr,
+    );
+
+    {
+        let known_pairs: Vec<(u8, u8)> = get_pokemon_header_list()
+            .iter()
+            .take(20)
+            .map(|h| (h.map_group, h.map_num))
+            .collect();
+        match find_map_groups_table(get_rom(), &known_pairs) {
+            Some(offset) => {
+                tracing::info!("Found gMapGroupsAndMaps at ROM offset 0x{:08X}", offset);
+                MAP_GROUPS_TABLE.get_or_init(|| offset);
+            }
+            None => {
+                tracing::warn!("gMapGroupsAndMaps not found — zone names will use fallback");
+            }
+        }
+    }
+
+    // Start the per-connection memory polling thread.
+    fire_red_memory::start_loop_ctx(mem_ctx.clone());
+
+    // Wait for the first EWRAM poll to complete.
+    std::thread::sleep(std::time::Duration::from_millis(600));
+
+    // Initialize per-connection party and trainer data from the first snapshot.
+    fire_red_party_monitor::update_party_ctx(&party_ctx);
+    fire_red_trainer_data::update_trainer_data_ctx(&trainer_ctx);
+
+    // Initialize trainer static data using the per-connection EWRAM.
+    fire_red_trainer_data::initialize_static_trainer_data();
+
+    // Start per-connection monitor threads.
+    fire_red_party_monitor::start_loop_ctx(mem_ctx.clone(), party_ctx);
+    let box_running = fire_red_box_monitor::start_loop_ctx(mem_ctx.clone());
+    fire_red_trainer_data::start_loop_ctx(mem_ctx, trainer_ctx);
+
+    Ok(box_running)
+}
+
+/// Stops all subsystem threads started by [`start_loop_ctx`].
+///
+/// Signals the memory, party, trainer, and box monitor threads for this
+/// connection to exit.  Does not join the threads — they will exit after their
+/// current poll cycle completes.
+pub fn stop_loop_ctx(
+    mem_ctx: &fire_red_memory::MemoryContext,
+    party_ctx: &fire_red_party_monitor::PartyContext,
+    trainer_ctx: &fire_red_trainer_data::TrainerContext,
+    box_running: &AtomicBool,
+) {
+    fire_red_memory::end_loop_ctx(mem_ctx);
+    fire_red_party_monitor::end_loop_ctx(party_ctx);
+    fire_red_trainer_data::end_loop_ctx(trainer_ctx);
+    box_running.store(false, Ordering::SeqCst);
 }
 
 // ---------------------------------------------------------------------------

@@ -143,10 +143,13 @@ html, body {
         <div class="status" id="status">Loading...</div>
         <a id="all-runs-link" href="/history" style="display:none;font-size:12px;color:#7090cc;text-decoration:none;margin-right:4px">← All Runs</a>
         <button class="refresh-btn" onclick="loadData()">↺ Refresh</button>
+        <select style="background:#1a1a2e;color:#ccc;border:1px solid rgba(255,255,255,.15);border-radius:4px;padding:3px 8px;font-size:12px;cursor:pointer" onchange="navToPage(this)"><option value="">Pages</option><option value="overlay">Overlay</option><option value="history">History</option><option value="stats">Stats</option><option value="shiny">Shiny</option><option value="memorial">Memorial</option><option value="trainers">Trainers</option><option value="timeline">Timeline</option></select>
     </div>
     <div id="runs"></div>
 </div>
 <script>
+(function(){if(!new URLSearchParams(window.location.search).has('run')){var t=localStorage.getItem('frt_session');if(t){fetch('/api/me/active_run',{headers:{'Authorization':'Bearer '+t}}).then(function(r){return r.ok?r.json():null;}).then(function(d){if(d&&d.run_id){var sp=new URLSearchParams(window.location.search);sp.set('run',d.run_id);window.location.replace(window.location.pathname+'?'+sp.toString());}}).catch(function(){});}}})();
+function navToPage(sel){var p=sel.value;sel.value='';if(!p)return;var sp=new URLSearchParams(window.location.search);var r=parseInt(sp.get('run')||'0')||0;if(!r){var m=window.location.pathname.match(/\/run\/(\d+)\//);if(m)r=parseInt(m[1]);}window.location.href=p==='stats'?(r?'/run/'+r+'/stats':'/history'):('/'+p+(r?'?run='+r:''));}
 function gSym(g) {
     if (g === 0) return '♂';
     if (g === 1) return '♀';

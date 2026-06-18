@@ -16,6 +16,7 @@
 mod trainer_data;
 
 use arc_swap::ArcSwap;
+use std::cell::RefCell;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 
@@ -32,6 +33,51 @@ static PLAYER_DATA: OnceLock<ArcSwap<PlayerData>> = OnceLock::new();
 
 /// Controls the background polling loop.
 static RUNNING: AtomicBool = AtomicBool::new(false);
+
+// ---------------------------------------------------------------------------
+// Per-connection context
+// ---------------------------------------------------------------------------
+
+/// Per-connection trainer/player data state.
+///
+/// Create one per direct-mode connection.  Pass it to [`start_loop_ctx`] to
+/// start a background thread that writes to it, and register it on the
+/// game-loop thread with [`set_thread_trainer_context`] so that
+/// [`get_static_trainer_data`] / [`get_player_data`] return this connection's data.
+pub struct TrainerContext {
+    pub data: ArcSwap<PlayerData>,
+    pub running: AtomicBool,
+}
+
+impl TrainerContext {
+    pub fn new() -> Arc<Self> {
+        Arc::new(Self {
+            data: ArcSwap::from_pointee(PlayerData::default()),
+            running: AtomicBool::new(false),
+        })
+    }
+}
+
+impl Default for TrainerContext {
+    fn default() -> Self {
+        Self {
+            data: ArcSwap::from_pointee(PlayerData::default()),
+            running: AtomicBool::new(false),
+        }
+    }
+}
+
+thread_local! {
+    static THREAD_TRAINER_CTX: RefCell<Option<Arc<TrainerContext>>> = const { RefCell::new(None) };
+}
+
+/// Registers `ctx` as this thread's trainer context.
+///
+/// After this call, [`get_static_trainer_data`] and [`get_player_data`] on the
+/// calling thread will return data from `ctx` instead of the global singleton.
+pub fn set_thread_trainer_context(ctx: Arc<TrainerContext>) {
+    THREAD_TRAINER_CTX.with(|c| *c.borrow_mut() = Some(ctx));
+}
 
 /// How long the background thread sleeps between checks.
 ///
@@ -57,15 +103,35 @@ pub fn initialize_static_trainer_data() -> &'static ArcSwap<PlayerData> {
     })
 }
 
-/// Returns the global [`PlayerData`] static, initializing it if necessary.
+/// Returns the trainer data ArcSwap for the current thread's connection.
+///
+/// If a per-connection [`TrainerContext`] has been registered on this thread
+/// via [`set_thread_trainer_context`], its current value is mirrored into the
+/// global singleton (so the `&'static` reference remains valid) and the global
+/// is returned.  Otherwise falls back to the global singleton directly.
 pub fn get_static_trainer_data() -> &'static ArcSwap<PlayerData> {
+    let thread_data =
+        THREAD_TRAINER_CTX.with(|c| c.borrow().as_ref().map(|ctx| ctx.data.load_full()));
+    if let Some(data) = thread_data {
+        let global =
+            PLAYER_DATA.get_or_init(|| ArcSwap::from_pointee(PlayerData::default()));
+        global.store(data);
+        return global;
+    }
     initialize_static_trainer_data()
 }
 
 /// Returns the current player data snapshot.
 ///
-/// Returns `None` if the static has not yet been initialized.
+/// If a per-connection [`TrainerContext`] has been registered on this thread
+/// via [`set_thread_trainer_context`], its data is returned.  Otherwise falls
+/// back to the global singleton populated by [`start_loop`].
 pub fn get_player_data() -> Option<Arc<PlayerData>> {
+    let thread =
+        THREAD_TRAINER_CTX.with(|c| c.borrow().as_ref().map(|ctx| ctx.data.load_full()));
+    if let Some(data) = thread {
+        return Some(data);
+    }
     PLAYER_DATA.get().map(|arc| arc.load_full())
 }
 
@@ -90,6 +156,43 @@ pub fn start_loop() {
 /// Stops the background polling loop.
 pub fn end_loop() {
     RUNNING.store(false, Ordering::SeqCst);
+}
+
+/// Reads per-connection trainer data from the EWRAM snapshot into `ctx`.
+///
+/// Calls [`fire_red_memory::get_ewram`], which returns the per-connection
+/// snapshot when a [`fire_red_memory::MemoryContext`] is registered on the
+/// calling thread.
+pub fn update_trainer_data_ctx(ctx: &TrainerContext) {
+    if let Some(player) = read_player_data_from_ewram() {
+        ctx.data.store(Arc::new(player));
+    }
+}
+
+/// Starts a per-connection trainer data polling loop.
+///
+/// Spawns a background thread that registers `mem_ctx` as its memory context
+/// and calls [`update_trainer_data_ctx`] every [`SLEEP_TIMER`], writing
+/// results into `trainer_ctx`.
+///
+/// Stop it with [`end_loop_ctx`].
+pub fn start_loop_ctx(
+    mem_ctx: Arc<fire_red_memory::MemoryContext>,
+    trainer_ctx: Arc<TrainerContext>,
+) {
+    trainer_ctx.running.store(true, Ordering::SeqCst);
+    std::thread::spawn(move || {
+        fire_red_memory::set_thread_memory_context(mem_ctx);
+        while trainer_ctx.running.load(Ordering::SeqCst) {
+            update_trainer_data_ctx(&trainer_ctx);
+            std::thread::sleep(SLEEP_TIMER);
+        }
+    });
+}
+
+/// Signals the per-connection trainer data polling loop to stop.
+pub fn end_loop_ctx(ctx: &TrainerContext) {
+    ctx.running.store(false, Ordering::SeqCst);
 }
 
 // ---------------------------------------------------------------------------

@@ -55,6 +55,13 @@ pub struct GameLoopConfig {
     pub livesplit_split_on_badges: bool,
     /// Send a LiveSplit split when the Champion is defeated.
     pub livesplit_split_on_clear: bool,
+    /// If set, this run ID is installed as the thread-local active run at the
+    /// start of the game-loop thread.  Used by direct-mode slots so each slot
+    /// writes to its own run without touching the global `DbState.run_id`.
+    pub thread_run_id: Option<u32>,
+    /// If set, the game loop exits when this flag becomes `true`.
+    /// Used by direct-mode `DirectConnector::disconnect` to stop a slot.
+    pub shutdown: Option<Arc<AtomicBool>>,
 }
 
 /// Shared state written by the game-polling loop and read by the caller.
@@ -252,15 +259,38 @@ pub fn spawn_game_loop(
 
     std::thread::spawn(move || {
         fire_red_retroarch_interfacing::set_thread_addr(&cfg.retroarch_host, cfg.retroarch_port);
+        if let Some(run_id) = cfg.thread_run_id {
+            fire_red_database::set_thread_run_id(run_id);
+        }
+        let thread_shutdown = cfg.shutdown.clone();
         use fire_red_loop::*;
 
-        match start_loop(cfg.rom_path.as_str(), cfg.is_clean) {
-            0 => tracing::info!("Monitor loop started."),
-            code => {
-                tracing::error!("Failed to start monitor loop (code {}).", code);
-                std::process::exit(1);
+        // Create per-connection contexts and register them as thread-locals so
+        // get_ewram(), get_party(), get_static_trainer_data() etc. return data
+        // from this connection's RetroArch instance, not the global singletons.
+        let mem_ctx     = fire_red_memory::MemoryContext::new();
+        let party_ctx   = fire_red_party_monitor::PartyContext::new();
+        let trainer_ctx = fire_red_trainer_data::TrainerContext::new();
+        fire_red_memory::set_thread_memory_context(mem_ctx.clone());
+        fire_red_party_monitor::set_thread_party_context(party_ctx.clone());
+        fire_red_trainer_data::set_thread_trainer_context(trainer_ctx.clone());
+
+        let box_running = match start_loop_ctx(
+            cfg.rom_path.as_str(),
+            cfg.is_clean,
+            mem_ctx.clone(),
+            party_ctx.clone(),
+            trainer_ctx.clone(),
+        ) {
+            Ok(br) => { tracing::info!("Per-connection loop started."); br }
+            Err(code) => {
+                tracing::error!(
+                    "Failed to start per-connection loop (code {}). Slot will not poll.",
+                    code
+                );
+                return;
             }
-        }
+        };
 
         tracing::info!("Waiting for initial map state...");
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
@@ -317,6 +347,9 @@ pub fn spawn_game_loop(
         }
 
         loop {
+            if let Some(ref sd) = thread_shutdown
+                && sd.load(Ordering::Acquire) { break; }
+
             // Process injection commands first so they're applied on next read.
             process_commands(&thread_cmds);
 
@@ -580,6 +613,10 @@ pub fn spawn_game_loop(
                 cfg.poll_ms.load(Ordering::Relaxed),
             ));
         }
+
+        // Stop this connection's subsystem threads before the game-loop thread
+        // exits so no background thread outlives its MemoryContext.
+        stop_loop_ctx(&mem_ctx, &party_ctx, &trainer_ctx, &box_running);
     })
 }
 

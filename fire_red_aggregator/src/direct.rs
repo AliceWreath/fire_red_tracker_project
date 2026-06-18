@@ -47,10 +47,12 @@ pub struct DirectConnector {
 impl DirectConnector {
     /// Attempt to connect to `host:port` as a new slot.
     ///
+    /// `run_id`: `None` = start a new run; `Some(id)` = resume an existing run.
+    ///
     /// Returns `true` if the host was newly accepted, `false` if it is already
     /// being polled.  The actual connection (ROM fetch + game-loop start) happens
     /// in a background thread; the slot may take a few seconds to appear.
-    pub fn connect(&self, host: String, port: u16) -> bool {
+    pub fn connect(&self, host: String, port: u16, run_id: Option<u32>) -> bool {
         try_add_host(
             host,
             port,
@@ -62,12 +64,38 @@ impl DirectConnector {
             self.db.clone(),
             self.slots.clone(),
             self.known.clone(),
+            run_id,
         )
     }
 
     /// List of host:port strings currently being polled or set up.
     pub fn active_hosts(&self) -> Vec<String> {
         self.known.lock_or_recover().iter().cloned().collect()
+    }
+
+    /// Signal the slot for `host:port` to stop and remove it from the active
+    /// set so the same host can be reconnected later.
+    ///
+    /// Returns `true` if the host was found and disconnected, `false` if it
+    /// was not in the active set.
+    pub fn disconnect(&self, host: &str, port: u16) -> bool {
+        let key = format!("{}:{}", host, port);
+        if !self.known.lock_or_recover().remove(&key) {
+            return false;
+        }
+        // Signal the slot's game-loop thread to stop.  The game-loop thread
+        // detects this flag and calls stop_loop_ctx() for its own per-connection
+        // subsystems before exiting — no global stop_loop() needed.
+        {
+            let lock = self.slots.lock_or_recover();
+            for slot in lock.iter() {
+                if slot.direct_host.as_deref() == Some(key.as_str()) {
+                    slot.shutdown.store(true, std::sync::atomic::Ordering::Release);
+                    break;
+                }
+            }
+        }
+        true
     }
 }
 
@@ -115,6 +143,7 @@ pub fn spawn(
             db.clone(),
             slots.clone(),
             known.clone(),
+            None, // pre-configured hosts always start a new run
         );
     }
 
@@ -184,6 +213,7 @@ fn try_add_host(
     db: Option<String>,
     slots: SharedSlots,
     known: Arc<Mutex<HashSet<String>>>,
+    run_id: Option<u32>,
 ) -> bool {
     let key = format!("{}:{}", host, retroarch_port);
     if !known.lock_or_recover().insert(key.clone()) {
@@ -191,6 +221,42 @@ fn try_add_host(
     }
 
     std::thread::spawn(move || {
+        // Resolve the run ID for this slot (create a new one or resume an existing one).
+        let slot_run_id: Option<u32> = if db.is_some() {
+            match run_id {
+                None => {
+                    match fire_red_database::create_run_for_slot("Unknown") {
+                        Ok(id) => {
+                            tracing::info!("Direct mode: created run #{} for {}", id, host);
+                            Some(id)
+                        }
+                        Err(e) => {
+                            tracing::warn!("Direct mode: could not create run for {}: {}", host, e);
+                            None
+                        }
+                    }
+                }
+                Some(id) => {
+                    match fire_red_database::run_exists(id) {
+                        Ok(true) => {
+                            tracing::info!("Direct mode: resuming run #{} for {}", id, host);
+                            Some(id)
+                        }
+                        Ok(false) => {
+                            tracing::error!("Direct mode: run #{} not found; creating new run for {}", id, host);
+                            fire_red_database::create_run_for_slot("Unknown").ok()
+                        }
+                        Err(e) => {
+                            tracing::warn!("Direct mode: could not verify run #{}: {}", id, e);
+                            None
+                        }
+                    }
+                }
+            }
+        } else {
+            None
+        };
+
         // Resolve ROM — use the configured path or fetch from RetroArch.
         let resolved_rom = match rom_path {
             Some(ref p) => p.clone(),
@@ -208,21 +274,43 @@ fn try_add_host(
             }
         };
 
-        // Allocate a new slot.
+        // Allocate a slot — reuse a dead slot at the same index if one exists
+        // so that overlay routes (/:index/party etc.) remain stable across reconnects.
         let (slot, slot_idx) = {
             let mut lock = slots.lock_or_recover();
-            let idx = lock.len();
-            let s = Arc::new(MonitorSlot::new(
-                idx,
-                format!("direct:{}", host),
-                db.clone(),
-                Some(format!("{}:{}", host, retroarch_port)),
-            ));
-            lock.push(s.clone());
-            (s, idx)
+            let reuse_idx = lock.iter().position(|s| {
+                s.direct_host.as_deref() == Some(&key)
+                    && s.shutdown.load(std::sync::atomic::Ordering::Acquire)
+            });
+            if let Some(idx) = reuse_idx {
+                let s = Arc::new(MonitorSlot::new(
+                    idx,
+                    format!("direct:{}", host),
+                    db.clone(),
+                    Some(key.clone()),
+                ));
+                lock[idx] = s.clone();
+                (s, idx)
+            } else {
+                let idx = lock.len();
+                let s = Arc::new(MonitorSlot::new(
+                    idx,
+                    format!("direct:{}", host),
+                    db.clone(),
+                    Some(key.clone()),
+                ));
+                lock.push(s.clone());
+                (s, idx)
+            }
         };
 
         tracing::info!("Direct mode: slot {} → RetroArch at {}:{}", slot_idx, host, retroarch_port);
+
+        // Pin the DbReader to the chosen run so sync_player doesn't silently
+        // switch to the newest run in the database.
+        if let (Some(db), Some(id)) = (slot.db.as_ref(), slot_run_id) {
+            db.set_forced_run_id(id);
+        }
 
         let loop_state = Arc::new(GameLoopState::new());
 
@@ -239,6 +327,8 @@ fn try_add_host(
             poll_ms: Arc::new(AtomicU64::new(poll_ms)),
             livesplit_split_on_badges: false,
             livesplit_split_on_clear: true,
+            thread_run_id: slot_run_id,
+            shutdown: Some(slot.shutdown.clone()),
         };
 
         fire_red_game_loop::spawn_game_loop(loop_cfg, loop_state.clone());
@@ -253,12 +343,15 @@ fn try_add_host(
         // buffer.  The buffer can be atomically replaced at runtime by
         // POST /api/slot/:index/refresh_rom without restarting this thread.
         {
-            let rom_bytes    = slot.rom_bytes.clone();
-            let sprite_queue = slot.texture_request_queue.clone();
+            let rom_bytes      = slot.rom_bytes.clone();
+            let sprite_queue   = slot.texture_request_queue.clone();
             let sprite_pending = slot.pending_textures.clone();
+            let sprite_shutdown = slot.shutdown.clone();
 
             std::thread::spawn(move || {
                 loop {
+                    if sprite_shutdown.load(std::sync::atomic::Ordering::Acquire) { break; }
+
                     let batch: Vec<u16> = {
                         let mut q = sprite_queue.lock_or_recover();
                         let mut all: Vec<u16> = q.drain(..).flatten().collect();
@@ -307,12 +400,13 @@ fn try_add_host(
         *slot.game_encounters.lock_or_recover() = Some(loop_state.encounters.clone());
 
         // Bridge thread: assemble GameState → slot and forward commands.
-        let slot_state   = slot.state.clone();
-        let slot_box     = slot.box_data.clone();
-        let slot_bag     = slot.bag_data.clone();
-        let slot_cmds    = slot.command_queue.clone();
-        let slot_run_chg = slot.run_changed.clone();
-        let loop_br      = loop_state;
+        let slot_state    = slot.state.clone();
+        let slot_box      = slot.box_data.clone();
+        let slot_bag      = slot.bag_data.clone();
+        let slot_cmds     = slot.command_queue.clone();
+        let slot_run_chg  = slot.run_changed.clone();
+        let bridge_shutdown = slot.shutdown.clone();
+        let loop_br       = loop_state;
 
         std::thread::spawn(move || {
             let mut last_box_send = std::time::Instant::now()
@@ -323,6 +417,11 @@ fn try_add_host(
                 .unwrap_or_else(std::time::Instant::now);
 
             loop {
+                if bridge_shutdown.load(std::sync::atomic::Ordering::Acquire) {
+                    *slot_state.lock_or_recover() = None;
+                    break;
+                }
+
                 // Forward injection commands from the web layer to the game loop.
                 {
                     let cmds: Vec<_> = slot_cmds.lock_or_recover().drain(..).collect();

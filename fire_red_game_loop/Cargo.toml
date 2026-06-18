@@ -16,6 +16,7 @@ fire_red_pokemon_data.workspace        = true
 fire_red_states.workspace              = true
 fire_red_badge.workspace               = true
 fire_red_memory.workspace              = true
+fire_red_trainer_data.workspace        = true
 fire_red_box_monitor.workspace         = true
 fire_red_location_names.workspace      = true
 fire_red_database.workspace            = true

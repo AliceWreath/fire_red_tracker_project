@@ -101,6 +101,11 @@ pub struct TrackerConfig {
     /// Enable by adding a `[twitch_helix]` section to `config.toml`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub twitch_helix: Option<TwitchHelixConfig>,
+    /// Account username to associate this tracker with. When set, the aggregator
+    /// links every run to the matching user account so runs are grouped by user
+    /// rather than by raw in-game trainer name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub username: Option<String>,
 }
 
 fn default_aggregator_host() -> String {
@@ -919,6 +924,7 @@ impl eframe::App for SetupApp {
                     livesplit_split_on_clear: true,
                     discord_client_id: None,
                     twitch_helix: None,
+                    username: None,
                 };
 
                 *self.result.lock().unwrap_or_else(|p| p.into_inner()) = Some(config);
@@ -1136,6 +1142,7 @@ mod tests {
             livesplit_split_on_clear: true,
             discord_client_id: None,
             twitch_helix: None,
+            username: None,
         }
     }
 

@@ -124,7 +124,14 @@ html[data-theme=light] .section-empty { color: #999; }
 const _pathParts  = window.location.pathname.split('/').filter(Boolean);
 const _pathIndex  = parseInt(_pathParts[0]);
 const _params     = new URLSearchParams(window.location.search);
-const playerIndex = !isNaN(_pathIndex) ? _pathIndex : parseInt(_params.get('slot') || '0');
+const _explicitIndex = !isNaN(_pathIndex) ? _pathIndex
+    : (_params.has('slot') ? parseInt(_params.get('slot')) : null);
+let playerIndex = _explicitIndex !== null ? _explicitIndex : 0;
+function resolvePlayerIndex(slots) {
+    if (_explicitIndex !== null) return;
+    const first = slots.findIndex(s => s && s.connected);
+    if (first !== -1) playerIndex = first;
+}
 
 const TYPE_NAMES = [
     'Normal','Fighting','Flying','Poison','Ground','Rock',
@@ -166,6 +173,7 @@ function el(tag, cls, text) {
 }
 
 function handleState(slots) {
+    resolvePlayerIndex(slots);
     const slot    = slots[playerIndex];
     const headerEl= document.getElementById('gym-header');
     const nameEl  = document.getElementById('gym-name');

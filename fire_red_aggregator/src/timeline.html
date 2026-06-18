@@ -130,6 +130,7 @@ select {
       <div class="page-title">Run Timeline</div>
       <div class="page-sub">FireRed Nuzlocke Tracker __VERSION__</div>
     </div>
+    <select style="background:#1a1a2e;color:#ccc;border:1px solid rgba(255,255,255,.15);border-radius:4px;padding:3px 8px;font-size:12px;cursor:pointer;margin-left:auto" onchange="navToPage(this)"><option value="">Pages</option><option value="overlay">Overlay</option><option value="history">History</option><option value="stats">Stats</option><option value="shiny">Shiny</option><option value="memorial">Memorial</option><option value="trainers">Trainers</option><option value="timeline">Timeline</option></select>
   </div>
 
   <div class="run-select-row">
@@ -143,6 +144,8 @@ select {
   <div id="timeline" class="timeline"></div>
 </div>
 <script>
+(function(){if(!new URLSearchParams(window.location.search).has('run')){var t=localStorage.getItem('frt_session');if(t){fetch('/api/me/active_run',{headers:{'Authorization':'Bearer '+t}}).then(function(r){return r.ok?r.json():null;}).then(function(d){if(d&&d.run_id){var sp=new URLSearchParams(window.location.search);sp.set('run',d.run_id);window.location.replace(window.location.pathname+'?'+sp.toString());}}).catch(function(){});}}})();
+function navToPage(sel){var p=sel.value;sel.value='';if(!p)return;var sp=new URLSearchParams(window.location.search);var r=parseInt(sp.get('run')||'0')||0;if(!r){var m=window.location.pathname.match(/\/run\/(\d+)\//);if(m)r=parseInt(m[1]);}window.location.href=p==='stats'?(r?'/run/'+r+'/stats':'/history'):('/'+p+(r?'?run='+r:''));}
 const runParam = new URLSearchParams(location.search).get('run');
 
 async function loadRuns() {

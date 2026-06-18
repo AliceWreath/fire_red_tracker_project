@@ -12,13 +12,13 @@
 use crate::app::sort_gifts_by_caught_at;
 use crate::client::{MonitorSlot, PngSpriteCache, SharedSlots, encode_png};
 use axum::{
-    Router,
+    Extension, Router,
     extract::{ConnectInfo, Path, Query, State},
     http::{StatusCode, header},
     response::{Html, IntoResponse},
     routing::{delete, get, patch, post},
 };
-use fire_red_database::{CaughtPokemon, DeadPokemon};
+use fire_red_database::{CaughtPokemon, DeadPokemon, User};
 use fire_red_states::{
     ClientMessage, GameState, LockOrRecover, MAX_NATIONAL_DEX_FIRERED, is_shiny,
 };
@@ -1487,6 +1487,8 @@ struct WebState {
     discord_slash: Option<crate::config::DiscordSlashConfig>,
     /// Path to the TOML config file, used by the hot-reload endpoint.
     config_path: Option<Arc<String>>,
+    /// In-memory map from user_id to their most recently connected run_id.
+    user_active_run: Arc<Mutex<HashMap<u32, u32>>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -1678,13 +1680,13 @@ async fn clear_db(
 
 /// Returns the full current state as a JSON array of slot objects — same
 /// payload the WebSocket would push on the next tick.
-async fn api_state(State(state): State<WebState>) -> impl IntoResponse {
+async fn api_state(
+    State(state): State<WebState>,
+    Extension(user): Extension<User>,
+) -> impl IntoResponse {
     let json = state.tx.borrow().clone();
-    let body = if json.is_empty() {
-        "[]".to_string()
-    } else {
-        json
-    };
+    let raw = if json.is_empty() { "[]".to_string() } else { json };
+    let body = filter_slots_for_user(&raw, user.id).await;
     ([(header::CONTENT_TYPE, "application/json")], body)
 }
 
@@ -1753,12 +1755,28 @@ async fn api_slot_odds(
 /// Returns a plain-text one-line summary of a tracker slot, suitable for chat
 /// bots or stream commands. Format: `"<Player> — <HP>/<MaxHP> — <MapName>"`.
 /// Returns `"Slot <n> not found"` or `"Slot <n> not connected"` on error.
-async fn api_bot_summary(State(state): State<WebState>, Path(index): Path<usize>) -> String {
+async fn api_bot_summary(
+    State(state): State<WebState>,
+    Extension(user): Extension<User>,
+    Path(index): Path<usize>,
+) -> String {
     let slots = state.live_slots.lock_or_recover().clone();
     let slot = match slots.get(index) {
         Some(s) => s.clone(),
         None => return format!("Slot {index} not found"),
     };
+    if let Some(rid) = slot.db.as_ref().and_then(|db| db.get_run_id()) {
+        let uid = user.id;
+        let can = tokio::task::spawn_blocking(move || {
+            fire_red_database::user_can_access_run(rid, uid)
+        })
+        .await
+        .unwrap_or(Ok(false))
+        .unwrap_or(false);
+        if !can {
+            return format!("Slot {index} not found");
+        }
+    }
     let gs = match slot.state.lock_or_recover().clone() {
         Some(gs) => gs,
         None => return format!("Slot {index} not connected"),
@@ -1781,9 +1799,13 @@ async fn ws_handler(
     ws: axum::extract::ws::WebSocketUpgrade,
     State(state): State<WebState>,
     Query(params): Query<HashMap<String, String>>,
+    Extension(user): Extension<User>,
 ) -> impl IntoResponse {
     let show = params.get("show").cloned();
-    ws.on_upgrade(move |socket| handle_socket(socket, state.tx.subscribe(), state.live_slots, show))
+    let user_id = user.id;
+    ws.on_upgrade(move |socket| {
+        handle_socket(socket, state.tx.subscribe(), state.live_slots, show, user_id)
+    })
 }
 
 /// Strips fields from a slot-array JSON string that the given `show` view does
@@ -1935,17 +1957,48 @@ async fn handle_socket(
     mut rx: watch::Receiver<String>,
     live_slots: SharedSlots,
     show: Option<String>,
+    user_id: u32,
 ) {
+    // Pre-fetch the set of run IDs this user can access once at connect time
+    // so we can filter every broadcast tick without hitting the DB.
+    let accessible: HashSet<u32> =
+        tokio::task::spawn_blocking(move || fire_red_database::get_accessible_run_ids(user_id))
+            .await
+            .unwrap_or(Ok(HashSet::new()))
+            .unwrap_or_default();
+
+    // Filter helper: replaces inaccessible slots with null (preserving array
+    // positions so /:index/ overlay URLs remain stable), then applies the
+    // show-filter on top.
+    let filter_json = |raw: &str| -> String {
+        let arr: serde_json::Value =
+            serde_json::from_str(raw).unwrap_or(serde_json::Value::Array(vec![]));
+        let user_slots: Vec<serde_json::Value> = arr
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|s| match s.get("active_run_id").and_then(|v| v.as_u64()) {
+                None => s,
+                Some(rid) if accessible.contains(&(rid as u32)) => s,
+                _ => serde_json::Value::Null,
+            })
+            .collect();
+        let filtered =
+            serde_json::to_string(&serde_json::Value::Array(user_slots)).unwrap_or_default();
+        match &show {
+            Some(s) => filter_slots_json(&filtered, s),
+            None => filtered,
+        }
+    };
+
     let (mut ws_tx, mut ws_rx) = socket.split();
 
     // Send current state immediately so the browser isn't blank on connect.
     {
         let current = rx.borrow_and_update().clone();
         if !current.is_empty() {
-            let msg = match &show {
-                Some(s) => filter_slots_json(&current, s),
-                None => current,
-            };
+            let msg = filter_json(&current);
             if ws_tx
                 .send(axum::extract::ws::Message::Text(msg))
                 .await
@@ -1956,9 +2009,15 @@ async fn handle_socket(
         }
     }
 
-    // Spawn a task to forward incoming browser messages as tracker commands.
-    // end_run and new_run are broadcast to every connected slot so all trackers
-    // stay in sync.
+    // Forward incoming browser commands only to slots accessible by this user.
+    let live_slots_cmd = live_slots.clone();
+    let accessible_cmd = {
+        // Re-fetch accessible run IDs for the command-forwarding closure.
+        tokio::task::spawn_blocking(move || fire_red_database::get_accessible_run_ids(user_id))
+            .await
+            .unwrap_or(Ok(HashSet::new()))
+            .unwrap_or_default()
+    };
     tokio::spawn(async move {
         while let Some(Ok(axum::extract::ws::Message::Text(text))) = ws_rx.next().await {
             if let Ok(val) = serde_json::from_str::<serde_json::Value>(&text) {
@@ -1968,9 +2027,16 @@ async fn handle_socket(
                     _ => None,
                 };
                 if let Some(msg) = msg {
-                    let slots = live_slots.lock_or_recover().clone();
+                    let slots = live_slots_cmd.lock_or_recover().clone();
                     for slot in &slots {
-                        slot.command_queue.lock_or_recover().push_back(msg.clone());
+                        let run_id = slot.db.as_ref().and_then(|db| db.get_run_id());
+                        let allowed = match run_id {
+                            None => true,
+                            Some(rid) => accessible_cmd.contains(&rid),
+                        };
+                        if allowed {
+                            slot.command_queue.lock_or_recover().push_back(msg.clone());
+                        }
                     }
                 }
             }
@@ -1983,10 +2049,7 @@ async fn handle_socket(
             break;
         }
         let raw = rx.borrow_and_update().clone();
-        let msg = match &show {
-            Some(s) => filter_slots_json(&raw, s),
-            None => raw,
-        };
+        let msg = filter_json(&raw);
         if ws_tx
             .send(axum::extract::ws::Message::Text(msg))
             .await
@@ -2336,7 +2399,10 @@ async fn api_shiny_stats(
 /// - `404 Not Found`           — no run is currently active.
 /// - `503 Service Unavailable` — no database configured.
 /// - `500 Internal Server Error` — DB connection or query failure.
-async fn api_active_timeline(State(state): State<WebState>) -> impl IntoResponse {
+async fn api_active_timeline(
+    State(state): State<WebState>,
+    Extension(user): Extension<User>,
+) -> impl IntoResponse {
     let Some(conn) = state.db_conn else {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
@@ -2344,8 +2410,11 @@ async fn api_active_timeline(State(state): State<WebState>) -> impl IntoResponse
         )
             .into_response();
     };
+    let uid = user.id;
     let result =
-        tokio::task::spawn_blocking(move || fire_red_database::active_run_timeline_json(&conn))
+        tokio::task::spawn_blocking(move || {
+            fire_red_database::active_run_timeline_for_user_json(&conn, uid)
+        })
             .await
             .unwrap_or_else(|_| {
                 Err(fire_red_database::EventsError::QueryFailed(
@@ -2404,25 +2473,39 @@ async fn api_run_events(
     }
 }
 
-/// `GET /api/runs` — summary list of all runs (id, player, dates, deaths, catches, encounters).
-async fn api_runs(State(state): State<WebState>) -> axum::Json<serde_json::Value> {
+/// `GET /api/runs` — summary list of runs accessible to the authenticated user.
+async fn api_runs(
+    State(state): State<WebState>,
+    Extension(user): Extension<User>,
+) -> axum::Json<serde_json::Value> {
     let conn = require_db!(state);
-    let result =
-        tokio::task::spawn_blocking(move || fire_red_database::list_all_runs_json(&conn)).await;
+    let uid = user.id;
+    let result = tokio::task::spawn_blocking(move || {
+        fire_red_database::list_runs_for_user_json(&conn, uid)
+    })
+    .await;
     axum::Json(result.unwrap_or_else(|_| serde_json::json!({ "error": "Task panicked" })))
 }
 
 /// `POST /api/run/import` — import a run from the JSON format produced by `/api/run/:id/export`.
 ///
 /// Creates a new run with a fresh id and re-inserts caught, dead, and encounter records.
-/// Returns `{ "run_id": <new_id> }` on success.
+/// The imported run is linked to the authenticated user. Returns `{ "run_id": <new_id> }`.
 async fn api_run_import(
     State(state): State<WebState>,
+    Extension(user): Extension<User>,
     axum::Json(body): axum::Json<serde_json::Value>,
 ) -> axum::Json<serde_json::Value> {
     let conn = require_db!(state);
-    let result =
-        tokio::task::spawn_blocking(move || fire_red_database::import_run(&conn, &body)).await;
+    let uid = user.id;
+    let result = tokio::task::spawn_blocking(move || {
+        let val = fire_red_database::import_run(&conn, &body);
+        if let Some(run_id) = val.get("run_id").and_then(|v| v.as_u64()).map(|v| v as u32) {
+            let _ = fire_red_database::link_run_to_user(run_id, uid);
+        }
+        val
+    })
+    .await;
     axum::Json(result.unwrap_or_else(|_| serde_json::json!({ "error": "Task panicked" })))
 }
 
@@ -4237,6 +4320,7 @@ async fn api_undo(
 /// Query param `ids` is a comma-separated list of run IDs (max 20).
 async fn api_runs_compare(
     State(state): State<WebState>,
+    Extension(user): Extension<User>,
     Query(params): Query<std::collections::HashMap<String, String>>,
 ) -> axum::Json<serde_json::Value> {
     let conn = require_db!(state);
@@ -4244,13 +4328,24 @@ async fn api_runs_compare(
         Some(s) => s.clone(),
         None => return axum::Json(serde_json::json!({ "error": "Missing 'ids' query parameter" })),
     };
-    let run_ids: Vec<u32> = ids_str
+    let requested: Vec<u32> = ids_str
         .split(',')
         .filter_map(|s| s.trim().parse::<u32>().ok())
         .take(20)
         .collect();
-    if run_ids.is_empty() {
+    if requested.is_empty() {
         return axum::Json(serde_json::json!({ "error": "No valid run IDs provided" }));
+    }
+    let uid = user.id;
+    let accessible = tokio::task::spawn_blocking(move || {
+        fire_red_database::get_accessible_run_ids(uid)
+    })
+    .await
+    .unwrap_or(Ok(HashSet::new()))
+    .unwrap_or_default();
+    let run_ids: Vec<u32> = requested.into_iter().filter(|id| accessible.contains(id)).collect();
+    if run_ids.is_empty() {
+        return axum::Json(serde_json::json!({ "error": "No accessible run IDs provided" }));
     }
     let result = tokio::task::spawn_blocking(move || {
         fire_red_database::run_comparison(&conn, &run_ids)
@@ -4798,17 +4893,32 @@ async fn api_slot_ev_progress(
 /// | `end_run`   | End the active run for every connected player.           |
 /// | `new_run`   | Start a new run for every connected player.              |
 /// | `heal_all`  | Heal HP/PP/status of every party Pokémon for all slots.  |
-async fn api_command(State(state): State<WebState>, Path(cmd): Path<String>) -> impl IntoResponse {
+async fn api_command(
+    State(state): State<WebState>,
+    Extension(user): Extension<User>,
+    Path(cmd): Path<String>,
+) -> impl IntoResponse {
     let msg = match cmd.as_str() {
         "end_run"  => ClientMessage::EndRun,
         "new_run"  => ClientMessage::NewRun,
         "heal_all" => ClientMessage::HealParty,
         other => return (StatusCode::BAD_REQUEST, format!("Unknown command: {other}")),
     };
+    let uid = user.id;
+    let accessible = tokio::task::spawn_blocking(move || {
+        fire_red_database::get_accessible_run_ids(uid)
+    })
+    .await
+    .unwrap_or(Ok(HashSet::new()))
+    .unwrap_or_default();
     let slots = state.live_slots.lock_or_recover().clone();
-    let count = slots.len();
+    let mut count = 0usize;
     for slot in &slots {
-        slot.command_queue.lock_or_recover().push_back(msg.clone());
+        let run_id = slot.db.as_ref().and_then(|db| db.get_run_id());
+        if run_id.is_none_or(|rid| accessible.contains(&rid)) {
+            slot.command_queue.lock_or_recover().push_back(msg.clone());
+            count += 1;
+        }
     }
     (
         StatusCode::OK,
@@ -5039,6 +5149,7 @@ async fn serve_vs_leader_overlay(
 /// Body: `{"run_id": <u32>, "text": "<string>"}`
 async fn api_post_goal(
     State(state): State<WebState>,
+    Extension(user): Extension<User>,
     axum::Json(body): axum::Json<serde_json::Value>,
 ) -> axum::Json<serde_json::Value> {
     let conn = require_db!(state);
@@ -5050,6 +5161,16 @@ async fn api_post_goal(
         Some(t) if !t.is_empty() => t.to_string(),
         _ => return axum::Json(serde_json::json!({ "error": "missing or empty text" })),
     };
+    let uid = user.id;
+    let can = tokio::task::spawn_blocking(move || {
+        fire_red_database::user_can_access_run(run_id, uid)
+    })
+    .await
+    .unwrap_or(Ok(false))
+    .unwrap_or(false);
+    if !can {
+        return axum::Json(serde_json::json!({ "error": "access denied" }));
+    }
     let result = tokio::task::spawn_blocking(move || {
         fire_red_database::create_goal(&conn, run_id, &text)
     })
@@ -5063,9 +5184,29 @@ async fn api_post_goal(
 /// `PATCH /api/goal/:id/complete` — mark a goal as completed.
 async fn api_complete_goal(
     State(state): State<WebState>,
+    Extension(user): Extension<User>,
     Path(goal_id): Path<i32>,
 ) -> axum::Json<serde_json::Value> {
     let conn = require_db!(state);
+    let uid = user.id;
+    let conn_clone = conn.clone();
+    let gid = goal_id;
+    let run_id = tokio::task::spawn_blocking(move || {
+        fire_red_database::get_run_id_for_goal(&conn_clone, gid)
+    })
+    .await
+    .unwrap_or(None);
+    if let Some(rid) = run_id {
+        let can = tokio::task::spawn_blocking(move || {
+            fire_red_database::user_can_access_run(rid, uid)
+        })
+        .await
+        .unwrap_or(Ok(false))
+        .unwrap_or(false);
+        if !can {
+            return axum::Json(serde_json::json!({ "error": "access denied" }));
+        }
+    }
     let result = tokio::task::spawn_blocking(move || {
         fire_red_database::complete_goal(&conn, goal_id)
     })
@@ -5079,9 +5220,29 @@ async fn api_complete_goal(
 /// `DELETE /api/goal/:id` — delete a goal.
 async fn api_delete_goal(
     State(state): State<WebState>,
+    Extension(user): Extension<User>,
     Path(goal_id): Path<i32>,
 ) -> axum::Json<serde_json::Value> {
     let conn = require_db!(state);
+    let uid = user.id;
+    let conn_clone = conn.clone();
+    let gid = goal_id;
+    let run_id = tokio::task::spawn_blocking(move || {
+        fire_red_database::get_run_id_for_goal(&conn_clone, gid)
+    })
+    .await
+    .unwrap_or(None);
+    if let Some(rid) = run_id {
+        let can = tokio::task::spawn_blocking(move || {
+            fire_red_database::user_can_access_run(rid, uid)
+        })
+        .await
+        .unwrap_or(Ok(false))
+        .unwrap_or(false);
+        if !can {
+            return axum::Json(serde_json::json!({ "error": "access denied" }));
+        }
+    }
     let result = tokio::task::spawn_blocking(move || {
         fire_red_database::delete_goal(&conn, goal_id)
     })
@@ -5104,6 +5265,7 @@ async fn api_delete_goal(
 /// validation failure.
 async fn api_batch_inject(
     State(state): State<WebState>,
+    Extension(user): Extension<User>,
     axum::Json(body): axum::Json<serde_json::Value>,
 ) -> axum::Json<serde_json::Value> {
     if !state.allow_injections {
@@ -5113,6 +5275,14 @@ async fn api_batch_inject(
         Some(a) => a,
         None => return axum::Json(serde_json::json!({ "error": "body must be a JSON array" })),
     };
+
+    let uid = user.id;
+    let accessible = tokio::task::spawn_blocking(move || {
+        fire_red_database::get_accessible_run_ids(uid)
+    })
+    .await
+    .unwrap_or(Ok(HashSet::new()))
+    .unwrap_or_default();
 
     let slots = state.live_slots.lock_or_recover().clone();
 
@@ -5132,6 +5302,13 @@ async fn api_batch_inject(
         if slot_idx >= slots.len() {
             return axum::Json(serde_json::json!({
                 "error": format!("item[{pos}]: slot {slot_idx} out of range")
+            }));
+        }
+        if let Some(rid) = slots[slot_idx].db.as_ref().and_then(|db| db.get_run_id())
+            && !accessible.contains(&rid)
+        {
+            return axum::Json(serde_json::json!({
+                "error": format!("item[{pos}]: access denied for slot {slot_idx}")
             }));
         }
         let msg: ClientMessage = match serde_json::from_value(item["message"].clone()) {
@@ -5214,6 +5391,7 @@ async fn api_delete_preset(
 /// Body: `{ "slot": <usize> }`.
 async fn api_apply_preset(
     State(state): State<WebState>,
+    Extension(user): Extension<User>,
     Path(name): Path<String>,
     axum::Json(body): axum::Json<serde_json::Value>,
 ) -> axum::Json<serde_json::Value> {
@@ -5228,6 +5406,18 @@ async fn api_apply_preset(
     let slots = state.live_slots.lock_or_recover().clone();
     if slot_idx >= slots.len() {
         return axum::Json(serde_json::json!({ "error": "slot index out of range" }));
+    }
+    if let Some(rid) = slots[slot_idx].db.as_ref().and_then(|db| db.get_run_id()) {
+        let uid = user.id;
+        let can = tokio::task::spawn_blocking(move || {
+            fire_red_database::user_can_access_run(rid, uid)
+        })
+        .await
+        .unwrap_or(Ok(false))
+        .unwrap_or(false);
+        if !can {
+            return axum::Json(serde_json::json!({ "error": "access denied" }));
+        }
     }
     let commands_val = match tokio::task::spawn_blocking(move || {
         fire_red_database::get_preset(&conn, &name)
@@ -5601,7 +5791,8 @@ pub fn register_slash_commands(cfg: &crate::config::DiscordSlashConfig) {
 
 fn build_router(web_state: WebState) -> Router {
     Router::new()
-        .route("/", get(serve_html))
+        .route("/", get(serve_login_page))
+        .route("/overlay", get(serve_html))
         .route("/ws", get(ws_handler))
         .route("/db", get(serve_db_viewer))
         .route("/db.json", get(serve_db_json))
@@ -5739,8 +5930,11 @@ fn build_router(web_state: WebState) -> Router {
         .route("/about", get(serve_about))
         .route("/compare", get(serve_compare))
         .route("/join", get(serve_join))
-        .route("/api/direct/connect", post(api_direct_connect))
+        .route("/register", get(serve_register))
+        .route("/api/direct/connect", post(api_direct_connect).delete(api_direct_disconnect))
         .route("/api/direct/hosts", get(api_direct_hosts))
+        .route("/api/run", post(api_create_run))
+        .route("/api/run/:id/resume", post(api_resume_run))
         // Batch injection
         .route("/api/batch", post(api_batch_inject))
         // Presets
@@ -5771,9 +5965,40 @@ fn build_router(web_state: WebState) -> Router {
         .route("/api/webhook/donation", post(api_donation_webhook))
         // Savefile snapshot import
         .route("/api/savefile", post(api_import_savefile))
+        // User accounts
+        .route("/api/users", post(api_register_user).get(api_list_users))
+        .route("/api/login", post(api_login))
+        .route("/api/logout", post(api_logout))
+        .route("/api/me", get(api_me))
+        .route("/api/me/dashboard", get(api_me_dashboard))
+        .route("/api/me/active_run", get(api_me_active_run).put(api_me_set_active_run))
+        .route("/api/user/:id/runs", get(api_user_runs))
+        // Run invites and access requests
+        .route("/api/run/:id/invite", post(api_run_invite))
+        .route("/api/run/:id/invites", get(api_run_invites))
+        .route("/api/run/:id/invite/accept", post(api_run_invite_accept))
+        .route("/api/run/:id/invite/decline", post(api_run_invite_decline))
+        .route("/api/run/:id/invite/request", post(api_run_invite_request))
+        .route("/api/run/:id/invite/requests", get(api_run_invite_requests))
+        .route("/api/run/:id/invite/request/:uid/approve", post(api_run_invite_request_approve))
+        .route("/api/run/:id/invite/request/:uid/deny", post(api_run_invite_request_deny))
+        .route("/api/me/run_statuses", get(api_me_run_statuses))
+        .route("/api/me/run_requests", get(api_me_run_requests))
+        // Dashboard page
+        .route("/dashboard", get(serve_dashboard))
         // Overlays
         .route("/:index/dex", get(serve_dex_overlay))
         .route("/:index/typechart", get(serve_typechart_overlay))
+        // ── Middleware stack (last added = outermost = runs first) ──────────
+        // 3. Slot access: check ownership before any request to /api/slot/:idx/…
+        .layer(axum::middleware::from_fn_with_state(
+            web_state.clone(),
+            slot_access_middleware,
+        ))
+        // 2. Run access: check user_can_access_run for /api/run/:id/… routes
+        .layer(axum::middleware::from_fn(run_access_middleware))
+        // 1. Auth wall: require a valid session for all non-public routes
+        .layer(axum::middleware::from_fn(auth_middleware))
         .with_state(web_state)
 }
 
@@ -5849,6 +6074,7 @@ pub fn run(live_slots: SharedSlots, port: u16, cfg: WebRunConfig) {
         connector,
         discord_slash,
         config_path: config_path.map(Arc::new),
+        user_active_run: Arc::new(Mutex::new(HashMap::new())),
     };
 
     let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
@@ -5874,6 +6100,180 @@ pub fn run(live_slots: SharedSlots, port: u16, cfg: WebRunConfig) {
 }
 
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Run management endpoints
+// ---------------------------------------------------------------------------
+
+#[derive(serde::Deserialize, Default)]
+struct CreateRunBody {
+    player_name: Option<String>,
+}
+
+/// `POST /api/run` — create a new run and return its ID.
+///
+/// Requires authentication. The run is linked to the caller's account and
+/// their username is used as the player name (overriding any `player_name`
+/// in the body).
+async fn api_create_run(
+    headers: axum::http::HeaderMap,
+    axum::Json(body): axum::Json<CreateRunBody>,
+) -> impl IntoResponse {
+    let Some(token) = extract_bearer(&headers) else {
+        return (StatusCode::UNAUTHORIZED, axum::Json(serde_json::json!({ "error": "authentication required" })));
+    };
+    let fallback_name = body.player_name.unwrap_or_else(|| "Unknown".into());
+
+    let result = tokio::task::spawn_blocking(move || -> Result<u32, (StatusCode, String)> {
+        let user = fire_red_database::validate_session(&token)
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?
+            .ok_or_else(|| (StatusCode::UNAUTHORIZED, "session expired or invalid".to_string()))?;
+
+        let player_name = if user.username.is_empty() { fallback_name } else { user.username };
+        let run_id = fire_red_database::create_run_for_slot(&player_name)
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
+        let _ = fire_red_database::link_run_to_user(run_id, user.id);
+        Ok(run_id)
+    }).await;
+
+    match result {
+        Ok(Ok(run_id)) => (StatusCode::CREATED, axum::Json(serde_json::json!({ "run_id": run_id }))),
+        Ok(Err((status, e))) => (status, axum::Json(serde_json::json!({ "error": e }))),
+        Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, axum::Json(serde_json::json!({ "error": "Task panicked" }))),
+    }
+}
+
+/// `POST /api/run/:id/resume` — set an existing run as the global active run.
+///
+/// Requires authentication.  The caller must own the run or have an accepted
+/// invite.  In direct mode each slot manages its own run context via
+/// `run_id` in `POST /api/direct/connect` instead.
+async fn api_resume_run(
+    State(state): State<WebState>,
+    headers: axum::http::HeaderMap,
+    Path(run_id): Path<u32>,
+) -> impl IntoResponse {
+    let Some(token) = extract_bearer(&headers) else {
+        return (StatusCode::UNAUTHORIZED, axum::Json(serde_json::json!({ "error": "authentication required" })));
+    };
+    let result = tokio::task::spawn_blocking(move || -> Result<u32, (StatusCode, String)> {
+        let user = fire_red_database::validate_session(&token)
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?
+            .ok_or_else(|| (StatusCode::UNAUTHORIZED, "session expired or invalid".to_string()))?;
+
+        match fire_red_database::user_can_access_run(run_id, user.id) {
+            Ok(true) => {}
+            Ok(false) => return Err((StatusCode::FORBIDDEN, "you do not have access to this run".into())),
+            Err(e) => return Err((StatusCode::INTERNAL_SERVER_ERROR, e)),
+        }
+        match fire_red_database::resume_run(run_id) {
+            Ok(true) => Ok(user.id),
+            Ok(false) => Err((StatusCode::NOT_FOUND, format!("run #{run_id} not found"))),
+            Err(e) => Err((StatusCode::INTERNAL_SERVER_ERROR, e)),
+        }
+    }).await;
+
+    match result {
+        Ok(Ok(user_id)) => {
+            state.user_active_run.lock().unwrap().insert(user_id, run_id);
+            (StatusCode::OK, axum::Json(serde_json::json!({ "run_id": run_id })))
+        }
+        Ok(Err((status, e))) => (status, axum::Json(serde_json::json!({ "error": e }))),
+        Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, axum::Json(serde_json::json!({ "error": "Task panicked" }))),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Create-account page
+// ---------------------------------------------------------------------------
+
+const REGISTER_HTML: &str = r#"<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Create Account – Fire Red Tracker</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:sans-serif;background:#1a1a2e;color:#eee;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:1rem}
+.card{background:#16213e;border:1px solid #0f3460;border-radius:10px;padding:2rem;width:100%;max-width:400px}
+h1{font-size:1.3rem;color:#e94560;margin-bottom:.3rem}
+.sub{color:#888;font-size:.85rem;margin-bottom:1.5rem}
+label{display:block;font-size:.85rem;color:#ccc;margin-bottom:.3rem}
+input{width:100%;padding:.55rem .75rem;background:#0f3460;border:1px solid #444;border-radius:4px;color:#eee;font-size:.95rem;margin-bottom:1rem}
+input:focus{outline:none;border-color:#e94560}
+.btn{display:block;width:100%;padding:.6rem;border:none;border-radius:4px;font-size:1rem;cursor:pointer}
+.btn-primary{background:#e94560;color:#fff}
+.btn-primary:hover{background:#c73652}
+.btn-primary:disabled{background:#555;cursor:default}
+.msg{margin-top:.9rem;padding:.55rem;border-radius:4px;text-align:center;font-size:.875rem;display:none}
+.ok{background:#1a4a1a;border:1px solid #2d8a2d;color:#7dce7d;display:block}
+.err{background:#4a1a1a;border:1px solid #8a2d2d;color:#ce7d7d;display:block}
+.footer{margin-top:1.2rem;text-align:center;font-size:.82rem;color:#666}
+.footer a{color:#5090e0;text-decoration:none}
+.footer a:hover{text-decoration:underline}
+.req{font-size:.75rem;color:#666;margin-top:-.6rem;margin-bottom:.9rem}
+</style>
+</head>
+<body>
+<div class="card">
+  <h1>Create Account</h1>
+  <p class="sub">Fire Red Tracker</p>
+  <form id="reg-form" onsubmit="doRegister(event)">
+    <label for="uname">Username</label>
+    <input id="uname" type="text" placeholder="pick a username" autocomplete="username" required maxlength="64">
+    <label for="upass">Password</label>
+    <input id="upass" type="password" placeholder="at least 8 characters" autocomplete="new-password" required minlength="8">
+    <p class="req">Minimum 8 characters.</p>
+    <label for="upass2">Confirm Password</label>
+    <input id="upass2" type="password" placeholder="repeat password" autocomplete="new-password" required>
+    <button class="btn btn-primary" id="reg-btn" type="submit">Create Account</button>
+  </form>
+  <div id="msg" class="msg"></div>
+  <div class="footer">Already have an account? <a href="/join">Log in on the join page</a></div>
+</div>
+<script>
+async function doRegister(e){
+  e.preventDefault();
+  const msg=document.getElementById('msg');
+  const btn=document.getElementById('reg-btn');
+  msg.className='msg';
+  const u=document.getElementById('uname').value.trim();
+  const p=document.getElementById('upass').value;
+  const p2=document.getElementById('upass2').value;
+  if(p!==p2){msg.className='msg err';msg.textContent='Passwords do not match.';return;}
+  if(p.length<8){msg.className='msg err';msg.textContent='Password must be at least 8 characters.';return;}
+  btn.disabled=true;
+  try{
+    const r=await fetch('/api/users',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({username:u,password:p})
+    });
+    const d=await r.json();
+    if(r.ok){
+      msg.className='msg ok';
+      msg.textContent='Account created! Redirecting to the join page…';
+      setTimeout(()=>window.location.href='/join',1200);
+    }else{
+      msg.className='msg err';
+      msg.textContent=d.error||('Error '+r.status);
+      btn.disabled=false;
+    }
+  }catch(err){
+    msg.className='msg err';
+    msg.textContent='Network error: '+err.message;
+    btn.disabled=false;
+  }
+}
+</script>
+</body>
+</html>"#;
+
+async fn serve_register() -> Html<&'static str> {
+    Html(REGISTER_HTML)
+}
+
+// ---------------------------------------------------------------------------
 // Run select / join page
 // ---------------------------------------------------------------------------
 
@@ -5884,171 +6284,463 @@ const JOIN_HTML: &str = r#"<!DOCTYPE html>
 <meta name="viewport" content="width=device-width,initial-scale=1.0">
 <title>Run Select – Fire Red Tracker</title>
 <style>
-  *{box-sizing:border-box;margin:0;padding:0}
-  body{font-family:sans-serif;background:#1a1a2e;color:#eee;min-height:100vh;padding:2rem 1rem}
-  .container{max-width:760px;margin:0 auto}
-  h1{font-size:1.5rem;color:#e94560;margin-bottom:1.5rem}
-  .section{background:#16213e;border:1px solid #0f3460;border-radius:8px;padding:1.5rem;margin-bottom:1.5rem}
-  .section-title{font-size:.95rem;font-weight:700;color:#ccc;margin-bottom:1rem;padding-bottom:.5rem;border-bottom:1px solid #1e3a6e}
-  .quick-actions{display:flex;gap:.75rem;flex-wrap:wrap;margin-bottom:1.2rem}
-  .btn{display:inline-block;padding:.45rem 1.1rem;border:none;border-radius:4px;font-size:.875rem;cursor:pointer;text-decoration:none;line-height:1.4}
-  .btn-primary{background:#e94560;color:#fff}
-  .btn-primary:hover{background:#c73652}
-  .btn-primary:disabled{background:#555;cursor:default}
-  .btn-secondary{background:#1e3a6e;color:#aad;border:1px solid #2d5499}
-  .btn-secondary:hover{background:#253d6a}
-  .btn-sm{padding:.28rem .65rem;font-size:.78rem}
-  table{width:100%;border-collapse:collapse;font-size:.85rem}
-  th{text-align:left;color:#888;font-weight:600;font-size:.72rem;text-transform:uppercase;letter-spacing:.4px;padding:.4rem .6rem;border-bottom:1px solid #1e3a6e}
-  td{padding:.42rem .6rem;border-bottom:1px solid rgba(255,255,255,0.04);vertical-align:middle}
-  tr:hover td{background:rgba(255,255,255,0.03)}
-  .run-id{color:#5090e0;font-weight:600}
-  .run-active{color:#60e060;font-size:.75rem;font-weight:700}
-  .deaths{color:#e06060}
-  .catches{color:#60d060}
-  label{display:block;font-size:.85rem;color:#ccc;margin-bottom:.3rem}
-  input[type=text],input[type=number]{width:100%;padding:.5rem .7rem;background:#0f3460;border:1px solid #444;border-radius:4px;color:#eee;font-size:1rem;margin-bottom:1rem}
-  input:focus{outline:none;border-color:#e94560}
-  .msg{margin-top:.75rem;padding:.55rem;border-radius:4px;text-align:center;font-size:.875rem;display:none}
-  .ok{background:#1a4a1a;border:1px solid #2d8a2d;color:#7dce7d;display:block}
-  .err{background:#4a1a1a;border:1px solid #8a2d2d;color:#ce7d7d;display:block}
-  .empty{color:#666;font-size:.85rem;text-align:center;padding:1.5rem 0}
-  .loading{color:#888;font-size:.85rem}
-  .td-actions{text-align:right;white-space:nowrap}
-  .td-actions a+a{margin-left:4px}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:sans-serif;background:#1a1a2e;color:#eee;min-height:100vh;padding:2rem 1rem}
+.container{max-width:860px;margin:0 auto}
+h1{font-size:1.5rem;color:#e94560;margin-bottom:1.5rem;display:flex;align-items:center;justify-content:space-between}
+h1 .user-pill{display:inline-flex;align-items:center;gap:.6rem;background:#1a3a1a;border:1px solid #2d5a2d;border-radius:20px;padding:.2rem .85rem;font-size:.82rem;color:#7dce7d}
+.section{background:#16213e;border:1px solid #0f3460;border-radius:8px;padding:1.5rem;margin-bottom:1.5rem}
+.section-title{font-size:.95rem;font-weight:700;color:#ccc;margin-bottom:1rem;padding-bottom:.5rem;border-bottom:1px solid #1e3a6e;display:flex;align-items:center;justify-content:space-between}
+.btn{display:inline-block;padding:.45rem 1.1rem;border:none;border-radius:4px;font-size:.875rem;cursor:pointer;text-decoration:none;line-height:1.4}
+.btn-primary{background:#e94560;color:#fff}
+.btn-primary:hover{background:#c73652}
+.btn-primary:disabled{background:#555;cursor:default}
+.btn-secondary{background:#1e3a6e;color:#aad;border:1px solid #2d5499}
+.btn-secondary:hover{background:#253d6a}
+.btn-success{background:#1a5c2e;color:#7dce7d;border:1px solid #2d8a2d}
+.btn-success:hover{background:#1e6a34}
+.btn-danger{background:#5c1a1a;color:#ce7d7d;border:1px solid #8a2d2d}
+.btn-danger:hover{background:#6a1e1e}
+.btn-warn{background:#4a3a00;color:#e0c040;border:1px solid #7a6000}
+.btn-connect{background:#0f3a4a;color:#7dd;border:1px solid #1a6a7a}
+.btn-connect:hover{background:#145060}
+.btn-sm{padding:.28rem .65rem;font-size:.78rem}
+.btn-xs{padding:.18rem .5rem;font-size:.72rem}
+.page-select{background:#1e3a6e;color:#aad;border:1px solid #2d5499;border-radius:4px;padding:.18rem .5rem;font-size:.72rem;cursor:pointer}
+.page-select:focus{outline:none;border-color:#e94560}
+table{width:100%;border-collapse:collapse;font-size:.85rem}
+th{text-align:left;color:#888;font-weight:600;font-size:.72rem;text-transform:uppercase;letter-spacing:.4px;padding:.4rem .6rem;border-bottom:1px solid #1e3a6e}
+td{padding:.42rem .6rem;border-bottom:1px solid rgba(255,255,255,0.04);vertical-align:middle}
+tr:hover td{background:rgba(255,255,255,0.03)}
+.run-id{color:#5090e0;font-weight:600}
+.run-active{color:#60e060;font-size:.75rem;font-weight:700}
+.deaths{color:#e06060}
+.catches{color:#60d060}
+.badge-owner{display:inline-block;font-size:.65rem;padding:.1rem .35rem;border-radius:3px;background:#1a3a5c;color:#5090e0;border:1px solid #2d5499;vertical-align:middle;margin-left:.3rem}
+.badge-invited{display:inline-block;font-size:.65rem;padding:.1rem .35rem;border-radius:3px;background:#1a3a1a;color:#7dce7d;border:1px solid #2d8a2d;vertical-align:middle;margin-left:.3rem}
+label{display:block;font-size:.85rem;color:#ccc;margin-bottom:.3rem}
+input[type=text],input[type=password],input[type=number],select{width:100%;padding:.5rem .7rem;background:#0f3460;border:1px solid #444;border-radius:4px;color:#eee;font-size:.9rem;margin-bottom:.8rem}
+input:focus,select:focus{outline:none;border-color:#e94560}
+select option{background:#0f3460}
+.msg{margin-top:.6rem;padding:.5rem;border-radius:4px;text-align:center;font-size:.85rem;display:none}
+.ok{background:#1a4a1a;border:1px solid #2d8a2d;color:#7dce7d;display:block}
+.err{background:#4a1a1a;border:1px solid #8a2d2d;color:#ce7d7d;display:block}
+.loading{color:#888;font-size:.85rem}
+.td-actions{text-align:right;white-space:nowrap;gap:3px;display:flex;justify-content:flex-end;flex-wrap:wrap}
+.form-row{display:flex;gap:.6rem;align-items:flex-end}
+.form-row>*{flex:1;margin-bottom:0}
+.form-row .btn{flex:0 0 auto;white-space:nowrap}
+.radio-group{display:flex;flex-direction:column;gap:.5rem;margin-bottom:.8rem}
+.radio-group label{display:flex;align-items:center;gap:.5rem;font-size:.875rem;color:#ccc;cursor:pointer;margin:0}
+.radio-group input[type=radio]{width:auto;margin:0}
+.req-row{display:flex;align-items:center;gap:.6rem;padding:.5rem 0;border-bottom:1px solid rgba(255,255,255,0.05);flex-wrap:wrap}
+.req-row:last-child{border-bottom:none}
+.req-info{flex:1;font-size:.85rem}
+.req-user{color:#eee;font-weight:600}
+.req-run{color:#5090e0;font-size:.8rem}
 </style>
 </head>
 <body>
 <div class="container">
-  <h1>Run Select</h1>
+<h1>
+  <span>Run Select</span>
+  <span id="user-pill" class="user-pill" style="display:none"></span>
+</h1>
 
-  <div class="section">
-    <div class="section-title">Choose a Run</div>
-    <div class="quick-actions">
-      <button class="btn btn-primary" id="new-run-btn" onclick="startNewRun()">+ Start New Run</button>
-      <a class="btn btn-secondary" id="latest-link" href="/history">View Most Recent</a>
-      <a class="btn btn-secondary" href="/history">All Run History</a>
-    </div>
-    <div id="runs-status" class="loading">Loading runs…</div>
-    <table id="runs-table" style="display:none">
-      <thead>
-        <tr>
-          <th>#</th><th>Player</th><th>Started</th><th>Status</th><th>Caught</th><th>Deaths</th><th></th>
-        </tr>
-      </thead>
-      <tbody id="runs-body"></tbody>
-    </table>
-    <div id="msg-run" class="msg"></div>
+<!-- ── Your Runs ───────────────────────────────────────────────────── -->
+<div class="section">
+  <div class="section-title">
+    <span>Your Runs</span>
+    <button class="btn btn-success btn-sm" onclick="createRun()">+ New Run</button>
   </div>
+  <div id="my-runs-status" class="loading">Loading…</div>
+  <table id="my-runs-table" style="display:none">
+    <thead><tr><th>#</th><th>Started</th><th>Status</th><th>Caught</th><th>Deaths</th><th></th></tr></thead>
+    <tbody id="my-runs-body"></tbody>
+  </table>
+  <div id="msg-my-run" class="msg"></div>
+</div>
 
-  <div class="section" id="direct-section" style="display:DIRECT_SECTION_DISPLAY">
-    <div class="section-title">Connect to RetroArch</div>
-    <p style="color:#aaa;font-size:.875rem;line-height:1.5;margin-bottom:1.2rem">Enter the IP of the machine running RetroArch. Make sure <strong>Network Commands</strong> are enabled in RetroArch settings.</p>
-    <form id="connect-form">
-      <label for="host">RetroArch IP address</label>
-      <input id="host" type="text" placeholder="192.168.1.x" required>
-      <label for="port">Network Commands port</label>
-      <input id="port" type="number" value="DEFAULT_PORT" min="1" max="65535" required>
-      <button class="btn btn-primary" id="connect-btn" type="submit" style="width:100%">Connect</button>
-    </form>
-    <div id="msg-connect" class="msg"></div>
-    <div id="active-hosts" style="display:none;margin-top:1.2rem;font-size:.8rem;color:#888">
-      <strong>Currently connected hosts:</strong>
-      <ul id="host-list" style="margin-top:.4rem;padding-left:1.2rem;color:#aaa"></ul>
+<!-- ── Pending Invites ─────────────────────────────────────────────── -->
+<div class="section" id="pending-invites-section" style="display:none">
+  <div class="section-title">Pending Invites</div>
+  <div id="pending-invites-list"></div>
+</div>
+
+<!-- ── All Runs ────────────────────────────────────────────────────── -->
+<div class="section">
+  <div class="section-title">All Runs</div>
+  <div id="runs-status" class="loading">Loading runs…</div>
+  <table id="runs-table" style="display:none">
+    <thead><tr><th>#</th><th>Player</th><th>Started</th><th>Status</th><th>Caught</th><th>Deaths</th><th></th></tr></thead>
+    <tbody id="runs-body"></tbody>
+  </table>
+  <div id="msg-run" class="msg"></div>
+</div>
+
+<!-- ── Pending Requests on Your Runs ──────────────────────────────── -->
+<div class="section" id="requests-section" style="display:none">
+  <div class="section-title">Access Requests on Your Runs</div>
+  <div id="requests-list"></div>
+</div>
+
+<!-- ── Connect to RetroArch (direct mode only) ────────────────────── -->
+<div class="section" id="direct-section" style="display:DIRECT_SECTION_DISPLAY">
+  <div class="section-title">Connect to RetroArch</div>
+  <p style="color:#aaa;font-size:.875rem;line-height:1.5;margin-bottom:1rem">Enter the IP of the machine running RetroArch. Network Commands must be enabled in RetroArch settings.</p>
+  <form id="connect-form" onsubmit="doConnect(event)">
+    <div class="form-row">
+      <div><label for="c-host">RetroArch IP</label><input id="c-host" type="text" placeholder="192.168.1.x" required></div>
+      <div style="flex:0 0 110px"><label for="c-port">Port</label><input id="c-port" type="number" value="DEFAULT_PORT" min="1" max="65535" required></div>
     </div>
+    <label>Run</label>
+    <div class="radio-group">
+      <label><input type="radio" name="run-choice" value="new" checked onchange="updateRunPicker()"> Start a new run</label>
+      <label><input type="radio" name="run-choice" value="existing" onchange="updateRunPicker()"> Resume an existing run</label>
+    </div>
+    <div id="run-picker-wrap" style="display:none">
+      <label for="run-picker">Select run to resume</label>
+      <select id="run-picker"><option value="">— loading runs —</option></select>
+    </div>
+    <button class="btn btn-primary" id="connect-btn" type="submit" style="width:100%">Connect</button>
+  </form>
+  <div id="msg-connect" class="msg"></div>
+  <div id="active-hosts" style="display:none;margin-top:1rem;font-size:.8rem;color:#888">
+    <strong>Currently connected hosts:</strong>
+    <ul id="host-list" style="margin-top:.4rem;padding-left:1.2rem;color:#aaa"></ul>
   </div>
 </div>
-<script>
-(async function init(){
-  try{
-    const r=await fetch('/api/runs');
-    if(r.ok){const d=await r.json();renderRuns(d.runs||[]);}
-    else{document.getElementById('runs-status').textContent='No database connected.';}
-  }catch(e){document.getElementById('runs-status').textContent='Could not load runs.';}
 
-  try{
-    const r=await fetch('/api/direct/hosts');
-    if(r.ok){
-      const d=await r.json();
-      if(d.hosts&&d.hosts.length>0){
-        const el=document.getElementById('active-hosts');
-        const ul=document.getElementById('host-list');
-        d.hosts.forEach(h=>{const li=document.createElement('li');li.textContent=h;ul.appendChild(li);});
-        el.style.display='';
-      }
-    }
-  }catch(e){}
-})();
+</div><!-- /container -->
+<script>
+const TOKEN_KEY='frt_session';
+const CLIENT_IP='__CLIENT_IP__';
+const DIRECT_PORT=DEFAULT_PORT;
+const DIRECT_ACTIVE=DIRECT_MODE_ACTIVE;
+let SESSION=localStorage.getItem(TOKEN_KEY)||null;
+let ME=null;
+let ALL_RUNS=[];
+let MY_STATUSES={};// run_id (string) → 'owner'|'accepted'|'pending_invite'|'pending_request'
 
 function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
 function fmtDate(iso){if(!iso)return'—';try{return new Date(iso).toLocaleDateString();}catch{return iso;}}
+function authHdr(){return SESSION?{'Authorization':'Bearer '+SESSION}:{};}
+function openRunPage(runId,sel){
+  const p=sel.value;sel.value='';if(!p)return;
+  const url=p==='stats'?'/run/'+runId+'/stats':'/'+p+'?run='+runId;
+  const tok=localStorage.getItem(TOKEN_KEY);
+  if(tok)fetch('/api/me/active_run',{method:'PUT',headers:{'Content-Type':'application/json','Authorization':'Bearer '+tok},body:JSON.stringify({run_id:runId})}).catch(()=>{});
+  window.open(url,'_blank');
+}
 
-function renderRuns(runs){
-  const status=document.getElementById('runs-status');
-  const table=document.getElementById('runs-table');
+async function init(){
+  if(!SESSION){window.location.href='/';return;}
+  const r=await fetch('/api/me',{headers:authHdr()}).catch(()=>null);
+  if(!r||!r.ok){SESSION=null;localStorage.removeItem(TOKEN_KEY);window.location.href='/';return;}
+  ME=await r.json();
+  document.getElementById('user-pill').textContent='● '+ME.username;
+  document.getElementById('user-pill').style.display='';
+  await Promise.all([loadStatuses(),loadAllRuns()]);
+  loadMyRuns();
+  loadPendingInvites();
+  loadAccessRequests();
+  loadHosts();
+}
+
+async function loadStatuses(){
+  const r=await fetch('/api/me/run_statuses',{headers:authHdr()}).catch(()=>null);
+  if(r&&r.ok){const d=await r.json();MY_STATUSES=d.statuses||{};}
+}
+
+async function loadAllRuns(){
+  const st=document.getElementById('runs-status');
+  try{
+    const r=await fetch('/api/runs');
+    if(r.ok){const d=await r.json();ALL_RUNS=d.runs||[];renderAllRuns();}
+    else{st.textContent='No database connected.';}
+  }catch(e){st.textContent='Could not load runs.';}
+  populateRunPicker();
+}
+
+function renderAllRuns(){
+  const st=document.getElementById('runs-status');
+  const tbl=document.getElementById('runs-table');
   const tbody=document.getElementById('runs-body');
-  if(runs.length===0){status.textContent='No runs yet. Start one above.';return;}
-  status.style.display='none';
-  table.style.display='';
-  const latest=runs[0];
-  if(latest){document.getElementById('latest-link').href='/history?run='+latest.id;}
+  if(!ALL_RUNS.length){st.textContent='No runs yet.';st.style.display='';tbl.style.display='none';return;}
+  st.style.display='none';tbl.style.display='';
   tbody.innerHTML='';
-  for(const run of runs){
+  for(const run of ALL_RUNS){
+    const status=MY_STATUSES[String(run.id)];
+    const hasAccess=(status==='owner'||status==='accepted');
     const active=run.ended_at==null;
+    let actions='';
+    if(hasAccess){
+      actions+='<select class="page-select" onchange="openRunPage('+run.id+',this)"><option value="">Open page…</option><option value="overlay">Overlay</option><option value="history">History</option><option value="stats">Stats</option><option value="shiny">Shiny</option><option value="memorial">Memorial</option><option value="trainers">Trainers</option><option value="timeline">Timeline</option></select> ';
+      actions+='<button class="btn btn-success btn-xs" onclick="resumeRun('+run.id+')">Resume</button>';
+      if(DIRECT_ACTIVE&&active)actions+=' <button class="btn btn-connect btn-xs" onclick="quickConnect('+run.id+')" title="Connect your RetroArch and open overlay">Quick Connect</button>';
+    }else if(status==='pending_request'){
+      actions='<span style="color:#888;font-size:.78rem">Request pending…</span>';
+    }else if(status==='pending_invite'){
+      actions='<span style="color:#e0c040;font-size:.78rem">Invite pending</span>';
+    }else{
+      actions='<button class="btn btn-warn btn-xs" onclick="requestAccess('+run.id+',this)">Request Access</button>';
+    }
+    const ownerBadge=status==='owner'?'<span class="badge-owner">owner</span>'
+                    :status==='accepted'?'<span class="badge-invited">invited</span>':'';
     const tr=document.createElement('tr');
     tr.innerHTML=
-      '<td><span class="run-id">#'+run.id+'</span></td>'+
-      '<td>'+esc(run.player_name||'—')+'</td>'+
-      '<td style="color:#888;font-size:.8rem">'+fmtDate(run.started_at)+'</td>'+
-      '<td>'+(active?'<span class="run-active">● Active</span>':'<span style="color:#555;font-size:.8rem">ended</span>')+'</td>'+
-      '<td><span class="catches">'+(run.catches??0)+'</span></td>'+
-      '<td><span class="deaths">'+(run.deaths??0)+'</span></td>'+
-      '<td class="td-actions">'+
-        (active?'<a class="btn btn-primary btn-sm" href="/?run='+run.id+'">Overlay</a>':'')+
-        '<a class="btn btn-secondary btn-sm" href="/history?run='+run.id+'">History</a>'+
-        '<a class="btn btn-secondary btn-sm" href="/memorial?run='+run.id+'">Deaths</a>'+
-        '<a class="btn btn-secondary btn-sm" href="/shiny?run='+run.id+'">Shinies</a>'+
-      '</td>';
+      '<td><span class="run-id">#'+run.id+'</span>'+ownerBadge+'</td>'
+      +'<td>'+esc(run.player_name||'—')+'</td>'
+      +'<td style="color:#888;font-size:.8rem">'+fmtDate(run.started_at)+'</td>'
+      +'<td>'+(active?'<span class="run-active">● Active</span>':'<span style="color:#555;font-size:.8rem">ended</span>')+'</td>'
+      +'<td><span class="catches">'+(run.catches??0)+'</span></td>'
+      +'<td><span class="deaths">'+(run.deaths??0)+'</span></td>'
+      +'<td class="td-actions">'+actions+'</td>';
     tbody.appendChild(tr);
   }
 }
 
-async function startNewRun(){
-  const btn=document.getElementById('new-run-btn');
-  const msg=document.getElementById('msg-run');
-  btn.disabled=true;
+async function loadMyRuns(){
+  if(!ME)return;
+  const st=document.getElementById('my-runs-status');
+  st.textContent='Loading…';st.style.display='';
+  document.getElementById('my-runs-table').style.display='none';
   try{
-    const r=await fetch('/api/command/new_run',{method:'POST'});
-    const text=await r.text();
+    const r=await fetch('/api/user/'+ME.id+'/runs',{headers:authHdr()});
+    if(!r.ok){st.textContent='Could not load your runs.';return;}
+    const d=await r.json();
+    const runs=d.runs||[];
+    const tbody=document.getElementById('my-runs-body');
+    const tbl=document.getElementById('my-runs-table');
+    if(!runs.length){st.textContent='No runs yet.';st.style.display='';tbl.style.display='none';return;}
+    st.style.display='none';tbl.style.display='';
+    tbody.innerHTML='';
+    for(const run of runs){
+      const active=run.ended_at==null;
+      const badge=run.is_owner?'<span class="badge-owner">owner</span>':'<span class="badge-invited">invited</span>';
+      let actions=
+        '<select class="page-select" onchange="openRunPage('+run.id+',this)"><option value="">Open page…</option><option value="overlay">Overlay</option><option value="history">History</option><option value="stats">Stats</option><option value="shiny">Shiny</option><option value="memorial">Memorial</option><option value="trainers">Trainers</option><option value="timeline">Timeline</option></select> '
+        +'<button class="btn btn-success btn-xs" onclick="resumeRun('+run.id+')">Resume</button>'
+        +(DIRECT_ACTIVE&&active?' <button class="btn btn-connect btn-xs" onclick="quickConnect('+run.id+')" title="Connect your RetroArch and open overlay">Quick Connect</button>':'');
+      const tr=document.createElement('tr');
+      tr.innerHTML=
+        '<td><span class="run-id">#'+run.id+'</span>'+badge+'</td>'
+        +'<td style="color:#888;font-size:.8rem">'+fmtDate(run.started_at)+'</td>'
+        +'<td>'+(active?'<span class="run-active">● Active</span>':'<span style="color:#555;font-size:.8rem">ended</span>')+'</td>'
+        +'<td><span class="catches">'+(run.catches??0)+'</span></td>'
+        +'<td><span class="deaths">'+(run.deaths??0)+'</span></td>'
+        +'<td class="td-actions">'+actions+'</td>';
+      tbody.appendChild(tr);
+    }
+  }catch(e){document.getElementById('my-runs-status').textContent='Could not load your runs.';}
+}
+
+async function loadPendingInvites(){
+  const sec=document.getElementById('pending-invites-section');
+  const list=document.getElementById('pending-invites-list');
+  const pending=Object.entries(MY_STATUSES)
+    .filter(([,v])=>v==='pending_invite')
+    .map(([id])=>parseInt(id,10));
+  if(!pending.length){sec.style.display='none';return;}
+  // Look up run details from ALL_RUNS
+  list.innerHTML='';
+  for(const runId of pending){
+    const run=ALL_RUNS.find(r=>r.id===runId);
+    if(!run)continue;
+    const row=document.createElement('div');
+    row.className='req-row';
+    row.id='inv-row-'+runId;
+    row.innerHTML=
+      '<div class="req-info"><span class="req-user">Run #'+runId+'</span>'
+      +' <span class="req-run">'+esc(run.player_name||'—')+'</span></div>'
+      +'<button class="btn btn-success btn-sm" onclick="respondInvite('+runId+',true)">Accept</button>'
+      +'<button class="btn btn-danger btn-sm" onclick="respondInvite('+runId+',false)">Decline</button>';
+    list.appendChild(row);
+  }
+  if(list.children.length)sec.style.display='';
+}
+
+async function respondInvite(runId,accept){
+  const ep=accept?'accept':'decline';
+  const r=await fetch('/api/run/'+runId+'/invite/'+ep,{method:'POST',headers:authHdr()}).catch(()=>null);
+  if(r&&r.ok){
+    const row=document.getElementById('inv-row-'+runId);
+    if(row)row.remove();
+    const list=document.getElementById('pending-invites-list');
+    if(!list.children.length)document.getElementById('pending-invites-section').style.display='none';
+    MY_STATUSES[String(runId)]=accept?'accepted':undefined;
+    if(accept){await loadStatuses();loadMyRuns();renderAllRuns();}
+    else{delete MY_STATUSES[String(runId)];renderAllRuns();}
+  }
+}
+
+async function createRun(){
+  const msg=document.getElementById('msg-my-run');
+  const r=await fetch('/api/run',{method:'POST',headers:{'Content-Type':'application/json',...authHdr()},body:JSON.stringify({})}).catch(()=>null);
+  if(!r){msg.className='msg err';msg.textContent='Network error.';return;}
+  const d=await r.json();
+  if(r.ok){
+    msg.className='msg ok';msg.textContent='Created run #'+d.run_id+'.';
+    setTimeout(async()=>{await loadStatuses();await loadAllRuns();loadMyRuns();},600);
+  }else{
+    msg.className='msg err';msg.textContent=d.error||'Failed.';
+  }
+}
+
+async function resumeRun(runId){
+  const r=await fetch('/api/run/'+runId+'/resume',{method:'POST',headers:authHdr()}).catch(()=>null);
+  if(r&&r.ok){
+    const msg=document.getElementById('msg-my-run');
+    msg.className='msg ok';msg.textContent='Run #'+runId+' set as active.';
+  }else if(r){
+    const d=await r.json().catch(()=>({}));
+    const msg=document.getElementById('msg-my-run');
+    msg.className='msg err';msg.textContent=d.error||'Could not resume run.';
+  }
+}
+
+async function requestAccess(runId,btn){
+  btn.disabled=true;
+  const r=await fetch('/api/run/'+runId+'/invite/request',{method:'POST',headers:authHdr()}).catch(()=>null);
+  if(r&&r.ok){
+    MY_STATUSES[String(runId)]='pending_request';
+    renderAllRuns();
+  }else{
+    btn.disabled=false;
+    if(r){const d=await r.json().catch(()=>({}));alert(d.error||'Request failed.');}
+  }
+}
+
+async function loadAccessRequests(){
+  const r=await fetch('/api/me/run_requests',{headers:authHdr()}).catch(()=>null);
+  if(!r||!r.ok)return;
+  const d=await r.json();
+  const reqs=d.requests||[];
+  if(!reqs.length)return;
+  const sec=document.getElementById('requests-section');
+  const list=document.getElementById('requests-list');
+  list.innerHTML='';
+  for(const req of reqs){
+    const row=document.createElement('div');
+    row.className='req-row';
+    row.id='req-row-'+req.invite_id;
+    row.innerHTML=
+      '<div class="req-info">'
+        +'<span class="req-user">'+esc(req.username)+'</span>'
+        +' <span class="req-run">wants access to Run #'+req.run_id+' ('+esc(req.player_name)+')</span>'
+        +'<div style="color:#666;font-size:.75rem">'+fmtDate(req.created_at)+'</div>'
+      +'</div>'
+      +'<button class="btn btn-success btn-sm" onclick="respondRequest('+req.run_id+','+req.user_id+','+req.invite_id+',true)">Approve</button>'
+      +'<button class="btn btn-danger btn-sm" onclick="respondRequest('+req.run_id+','+req.user_id+','+req.invite_id+',false)">Deny</button>';
+    list.appendChild(row);
+  }
+  sec.style.display='';
+}
+
+async function respondRequest(runId,userId,inviteId,approve){
+  const ep=approve?'approve':'deny';
+  const r=await fetch('/api/run/'+runId+'/invite/request/'+userId+'/'+ep,{method:'POST',headers:authHdr()}).catch(()=>null);
+  if(r&&r.ok){
+    const row=document.getElementById('req-row-'+inviteId);
+    if(row)row.remove();
+    const list=document.getElementById('requests-list');
+    if(!list.children.length)document.getElementById('requests-section').style.display='none';
+  }
+}
+
+// ── Quick connect ────────────────────────────────────────────────────
+async function quickConnect(runId){
+  const msg=document.getElementById('msg-my-run');
+  msg.className='msg';
+  const r=await fetch('/api/direct/connect',{
+    method:'POST',
+    headers:{'Content-Type':'application/json',...authHdr()},
+    body:JSON.stringify({host:CLIENT_IP,port:DIRECT_PORT,run_id:runId}),
+  }).catch(()=>null);
+  if(!r){msg.className='msg err';msg.textContent='Network error.';return;}
+  const d=await r.json();
+  if(r.ok){
+    window.open('/overlay?run='+runId,'_blank');
+  }else{
+    msg.className='msg err';msg.textContent=d.error||'Connection failed.';
+  }
+}
+
+// ── Direct mode ──────────────────────────────────────────────────────
+function populateRunPicker(){
+  const sel=document.getElementById('run-picker');
+  sel.innerHTML='<option value="">— new run —</option>';
+  // Only show runs the user can access
+  for(const run of ALL_RUNS){
+    const status=MY_STATUSES[String(run.id)];
+    if(status!=='owner'&&status!=='accepted')continue;
+    const opt=document.createElement('option');
+    opt.value=run.id;
+    opt.textContent='#'+run.id+' '+(run.player_name||'Unknown')+' ('+fmtDate(run.started_at)+')';
+    sel.appendChild(opt);
+  }
+}
+
+function updateRunPicker(){
+  const choice=document.querySelector('input[name="run-choice"]:checked').value;
+  document.getElementById('run-picker-wrap').style.display=(choice==='existing'?'':'none');
+}
+
+async function doConnect(e){
+  e.preventDefault();
+  const host=document.getElementById('c-host').value.trim();
+  const port=parseInt(document.getElementById('c-port').value,10);
+  const choice=document.querySelector('input[name="run-choice"]:checked').value;
+  const runIdVal=document.getElementById('run-picker').value;
+  const run_id=choice==='existing'&&runIdVal?parseInt(runIdVal,10):null;
+  const msg=document.getElementById('msg-connect');
+  const btn=document.getElementById('connect-btn');
+  msg.className='msg';btn.disabled=true;
+  try{
+    const body={host,port};
+    if(run_id!=null)body.run_id=run_id;
+    const r=await fetch('/api/direct/connect',{method:'POST',headers:{'Content-Type':'application/json',...authHdr()},body:JSON.stringify(body)});
+    const d=await r.json();
     msg.className='msg '+(r.ok?'ok':'err');
-    msg.textContent=r.ok?'New run started.':'Error: '+text;
-    if(r.ok)setTimeout(()=>location.reload(),900);
-  }catch(e){
-    msg.className='msg err';
-    msg.textContent='Request failed: '+e.message;
+    msg.textContent=r.ok?(d.message||'Connection request sent.'):(d.error||'Connection failed.');
+  }catch(err){
+    msg.className='msg err';msg.textContent='Request failed: '+err.message;
   }
   btn.disabled=false;
 }
 
-document.getElementById('connect-form').onsubmit=async function(e){
-  e.preventDefault();
-  const host=document.getElementById('host').value.trim();
-  const port=parseInt(document.getElementById('port').value,10);
-  const msg=document.getElementById('msg-connect');
-  const btn=document.getElementById('connect-btn');
-  msg.className='msg';
-  btn.disabled=true;
+async function loadHosts(){
   try{
-    const r=await fetch('/api/direct/connect',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({host,port})});
-    const d=await r.json();
-    msg.className='msg '+(r.ok?'ok':'err');
-    msg.textContent=r.ok?(d.message||'Connection request sent.'): (d.error||'Connection failed.');
-  }catch(err){
-    msg.className='msg err';
-    msg.textContent='Request failed: '+err.message;
-  }
-  btn.disabled=false;
-};
+    const r=await fetch('/api/direct/hosts');
+    if(r.ok){
+      const d=await r.json();
+      const el=document.getElementById('active-hosts');
+      const ul=document.getElementById('host-list');
+      ul.innerHTML='';
+      if(d.hosts&&d.hosts.length>0){
+        d.hosts.forEach(h=>{
+          const li=document.createElement('li');
+          li.style.cssText='display:flex;align-items:center;gap:.5rem;margin-bottom:.25rem';
+          const span=document.createElement('span');span.textContent=h;
+          const btn=document.createElement('button');
+          btn.textContent='Disconnect';
+          btn.style.cssText='font-size:.7rem;padding:1px 6px;cursor:pointer;background:#c0392b;color:#fff;border:none;border-radius:3px';
+          btn.onclick=async()=>{
+            btn.disabled=true;
+            const [host,port]=h.split(':');
+            const res=await fetch('/api/direct/connect',{method:'DELETE',headers:{'Content-Type':'application/json',...authHdr()},body:JSON.stringify({host,port:port?parseInt(port,10):undefined})}).catch(()=>null);
+            if(res&&res.ok){li.remove();if(!ul.children.length)el.style.display='none';}
+            else{btn.disabled=false;}
+          };
+          li.appendChild(span);li.appendChild(btn);ul.appendChild(li);
+        });
+        el.style.display='';
+      }else{el.style.display='none';}
+    }
+  }catch(e){}
+}
+
+init();
 </script>
 </body>
 </html>"#;
@@ -6060,10 +6752,13 @@ async fn serve_join(
     let direct_visible = if state.connector.is_some() { "block" } else { "none" };
     let default_port = state.connector.as_ref().map(|c| c.default_port).unwrap_or(55355);
     let client_ip = addr.ip().to_string();
+    let direct_active = if state.connector.is_some() { "true" } else { "false" };
     let html = JOIN_HTML
         .replace("DIRECT_SECTION_DISPLAY", direct_visible)
+        .replace("DIRECT_MODE_ACTIVE", direct_active)
         .replace("DEFAULT_PORT", &default_port.to_string())
-        .replace("192.168.1.x", &client_ip);
+        .replace("192.168.1.x", &client_ip)
+        .replace("__CLIENT_IP__", &client_ip);
     (
         StatusCode::OK,
         [(header::CONTENT_TYPE, "text/html; charset=utf-8")],
@@ -6075,10 +6770,13 @@ async fn serve_join(
 struct DirectConnectBody {
     host: String,
     port: Option<u16>,
+    /// Existing run ID to resume. Omit (or pass `null`) to start a new run.
+    run_id: Option<u32>,
 }
 
 async fn api_direct_connect(
     State(state): State<WebState>,
+    headers: axum::http::HeaderMap,
     axum::Json(body): axum::Json<DirectConnectBody>,
 ) -> impl IntoResponse {
     let Some(connector) = &state.connector else {
@@ -6096,11 +6794,47 @@ async fn api_direct_connect(
         );
     }
 
+    // When resuming an existing run, require auth and access.
+    // Returns the authenticated user_id so we can record the active run.
+    let mut authed_user_id: Option<u32> = None;
+    if let Some(run_id) = body.run_id {
+        let Some(token) = extract_bearer(&headers) else {
+            return (StatusCode::UNAUTHORIZED, axum::Json(serde_json::json!({"error": "authentication required to resume a run"})));
+        };
+        let check = tokio::task::spawn_blocking(move || -> Result<u32, (StatusCode, String)> {
+            let user = fire_red_database::validate_session(&token)
+                .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?
+                .ok_or_else(|| (StatusCode::UNAUTHORIZED, "session expired or invalid".to_string()))?;
+            match fire_red_database::user_can_access_run(run_id, user.id) {
+                Ok(true) => Ok(user.id),
+                Ok(false) => Err((StatusCode::FORBIDDEN, "you do not have access to this run".into())),
+                Err(e) => Err((StatusCode::INTERNAL_SERVER_ERROR, e)),
+            }
+        }).await;
+        match check {
+            Ok(Ok(uid)) => { authed_user_id = Some(uid); }
+            Ok(Err((status, e))) => return (status, axum::Json(serde_json::json!({"error": e}))),
+            Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, axum::Json(serde_json::json!({"error": "Task panicked"}))),
+        }
+    }
+
     let port = body.port.unwrap_or(connector.default_port);
-    let accepted = connector.connect(host.clone(), port);
+
+    // When targeting a specific run, always disconnect the host first so it
+    // can switch away from whatever run (if any) it was previously polling.
+    if body.run_id.is_some() {
+        connector.disconnect(&host, port);
+    }
+
+    let accepted = connector.connect(host.clone(), port, body.run_id);
+
+    // Record user → run association so the overlay can auto-detect it.
+    if let (Some(uid), Some(run_id)) = (authed_user_id, body.run_id) {
+        state.user_active_run.lock().unwrap().insert(uid, run_id);
+    }
 
     if accepted {
-        tracing::info!("Direct mode: /join accepted {}:{}", host, port);
+        tracing::info!("Direct mode: /join accepted {}:{} (run={:?})", host, port, body.run_id);
         (
             StatusCode::OK,
             axum::Json(serde_json::json!({
@@ -6119,13 +6853,87 @@ async fn api_direct_connect(
     }
 }
 
-async fn api_direct_hosts(State(state): State<WebState>) -> impl IntoResponse {
-    let hosts = state
-        .connector
-        .as_ref()
-        .map(|c| c.active_hosts())
-        .unwrap_or_default();
+async fn api_direct_hosts(
+    State(state): State<WebState>,
+    Extension(user): Extension<User>,
+) -> impl IntoResponse {
+    let uid = user.id;
+    let accessible = tokio::task::spawn_blocking(move || {
+        fire_red_database::get_accessible_run_ids(uid)
+    })
+    .await
+    .unwrap_or(Ok(HashSet::new()))
+    .unwrap_or_default();
+    // Collect the direct_host values for slots this user can access.
+    let my_hosts: HashSet<String> = {
+        let slots = state.live_slots.lock_or_recover();
+        slots
+            .iter()
+            .filter(|s| {
+                let run_id = s.db.as_ref().and_then(|db| db.get_run_id());
+                run_id.is_none_or(|rid| accessible.contains(&rid))
+            })
+            .filter_map(|s| s.direct_host.clone())
+            .collect()
+    };
+    let all_hosts = state.connector.as_ref().map(|c| c.active_hosts()).unwrap_or_default();
+    let hosts: Vec<String> = all_hosts.into_iter().filter(|h| my_hosts.contains(h)).collect();
     axum::Json(serde_json::json!({"hosts": hosts}))
+}
+
+#[derive(serde::Deserialize)]
+struct DirectDisconnectBody {
+    host: String,
+    port: Option<u16>,
+}
+
+async fn api_direct_disconnect(
+    State(state): State<WebState>,
+    Extension(user): Extension<User>,
+    axum::Json(body): axum::Json<DirectDisconnectBody>,
+) -> impl IntoResponse {
+    let Some(connector) = &state.connector else {
+        return (
+            StatusCode::NOT_FOUND,
+            axum::Json(serde_json::json!({"error": "Direct mode is not active."})),
+        );
+    };
+    let host = body.host.trim().to_string();
+    let port = body.port.unwrap_or(connector.default_port);
+    let host_key = format!("{}:{}", host, port);
+    // Only allow disconnect if the host belongs to a slot the user can access.
+    let uid = user.id;
+    let accessible = tokio::task::spawn_blocking(move || {
+        fire_red_database::get_accessible_run_ids(uid)
+    })
+    .await
+    .unwrap_or(Ok(HashSet::new()))
+    .unwrap_or_default();
+    let owns_host = {
+        let slots = state.live_slots.lock_or_recover();
+        slots.iter().any(|s| {
+            if s.direct_host.as_deref() != Some(&host_key) {
+                return false;
+            }
+            let run_id = s.db.as_ref().and_then(|db| db.get_run_id());
+            run_id.is_none_or(|rid| accessible.contains(&rid))
+        })
+    };
+    if !owns_host {
+        return (
+            StatusCode::FORBIDDEN,
+            axum::Json(serde_json::json!({"error": "access denied"})),
+        );
+    }
+    if connector.disconnect(&host, port) {
+        tracing::info!("Direct mode: disconnected {}:{}", host, port);
+        (StatusCode::OK, axum::Json(serde_json::json!({"ok": true})))
+    } else {
+        (
+            StatusCode::NOT_FOUND,
+            axum::Json(serde_json::json!({"error": "Host not connected."})),
+        )
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -6415,6 +7223,1192 @@ async fn serve_typechart_overlay(
 ) -> Html<String> {
     let theme = params.get("theme").map(String::as_str);
     Html(apply_page_with_theme(TYPECHART_HTML, state.testing, theme))
+}
+
+// ---------------------------------------------------------------------------
+// User auth helpers + handlers
+// ---------------------------------------------------------------------------
+
+/// Extract a bearer token from `Authorization: Bearer <token>`,
+/// `X-Session-Token: <token>`, or the `frt_token` cookie.
+/// Returns `None` if none is present.
+fn extract_bearer(headers: &axum::http::HeaderMap) -> Option<String> {
+    if let Some(v) = headers.get("Authorization")
+        && let Ok(s) = v.to_str()
+        && let Some(tok) = s.strip_prefix("Bearer ") {
+            return Some(tok.trim().to_string());
+    }
+    if let Some(v) = headers.get("X-Session-Token")
+        && let Ok(s) = v.to_str() {
+            return Some(s.trim().to_string());
+    }
+    // Cookie fallback — works for same-origin page loads and WS upgrades.
+    if let Some(v) = headers.get(header::COOKIE)
+        && let Ok(s) = v.to_str() {
+        for part in s.split(';') {
+            if let Some(val) = part.trim().strip_prefix("frt_token=") {
+                return Some(val.trim().to_string());
+            }
+        }
+    }
+    None
+}
+
+/// Extract a `?token=<value>` query parameter from a URI.
+/// Used by OBS browser sources that embed the token in the URL.
+fn extract_query_token(uri: &axum::http::Uri) -> Option<String> {
+    let q = uri.query()?;
+    for pair in q.split('&') {
+        if let Some(val) = pair.strip_prefix("token=")
+            && !val.is_empty()
+        {
+            return Some(val.to_string());
+        }
+    }
+    None
+}
+
+// ---------------------------------------------------------------------------
+// Auth / access-control middleware
+// ---------------------------------------------------------------------------
+
+/// Routes that do not require a valid session.
+fn is_public_route(path: &str, method: &axum::http::Method) -> bool {
+    matches!(path, "/" | "/register" | "/interactions" | "/api/webhook/donation")
+        || path == "/api/login"
+        || path.starts_with("/share/")
+        // POST /api/users = register endpoint
+        || (path == "/api/users" && method == axum::http::Method::POST)
+}
+
+/// Global authentication middleware — validates the session on every
+/// non-public route and injects [`User`] into request extensions.
+/// Unauthenticated page requests are redirected to `/`; API/WS requests
+/// receive `401 Unauthorized`.
+async fn auth_middleware(
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    let path   = request.uri().path().to_string();
+    let method = request.method().clone();
+
+    if is_public_route(&path, &method) {
+        return next.run(request).await;
+    }
+
+    let token = extract_query_token(request.uri())
+        .or_else(|| extract_bearer(request.headers()));
+
+    let user: Option<User> = if let Some(tok) = token {
+        tokio::task::spawn_blocking(move || fire_red_database::validate_session(&tok))
+            .await
+            .unwrap_or(Ok(None))
+            .unwrap_or(None)
+    } else {
+        None
+    };
+
+    match user {
+        Some(u) => {
+            let mut req = request;
+            req.extensions_mut().insert(u);
+            next.run(req).await
+        }
+        None => {
+            if path.starts_with("/api/") || path == "/ws" {
+                axum::response::Response::builder()
+                    .status(StatusCode::UNAUTHORIZED)
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(axum::body::Body::from(r#"{"error":"authentication required"}"#))
+                    .unwrap()
+            } else {
+                axum::response::Redirect::to("/").into_response()
+            }
+        }
+    }
+}
+
+/// Per-run access middleware — checks `user_can_access_run` for any path
+/// that looks like `/api/run/<numeric-id>/…`.
+///
+/// Exceptions: invite-flow paths where the user doesn't yet have access
+/// (`/invite/accept`, `/invite/decline`, `/invite/request`).
+async fn run_access_middleware(
+    Extension(user): Extension<User>,
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    let path = request.uri().path();
+
+    // Invite-flow routes: caller may not have access yet.
+    if path.ends_with("/invite/accept")
+        || path.ends_with("/invite/decline")
+        || (path.ends_with("/invite/request") && request.method() == axum::http::Method::POST)
+    {
+        return next.run(request).await;
+    }
+
+    // Extract numeric run_id from /api/run/<id>/…
+    let run_id: Option<u32> = path
+        .strip_prefix("/api/run/")
+        .and_then(|s| s.split('/').next())
+        .and_then(|s| s.parse().ok());
+
+    if let Some(rid) = run_id {
+        let uid = user.id;
+        let can = tokio::task::spawn_blocking(move || {
+            fire_red_database::user_can_access_run(rid, uid)
+        })
+        .await
+        .unwrap_or(Ok(false))
+        .unwrap_or(false);
+
+        if !can {
+            return axum::response::Response::builder()
+                .status(StatusCode::FORBIDDEN)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(axum::body::Body::from(r#"{"error":"access denied"}"#))
+                .unwrap();
+        }
+    }
+
+    next.run(request).await
+}
+
+/// Per-slot access middleware — for all requests to `/api/slot/<idx>/…`,
+/// verifies the authenticated user has access to that slot's run.
+async fn slot_access_middleware(
+    State(state): State<WebState>,
+    Extension(user): Extension<User>,
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    let path = request.uri().path();
+    let slot_idx: Option<usize> = path
+        .strip_prefix("/api/slot/")
+        .and_then(|s| s.split('/').next())
+        .and_then(|s| s.parse().ok());
+
+    if let Some(idx) = slot_idx {
+        let run_id = {
+            let lock = state.live_slots.lock_or_recover();
+            lock.get(idx).and_then(|s| s.db.as_ref().and_then(|db| db.get_run_id()))
+        };
+
+        if let Some(rid) = run_id {
+            let uid = user.id;
+            let can = tokio::task::spawn_blocking(move || {
+                fire_red_database::user_can_access_run(rid, uid)
+            })
+            .await
+            .unwrap_or(Ok(false))
+            .unwrap_or(false);
+
+            if !can {
+                return axum::response::Response::builder()
+                    .status(StatusCode::FORBIDDEN)
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(axum::body::Body::from(r#"{"error":"access denied"}"#))
+                    .unwrap();
+            }
+        }
+    }
+
+    next.run(request).await
+}
+
+/// Filter a JSON slot-array string for `user_id`.
+///
+/// Array positions are **preserved** — inaccessible slots are replaced with
+/// `null` rather than removed.  This ensures that overlay URLs such as
+/// `/1/alerts` (which index into the array by position) still work correctly
+/// when multiple users share the same server.
+///
+/// A slot with no `active_run_id` is kept as-is (accessible to all
+/// authenticated users, e.g. unlinked tracker-TCP connections).
+async fn filter_slots_for_user(json: &str, user_id: u32) -> String {
+    let arr: serde_json::Value =
+        serde_json::from_str(json).unwrap_or(serde_json::Value::Array(vec![]));
+    let slots = match arr.as_array() {
+        Some(s) => s.clone(),
+        None => return "[]".to_string(),
+    };
+
+    let accessible: HashSet<u32> =
+        tokio::task::spawn_blocking(move || fire_red_database::get_accessible_run_ids(user_id))
+            .await
+            .unwrap_or(Ok(HashSet::new()))
+            .unwrap_or_default();
+
+    // Replace inaccessible slots with null (preserve position).
+    let filtered: Vec<serde_json::Value> = slots
+        .into_iter()
+        .map(|slot| {
+            match slot.get("active_run_id").and_then(|v| v.as_u64()) {
+                None => slot,                                           // unlinked → keep
+                Some(rid) if accessible.contains(&(rid as u32)) => slot, // owned → keep
+                _ => serde_json::Value::Null,                          // forbidden → null
+            }
+        })
+        .collect();
+
+    serde_json::to_string(&serde_json::Value::Array(filtered))
+        .unwrap_or_else(|_| "[]".to_string())
+}
+
+#[derive(serde::Deserialize)]
+struct RegisterBody {
+    username: String,
+    password: String,
+}
+
+/// `POST /api/users` — register a new user account.
+///
+/// Body: `{ "username": "...", "password": "..." }` (password ≥ 8 chars)
+/// Returns: `{ "id": N, "username": "..." }` or `{ "error": "..." }` with
+/// `409 Conflict` when the username is already taken.
+async fn api_register_user(
+    axum::Json(body): axum::Json<RegisterBody>,
+) -> impl IntoResponse {
+    let result = tokio::task::spawn_blocking(move || {
+        fire_red_database::create_user(&body.username, &body.password)
+    }).await;
+    match result {
+        Ok(Ok(user)) => (
+            StatusCode::CREATED,
+            axum::Json(serde_json::json!({
+                "id": user.id,
+                "username": user.username,
+                "created_at": user.created_at,
+            })),
+        ),
+        Ok(Err(e)) if e.contains("already taken") => (
+            StatusCode::CONFLICT,
+            axum::Json(serde_json::json!({ "error": e })),
+        ),
+        Ok(Err(e)) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            axum::Json(serde_json::json!({ "error": e })),
+        ),
+        Err(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            axum::Json(serde_json::json!({ "error": "Task panicked" })),
+        ),
+    }
+}
+
+/// `GET /api/users` — list all registered users (admin view).
+///
+/// Returns: `[{ "id": N, "username": "...", "created_at": N }, ...]`
+async fn api_list_users() -> impl IntoResponse {
+    let result = tokio::task::spawn_blocking(fire_red_database::list_users).await;
+    match result {
+        Ok(Ok(users)) => {
+            let arr: Vec<_> = users.iter().map(|u| serde_json::json!({
+                "id": u.id,
+                "username": u.username,
+                "created_at": u.created_at,
+            })).collect();
+            (StatusCode::OK, axum::Json(serde_json::json!(arr)))
+        }
+        Ok(Err(e)) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            axum::Json(serde_json::json!({ "error": e })),
+        ),
+        Err(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            axum::Json(serde_json::json!({ "error": "Task panicked" })),
+        ),
+    }
+}
+
+/// `POST /api/login` — authenticate and get a session token.
+///
+/// Body: `{ "username": "...", "password": "..." }`
+/// Returns: `{ "token": "...", "user": { "id": N, "username": "..." } }` and
+/// sets an `HttpOnly` `frt_token` cookie so browser page-loads are authenticated
+/// automatically. Returns `401` on bad credentials.
+async fn api_login(
+    axum::Json(body): axum::Json<RegisterBody>,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    let username_for_log = body.username.clone();
+    let result = tokio::task::spawn_blocking(move || -> Result<Option<(fire_red_database::User, String)>, String> {
+        let user = fire_red_database::authenticate_user(&body.username, &body.password)?;
+        match user {
+            Some(u) => {
+                let token = fire_red_database::create_session(u.id)?;
+                Ok(Some((u, token)))
+            }
+            None => Ok(None),
+        }
+    }).await;
+    match result {
+        Ok(Ok(Some((user, token)))) => {
+            let cookie = format!(
+                "frt_token={}; HttpOnly; Path=/; SameSite=Lax; Max-Age=2592000",
+                token
+            );
+            (
+                StatusCode::OK,
+                [(header::SET_COOKIE, cookie)],
+                axum::Json(serde_json::json!({
+                    "token": token,
+                    "user": { "id": user.id, "username": user.username },
+                })),
+            ).into_response()
+        }
+        Ok(Ok(None)) => {
+            tracing::warn!(username = %username_for_log, "POST /api/login → 401");
+            (
+                StatusCode::UNAUTHORIZED,
+                axum::Json(serde_json::json!({ "error": "invalid username or password" })),
+            ).into_response()
+        }
+        Ok(Err(e)) => {
+            tracing::error!(username = %username_for_log, error = %e, "POST /api/login → 500 (DB error)");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                axum::Json(serde_json::json!({ "error": e })),
+            ).into_response()
+        }
+        Err(_) => {
+            tracing::error!(username = %username_for_log, "POST /api/login → 500 (task panicked)");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                axum::Json(serde_json::json!({ "error": "Task panicked" })),
+            ).into_response()
+        }
+    }
+}
+
+/// `POST /api/logout` — invalidate the current session token.
+///
+/// Requires `Authorization: Bearer <token>` or `X-Session-Token: <token>`.
+/// Returns `200` whether or not the token existed.
+async fn api_logout(
+    headers: axum::http::HeaderMap,
+) -> impl IntoResponse {
+    if let Some(token) = extract_bearer(&headers) {
+        tokio::task::spawn_blocking(move || fire_red_database::delete_session(&token))
+            .await
+            .ok();
+    }
+    // Clear the frt_token cookie in the browser.
+    (
+        StatusCode::OK,
+        [(header::SET_COOKIE, "frt_token=; HttpOnly; Path=/; SameSite=Lax; Max-Age=0")],
+    )
+}
+
+/// `GET /api/me` — return the currently authenticated user.
+///
+/// Requires `Authorization: Bearer <token>` or `X-Session-Token: <token>`.
+/// Returns `{ "id": N, "username": "..." }` or `401` if the token is missing
+/// or expired.
+async fn api_me(
+    headers: axum::http::HeaderMap,
+) -> impl IntoResponse {
+    let Some(token) = extract_bearer(&headers) else {
+        return (
+            StatusCode::UNAUTHORIZED,
+            axum::Json(serde_json::json!({ "error": "no session token provided" })),
+        );
+    };
+    let result = tokio::task::spawn_blocking(move || {
+        fire_red_database::validate_session(&token)
+    }).await;
+    match result {
+        Ok(Ok(Some(user))) => (
+            StatusCode::OK,
+            axum::Json(serde_json::json!({
+                "id": user.id,
+                "username": user.username,
+                "created_at": user.created_at,
+            })),
+        ),
+        Ok(Ok(None)) => (
+            StatusCode::UNAUTHORIZED,
+            axum::Json(serde_json::json!({ "error": "session expired or invalid" })),
+        ),
+        Ok(Err(e)) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            axum::Json(serde_json::json!({ "error": e })),
+        ),
+        Err(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            axum::Json(serde_json::json!({ "error": "Task panicked" })),
+        ),
+    }
+}
+
+/// `GET /api/me/active_run` — return the run_id this user most recently connected to.
+///
+/// Returns `{ "run_id": N }` or `{ "run_id": null }` if none recorded.
+async fn api_me_active_run(
+    State(state): State<WebState>,
+    headers: axum::http::HeaderMap,
+) -> impl IntoResponse {
+    let Some(token) = extract_bearer(&headers) else {
+        return (StatusCode::UNAUTHORIZED, axum::Json(serde_json::json!({"error": "authentication required"})));
+    };
+    let result = tokio::task::spawn_blocking(move || fire_red_database::validate_session(&token)).await;
+    let user = match result {
+        Ok(Ok(Some(u))) => u,
+        Ok(Ok(None)) => return (StatusCode::UNAUTHORIZED, axum::Json(serde_json::json!({"error": "session expired"}))),
+        Ok(Err(e)) => return (StatusCode::INTERNAL_SERVER_ERROR, axum::Json(serde_json::json!({"error": e}))),
+        Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, axum::Json(serde_json::json!({"error": "Task panicked"}))),
+    };
+    let run_id = state.user_active_run.lock().unwrap().get(&user.id).copied();
+    (StatusCode::OK, axum::Json(serde_json::json!({"run_id": run_id})))
+}
+
+/// `PUT /api/me/active_run` — explicitly set the caller's active run.
+///
+/// Body: `{ "run_id": N }`.  Used by the page-selector dropdown so that
+/// selecting a run page on the join/dashboard also updates auto-detect.
+async fn api_me_set_active_run(
+    State(state): State<WebState>,
+    headers: axum::http::HeaderMap,
+    axum::Json(body): axum::Json<serde_json::Value>,
+) -> impl IntoResponse {
+    let Some(token) = extract_bearer(&headers) else {
+        return (StatusCode::UNAUTHORIZED, axum::Json(serde_json::json!({"error": "authentication required"})));
+    };
+    let run_id = match body.get("run_id").and_then(|v| v.as_u64()) {
+        Some(id) => id as u32,
+        None => return (StatusCode::BAD_REQUEST, axum::Json(serde_json::json!({"error": "run_id required"}))),
+    };
+    let result = tokio::task::spawn_blocking(move || fire_red_database::validate_session(&token)).await;
+    let user = match result {
+        Ok(Ok(Some(u))) => u,
+        Ok(Ok(None)) => return (StatusCode::UNAUTHORIZED, axum::Json(serde_json::json!({"error": "session expired"}))),
+        Ok(Err(e)) => return (StatusCode::INTERNAL_SERVER_ERROR, axum::Json(serde_json::json!({"error": e}))),
+        Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, axum::Json(serde_json::json!({"error": "Task panicked"}))),
+    };
+    state.user_active_run.lock().unwrap().insert(user.id, run_id);
+    (StatusCode::OK, axum::Json(serde_json::json!({"ok": true})))
+}
+
+/// `GET /api/user/:id/runs` — list runs for a user (own account only).
+async fn api_user_runs(
+    State(state): State<WebState>,
+    Extension(user): Extension<User>,
+    Path(user_id): Path<u32>,
+) -> axum::Json<serde_json::Value> {
+    if user.id != user_id {
+        return axum::Json(serde_json::json!({ "error": "access denied" }));
+    }
+    let conn = require_db!(state);
+    let result = tokio::task::spawn_blocking(move || {
+        fire_red_database::list_runs_for_user_json(&conn, user_id)
+    })
+    .await;
+    axum::Json(result.unwrap_or_else(|_| serde_json::json!({ "error": "Task panicked" })))
+}
+
+// ---------------------------------------------------------------------------
+// Login / landing page  (served at "/")
+// ---------------------------------------------------------------------------
+
+const LOGIN_HTML: &str = r#"<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Fire Red Tracker</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:sans-serif;background:#1a1a2e;color:#eee;min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:2rem 1rem}
+.card{background:#16213e;border:1px solid #0f3460;border-radius:10px;padding:2rem;width:100%;max-width:380px}
+h1{font-size:1.4rem;color:#e94560;margin-bottom:.3rem;text-align:center}
+.subtitle{font-size:.8rem;color:#556;text-align:center;margin-bottom:1.8rem}
+label{display:block;font-size:.85rem;color:#ccc;margin-bottom:.3rem}
+input{width:100%;padding:.55rem .75rem;background:#0f3460;border:1px solid #444;border-radius:5px;color:#eee;font-size:.9rem;margin-bottom:1rem}
+input:focus{outline:none;border-color:#e94560}
+.btn{display:block;width:100%;padding:.55rem;border:none;border-radius:5px;font-size:.9rem;cursor:pointer;text-align:center;text-decoration:none;line-height:1.4}
+.btn-primary{background:#e94560;color:#fff;margin-bottom:.7rem}
+.btn-primary:hover{background:#c73652}
+.btn-secondary{background:#1e3a6e;color:#aad;border:1px solid #2d5499;margin-bottom:.5rem}
+.btn-secondary:hover{background:#253d6a}
+.msg{margin-top:.5rem;padding:.5rem;border-radius:4px;text-align:center;font-size:.82rem;display:none}
+.ok{background:#1a4a1a;border:1px solid #2d8a2d;color:#7dce7d;display:block}
+.err{background:#4a1a1a;border:1px solid #8a2d2d;color:#ce7d7d;display:block}
+.divider{border:none;border-top:1px solid #1e3a6e;margin:1.2rem 0}
+.links{display:flex;flex-direction:column;gap:.5rem}
+.user-info{text-align:center;margin-bottom:1rem;font-size:.9rem;color:#7dce7d}
+.hint{font-size:.75rem;color:#556;text-align:center;margin-top:.4rem}
+</style>
+</head>
+<body>
+<div class="card">
+  <h1>🔴 Fire Red Tracker</h1>
+  <p class="subtitle">Nuzlocke run tracker</p>
+
+  <!-- Logged-out state -->
+  <div id="login-wrap">
+    <label for="uname">Username</label>
+    <input id="uname" type="text" placeholder="your username" autocomplete="username">
+    <label for="upass">Password</label>
+    <input id="upass" type="password" placeholder="••••••••" autocomplete="current-password" onkeydown="if(event.key==='Enter')doLogin()">
+    <button class="btn btn-primary" onclick="doLogin()">Log In</button>
+    <p class="hint">No account? <a href="/register" style="color:#5090e0">Register here</a></p>
+    <div id="msg-login" class="msg"></div>
+    <hr class="divider">
+    <div class="links">
+      <a class="btn btn-secondary" href="/overlay">Overlay (anonymous)</a>
+      <a class="btn btn-secondary" href="/join">Join / Run Select</a>
+    </div>
+  </div>
+
+  <!-- Logged-in state -->
+  <div id="loggedin-wrap" style="display:none">
+    <div class="user-info" id="user-info"></div>
+    <div class="links">
+      <a class="btn btn-primary" href="/overlay" id="overlay-link">Overlay</a>
+      <a class="btn btn-secondary" href="/dashboard">Dashboard</a>
+      <a class="btn btn-secondary" href="/join">Join / Run Select</a>
+      <a class="btn btn-secondary" href="/history">Run History</a>
+    </div>
+    <hr class="divider">
+    <button class="btn btn-secondary" onclick="doLogout()">Log Out</button>
+  </div>
+</div>
+
+<script>
+const TOKEN_KEY='frt_session';
+let SESSION=localStorage.getItem(TOKEN_KEY)||null;
+
+function authHdr(){return SESSION?{'Authorization':'Bearer '+SESSION}:{};}
+function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
+
+async function init(){
+  if(!SESSION){return;}
+  const r=await fetch('/api/me',{headers:authHdr()}).catch(()=>null);
+  if(r&&r.ok){
+    const me=await r.json();
+    showLoggedIn(me);
+  }else{
+    SESSION=null;localStorage.removeItem(TOKEN_KEY);
+  }
+}
+
+function showLoggedIn(me){
+  document.getElementById('login-wrap').style.display='none';
+  document.getElementById('loggedin-wrap').style.display='';
+  document.getElementById('user-info').textContent='Logged in as '+esc(me.username);
+}
+
+async function doLogin(){
+  const u=document.getElementById('uname').value.trim();
+  const p=document.getElementById('upass').value;
+  const msg=document.getElementById('msg-login');
+  msg.className='msg';
+  if(!u||!p){msg.className='msg err';msg.textContent='Enter username and password.';return;}
+  const r=await fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:u,password:p})}).catch(()=>null);
+  if(!r){msg.className='msg err';msg.textContent='Network error.';return;}
+  const d=await r.json();
+  if(r.ok){
+    SESSION=d.token;
+    localStorage.setItem(TOKEN_KEY,SESSION);
+    showLoggedIn(d.user);
+  }else{
+    msg.className='msg err';msg.textContent=d.error||'Login failed.';
+  }
+}
+
+async function doLogout(){
+  await fetch('/api/logout',{method:'POST',headers:authHdr()}).catch(()=>null);
+  SESSION=null;localStorage.removeItem(TOKEN_KEY);
+  document.getElementById('loggedin-wrap').style.display='none';
+  document.getElementById('login-wrap').style.display='';
+  document.getElementById('upass').value='';
+}
+
+init();
+</script>
+</body>
+</html>"#;
+
+async fn serve_login_page() -> impl IntoResponse {
+    (
+        StatusCode::OK,
+        [(header::CONTENT_TYPE, "text/html; charset=utf-8")],
+        LOGIN_HTML,
+    )
+}
+
+// ---------------------------------------------------------------------------
+// Dashboard page
+// ---------------------------------------------------------------------------
+
+const DASHBOARD_HTML: &str = r#"<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Dashboard – Fire Red Tracker</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:sans-serif;background:#1a1a2e;color:#eee;min-height:100vh;padding:2rem 1rem}
+.container{max-width:900px;margin:0 auto}
+h1{font-size:1.5rem;color:#e94560;margin-bottom:1.5rem;display:flex;align-items:center;justify-content:space-between}
+h1 a{font-size:.85rem;color:#5090e0;text-decoration:none}
+h1 a:hover{text-decoration:underline}
+.section{background:#16213e;border:1px solid #0f3460;border-radius:8px;padding:1.5rem;margin-bottom:1.5rem}
+.section-title{font-size:.95rem;font-weight:700;color:#ccc;margin-bottom:1rem;padding-bottom:.5rem;border-bottom:1px solid #1e3a6e}
+.stat-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:1rem;margin-bottom:.5rem}
+.stat-card{background:#0f3460;border-radius:6px;padding:1rem;text-align:center}
+.stat-num{font-size:1.8rem;font-weight:700;color:#e94560;line-height:1}
+.stat-label{font-size:.75rem;color:#888;margin-top:.3rem;text-transform:uppercase;letter-spacing:.5px}
+.btn{display:inline-block;padding:.4rem 1rem;border:none;border-radius:4px;font-size:.85rem;cursor:pointer;text-decoration:none;line-height:1.4}
+.btn-primary{background:#e94560;color:#fff}
+.btn-primary:hover{background:#c73652}
+.btn-secondary{background:#1e3a6e;color:#aad;border:1px solid #2d5499}
+.btn-secondary:hover{background:#253d6a}
+.btn-success{background:#1a5c2e;color:#7dce7d;border:1px solid #2d8a2d}
+.btn-success:hover{background:#1e6a34}
+.btn-danger{background:#5c1a1a;color:#ce7d7d;border:1px solid #8a2d2d}
+.btn-danger:hover{background:#6a1e1e}
+.btn-connect{background:#0f3a4a;color:#7dd;border:1px solid #1a6a7a}
+.btn-connect:hover{background:#145060}
+.btn-sm{padding:.28rem .65rem;font-size:.78rem}
+.btn-xs{padding:.18rem .5rem;font-size:.72rem}
+.page-select{background:#1e3a6e;color:#aad;border:1px solid #2d5499;border-radius:4px;padding:.18rem .5rem;font-size:.72rem;cursor:pointer}
+.page-select:focus{outline:none;border-color:#e94560}
+table{width:100%;border-collapse:collapse;font-size:.85rem}
+th{text-align:left;color:#888;font-weight:600;font-size:.72rem;text-transform:uppercase;letter-spacing:.4px;padding:.4rem .6rem;border-bottom:1px solid #1e3a6e}
+td{padding:.42rem .6rem;border-bottom:1px solid rgba(255,255,255,0.04);vertical-align:middle}
+tr:hover td{background:rgba(255,255,255,0.03)}
+.run-id{color:#5090e0;font-weight:600}
+.deaths{color:#e06060}
+.catches{color:#60d060}
+.badge-owner{display:inline-block;font-size:.65rem;padding:.1rem .35rem;border-radius:3px;background:#1a3a5c;color:#5090e0;border:1px solid #2d5499;vertical-align:middle;margin-left:.35rem}
+.badge-invited{display:inline-block;font-size:.65rem;padding:.1rem .35rem;border-radius:3px;background:#1a3a1a;color:#7dce7d;border:1px solid #2d8a2d;vertical-align:middle;margin-left:.35rem}
+.party-grid{display:flex;flex-wrap:wrap;gap:.6rem}
+.party-mon{background:#0f3460;border-radius:6px;padding:.6rem .9rem;min-width:110px;font-size:.82rem}
+.mon-name{font-weight:600;color:#eee}
+.mon-species{color:#888;font-size:.75rem}
+.mon-level{color:#5090e0;font-size:.75rem}
+.mon-shiny{color:#f0d060;font-size:.7rem;margin-left:.3rem}
+.invite-row{display:flex;align-items:center;gap:.7rem;padding:.6rem 0;border-bottom:1px solid rgba(255,255,255,0.05);flex-wrap:wrap}
+.invite-row:last-child{border-bottom:none}
+.invite-info{flex:1;font-size:.85rem}
+.invite-run{color:#5090e0;font-weight:600}
+.invite-from{color:#888;font-size:.78rem}
+label{display:block;font-size:.85rem;color:#ccc;margin-bottom:.3rem}
+input[type=text]{width:100%;padding:.5rem .7rem;background:#0f3460;border:1px solid #444;border-radius:4px;color:#eee;font-size:.9rem;margin-bottom:.8rem}
+input:focus{outline:none;border-color:#e94560}
+.form-row{display:flex;gap:.6rem;align-items:flex-end}
+.form-row>*{flex:1;margin-bottom:0}
+.form-row .btn{flex:0 0 auto}
+.msg{margin-top:.6rem;padding:.5rem;border-radius:4px;text-align:center;font-size:.85rem;display:none}
+.ok{background:#1a4a1a;border:1px solid #2d8a2d;color:#7dce7d;display:block}
+.err{background:#4a1a1a;border:1px solid #8a2d2d;color:#ce7d7d;display:block}
+.empty{color:#666;font-size:.85rem;text-align:center;padding:1.5rem 0}
+.loading{color:#888;font-size:.85rem}
+.td-actions{text-align:right;white-space:nowrap;display:flex;justify-content:flex-end;gap:3px;flex-wrap:wrap}
+</style>
+</head>
+<body>
+<div class="container">
+<h1><span id="page-title">Dashboard</span> <a href="/join">← Back to Join</a></h1>
+
+<!-- ── Stats overview ──────────────────────────────────────────────── -->
+<div class="section">
+  <div class="section-title">Overview</div>
+  <div class="stat-grid" id="stat-grid">
+    <div class="stat-card"><div class="stat-num" id="stat-runs">—</div><div class="stat-label">Total Runs</div></div>
+    <div class="stat-card"><div class="stat-num" id="stat-catches">—</div><div class="stat-label">Caught</div></div>
+    <div class="stat-card"><div class="stat-num" id="stat-deaths">—</div><div class="stat-label">Deaths</div></div>
+    <div class="stat-card"><div class="stat-num" id="stat-encounters">—</div><div class="stat-label">Encounters</div></div>
+  </div>
+</div>
+
+<!-- ── Open runs ───────────────────────────────────────────────────── -->
+<div class="section">
+  <div class="section-title">Open Runs</div>
+  <div id="open-runs-status" class="loading">Loading…</div>
+  <table id="open-runs-table" style="display:none">
+    <thead><tr><th>#</th><th>Player</th><th>Started</th><th>Caught</th><th>Deaths</th><th>Invite</th><th></th></tr></thead>
+    <tbody id="open-runs-body"></tbody>
+  </table>
+</div>
+
+<!-- ── Most recent party ───────────────────────────────────────────── -->
+<div class="section" id="party-section" style="display:none">
+  <div class="section-title">Current Party <span id="party-run-label" style="color:#666;font-size:.8rem;font-weight:400"></span></div>
+  <div class="party-grid" id="party-grid"></div>
+</div>
+
+<!-- ── Pending invites ─────────────────────────────────────────────── -->
+<div class="section" id="invites-section" style="display:none">
+  <div class="section-title">Pending Run Invites</div>
+  <div id="invites-list"></div>
+</div>
+
+</div><!-- /container -->
+
+<!-- Invite modal overlay -->
+<div id="invite-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:100;align-items:center;justify-content:center">
+  <div style="background:#16213e;border:1px solid #0f3460;border-radius:8px;padding:1.5rem;width:340px;max-width:95vw">
+    <div style="font-size:.95rem;font-weight:700;color:#ccc;margin-bottom:1rem">Invite User to Run <span id="modal-run-id" style="color:#5090e0"></span></div>
+    <label for="invite-username">Username to invite</label>
+    <input id="invite-username" type="text" placeholder="their username" autocomplete="off">
+    <div id="msg-invite" class="msg"></div>
+    <div style="display:flex;gap:.6rem;margin-top:.5rem">
+      <button class="btn btn-primary" style="flex:1" onclick="submitInvite()">Send Invite</button>
+      <button class="btn btn-secondary" onclick="closeInviteModal()">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const TOKEN_KEY='frt_session';
+const CLIENT_IP='__CLIENT_IP__';
+const DIRECT_PORT=DEFAULT_PORT;
+const DIRECT_ACTIVE=DIRECT_MODE_ACTIVE;
+let SESSION=localStorage.getItem(TOKEN_KEY)||null;
+let MODAL_RUN_ID=null;
+
+function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
+function fmtDate(iso){if(!iso)return'—';try{return new Date(iso).toLocaleDateString();}catch{return iso;}}
+function authHdr(){return SESSION?{'Authorization':'Bearer '+SESSION}:{};}
+function openRunPage(runId,sel){
+  const p=sel.value;sel.value='';if(!p)return;
+  const url=p==='stats'?'/run/'+runId+'/stats':'/'+p+'?run='+runId;
+  const tok=localStorage.getItem(TOKEN_KEY);
+  if(tok)fetch('/api/me/active_run',{method:'PUT',headers:{'Content-Type':'application/json','Authorization':'Bearer '+tok},body:JSON.stringify({run_id:runId})}).catch(()=>{});
+  window.open(url,'_blank');
+}
+
+async function quickConnect(runId){
+  const r=await fetch('/api/direct/connect',{
+    method:'POST',
+    headers:{'Content-Type':'application/json',...authHdr()},
+    body:JSON.stringify({host:CLIENT_IP,port:DIRECT_PORT,run_id:runId}),
+  }).catch(()=>null);
+  if(!r){alert('Network error.');return;}
+  const d=await r.json();
+  if(r.ok){window.open('/overlay?run='+runId,'_blank');}
+  else{alert(d.error||'Connection failed.');}
+}
+
+async function init(){
+  if(!SESSION){window.location.href='/join';return;}
+  const r=await fetch('/api/me',{headers:authHdr()}).catch(()=>null);
+  if(!r||!r.ok){window.location.href='/join';return;}
+  const me=await r.json();
+  document.getElementById('page-title').textContent='Dashboard — '+esc(me.username);
+  loadDashboard();
+}
+
+async function loadDashboard(){
+  const r=await fetch('/api/me/dashboard',{headers:authHdr()}).catch(()=>null);
+  if(!r||!r.ok){
+    document.getElementById('open-runs-status').textContent='Could not load dashboard.';
+    return;
+  }
+  const d=await r.json();
+  if(d.error){document.getElementById('open-runs-status').textContent=d.error;return;}
+
+  // Stats
+  const s=d.stats||{};
+  document.getElementById('stat-runs').textContent=s.runs??0;
+  document.getElementById('stat-catches').textContent=s.catches??0;
+  document.getElementById('stat-deaths').textContent=s.deaths??0;
+  document.getElementById('stat-encounters').textContent=s.encounters??0;
+
+  // Open runs
+  const runs=d.open_runs||[];
+  const st=document.getElementById('open-runs-status');
+  const tbl=document.getElementById('open-runs-table');
+  const tbody=document.getElementById('open-runs-body');
+  if(!runs.length){st.textContent='No open runs.';st.style.display='';tbl.style.display='none';}
+  else{
+    st.style.display='none';tbl.style.display='';
+    tbody.innerHTML='';
+    for(const run of runs){
+      const tr=document.createElement('tr');
+      const ownerBadge=run.is_owner
+        ?'<span class="badge-owner">owner</span>'
+        :'<span class="badge-invited">invited</span>';
+      const inviteBtn=run.is_owner
+        ?'<button class="btn btn-secondary btn-xs" onclick="openInviteModal('+run.id+')">Invite</button>'
+        :'';
+      tr.innerHTML=
+        '<td><span class="run-id">#'+run.id+'</span>'+ownerBadge+'</td>'
+        +'<td>'+esc(run.player_name||'—')+'</td>'
+        +'<td style="color:#888;font-size:.8rem">'+fmtDate(run.started_at)+'</td>'
+        +'<td><span class="catches">'+(run.catches??0)+'</span></td>'
+        +'<td><span class="deaths">'+(run.deaths??0)+'</span></td>'
+        +'<td>'+inviteBtn+'</td>'
+        +'<td class="td-actions">'
+          +'<select class="page-select" onchange="openRunPage('+run.id+',this)"><option value="">Open page…</option><option value="overlay">Overlay</option><option value="history">History</option><option value="stats">Stats</option><option value="shiny">Shiny</option><option value="memorial">Memorial</option><option value="trainers">Trainers</option><option value="timeline">Timeline</option></select>'
+          +(DIRECT_ACTIVE?' <button class="btn btn-connect btn-xs" onclick="quickConnect('+run.id+')" title="Connect your RetroArch and open overlay">Quick Connect</button>':'')
+        +'</td>';
+      tbody.appendChild(tr);
+    }
+  }
+
+  // Recent party
+  const party=d.recent_party||[];
+  if(party.length&&runs.length){
+    const ps=document.getElementById('party-section');
+    const pg=document.getElementById('party-grid');
+    const rl=document.getElementById('party-run-label');
+    rl.textContent='(Run #'+runs[0].id+')';
+    pg.innerHTML='';
+    for(const mon of party){
+      const div=document.createElement('div');
+      div.className='party-mon';
+      div.innerHTML=
+        '<div class="mon-name">'+esc(mon.nickname)+(mon.is_shiny?'<span class="mon-shiny">★</span>':'')+'</div>'
+        +'<div class="mon-species">'+esc(mon.species_name)+'</div>'
+        +'<div class="mon-level">Lv. '+mon.level+'</div>';
+      pg.appendChild(div);
+    }
+    ps.style.display='';
+  }
+
+  // Pending invites
+  const invites=d.pending_invites||[];
+  if(invites.length){
+    const sec=document.getElementById('invites-section');
+    const list=document.getElementById('invites-list');
+    list.innerHTML='';
+    for(const inv of invites){
+      const row=document.createElement('div');
+      row.className='invite-row';
+      row.id='invite-row-'+inv.invite_id;
+      row.innerHTML=
+        '<div class="invite-info">'
+          +'<span class="invite-run">Run #'+inv.run_id+'</span>'
+          +' <span style="color:#ccc">'+esc(inv.player_name)+'</span>'
+          +'<div class="invite-from">Invited by '+esc(inv.invited_by)+' · '+fmtDate(inv.created_at)+'</div>'
+        +'</div>'
+        +'<button class="btn btn-success btn-sm" onclick="respondInvite('+inv.run_id+',true,'+inv.invite_id+')">Accept</button>'
+        +'<button class="btn btn-danger btn-sm" onclick="respondInvite('+inv.run_id+',false,'+inv.invite_id+')">Decline</button>';
+      list.appendChild(row);
+    }
+    sec.style.display='';
+  }
+}
+
+function openInviteModal(runId){
+  MODAL_RUN_ID=runId;
+  document.getElementById('modal-run-id').textContent='#'+runId;
+  document.getElementById('invite-username').value='';
+  document.getElementById('msg-invite').className='msg';
+  document.getElementById('invite-modal').style.display='flex';
+  setTimeout(()=>document.getElementById('invite-username').focus(),50);
+}
+function closeInviteModal(){
+  document.getElementById('invite-modal').style.display='none';
+  MODAL_RUN_ID=null;
+}
+async function submitInvite(){
+  const uname=document.getElementById('invite-username').value.trim();
+  const msg=document.getElementById('msg-invite');
+  if(!uname){msg.className='msg err';msg.textContent='Enter a username.';return;}
+  const r=await fetch('/api/run/'+MODAL_RUN_ID+'/invite',{
+    method:'POST',
+    headers:{'Content-Type':'application/json',...authHdr()},
+    body:JSON.stringify({username:uname}),
+  }).catch(()=>null);
+  if(!r){msg.className='msg err';msg.textContent='Network error.';return;}
+  const d=await r.json();
+  if(r.ok){
+    msg.className='msg ok';msg.textContent='Invite sent to '+esc(uname)+'.';
+    setTimeout(closeInviteModal,1400);
+  }else{
+    msg.className='msg err';msg.textContent=d.error||'Failed.';
+  }
+}
+async function respondInvite(runId,accept,inviteId){
+  const endpoint=accept?'accept':'decline';
+  const r=await fetch('/api/run/'+runId+'/invite/'+endpoint,{
+    method:'POST',
+    headers:authHdr(),
+  }).catch(()=>null);
+  if(r&&r.ok){
+    const row=document.getElementById('invite-row-'+inviteId);
+    if(row)row.remove();
+    const sec=document.getElementById('invites-section');
+    const list=document.getElementById('invites-list');
+    if(!list.children.length)sec.style.display='none';
+    if(accept)loadDashboard();
+  }
+}
+
+init();
+</script>
+</body>
+</html>"#;
+
+async fn serve_dashboard(
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    State(state): State<WebState>,
+) -> impl IntoResponse {
+    let client_ip = addr.ip().to_string();
+    let default_port = state.connector.as_ref().map(|c| c.default_port).unwrap_or(55355);
+    let direct_active = if state.connector.is_some() { "true" } else { "false" };
+    let html = DASHBOARD_HTML
+        .replace("DIRECT_MODE_ACTIVE", direct_active)
+        .replace("DEFAULT_PORT", &default_port.to_string())
+        .replace("__CLIENT_IP__", &client_ip);
+    (
+        StatusCode::OK,
+        [(header::CONTENT_TYPE, "text/html; charset=utf-8")],
+        html,
+    )
+}
+
+/// `GET /api/me/dashboard` — full dashboard JSON for the authenticated user.
+async fn api_me_dashboard(
+    State(state): State<WebState>,
+    headers: axum::http::HeaderMap,
+) -> impl IntoResponse {
+    let Some(token) = extract_bearer(&headers) else {
+        return (StatusCode::UNAUTHORIZED, axum::Json(serde_json::json!({ "error": "not authenticated" })));
+    };
+    let Some(conn) = state.db_conn else {
+        return (StatusCode::SERVICE_UNAVAILABLE, axum::Json(serde_json::json!({ "error": "No database configured" })));
+    };
+    let result = tokio::task::spawn_blocking(move || -> Result<serde_json::Value, String> {
+        let user = fire_red_database::validate_session(&token)?
+            .ok_or_else(|| "session expired or invalid".to_string())?;
+        Ok(fire_red_database::user_dashboard_json(&conn, user.id))
+    }).await;
+    match result {
+        Ok(Ok(v)) => (StatusCode::OK, axum::Json(v)),
+        Ok(Err(e)) => (StatusCode::UNAUTHORIZED, axum::Json(serde_json::json!({ "error": e }))),
+        Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, axum::Json(serde_json::json!({ "error": "Task panicked" }))),
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct InviteBody { username: String }
+
+/// `POST /api/run/:id/invite` — invite a user (by username) to a run.
+///
+/// Requires auth. The caller must own the run.
+/// Body: `{ "username": "..." }`
+async fn api_run_invite(
+    State(_state): State<WebState>,
+    headers: axum::http::HeaderMap,
+    Path(run_id): Path<u32>,
+    axum::Json(body): axum::Json<InviteBody>,
+) -> impl IntoResponse {
+    let Some(token) = extract_bearer(&headers) else {
+        return (StatusCode::UNAUTHORIZED, axum::Json(serde_json::json!({ "error": "not authenticated" })));
+    };
+    let username = body.username.trim().to_string();
+    let result = tokio::task::spawn_blocking(move || -> Result<u32, String> {
+        let user = fire_red_database::validate_session(&token)?
+            .ok_or_else(|| "session expired or invalid".to_string())?;
+        fire_red_database::invite_user_to_run(run_id, user.id, &username)
+    }).await;
+    match result {
+        Ok(Ok(invite_id)) => (StatusCode::OK, axum::Json(serde_json::json!({ "invite_id": invite_id }))),
+        Ok(Err(e)) if e.contains("do not own") || e.contains("not found") => {
+            (StatusCode::FORBIDDEN, axum::Json(serde_json::json!({ "error": e })))
+        }
+        Ok(Err(e)) => (StatusCode::BAD_REQUEST, axum::Json(serde_json::json!({ "error": e }))),
+        Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, axum::Json(serde_json::json!({ "error": "Task panicked" }))),
+    }
+}
+
+/// `GET /api/run/:id/invites` — list all invites for a run (owner view).
+async fn api_run_invites(
+    State(state): State<WebState>,
+    headers: axum::http::HeaderMap,
+    Path(run_id): Path<u32>,
+) -> impl IntoResponse {
+    let Some(token) = extract_bearer(&headers) else {
+        return (StatusCode::UNAUTHORIZED, axum::Json(serde_json::json!({ "error": "not authenticated" })));
+    };
+    let Some(conn) = state.db_conn else {
+        return (StatusCode::SERVICE_UNAVAILABLE, axum::Json(serde_json::json!({ "error": "No database configured" })));
+    };
+    let result = tokio::task::spawn_blocking(move || -> Result<serde_json::Value, String> {
+        fire_red_database::validate_session(&token)?
+            .ok_or_else(|| "session expired or invalid".to_string())?;
+        Ok(fire_red_database::get_run_invites_json(&conn, run_id))
+    }).await;
+    match result {
+        Ok(Ok(v)) => (StatusCode::OK, axum::Json(v)),
+        Ok(Err(e)) => (StatusCode::UNAUTHORIZED, axum::Json(serde_json::json!({ "error": e }))),
+        Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, axum::Json(serde_json::json!({ "error": "Task panicked" }))),
+    }
+}
+
+/// `POST /api/run/:id/invite/accept` — accept an invite to a run.
+async fn api_run_invite_accept(
+    headers: axum::http::HeaderMap,
+    Path(run_id): Path<u32>,
+) -> impl IntoResponse {
+    api_run_invite_respond(headers, run_id, true).await
+}
+
+/// `POST /api/run/:id/invite/decline` — decline an invite to a run.
+async fn api_run_invite_decline(
+    headers: axum::http::HeaderMap,
+    Path(run_id): Path<u32>,
+) -> impl IntoResponse {
+    api_run_invite_respond(headers, run_id, false).await
+}
+
+async fn api_run_invite_respond(
+    headers: axum::http::HeaderMap,
+    run_id: u32,
+    accept: bool,
+) -> impl IntoResponse {
+    let Some(token) = extract_bearer(&headers) else {
+        return (StatusCode::UNAUTHORIZED, axum::Json(serde_json::json!({ "error": "not authenticated" })));
+    };
+    let result = tokio::task::spawn_blocking(move || -> Result<(), String> {
+        let user = fire_red_database::validate_session(&token)?
+            .ok_or_else(|| "session expired or invalid".to_string())?;
+        fire_red_database::respond_to_invite(run_id, user.id, accept)
+    }).await;
+    match result {
+        Ok(Ok(())) => (StatusCode::OK, axum::Json(serde_json::json!({ "ok": true }))),
+        Ok(Err(e)) => (StatusCode::NOT_FOUND, axum::Json(serde_json::json!({ "error": e }))),
+        Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, axum::Json(serde_json::json!({ "error": "Task panicked" }))),
+    }
+}
+
+/// `POST /api/run/:id/invite/request` — request access to a run.
+///
+/// Any authenticated user who does not own the run may call this.
+async fn api_run_invite_request(
+    headers: axum::http::HeaderMap,
+    Path(run_id): Path<u32>,
+) -> impl IntoResponse {
+    let Some(token) = extract_bearer(&headers) else {
+        return (StatusCode::UNAUTHORIZED, axum::Json(serde_json::json!({ "error": "not authenticated" })));
+    };
+    let result = tokio::task::spawn_blocking(move || -> Result<u32, String> {
+        let user = fire_red_database::validate_session(&token)?
+            .ok_or_else(|| "session expired or invalid".to_string())?;
+        fire_red_database::request_run_invite(run_id, user.id)
+    }).await;
+    match result {
+        Ok(Ok(invite_id)) => (StatusCode::OK, axum::Json(serde_json::json!({ "invite_id": invite_id }))),
+        Ok(Err(e)) if e.contains("already own") => (StatusCode::BAD_REQUEST, axum::Json(serde_json::json!({ "error": e }))),
+        Ok(Err(e)) if e.contains("not found") => (StatusCode::NOT_FOUND, axum::Json(serde_json::json!({ "error": e }))),
+        Ok(Err(e)) => (StatusCode::BAD_REQUEST, axum::Json(serde_json::json!({ "error": e }))),
+        Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, axum::Json(serde_json::json!({ "error": "Task panicked" }))),
+    }
+}
+
+/// `GET /api/run/:id/invite/requests` — list pending access requests (owner only).
+async fn api_run_invite_requests(
+    State(state): State<WebState>,
+    headers: axum::http::HeaderMap,
+    Path(run_id): Path<u32>,
+) -> impl IntoResponse {
+    let Some(token) = extract_bearer(&headers) else {
+        return (StatusCode::UNAUTHORIZED, axum::Json(serde_json::json!({ "error": "not authenticated" })));
+    };
+    let Some(conn) = state.db_conn else {
+        return (StatusCode::SERVICE_UNAVAILABLE, axum::Json(serde_json::json!({ "error": "No database configured" })));
+    };
+    let result = tokio::task::spawn_blocking(move || -> Result<serde_json::Value, String> {
+        fire_red_database::validate_session(&token)?
+            .ok_or_else(|| "session expired or invalid".to_string())?;
+        Ok(fire_red_database::get_run_invite_requests_json(&conn, run_id))
+    }).await;
+    match result {
+        Ok(Ok(v)) => (StatusCode::OK, axum::Json(v)),
+        Ok(Err(e)) => (StatusCode::UNAUTHORIZED, axum::Json(serde_json::json!({ "error": e }))),
+        Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, axum::Json(serde_json::json!({ "error": "Task panicked" }))),
+    }
+}
+
+/// `POST /api/run/:id/invite/request/:uid/approve` — approve an access request.
+async fn api_run_invite_request_approve(
+    headers: axum::http::HeaderMap,
+    Path((run_id, requester_id)): Path<(u32, u32)>,
+) -> impl IntoResponse {
+    api_run_invite_request_respond(headers, run_id, requester_id, true).await
+}
+
+/// `POST /api/run/:id/invite/request/:uid/deny` — deny an access request.
+async fn api_run_invite_request_deny(
+    headers: axum::http::HeaderMap,
+    Path((run_id, requester_id)): Path<(u32, u32)>,
+) -> impl IntoResponse {
+    api_run_invite_request_respond(headers, run_id, requester_id, false).await
+}
+
+async fn api_run_invite_request_respond(
+    headers: axum::http::HeaderMap,
+    run_id: u32,
+    requester_id: u32,
+    approve: bool,
+) -> impl IntoResponse {
+    let Some(token) = extract_bearer(&headers) else {
+        return (StatusCode::UNAUTHORIZED, axum::Json(serde_json::json!({ "error": "not authenticated" })));
+    };
+    let result = tokio::task::spawn_blocking(move || -> Result<(), String> {
+        let user = fire_red_database::validate_session(&token)?
+            .ok_or_else(|| "session expired or invalid".to_string())?;
+        fire_red_database::respond_to_invite_request(run_id, requester_id, user.id, approve)
+    }).await;
+    match result {
+        Ok(Ok(())) => (StatusCode::OK, axum::Json(serde_json::json!({ "ok": true }))),
+        Ok(Err(e)) if e.contains("do not own") => (StatusCode::FORBIDDEN, axum::Json(serde_json::json!({ "error": e }))),
+        Ok(Err(e)) => (StatusCode::NOT_FOUND, axum::Json(serde_json::json!({ "error": e }))),
+        Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, axum::Json(serde_json::json!({ "error": "Task panicked" }))),
+    }
+}
+
+/// `GET /api/me/run_statuses` — map of run_id → access status for the caller.
+async fn api_me_run_statuses(
+    State(state): State<WebState>,
+    headers: axum::http::HeaderMap,
+) -> impl IntoResponse {
+    let Some(token) = extract_bearer(&headers) else {
+        return (StatusCode::UNAUTHORIZED, axum::Json(serde_json::json!({ "error": "not authenticated" })));
+    };
+    let Some(conn) = state.db_conn else {
+        return (StatusCode::SERVICE_UNAVAILABLE, axum::Json(serde_json::json!({ "error": "No database configured" })));
+    };
+    let result = tokio::task::spawn_blocking(move || -> Result<serde_json::Value, String> {
+        let user = fire_red_database::validate_session(&token)?
+            .ok_or_else(|| "session expired or invalid".to_string())?;
+        Ok(fire_red_database::get_my_run_statuses_json(&conn, user.id))
+    }).await;
+    match result {
+        Ok(Ok(v)) => (StatusCode::OK, axum::Json(v)),
+        Ok(Err(e)) => (StatusCode::UNAUTHORIZED, axum::Json(serde_json::json!({ "error": e }))),
+        Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, axum::Json(serde_json::json!({ "error": "Task panicked" }))),
+    }
+}
+
+/// `GET /api/me/run_requests` — all pending access requests on runs the caller owns.
+async fn api_me_run_requests(
+    State(state): State<WebState>,
+    headers: axum::http::HeaderMap,
+) -> impl IntoResponse {
+    let Some(token) = extract_bearer(&headers) else {
+        return (StatusCode::UNAUTHORIZED, axum::Json(serde_json::json!({ "error": "not authenticated" })));
+    };
+    let Some(conn) = state.db_conn else {
+        return (StatusCode::SERVICE_UNAVAILABLE, axum::Json(serde_json::json!({ "error": "No database configured" })));
+    };
+    let result = tokio::task::spawn_blocking(move || -> Result<serde_json::Value, String> {
+        let user = fire_red_database::validate_session(&token)?
+            .ok_or_else(|| "session expired or invalid".to_string())?;
+        Ok(fire_red_database::get_my_run_requests_json(&conn, user.id))
+    }).await;
+    match result {
+        Ok(Ok(v)) => (StatusCode::OK, axum::Json(v)),
+        Ok(Err(e)) => (StatusCode::UNAUTHORIZED, axum::Json(serde_json::json!({ "error": e }))),
+        Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, axum::Json(serde_json::json!({ "error": "Task panicked" }))),
+    }
 }
 
 // ---------------------------------------------------------------------------

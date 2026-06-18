@@ -88,11 +88,21 @@ html, body {
   <div class="bt-count" id="bt-count"></div>
 </div>
 <script>
-// Player slot index — path takes priority (/0/alerts), falls back to ?slot=N, then 0
+// Player slot index — path takes priority (/0/alerts), falls back to ?slot=N.
+// When neither is given, defer to the first non-null slot in the live array
+// so users on any slot index see their own data on the index-free /alerts URL.
 const _pathParts  = window.location.pathname.split('/').filter(Boolean);
 const _pathIndex  = parseInt(_pathParts[0]);
 const _params     = new URLSearchParams(window.location.search);
-const playerIndex = !isNaN(_pathIndex) ? _pathIndex : parseInt(_params.get('slot') || '0');
+const _explicitIndex = !isNaN(_pathIndex) ? _pathIndex
+    : (_params.has('slot') ? parseInt(_params.get('slot')) : null);
+// playerIndex is resolved dynamically when null (first non-null slot wins).
+let playerIndex = _explicitIndex !== null ? _explicitIndex : 0;
+function resolvePlayerIndex(slots) {
+    if (_explicitIndex !== null) return;
+    const first = slots.findIndex(s => s && s.connected);
+    if (first !== -1) playerIndex = first;
+}
 
 let _lastZoneKey = '';
 let _toastTimer  = null;
@@ -237,6 +247,7 @@ function showDeathToast(mon) {
 }
 
 function handleState(slots) {
+    resolvePlayerIndex(slots);
     const slot = slots[playerIndex];
     if (!slot || !slot.connected) return;
 

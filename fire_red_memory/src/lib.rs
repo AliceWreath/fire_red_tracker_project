@@ -44,6 +44,7 @@
 use arc_swap::ArcSwap;
 use fire_red_retroarch_interfacing::{generate_command, get_from_retroarch, make_socket};
 pub use fire_red_retroarch_interfacing::{get_thread_addr_string, set_thread_addr_string};
+use std::cell::RefCell;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
@@ -67,6 +68,56 @@ static LOADED_EWRAM: OnceLock<ArcSwap<Vec<u8>>> = OnceLock::new();
 ///
 /// Set to `true` by [`start_loop`] and `false` by [`end_loop`].
 static RUNNING: AtomicBool = AtomicBool::new(false);
+
+// ---------------------------------------------------------------------------
+// Per-connection context
+// ---------------------------------------------------------------------------
+
+/// Per-connection EWRAM/IWRAM snapshot state.
+///
+/// Create one per RetroArch connection with [`MemoryContext::new`], pass it to
+/// [`start_loop_ctx`], and register it on the game-loop thread with
+/// [`set_thread_memory_context`] so that [`get_ewram`] / [`get_iwram`]
+/// automatically return this connection's data on that thread.
+pub struct MemoryContext {
+    pub ewram: ArcSwap<Vec<u8>>,
+    pub iwram: ArcSwap<Vec<u8>>,
+    pub running: AtomicBool,
+}
+
+impl MemoryContext {
+    pub fn new() -> Arc<Self> {
+        Arc::new(Self {
+            ewram: ArcSwap::from_pointee(Vec::new()),
+            iwram: ArcSwap::from_pointee(Vec::new()),
+            running: AtomicBool::new(false),
+        })
+    }
+}
+
+impl Default for MemoryContext {
+    fn default() -> Self {
+        Self {
+            ewram: ArcSwap::from_pointee(Vec::new()),
+            iwram: ArcSwap::from_pointee(Vec::new()),
+            running: AtomicBool::new(false),
+        }
+    }
+}
+
+thread_local! {
+    static THREAD_MEM_CTX: RefCell<Option<Arc<MemoryContext>>> = const { RefCell::new(None) };
+}
+
+/// Registers `ctx` as this thread's memory context.
+///
+/// After this call, [`get_ewram`] and [`get_iwram`] on the calling thread will
+/// return data from `ctx` rather than the global singleton.  Call this at the
+/// top of every thread that belongs to a specific direct-mode connection
+/// (game-loop thread, party monitor thread, box monitor thread, etc.).
+pub fn set_thread_memory_context(ctx: Arc<MemoryContext>) {
+    THREAD_MEM_CTX.with(|c| *c.borrow_mut() = Some(ctx));
+}
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -216,28 +267,114 @@ pub fn end_loop() {
 
 /// Returns the most recent IWRAM snapshot.
 ///
-/// Initializes the static to an empty `Vec` if [`start_loop`] has not been
-/// called yet. The returned [`Arc`] is a consistent point-in-time snapshot;
-/// the background thread may update the stored value concurrently without
-/// affecting data visible through this handle.
+/// If a per-connection [`MemoryContext`] has been registered on this thread
+/// via [`set_thread_memory_context`], its IWRAM is returned.  Otherwise falls
+/// back to the global singleton populated by [`start_loop`].
 pub fn get_iwram() -> Arc<Vec<u8>> {
-    LOADED_IWRAM
-        .get_or_init(|| ArcSwap::from_pointee(Vec::new()))
-        .load_full()
+    let thread = THREAD_MEM_CTX.with(|c| c.borrow().as_ref().map(|ctx| ctx.iwram.load_full()));
+    thread.unwrap_or_else(|| {
+        LOADED_IWRAM
+            .get_or_init(|| ArcSwap::from_pointee(Vec::new()))
+            .load_full()
+    })
 }
 
 /// Returns the most recent EWRAM snapshot.
 ///
-/// See [`get_iwram`] for details.
+/// If a per-connection [`MemoryContext`] has been registered on this thread
+/// via [`set_thread_memory_context`], its EWRAM is returned.  Otherwise falls
+/// back to the global singleton populated by [`start_loop`].
 pub fn get_ewram() -> Arc<Vec<u8>> {
-    LOADED_EWRAM
-        .get_or_init(|| ArcSwap::from_pointee(Vec::new()))
-        .load_full()
+    let thread = THREAD_MEM_CTX.with(|c| c.borrow().as_ref().map(|ctx| ctx.ewram.load_full()));
+    thread.unwrap_or_else(|| {
+        LOADED_EWRAM
+            .get_or_init(|| ArcSwap::from_pointee(Vec::new()))
+            .load_full()
+    })
+}
+
+/// Starts a per-connection memory polling loop.
+///
+/// Spawns a background thread that polls the RetroArch instance whose address
+/// is set on the **calling** thread via
+/// [`fire_red_retroarch_interfacing::set_thread_addr`] and writes results into
+/// `ctx`.  Multiple connections can run concurrently because each has its own
+/// [`MemoryContext`]; the global [`LOADED_EWRAM`] / [`LOADED_IWRAM`] are not
+/// touched.
+///
+/// Stop the thread with [`end_loop_ctx`].
+pub fn start_loop_ctx(ctx: Arc<MemoryContext>) {
+    ctx.running.store(true, Ordering::SeqCst);
+    let ra_addr = get_thread_addr_string();
+    let ctx2 = ctx.clone();
+    std::thread::spawn(move || {
+        set_thread_addr_string(ra_addr);
+        let wait_interval = std::time::Duration::from_secs(5);
+        let mut connected = false;
+        let mut last_waiting_print = std::time::Instant::now()
+            .checked_sub(wait_interval)
+            .unwrap_or_else(std::time::Instant::now);
+        while ctx2.running.load(Ordering::SeqCst) {
+            match update_memory_ctx(&ctx2) {
+                Ok(()) => {
+                    if !connected {
+                        tracing::info!("RetroArch connected.");
+                        connected = true;
+                    }
+                }
+                Err(_) => {
+                    if connected {
+                        tracing::warn!("Lost connection to RetroArch. Waiting...");
+                        connected = false;
+                    }
+                    let now = std::time::Instant::now();
+                    if now.duration_since(last_waiting_print) >= wait_interval {
+                        tracing::debug!("Waiting for RetroArch...");
+                        last_waiting_print = now;
+                    }
+                }
+            }
+            std::thread::sleep(SLEEP_DURATION);
+        }
+    });
+}
+
+/// Signals the per-connection memory polling loop to stop.
+pub fn end_loop_ctx(ctx: &MemoryContext) {
+    ctx.running.store(false, Ordering::SeqCst);
 }
 
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
+
+/// Per-connection variant of [`update_memory`]: writes results into `ctx`
+/// instead of the global [`LOADED_EWRAM`] / [`LOADED_IWRAM`] singletons.
+fn update_memory_ctx(ctx: &Arc<MemoryContext>) -> Result<(), &'static str> {
+    let ra_addr = get_thread_addr_string();
+    let ra_addr2 = ra_addr.clone();
+    let ctx_i = ctx.clone();
+    let ctx_e = ctx.clone();
+    let iwram_thread = std::thread::spawn(move || -> Option<()> {
+        set_thread_addr_string(ra_addr);
+        let data = update_ram_type::<Iwram>()?;
+        ctx_i.iwram.store(Arc::new(data));
+        Some(())
+    });
+    let ewram_thread = std::thread::spawn(move || -> Option<()> {
+        set_thread_addr_string(ra_addr2);
+        let data = update_ram_type::<Ewram>()?;
+        ctx_e.ewram.store(Arc::new(data));
+        Some(())
+    });
+    let iwram_ok = iwram_thread.join().map_err(|_| "IWRAM thread panicked.")?;
+    let ewram_ok = ewram_thread.join().map_err(|_| "EWRAM thread panicked.")?;
+    match (iwram_ok, ewram_ok) {
+        (Some(()), Some(())) => Ok(()),
+        (None, _) => Err("Unable to update IWRAM."),
+        (_, None) => Err("Unable to update EWRAM."),
+    }
+}
 
 /// Reads IWRAM and EWRAM concurrently, storing each region as soon as it
 /// completes rather than waiting for both before storing either.

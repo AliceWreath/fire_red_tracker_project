@@ -1043,6 +1043,15 @@ pub(crate) fn compute_new_trainer_flags(current: &[u8], last: &[u8]) -> Vec<u16>
         .collect()
 }
 
+/// Maximum number of new trainer flags allowed in a single poll tick.
+///
+/// You can only battle one trainer at a time, so seeing more than a handful of
+/// flags flip simultaneously is a reliable signal that the memory we're reading
+/// is temporarily corrupted by a battle-engine state transition (e.g. the wild
+/// encounter intro on Route 22 caused 63 false positives). When the count
+/// exceeds this threshold we silently re-baseline instead of recording them.
+const MAX_TRAINER_FLAGS_PER_TICK: usize = 4;
+
 /// Scans the trainer flag range (0x100–0x3DF) for newly-set bits and records
 /// each defeat in the `trainer_battles` table.
 ///
@@ -1060,6 +1069,19 @@ pub fn check_for_new_trainer_battles(last_flags: Option<Vec<u8>>) -> Option<Vec<
         return Some(current);
     }
 
+    let new_flags = compute_new_trainer_flags(&current, &last);
+
+    // If an implausible number of flags changed at once, the memory snapshot is
+    // in a transient state (e.g. a battle-engine write overlapping the flags
+    // region). Re-baseline silently so normal detection resumes next tick.
+    if new_flags.len() > MAX_TRAINER_FLAGS_PER_TICK {
+        tracing::debug!(
+            "Trainer flag burst ({} flags) discarded — likely a battle transition artifact",
+            new_flags.len()
+        );
+        return Some(current);
+    }
+
     let player = fire_red_loop::get_trainer_name();
     let location = map_state_from_ewram()
         .map(|s| {
@@ -1073,7 +1095,7 @@ pub fn check_for_new_trainer_battles(last_flags: Option<Vec<u8>>) -> Option<Vec<
         .unwrap_or_default();
     let timestamp = fire_red_database::unix_now();
 
-    for flag in compute_new_trainer_flags(&current, &last) {
+    for flag in new_flags {
         let name = trainer_name_for_flag(flag);
         match fire_red_database::record_trainer_defeat(fire_red_database::TrainerDefeat {
             player_name: player.clone(),

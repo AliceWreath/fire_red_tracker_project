@@ -34,7 +34,7 @@ use fire_red_party_monitor::BoxPokemon;
 use fire_red_states::LockOrRecover;
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
 // ---------------------------------------------------------------------------
 // Address constants
@@ -143,6 +143,31 @@ pub fn end_loop() {
     {
         tracing::error!("Error joining box monitor thread: {:?}", e);
     }
+}
+
+/// Starts a per-connection box monitoring thread.
+///
+/// The spawned thread registers `mem_ctx` as its memory context so that all
+/// EWRAM/IWRAM reads inside [`update_box_list`] return data from the correct
+/// RetroArch instance.
+///
+/// Returns an `Arc<AtomicBool>` shutdown flag: store `false` into it to stop
+/// the thread (it exits after the current [`update_box_list`] call completes).
+pub fn start_loop_ctx(
+    mem_ctx: Arc<fire_red_memory::MemoryContext>,
+) -> Arc<std::sync::atomic::AtomicBool> {
+    let running = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let running_clone = running.clone();
+    std::thread::spawn(move || {
+        fire_red_memory::set_thread_memory_context(mem_ctx);
+        while running_clone.load(Ordering::SeqCst) {
+            if std::panic::catch_unwind(update_box_list).is_err() {
+                tracing::error!("Panic occurred while updating box list.");
+            }
+            std::thread::sleep(SLEEP_TIMER);
+        }
+    });
+    running
 }
 
 // ---------------------------------------------------------------------------

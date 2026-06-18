@@ -40,6 +40,10 @@ pub struct Cli {
     #[arg(long, default_value_t = false)]
     pub config_editor: bool,
 
+    /// Open the interactive terminal configuration editor and exit (no GUI required).
+    #[arg(long, default_value_t = false)]
+    pub config_editor_cli: bool,
+
     /// Check GitHub for a newer release and replace this binary if one is found.
     #[arg(long, default_value_t = false)]
     pub update: bool,

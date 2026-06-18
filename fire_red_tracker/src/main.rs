@@ -39,6 +39,7 @@
 
 mod cli;
 mod config;
+mod config_cli;
 mod discord;
 mod encounter;
 mod game;
@@ -212,6 +213,11 @@ fn main() {
         return;
     }
 
+    if cli.config_editor_cli {
+        config_cli::run_config_editor_cli(&config_path);
+        return;
+    }
+
     let cfg = config::load_or_prompt(&config_path);
     let cfg_gui = cfg.clone();
     let config_path_gui = config_path.clone();
@@ -326,6 +332,26 @@ fn main() {
                 std::process::exit(1);
             });
             println!("Using run #{}.", id);
+        }
+    }
+
+    // If a username is configured, use it as the in-DB player name immediately
+    // so runs are associated correctly even before the ROM trainer name is read.
+    if let Some(ref uname) = cfg.username {
+        fire_red_database::set_player_name(uname);
+        if let Some(run_id) = fire_red_database::active_run_id() {
+            match fire_red_database::get_user_by_username(uname) {
+                Ok(Some(user)) => {
+                    if let Err(e) = fire_red_database::link_run_to_user(run_id, user.id) {
+                        tracing::warn!("Could not link run to user account: {e}");
+                    }
+                }
+                Ok(None) => tracing::warn!(
+                    "username '{uname}' is configured but no matching account was found \
+                     — create one via POST /api/users on the aggregator"
+                ),
+                Err(e) => tracing::warn!("Failed to look up user account: {e}"),
+            }
         }
     }
 

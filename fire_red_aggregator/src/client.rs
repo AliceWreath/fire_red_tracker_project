@@ -137,6 +137,10 @@ pub struct MonitorSlot {
     /// after the game loop is started.  Reset to default by the refresh
     /// endpoint so stale encounter tables from the old ROM are evicted.
     pub game_encounters: Arc<Mutex<Option<Arc<Mutex<fire_red_pokemon_data::WildPokemonHeader>>>>>,
+    /// Signals the game loop, sprite loader, and bridge threads for this slot
+    /// to exit.  Set by `DirectConnector::disconnect`; always `false` for
+    /// tracker-TCP slots (those stop when the connection drops).
+    pub shutdown: Arc<AtomicBool>,
 }
 
 impl MonitorSlot {
@@ -178,6 +182,7 @@ impl MonitorSlot {
             rom_bytes: Arc::new(Mutex::new(Vec::new())),
             rom_identity: Arc::new(Mutex::new(String::new())),
             game_encounters: Arc::new(Mutex::new(None)),
+            shutdown: Arc::new(AtomicBool::new(false)),
         }
     }
 }

@@ -23,6 +23,7 @@
 use arc_swap::ArcSwap;
 use fire_red_get_values::*;
 use serde_big_array::BigArray;
+use std::cell::RefCell;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 
@@ -115,6 +116,51 @@ static PARTY_DATA: OnceLock<ArcSwap<Party>> = OnceLock::new();
 static RUNNING: AtomicBool = AtomicBool::new(false);
 
 // ---------------------------------------------------------------------------
+// Per-connection context
+// ---------------------------------------------------------------------------
+
+/// Per-connection party snapshot state.
+///
+/// Create one per direct-mode connection.  Pass it to [`start_loop_ctx`] to
+/// start a background thread that writes to it, and register it on the
+/// game-loop thread with [`set_thread_party_context`] so that [`get_party`]
+/// returns this connection's data.
+pub struct PartyContext {
+    pub data: ArcSwap<Party>,
+    pub running: AtomicBool,
+}
+
+impl PartyContext {
+    pub fn new() -> Arc<Self> {
+        Arc::new(Self {
+            data: ArcSwap::from_pointee(Party::empty()),
+            running: AtomicBool::new(false),
+        })
+    }
+}
+
+impl Default for PartyContext {
+    fn default() -> Self {
+        Self {
+            data: ArcSwap::from_pointee(Party::empty()),
+            running: AtomicBool::new(false),
+        }
+    }
+}
+
+thread_local! {
+    static THREAD_PARTY_CTX: RefCell<Option<Arc<PartyContext>>> = const { RefCell::new(None) };
+}
+
+/// Registers `ctx` as this thread's party context.
+///
+/// After this call, [`get_party`] on the calling thread will return data from
+/// `ctx` instead of the global singleton.
+pub fn set_thread_party_context(ctx: Arc<PartyContext>) {
+    THREAD_PARTY_CTX.with(|c| *c.borrow_mut() = Some(ctx));
+}
+
+// ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
@@ -144,8 +190,15 @@ pub fn get_static_party() -> &'static ArcSwap<Party> {
 
 /// Returns the current party snapshot.
 ///
-/// Returns `None` if the party has not yet been initialized.
+/// If a per-connection [`PartyContext`] has been registered on this thread via
+/// [`set_thread_party_context`], its data is returned.  Otherwise falls back
+/// to the global singleton populated by [`start_loop`].
 pub fn get_party() -> Option<Arc<Party>> {
+    let thread =
+        THREAD_PARTY_CTX.with(|c| c.borrow().as_ref().map(|ctx| ctx.data.load_full()));
+    if let Some(party) = thread {
+        return Some(party);
+    }
     PARTY_DATA.get().map(|arc| arc.load_full())
 }
 
@@ -178,6 +231,45 @@ pub fn start_loop() {
 /// Stops the background party polling loop.
 pub fn end_loop() {
     RUNNING.store(false, Ordering::SeqCst);
+}
+
+/// Rebuilds a per-connection party snapshot from the current EWRAM buffer.
+///
+/// Reads via [`fire_red_memory::get_ewram`], which returns the per-connection
+/// snapshot when a [`fire_red_memory::MemoryContext`] is registered on the
+/// calling thread.
+pub fn update_party_ctx(ctx: &PartyContext) {
+    let ewram = fire_red_memory::get_ewram();
+    let rom = fire_red_rom_buffer::get_rom();
+    ctx.data.store(Arc::new(Party::from_ewram(&ewram, rom)));
+}
+
+/// Starts a per-connection party polling loop.
+///
+/// Spawns a background thread that:
+/// 1. Registers `mem_ctx` as its memory context (so EWRAM reads go to the
+///    right RetroArch instance).
+/// 2. Calls [`update_party_ctx`] every [`SLEEP_TIMER`], writing results into
+///    `party_ctx`.
+///
+/// Stop it with [`end_loop_ctx`].
+pub fn start_loop_ctx(
+    mem_ctx: Arc<fire_red_memory::MemoryContext>,
+    party_ctx: Arc<PartyContext>,
+) {
+    party_ctx.running.store(true, Ordering::SeqCst);
+    std::thread::spawn(move || {
+        fire_red_memory::set_thread_memory_context(mem_ctx);
+        while party_ctx.running.load(Ordering::SeqCst) {
+            update_party_ctx(&party_ctx);
+            std::thread::sleep(SLEEP_TIMER);
+        }
+    });
+}
+
+/// Signals the per-connection party polling loop to stop.
+pub fn end_loop_ctx(ctx: &PartyContext) {
+    ctx.running.store(false, Ordering::SeqCst);
 }
 
 // ---------------------------------------------------------------------------

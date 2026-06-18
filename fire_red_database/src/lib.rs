@@ -1,6 +1,7 @@
 use fire_red_states::LockOrRecover;
 use postgres::{Client, NoTls};
 use sha2::{Digest, Sha256};
+use std::cell::Cell;
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 
@@ -627,6 +628,14 @@ pub struct TrainerDefeat {
     pub defeated_at: u64,
 }
 
+/// A registered user account.
+#[derive(Clone, Debug)]
+pub struct User {
+    pub id: u32,
+    pub username: String,
+    pub created_at: u64,
+}
+
 // ---------------------------------------------------------------------------
 // Storage
 // ---------------------------------------------------------------------------
@@ -639,6 +648,38 @@ struct DbState {
     /// write (dead_pokemon, caught_pokemon, encounters) so records from different
     /// players sharing the same run can be distinguished.
     current_player: String,
+}
+
+impl DbState {
+    /// Returns the run ID for the current call context.
+    ///
+    /// Direct-mode slots each run their game loop on a dedicated thread and
+    /// set `THREAD_RUN_ID` to their own run ID via `set_thread_run_id`.  That
+    /// per-thread override takes precedence over the global `run_id` so multiple
+    /// slots can write to different runs simultaneously without interfering.
+    fn effective_run_id(&self) -> Option<u32> {
+        THREAD_RUN_ID.with(|c| c.get()).or(self.run_id)
+    }
+}
+
+// Per-thread run ID override used by direct-mode game-loop threads.
+// Set via set_thread_run_id at thread startup; cleared by clear_thread_run_id.
+thread_local! {
+    static THREAD_RUN_ID: Cell<Option<u32>> = const { Cell::new(None) };
+}
+
+/// Override the active run ID for the current thread.
+///
+/// Call this once at the start of a direct-mode game-loop thread so that all
+/// DB writes from that thread go to the correct run, independent of the global
+/// `DbState.run_id`.
+pub fn set_thread_run_id(run_id: u32) {
+    THREAD_RUN_ID.with(|c| c.set(Some(run_id)));
+}
+
+/// Clear the per-thread run ID override set by [`set_thread_run_id`].
+pub fn clear_thread_run_id() {
+    THREAD_RUN_ID.with(|c| c.set(None));
 }
 
 static DB: OnceLock<Option<Mutex<DbState>>> = OnceLock::new();
@@ -676,7 +717,7 @@ pub fn initialize_noop() {
 /// `initialize` has already been called.
 /// Increment this whenever a new migration or data-repair statement is added.
 /// `initialize` skips all SQL when the DB already records this version.
-const SCHEMA_VERSION: &str = "23";
+const SCHEMA_VERSION: &str = "26";
 
 pub fn initialize(connection_string: &str) -> Result<(), String> {
     // Accept bare `host/dbname` strings — prepend the scheme so callers don't have to.
@@ -1094,6 +1135,42 @@ pub fn initialize(connection_string: &str) -> Result<(), String> {
             occurred_at  BIGINT    NOT NULL
         );
         CREATE INDEX IF NOT EXISTS status_events_run ON status_events (run_id, personality);
+
+        -- Migration v24: user accounts and sessions.
+        -- Users provide a unique, password-protected identity so two players
+        -- with the same in-game trainer name don't collide in the database.
+        CREATE TABLE IF NOT EXISTS users (
+            id            SERIAL  PRIMARY KEY,
+            username      TEXT    UNIQUE NOT NULL,
+            password_hash TEXT    NOT NULL,
+            created_at    BIGINT  NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS sessions (
+            token      TEXT    PRIMARY KEY,
+            user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            created_at BIGINT  NOT NULL,
+            expires_at BIGINT  NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS sessions_user ON sessions (user_id);
+        CREATE INDEX IF NOT EXISTS sessions_expiry ON sessions (expires_at);
+
+        ALTER TABLE runs ADD COLUMN IF NOT EXISTS user_id INTEGER REFERENCES users(id);
+
+        CREATE TABLE IF NOT EXISTS run_invites (
+            id           SERIAL  PRIMARY KEY,
+            run_id       INTEGER NOT NULL REFERENCES runs(id)  ON DELETE CASCADE,
+            invited_by   INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            invited_user INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            status       TEXT    NOT NULL DEFAULT 'pending',
+            created_at   BIGINT  NOT NULL,
+            responded_at BIGINT,
+            UNIQUE (run_id, invited_user)
+        );
+        CREATE INDEX IF NOT EXISTS run_invites_user   ON run_invites (invited_user);
+        CREATE INDEX IF NOT EXISTS run_invites_run    ON run_invites (run_id);
+
+        ALTER TABLE run_invites ADD COLUMN IF NOT EXISTS is_request BOOLEAN NOT NULL DEFAULT FALSE;
     ").map_err(|e| format!("Failed to create database schema: {e}"))?;
 
     // Record the schema version so future startups can skip all migrations.
@@ -1351,7 +1428,7 @@ pub fn set_player_name(name: &str) {
     let Some(db) = db() else { return };
     let mut state = db.lock_or_recover();
     state.current_player = name.to_string();
-    if let Some(id) = state.run_id
+    if let Some(id) = state.effective_run_id()
         && let Err(e) = state.client.execute(
             "UPDATE runs SET player_name = $1 WHERE id = $2 AND player_name = 'Unknown'",
             &[&name, &(id as i32)],
@@ -1445,7 +1522,7 @@ pub fn list_runs() -> Result<Vec<(u32, String, u64, usize)>, String> {
 pub fn mark_dead(pokemon: DeadPokemon) -> Result<bool, postgres::Error> {
     let Some(db) = db() else { return Ok(false) };
     let mut state = db.lock_or_recover();
-    let active = match state.run_id {
+    let active = match state.effective_run_id() {
         Some(id) => id,
         None => return Ok(false),
     };
@@ -1534,7 +1611,7 @@ pub fn mark_dead(pokemon: DeadPokemon) -> Result<bool, postgres::Error> {
 pub fn is_dead(personality: u32) -> bool {
     let Some(db) = db() else { return false };
     let mut state = db.lock_or_recover();
-    let active = match state.run_id {
+    let active = match state.effective_run_id() {
         Some(id) => id,
         None => return false,
     };
@@ -1545,7 +1622,7 @@ pub fn is_dead(personality: u32) -> bool {
 pub fn get_dead_pokemon(personality: u32) -> Option<DeadPokemon> {
     let db = db()?;
     let mut state = db.lock_or_recover();
-    let active = state.run_id?;
+    let active = state.effective_run_id()?;
     let row = state.client
         .query_opt(
             "SELECT
@@ -1581,7 +1658,7 @@ pub fn update_min_hp_seen(personality: u32, hp: u16, max_hp: u16) {
     }
     let Some(db) = db() else { return };
     let mut state = db.lock_or_recover();
-    let Some(run_id) = state.run_id else { return };
+    let Some(run_id) = state.effective_run_id() else { return };
     let hp_i = hp as i32;
     let max_i = max_hp as i32;
     // Update only if no previous record (IS NULL) or new ratio is strictly lower.
@@ -1613,7 +1690,7 @@ pub fn update_min_hp_seen(personality: u32, hp: u16, max_hp: u16) {
 pub fn record_hp_observation(personality: u32, hp: u16, max_hp: u16) {
     let Some(db) = db() else { return };
     let mut state = db.lock_or_recover();
-    let Some(run_id) = state.run_id else { return };
+    let Some(run_id) = state.effective_run_id() else { return };
     let _ = state.client.execute(
         "INSERT INTO hp_history (run_id, personality, observed_at, hp, max_hp)
          VALUES ($1, $2, $3, $4, $5)",
@@ -1634,7 +1711,7 @@ pub fn record_hp_observation(personality: u32, hp: u16, max_hp: u16) {
 pub fn record_enemy_hp(personality: u32, hp: u16, max_hp: u16, phase: &str) {
     let Some(db) = db() else { return };
     let mut state = db.lock_or_recover();
-    let Some(run_id) = state.run_id else { return };
+    let Some(run_id) = state.effective_run_id() else { return };
     let _ = state.client.execute(
         "INSERT INTO enemy_hp_log (run_id, personality, observed_at, hp, max_hp, phase)
          VALUES ($1, $2, $3, $4, $5, $6)",
@@ -2178,7 +2255,7 @@ impl<'a> EventKind<'a> {
 pub fn record_event(event: EventKind<'_>) -> Result<(), postgres::Error> {
     let Some(db) = db() else { return Ok(()) };
     let mut state = db.lock_or_recover();
-    let run_id = match state.run_id {
+    let run_id = match state.effective_run_id() {
         Some(id) => id,
         None => return Ok(()),
     };
@@ -2210,7 +2287,7 @@ pub fn record_event(event: EventKind<'_>) -> Result<(), postgres::Error> {
 pub fn record_trainer_defeat(defeat: TrainerDefeat) -> Result<bool, postgres::Error> {
     let Some(db) = db() else { return Ok(false) };
     let mut state = db.lock_or_recover();
-    let run_id = match state.run_id {
+    let run_id = match state.effective_run_id() {
         Some(id) => id,
         None => return Ok(false),
     };
@@ -2273,7 +2350,7 @@ pub fn get_trainer_defeats_json(conn_str: &str, run_id: u32) -> serde_json::Valu
 pub fn mark_caught(pokemon: CaughtPokemon) -> bool {
     let Some(db) = db() else { return false };
     let mut state = db.lock_or_recover();
-    let active = match state.run_id {
+    let active = match state.effective_run_id() {
         Some(id) => id,
         None => return false,
     };
@@ -2338,7 +2415,7 @@ pub fn mark_caught(pokemon: CaughtPokemon) -> bool {
 pub fn update_caught_nickname(personality: u32, nickname: &str) -> Option<String> {
     let db = db()?;
     let mut state = db.lock_or_recover();
-    let active = state.run_id?;
+    let active = state.effective_run_id()?;
     // Read the current name first so we can return it as the "old" value.
     // On SELECT error, attempt the UPDATE anyway as a best-effort sync — but
     // note that if the client is in a broken state the UPDATE will also fail
@@ -2378,7 +2455,7 @@ pub fn update_caught_nickname(personality: u32, nickname: &str) -> Option<String
 pub fn update_caught_evs(personality: u32, evs: &EVs) {
     let Some(db) = db() else { return };
     let mut state = db.lock_or_recover();
-    let active = match state.run_id {
+    let active = match state.effective_run_id() {
         Some(id) => id,
         None => return,
     };
@@ -2406,7 +2483,7 @@ pub fn update_caught_evs(personality: u32, evs: &EVs) {
 pub fn is_caught(personality: u32) -> bool {
     let Some(db) = db() else { return false };
     let mut state = db.lock_or_recover();
-    let active = match state.run_id {
+    let active = match state.effective_run_id() {
         Some(id) => id,
         None => return false,
     };
@@ -2424,7 +2501,7 @@ pub fn is_caught(personality: u32) -> bool {
 pub fn list_caught() -> Vec<CaughtPokemon> {
     let Some(db) = db() else { return vec![] };
     let mut state = db.lock_or_recover();
-    let active = match state.run_id {
+    let active = match state.effective_run_id() {
         Some(id) => id,
         None => return vec![],
     };
@@ -2446,7 +2523,7 @@ pub fn list_caught() -> Vec<CaughtPokemon> {
 pub fn record_encounter(encounter: Encounter) -> Result<bool, postgres::Error> {
     let Some(db) = db() else { return Ok(false) };
     let mut state = db.lock_or_recover();
-    let active = match state.run_id {
+    let active = match state.effective_run_id() {
         Some(id) => id,
         None => return Ok(false),
     };
@@ -2476,7 +2553,7 @@ pub fn record_encounter(encounter: Encounter) -> Result<bool, postgres::Error> {
 pub fn set_encounter_caught(map_group: u8, map_name: u8) {
     let Some(db) = db() else { return };
     let mut state = db.lock_or_recover();
-    let active = match state.run_id {
+    let active = match state.effective_run_id() {
         Some(id) => id,
         None => return,
     };
@@ -2509,7 +2586,7 @@ pub fn record_catch_attempt(
 ) {
     let Some(db) = db() else { return };
     let mut state = db.lock_or_recover();
-    let active = match state.run_id {
+    let active = match state.effective_run_id() {
         Some(id) => id,
         None => return,
     };
@@ -2540,7 +2617,7 @@ pub fn record_catch_attempt(
 pub fn open_area_visit(map_group: u8, map_name: u8, area_name: &str, entered_at: u64) -> Option<i64> {
     let db = db()?;
     let mut state = db.lock_or_recover();
-    let active = state.run_id? as i32;
+    let active = state.effective_run_id()? as i32;
     let player = pg_safe(&state.current_player);
     let area_s = pg_safe(area_name);
     state
@@ -2583,7 +2660,7 @@ pub fn close_area_visit(visit_id: i64, exited_at: u64) {
 pub fn species_caught_any(species: u16) -> bool {
     let Some(db) = db() else { return false };
     let mut state = db.lock_or_recover();
-    let active = match state.run_id {
+    let active = match state.effective_run_id() {
         Some(id) => id,
         None => return false,
     };
@@ -2605,7 +2682,7 @@ pub fn species_caught_any(species: u16) -> bool {
 pub fn species_caught_by_self(species: u16) -> bool {
     let Some(db) = db() else { return false };
     let mut state = db.lock_or_recover();
-    let active = match state.run_id {
+    let active = match state.effective_run_id() {
         Some(id) => id,
         None => return false,
     };
@@ -2626,7 +2703,7 @@ pub fn species_caught_by_self(species: u16) -> bool {
 pub fn species_encountered(species: u16) -> bool {
     let Some(db) = db() else { return false };
     let mut state = db.lock_or_recover();
-    let active = match state.run_id {
+    let active = match state.effective_run_id() {
         Some(id) => id,
         None => return false,
     };
@@ -2648,7 +2725,7 @@ pub fn species_encountered(species: u16) -> bool {
 pub fn has_any_encounters() -> bool {
     let Some(db) = db() else { return false };
     let mut state = db.lock_or_recover();
-    let active = match state.run_id {
+    let active = match state.effective_run_id() {
         Some(id) => id,
         None => return false,
     };
@@ -2674,7 +2751,7 @@ pub fn has_encounter_for_any_floor(floors: &[(u8, u8)]) -> bool {
     }
     let Some(db) = db() else { return false };
     let mut state = db.lock_or_recover();
-    let active = match state.run_id {
+    let active = match state.effective_run_id() {
         Some(id) => id,
         None => return false,
     };
@@ -2723,7 +2800,7 @@ pub fn has_encounter_for_any_floor(floors: &[(u8, u8)]) -> bool {
 pub fn has_encounter(map_group: u8, map_name: u8) -> bool {
     let Some(db) = db() else { return false };
     let mut state = db.lock_or_recover();
-    let active = match state.run_id {
+    let active = match state.effective_run_id() {
         Some(id) => id,
         None => return false,
     };
@@ -2748,7 +2825,7 @@ pub fn has_encounter(map_group: u8, map_name: u8) -> bool {
 pub fn list_encounters() -> Vec<Encounter> {
     let Some(db) = db() else { return vec![] };
     let mut state = db.lock_or_recover();
-    let active = match state.run_id {
+    let active = match state.effective_run_id() {
         Some(id) => id,
         None => return vec![],
     };
@@ -2784,7 +2861,7 @@ pub fn list_encounters() -> Vec<Encounter> {
 pub fn set_soul_link_override(personality: u32, partner_personality: u32) {
     let Some(db) = db() else { return };
     let mut state = db.lock_or_recover();
-    let active = match state.run_id {
+    let active = match state.effective_run_id() {
         Some(id) => id,
         None => {
             tracing::warn!("set_soul_link_override: no active run");
@@ -2813,7 +2890,7 @@ pub fn set_soul_link_override(personality: u32, partner_personality: u32) {
 pub fn clear_soul_link_override(personality: u32) {
     let Some(db) = db() else { return };
     let mut state = db.lock_or_recover();
-    let active = match state.run_id {
+    let active = match state.effective_run_id() {
         Some(id) => id,
         None => return,
     };
@@ -2909,6 +2986,16 @@ pub fn list_goals_for_run(conn_str: &str, run_id: u32) -> Vec<GoalRow> {
         .collect()
 }
 
+/// Returns the `run_id` for the goal with `goal_id`, or `None` if not found.
+pub fn get_run_id_for_goal(conn_str: &str, goal_id: i32) -> Option<u32> {
+    let conn_str = normalize_conn_str(conn_str);
+    let Ok(mut client) = Client::connect(&conn_str, NoTls) else { return None };
+    let row = client
+        .query_opt("SELECT run_id FROM run_goals WHERE id = $1", &[&goal_id])
+        .ok()??;
+    Some(row.get::<_, i32>(0) as u32)
+}
+
 // ---------------------------------------------------------------------------
 // DbReader — read access to the shared database for the aggregator
 //
@@ -2926,6 +3013,10 @@ pub struct DbReader {
     dirty: std::sync::atomic::AtomicBool,
     /// `true` when the tracked run has `ended_at IS NULL` (currently active).
     is_active: std::sync::atomic::AtomicBool,
+    /// When `Some`, `sync_player` uses this run ID instead of querying for the
+    /// most-recent run.  Set by direct-mode resume so the user's chosen run is
+    /// always used regardless of how many newer runs exist in the database.
+    forced_run_id: Mutex<Option<u32>>,
 }
 
 impl DbReader {
@@ -2947,6 +3038,7 @@ impl DbReader {
             last_player: Mutex::new(String::new()),
             dirty: std::sync::atomic::AtomicBool::new(false),
             is_active: std::sync::atomic::AtomicBool::new(false),
+            forced_run_id: Mutex::new(None),
         })
     }
 
@@ -2955,6 +3047,23 @@ impl DbReader {
     /// remotely so the cached run ID is immediately refreshed.
     pub fn mark_dirty(&self) {
         self.dirty.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Pin this reader to a specific run ID, bypassing the "most recent run"
+    /// query in `sync_player`.  Used by direct-mode slots when the user picks
+    /// an existing run to resume from the join page.
+    pub fn set_forced_run_id(&self, id: u32) {
+        *self.forced_run_id.lock_or_recover() = Some(id);
+        self.mark_dirty();
+    }
+
+    /// Returns the run ID this reader is currently tracking — forced_run_id takes
+    /// precedence, then the most recently synced run_id.
+    pub fn get_run_id(&self) -> Option<u32> {
+        if let Some(id) = *self.forced_run_id.lock_or_recover() {
+            return Some(id);
+        }
+        *self.run_id.lock_or_recover()
     }
 
     /// Returns the active run ID if the tracked run has not been ended, else `None`.
@@ -2974,6 +3083,21 @@ impl DbReader {
     /// Re-queries whenever the player name changes OR `mark_dirty()` was called.
     /// Returns `true` if the run ID changed (triggers a caught-list refresh).
     pub fn sync_player(&self, player_name: &str) -> bool {
+        // If the caller pinned a specific run (e.g. direct-mode resume), use
+        // it unconditionally rather than querying for the most-recent run.
+        if let Some(id) = *self.forced_run_id.lock_or_recover() {
+            let mut rid = self.run_id.lock_or_recover();
+            let changed = *rid != Some(id);
+            if changed {
+                *rid = Some(id);
+                drop(rid);
+                self.is_active.store(true, std::sync::atomic::Ordering::SeqCst);
+                *self.last_player.lock_or_recover() = player_name.to_string();
+            }
+            self.dirty.store(false, std::sync::atomic::Ordering::SeqCst);
+            return changed;
+        }
+
         let forced = self.dirty.swap(false, std::sync::atomic::Ordering::SeqCst);
         if !forced {
             let last = self.last_player.lock_or_recover();
@@ -4288,6 +4412,57 @@ pub fn list_all_runs_json(conn_str: &str) -> serde_json::Value {
     serde_json::json!({ "runs": runs })
 }
 
+/// Returns all runs owned by `user_id` in the same shape as [`list_all_runs_json`].
+pub fn list_runs_for_user_json(conn_str: &str, user_id: u32) -> serde_json::Value {
+    let mut client = match Client::connect(conn_str, NoTls) {
+        Ok(c) => c,
+        Err(e) => return serde_json::json!({ "error": format!("DB connection failed: {e}") }),
+    };
+    let rows = match client.query(
+        "SELECT r.id, r.player_name, r.started_at, r.ended_at,
+                COUNT(DISTINCT d.personality)  AS deaths,
+                COUNT(DISTINCT c.personality)  AS catches,
+                COUNT(DISTINCT e.id)           AS encounters,
+                (r.user_id = $1)               AS is_owner
+         FROM runs r
+         LEFT JOIN dead_pokemon   d  ON d.run_id = r.id
+         LEFT JOIN caught_pokemon c  ON c.run_id = r.id
+         LEFT JOIN encounters     e  ON e.run_id = r.id
+         WHERE r.user_id = $1
+            OR EXISTS (
+                SELECT 1 FROM run_invites ri
+                WHERE ri.run_id = r.id
+                  AND ri.invited_user = $1
+                  AND ri.status = 'accepted'
+            )
+         GROUP BY r.id, r.user_id
+         ORDER BY r.id DESC",
+        &[&(user_id as i32)],
+    ) {
+        Ok(r) => r,
+        Err(e) => return serde_json::json!({ "error": format!("Query failed: {e}") }),
+    };
+    let runs: Vec<serde_json::Value> = rows
+        .iter()
+        .map(|row| {
+            let started: i64 = row.get(2);
+            let ended: Option<i64> = row.get(3);
+            let is_owner: bool = row.get(7);
+            serde_json::json!({
+                "id":          row.get::<_, i32>(0),
+                "player_name": row.get::<_, String>(1),
+                "started_at":  format_timestamp(started as u64),
+                "ended_at":    ended.map(|t| format_timestamp(t as u64)),
+                "deaths":      row.get::<_, i64>(4),
+                "catches":     row.get::<_, i64>(5),
+                "encounters":  row.get::<_, i64>(6),
+                "is_owner":    is_owner,
+            })
+        })
+        .collect();
+    serde_json::json!({ "runs": runs })
+}
+
 /// Imports a run from the JSON format produced by [`export_run`].
 ///
 /// Creates a new `runs` row and re-inserts every caught, dead, and encounter
@@ -4632,6 +4807,49 @@ pub fn active_run_timeline_json(conn_str: &str) -> Result<serde_json::Value, Eve
     let run_id: u32 = get_meta(&mut client, "active_run_id")
         .and_then(|v| v.parse().ok())
         .ok_or(EventsError::NoActiveRun)?;
+    let rows = client.query(
+        "SELECT id, player_name, event_type, species_name, nickname, old_nickname, level, occurred_at, note
+         FROM events WHERE run_id = $1 ORDER BY occurred_at ASC",
+        &[&(run_id as i32)],
+    ).map_err(|e| EventsError::QueryFailed(e.to_string()))?;
+    let events: Vec<serde_json::Value> = rows
+        .iter()
+        .map(|row| {
+            let ts = row.get::<_, i64>(7) as u64;
+            serde_json::json!({
+                "id":                row.get::<_, i32>(0),
+                "player_name":       row.get::<_, String>(1),
+                "event_type":        row.get::<_, String>(2),
+                "species_name":      row.get::<_, String>(3),
+                "nickname":          row.get::<_, String>(4),
+                "old_nickname":      row.get::<_, String>(5),
+                "level":             row.get::<_, i32>(6),
+                "occurred_at":       ts,
+                "occurred_at_human": format_timestamp(ts),
+                "note":              row.get::<_, String>(8),
+            })
+        })
+        .collect();
+    Ok(serde_json::json!({ "run_id": run_id, "events": events }))
+}
+
+/// Like [`active_run_timeline_json`] but returns `Err(NoActiveRun)` if the
+/// active run is not accessible to `user_id`.
+pub fn active_run_timeline_for_user_json(
+    conn_str: &str,
+    user_id: u32,
+) -> Result<serde_json::Value, EventsError> {
+    let mut client = Client::connect(conn_str, NoTls)
+        .map_err(|e| EventsError::ConnectionFailed(e.to_string()))?;
+    let run_id: u32 = get_meta(&mut client, "active_run_id")
+        .and_then(|v| v.parse().ok())
+        .ok_or(EventsError::NoActiveRun)?;
+    // Check access via global DB handle.
+    let accessible = user_can_access_run(run_id, user_id)
+        .unwrap_or(false);
+    if !accessible {
+        return Err(EventsError::NoActiveRun);
+    }
     let rows = client.query(
         "SELECT id, player_name, event_type, species_name, nickname, old_nickname, level, occurred_at, note
          FROM events WHERE run_id = $1 ORDER BY occurred_at ASC",
@@ -5906,7 +6124,7 @@ pub fn log_party_snapshot(
 ) {
     let Some(db) = db() else { return };
     let mut state = db.lock_or_recover();
-    let Some(run_id) = state.run_id else { return };
+    let Some(run_id) = state.effective_run_id() else { return };
     if levels.is_empty() { return; }
     let avg = levels.iter().map(|&l| l as f32).sum::<f32>() / levels.len() as f32;
     let levels_json = serde_json::to_string(levels).unwrap_or_else(|_| "[]".to_string());
@@ -5938,7 +6156,7 @@ pub fn log_move_use(
 ) {
     let Some(db) = db() else { return };
     let mut state = db.lock_or_recover();
-    let Some(run_id) = state.run_id else { return };
+    let Some(run_id) = state.effective_run_id() else { return };
     let now = unix_now();
     if let Err(e) = state.client.execute(
         "INSERT INTO move_uses (run_id, player_name, personality, move_slot, move_id, move_name, use_count, updated_at)
@@ -5972,7 +6190,7 @@ pub fn log_friendship(
 ) {
     let Some(db) = db() else { return };
     let mut state = db.lock_or_recover();
-    let Some(run_id) = state.run_id else { return };
+    let Some(run_id) = state.effective_run_id() else { return };
     let now = unix_now();
     if let Err(e) = state.client.execute(
         "INSERT INTO friendship_log (run_id, player_name, personality, nickname, species_name, friendship, logged_at)
@@ -6006,7 +6224,7 @@ pub fn log_status_event(
 ) {
     let Some(db) = db() else { return };
     let mut state = db.lock_or_recover();
-    let Some(run_id) = state.run_id else { return };
+    let Some(run_id) = state.effective_run_id() else { return };
     let now = unix_now();
     if let Err(e) = state.client.execute(
         "INSERT INTO status_events
@@ -6661,4 +6879,692 @@ mod tests {
         assert_eq!(parse_timestamp("2025-04-31 00:00:00 UTC"), None); // April has 30 days
         assert_eq!(parse_timestamp("2025-01-32 00:00:00 UTC"), None); // 32nd of any month
     }
+}
+
+// ---------------------------------------------------------------------------
+// Public API — user accounts and sessions
+// ---------------------------------------------------------------------------
+
+const SESSION_TTL_SECS: u64 = 86_400 * 30; // 30 days
+
+/// Register a new user. Returns `Err` if the username is already taken or the
+/// password cannot be hashed.
+///
+/// The password is hashed with bcrypt (cost 12) before storage; the plaintext
+/// is never written to the database.
+pub fn create_user(username: &str, password: &str) -> Result<User, String> {
+    let username = username.trim();
+    if username.is_empty() {
+        return Err("username must not be empty".to_string());
+    }
+    if password.len() < 8 {
+        return Err("password must be at least 8 characters".to_string());
+    }
+
+    let hash = bcrypt::hash(password, 12)
+        .map_err(|e| format!("Failed to hash password: {e}"))?;
+
+    let Some(db) = db() else {
+        return Err("database not initialised".to_string());
+    };
+    let mut state = db.lock_or_recover();
+
+    let row = state.client.query_opt(
+        "INSERT INTO users (username, password_hash, created_at)
+         VALUES ($1, $2, $3)
+         ON CONFLICT (username) DO NOTHING
+         RETURNING id, created_at",
+        &[&username, &hash, &(unix_now() as i64)],
+    ).map_err(|e| format!("DB error: {e}"))?;
+
+    let row = row.ok_or_else(|| format!("username '{}' is already taken", username))?;
+    Ok(User {
+        id: row.get::<_, i32>(0) as u32,
+        username: username.to_string(),
+        created_at: row.get::<_, i64>(1) as u64,
+    })
+}
+
+/// Look up a user by username and verify their password.
+///
+/// Returns `Ok(Some(user))` on success, `Ok(None)` when credentials are wrong
+/// or the user doesn't exist.
+pub fn authenticate_user(username: &str, password: &str) -> Result<Option<User>, String> {
+    let Some(db) = db() else { return Ok(None) };
+    let mut state = db.lock_or_recover();
+
+    let row = match state.client.query_opt(
+        "SELECT id, username, password_hash, created_at FROM users WHERE username = $1",
+        &[&username],
+    ) {
+        Ok(r) => r,
+        Err(e) => return Err(format!("DB error: {e}")),
+    };
+
+    let Some(row) = row else {
+        tracing::warn!(username = %username, reason = "no such user", "login failed");
+        return Ok(None);
+    };
+    let hash: String = row.get(2);
+
+    let ok = bcrypt::verify(password, &hash)
+        .map_err(|e| format!("bcrypt error: {e}"))?;
+
+    if ok {
+        tracing::info!(username = %username, "login succeeded");
+        Ok(Some(User {
+            id: row.get::<_, i32>(0) as u32,
+            username: row.get(1),
+            created_at: row.get::<_, i64>(3) as u64,
+        }))
+    } else {
+        tracing::warn!(username = %username, reason = "wrong password", "login failed");
+        Ok(None)
+    }
+}
+
+/// Fetch a user by ID. Returns `Ok(None)` if the ID doesn't exist.
+pub fn get_user_by_id(id: u32) -> Result<Option<User>, String> {
+    let Some(db) = db() else { return Ok(None) };
+    let mut state = db.lock_or_recover();
+    let row = state.client.query_opt(
+        "SELECT id, username, created_at FROM users WHERE id = $1",
+        &[&(id as i32)],
+    ).map_err(|e| format!("DB error: {e}"))?;
+    Ok(row.map(|r| User {
+        id: r.get::<_, i32>(0) as u32,
+        username: r.get(1),
+        created_at: r.get::<_, i64>(2) as u64,
+    }))
+}
+
+/// Return all registered users, ordered by ID.
+pub fn list_users() -> Result<Vec<User>, String> {
+    let Some(db) = db() else { return Ok(vec![]) };
+    let mut state = db.lock_or_recover();
+    let rows = state.client.query(
+        "SELECT id, username, created_at FROM users ORDER BY id",
+        &[],
+    ).map_err(|e| format!("DB error: {e}"))?;
+    Ok(rows.iter().map(|r| User {
+        id: r.get::<_, i32>(0) as u32,
+        username: r.get(1),
+        created_at: r.get::<_, i64>(2) as u64,
+    }).collect())
+}
+
+/// Create a session token for a user. Returns the opaque bearer token.
+///
+/// Tokens expire after 30 days. Old expired sessions are pruned on each call.
+pub fn create_session(user_id: u32) -> Result<String, String> {
+    use sha2::{Digest, Sha256};
+
+    let Some(db) = db() else {
+        return Err("database not initialised".to_string());
+    };
+    let mut state = db.lock_or_recover();
+
+    // Prune expired sessions to keep the table tidy.
+    let _ = state.client.execute(
+        "DELETE FROM sessions WHERE expires_at < $1",
+        &[&(unix_now() as i64)],
+    );
+
+    // Generate a token: SHA-256 of (user_id || current nanos || random bytes).
+    let nonce: u64 = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .subsec_nanos() as u64;
+    let mut hasher = Sha256::new();
+    hasher.update(user_id.to_le_bytes());
+    hasher.update(nonce.to_le_bytes());
+    hasher.update(unix_now().to_le_bytes());
+    let digest = hasher.finalize();
+    let token: String = digest.iter().fold(String::with_capacity(64), |mut s, b| {
+        use std::fmt::Write;
+        let _ = write!(s, "{:02x}", b);
+        s
+    });
+
+    let now = unix_now() as i64;
+    let expires = now + SESSION_TTL_SECS as i64;
+    state.client.execute(
+        "INSERT INTO sessions (token, user_id, created_at, expires_at) VALUES ($1, $2, $3, $4)",
+        &[&token, &(user_id as i32), &now, &expires],
+    ).map_err(|e| format!("DB error: {e}"))?;
+
+    Ok(token)
+}
+
+/// Validate a session token. Returns the associated `User` if the token is
+/// valid and not expired; `Ok(None)` otherwise.
+pub fn validate_session(token: &str) -> Result<Option<User>, String> {
+    let Some(db) = db() else { return Ok(None) };
+    let mut state = db.lock_or_recover();
+    let row = state.client.query_opt(
+        "SELECT u.id, u.username, u.created_at
+         FROM sessions s
+         JOIN users u ON u.id = s.user_id
+         WHERE s.token = $1 AND s.expires_at > $2",
+        &[&token, &(unix_now() as i64)],
+    ).map_err(|e| format!("DB error: {e}"))?;
+    Ok(row.map(|r| User {
+        id: r.get::<_, i32>(0) as u32,
+        username: r.get(1),
+        created_at: r.get::<_, i64>(2) as u64,
+    }))
+}
+
+/// Revoke a session token (logout).
+pub fn delete_session(token: &str) -> Result<(), String> {
+    let Some(db) = db() else { return Ok(()) };
+    let mut state = db.lock_or_recover();
+    state.client.execute("DELETE FROM sessions WHERE token = $1", &[&token])
+        .map_err(|e| format!("DB error: {e}"))?;
+    Ok(())
+}
+
+/// Return all run IDs accessible to `user_id` — runs they own plus runs they
+/// have an accepted invite for.  Used to filter live slot data per-user.
+pub fn get_accessible_run_ids(user_id: u32) -> Result<std::collections::HashSet<u32>, String> {
+    let Some(db) = db() else { return Ok(std::collections::HashSet::new()) };
+    let mut state = db.lock_or_recover();
+    let rows = state.client.query(
+        "SELECT id FROM runs WHERE user_id = $1
+         UNION
+         SELECT run_id FROM run_invites WHERE invited_user = $1 AND status = 'accepted'",
+        &[&(user_id as i32)],
+    ).map_err(|e| format!("DB error: {e}"))?;
+    Ok(rows.iter().map(|r| r.get::<_, i32>(0) as u32).collect())
+}
+
+/// Associate an existing run with a user account.
+pub fn link_run_to_user(run_id: u32, user_id: u32) -> Result<(), String> {
+    let Some(db) = db() else { return Ok(()) };
+    let mut state = db.lock_or_recover();
+    state.client.execute(
+        "UPDATE runs SET user_id = $1 WHERE id = $2",
+        &[&(user_id as i32), &(run_id as i32)],
+    ).map_err(|e| format!("DB error: {e}"))?;
+    Ok(())
+}
+
+/// Create a new run for a direct-mode slot **without** touching the global
+/// `DbState.run_id`.  The caller must then call [`set_thread_run_id`] on the
+/// game-loop thread so DB writes from that thread go to this run.
+pub fn create_run_for_slot(player_name: &str) -> Result<u32, String> {
+    let Some(db) = db() else { return Err("No database configured".into()) };
+    let mut state = db.lock_or_recover();
+    let row = state.client.query_one(
+        "INSERT INTO runs (player_name, started_at) VALUES ($1, $2) RETURNING id",
+        &[&player_name, &(unix_now() as i64)],
+    ).map_err(|e| format!("Failed to create run: {e}"))?;
+    Ok(row.get::<_, i32>(0) as u32)
+}
+
+/// Verify that a run with the given ID exists (for resuming in direct mode).
+///
+/// Returns `Ok(true)` if found, `Ok(false)` if not, `Err` on DB error.
+/// Does **not** set the global active run — the caller should call
+/// [`set_thread_run_id`] on the game-loop thread afterward.
+pub fn run_exists(run_id: u32) -> Result<bool, String> {
+    let Some(db) = db() else { return Ok(false) };
+    let mut state = db.lock_or_recover();
+    let rows = state.client.query(
+        "SELECT 1 FROM runs WHERE id = $1",
+        &[&(run_id as i32)],
+    ).map_err(|e| format!("DB error: {e}"))?;
+    Ok(!rows.is_empty())
+}
+
+/// Look up a user by username. Returns `None` if no account with that name exists.
+pub fn get_user_by_username(username: &str) -> Result<Option<User>, String> {
+    let Some(db) = db() else { return Ok(None) };
+    let mut state = db.lock_or_recover();
+    let rows = state.client.query(
+        "SELECT id, username, created_at FROM users WHERE username = $1",
+        &[&username],
+    ).map_err(|e| format!("DB error: {e}"))?;
+    Ok(rows.first().map(|row| User {
+        id: row.get::<_, i32>(0) as u32,
+        username: row.get(1),
+        created_at: row.get::<_, i64>(2) as u64,
+    }))
+}
+
+// ---------------------------------------------------------------------------
+// Dashboard
+// ---------------------------------------------------------------------------
+
+/// Returns a dashboard JSON blob for the given user:
+/// - `user`: `{ id, username }`
+/// - `open_runs`: runs owned or accepted-invite runs that have no `ended_at`
+/// - `stats`: totals across all accessible runs `{ deaths, catches, encounters, runs }`
+/// - `recent_party`: alive caught_pokemon from the most recent open run (up to 6)
+/// - `pending_invites`: invites waiting for this user's response
+pub fn user_dashboard_json(conn_str: &str, user_id: u32) -> serde_json::Value {
+    let mut client = match Client::connect(conn_str, NoTls) {
+        Ok(c) => c,
+        Err(e) => return serde_json::json!({ "error": format!("DB connection failed: {e}") }),
+    };
+
+    // User info
+    let user_row = match client.query_opt(
+        "SELECT id, username FROM users WHERE id = $1",
+        &[&(user_id as i32)],
+    ) {
+        Ok(Some(r)) => r,
+        Ok(None) => return serde_json::json!({ "error": "user not found" }),
+        Err(e) => return serde_json::json!({ "error": format!("DB error: {e}") }),
+    };
+    let username: String = user_row.get(1);
+
+    // Open runs (owned or accepted invite)
+    let open_rows = match client.query(
+        "SELECT r.id, r.player_name, r.started_at,
+                COUNT(DISTINCT d.personality) AS deaths,
+                COUNT(DISTINCT c.personality) AS catches,
+                (r.user_id = $1)              AS is_owner
+         FROM runs r
+         LEFT JOIN dead_pokemon   d ON d.run_id = r.id
+         LEFT JOIN caught_pokemon c ON c.run_id = r.id
+         WHERE r.ended_at IS NULL
+           AND (
+               r.user_id = $1
+               OR EXISTS (
+                   SELECT 1 FROM run_invites ri
+                   WHERE ri.run_id = r.id AND ri.invited_user = $1 AND ri.status = 'accepted'
+               )
+           )
+         GROUP BY r.id, r.user_id
+         ORDER BY r.id DESC",
+        &[&(user_id as i32)],
+    ) {
+        Ok(r) => r,
+        Err(e) => return serde_json::json!({ "error": format!("Query failed: {e}") }),
+    };
+    let open_runs: Vec<serde_json::Value> = open_rows.iter().map(|row| {
+        let started: i64 = row.get(2);
+        serde_json::json!({
+            "id":          row.get::<_, i32>(0),
+            "player_name": row.get::<_, String>(1),
+            "started_at":  format_timestamp(started as u64),
+            "deaths":      row.get::<_, i64>(3),
+            "catches":     row.get::<_, i64>(4),
+            "is_owner":    row.get::<_, bool>(5),
+        })
+    }).collect();
+
+    // Aggregate stats across all accessible runs (open and closed)
+    let stats_row = match client.query_opt(
+        "SELECT COUNT(DISTINCT r.id)           AS run_count,
+                COUNT(DISTINCT d.personality)  AS deaths,
+                COUNT(DISTINCT c.personality)  AS catches,
+                COUNT(DISTINCT e.id)           AS encounters
+         FROM runs r
+         LEFT JOIN dead_pokemon   d ON d.run_id = r.id
+         LEFT JOIN caught_pokemon c ON c.run_id = r.id
+         LEFT JOIN encounters     e ON e.run_id = r.id
+         WHERE r.user_id = $1
+            OR EXISTS (
+                SELECT 1 FROM run_invites ri
+                WHERE ri.run_id = r.id AND ri.invited_user = $1 AND ri.status = 'accepted'
+            )",
+        &[&(user_id as i32)],
+    ) {
+        Ok(r) => r,
+        Err(e) => return serde_json::json!({ "error": format!("Stats query failed: {e}") }),
+    };
+    let stats = stats_row.map(|row| serde_json::json!({
+        "runs":       row.get::<_, i64>(0),
+        "deaths":     row.get::<_, i64>(1),
+        "catches":    row.get::<_, i64>(2),
+        "encounters": row.get::<_, i64>(3),
+    })).unwrap_or_else(|| serde_json::json!({ "runs": 0, "deaths": 0, "catches": 0, "encounters": 0 }));
+
+    // Most recent party: alive caught pokemon from most recent open run
+    let recent_party: Vec<serde_json::Value> = if let Some(first) = open_rows.first() {
+        let run_id: i32 = first.get(0);
+        match client.query(
+            "SELECT cp.nickname, cp.species_name, cp.level, cp.is_shiny
+             FROM caught_pokemon cp
+             WHERE cp.run_id = $1
+               AND NOT EXISTS (
+                   SELECT 1 FROM dead_pokemon dp
+                   WHERE dp.run_id = cp.run_id AND dp.personality = cp.personality
+               )
+             ORDER BY cp.caught_at ASC
+             LIMIT 6",
+            &[&run_id],
+        ) {
+            Ok(rows) => rows.iter().map(|row| serde_json::json!({
+                "nickname":     row.get::<_, String>(0),
+                "species_name": row.get::<_, String>(1),
+                "level":        row.get::<_, i32>(2),
+                "is_shiny":     row.get::<_, bool>(3),
+            })).collect(),
+            Err(_) => vec![],
+        }
+    } else {
+        vec![]
+    };
+
+    // Pending invites for this user
+    let invite_rows = match client.query(
+        "SELECT ri.id, r.id AS run_id, r.player_name, u.username AS invited_by, ri.created_at
+         FROM run_invites ri
+         JOIN runs  r ON r.id  = ri.run_id
+         JOIN users u ON u.id  = ri.invited_by
+         WHERE ri.invited_user = $1 AND ri.status = 'pending' AND ri.is_request = FALSE
+         ORDER BY ri.created_at DESC",
+        &[&(user_id as i32)],
+    ) {
+        Ok(r) => r,
+        Err(e) => return serde_json::json!({ "error": format!("Invite query failed: {e}") }),
+    };
+    let pending_invites: Vec<serde_json::Value> = invite_rows.iter().map(|row| {
+        let created: i64 = row.get(4);
+        serde_json::json!({
+            "invite_id":   row.get::<_, i32>(0),
+            "run_id":      row.get::<_, i32>(1),
+            "player_name": row.get::<_, String>(2),
+            "invited_by":  row.get::<_, String>(3),
+            "created_at":  format_timestamp(created as u64),
+        })
+    }).collect();
+
+    serde_json::json!({
+        "user": { "id": user_id, "username": username },
+        "open_runs": open_runs,
+        "stats": stats,
+        "recent_party": recent_party,
+        "pending_invites": pending_invites,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Run invites
+// ---------------------------------------------------------------------------
+
+/// Invite another user (by username) to collaborate on a run.
+///
+/// Only the run owner (`runs.user_id`) may invite others.
+/// Returns `Ok(invite_id)` on success or `Err(message)` on failure.
+pub fn invite_user_to_run(run_id: u32, inviter_user_id: u32, invitee_username: &str) -> Result<u32, String> {
+    let Some(db) = db() else { return Err("database not initialised".to_string()) };
+    let mut state = db.lock_or_recover();
+
+    // Verify caller owns the run.
+    let row = state.client.query_opt(
+        "SELECT user_id FROM runs WHERE id = $1",
+        &[&(run_id as i32)],
+    ).map_err(|e| format!("DB error: {e}"))?;
+    let owner_id: Option<i32> = row.as_ref().and_then(|r| r.get(0));
+    if owner_id != Some(inviter_user_id as i32) {
+        return Err("you do not own this run".to_string());
+    }
+
+    // Resolve invitee.
+    let inv_row = state.client.query_opt(
+        "SELECT id FROM users WHERE username = $1",
+        &[&invitee_username],
+    ).map_err(|e| format!("DB error: {e}"))?;
+    let invitee_id: i32 = inv_row
+        .ok_or_else(|| format!("user '{}' not found", invitee_username))?
+        .get(0);
+
+    if invitee_id == inviter_user_id as i32 {
+        return Err("cannot invite yourself".to_string());
+    }
+
+    let result = state.client.query_one(
+        "INSERT INTO run_invites (run_id, invited_by, invited_user, is_request, created_at)
+         VALUES ($1, $2, $3, FALSE, $4)
+         ON CONFLICT (run_id, invited_user) DO UPDATE
+             SET status = 'pending', is_request = FALSE, responded_at = NULL, created_at = EXCLUDED.created_at
+         RETURNING id",
+        &[&(run_id as i32), &(inviter_user_id as i32), &invitee_id, &(unix_now() as i64)],
+    ).map_err(|e| format!("DB error: {e}"))?;
+
+    Ok(result.get::<_, i32>(0) as u32)
+}
+
+/// Accept or decline a run invite.
+///
+/// The responding user must be `invited_user` for the invite.
+/// Returns `Ok(())` or `Err(reason)`.
+pub fn respond_to_invite(run_id: u32, user_id: u32, accept: bool) -> Result<(), String> {
+    let Some(db) = db() else { return Err("database not initialised".to_string()) };
+    let mut state = db.lock_or_recover();
+    let status = if accept { "accepted" } else { "declined" };
+    let rows_affected = state.client.execute(
+        "UPDATE run_invites SET status = $1, responded_at = $2
+         WHERE run_id = $3 AND invited_user = $4 AND is_request = FALSE AND status = 'pending'",
+        &[&status, &(unix_now() as i64), &(run_id as i32), &(user_id as i32)],
+    ).map_err(|e| format!("DB error: {e}"))?;
+    if rows_affected == 0 {
+        Err("no pending invite found for this run".to_string())
+    } else {
+        Ok(())
+    }
+}
+
+/// List all invites for a run (owner view).
+///
+/// Returns `{ "invites": [...] }` or `{ "error": "..." }`.
+pub fn get_run_invites_json(conn_str: &str, run_id: u32) -> serde_json::Value {
+    let mut client = match Client::connect(conn_str, NoTls) {
+        Ok(c) => c,
+        Err(e) => return serde_json::json!({ "error": format!("DB connection failed: {e}") }),
+    };
+    let rows = match client.query(
+        "SELECT ri.id, u.username AS invitee, ub.username AS invited_by, ri.status, ri.created_at, ri.responded_at
+         FROM run_invites ri
+         JOIN users u  ON u.id  = ri.invited_user
+         JOIN users ub ON ub.id = ri.invited_by
+         WHERE ri.run_id = $1 AND ri.is_request = FALSE
+         ORDER BY ri.created_at DESC",
+        &[&(run_id as i32)],
+    ) {
+        Ok(r) => r,
+        Err(e) => return serde_json::json!({ "error": format!("Query failed: {e}") }),
+    };
+    let invites: Vec<serde_json::Value> = rows.iter().map(|row| {
+        let created: i64 = row.get(4);
+        let responded: Option<i64> = row.get(5);
+        serde_json::json!({
+            "invite_id":    row.get::<_, i32>(0),
+            "invitee":      row.get::<_, String>(1),
+            "invited_by":   row.get::<_, String>(2),
+            "status":       row.get::<_, String>(3),
+            "created_at":   format_timestamp(created as u64),
+            "responded_at": responded.map(|t| format_timestamp(t as u64)),
+        })
+    }).collect();
+    serde_json::json!({ "run_id": run_id, "invites": invites })
+}
+
+/// Return `true` if `user_id` owns or has an accepted invite for `run_id`.
+pub fn user_can_access_run(run_id: u32, user_id: u32) -> Result<bool, String> {
+    let Some(db) = db() else { return Ok(false) };
+    let mut state = db.lock_or_recover();
+    let row = state.client.query_opt(
+        "SELECT 1 FROM runs WHERE id = $1 AND user_id = $2
+         UNION ALL
+         SELECT 1 FROM run_invites
+         WHERE run_id = $1 AND invited_user = $2 AND status = 'accepted'
+         LIMIT 1",
+        &[&(run_id as i32), &(user_id as i32)],
+    ).map_err(|e| format!("DB error: {e}"))?;
+    Ok(row.is_some())
+}
+
+/// Submit an access request for a run the caller does not own.
+///
+/// Reuses the `run_invites` table with `is_request = TRUE` and
+/// `invited_by = invited_user = requester_id`.  If a prior request (or
+/// invite) exists for this `(run_id, user)` pair it is reset to pending.
+/// Returns the invite-row id on success.
+pub fn request_run_invite(run_id: u32, requester_id: u32) -> Result<u32, String> {
+    let Some(db) = db() else { return Err("database not initialised".to_string()) };
+    let mut state = db.lock_or_recover();
+
+    // Run must exist.
+    let run_row = state.client.query_opt(
+        "SELECT user_id FROM runs WHERE id = $1",
+        &[&(run_id as i32)],
+    ).map_err(|e| format!("DB error: {e}"))?;
+    let owner: Option<i32> = run_row
+        .as_ref()
+        .ok_or_else(|| format!("run #{run_id} not found"))?
+        .get(0);
+
+    if owner == Some(requester_id as i32) {
+        return Err("you already own this run".to_string());
+    }
+
+    let row = state.client.query_one(
+        "INSERT INTO run_invites (run_id, invited_by, invited_user, is_request, created_at)
+         VALUES ($1, $2, $2, TRUE, $3)
+         ON CONFLICT (run_id, invited_user) DO UPDATE
+             SET status = 'pending', is_request = TRUE,
+                 responded_at = NULL, created_at = EXCLUDED.created_at
+         RETURNING id",
+        &[&(run_id as i32), &(requester_id as i32), &(unix_now() as i64)],
+    ).map_err(|e| format!("DB error: {e}"))?;
+
+    Ok(row.get::<_, i32>(0) as u32)
+}
+
+/// Approve or deny an access request.  `approver_id` must own the run.
+pub fn respond_to_invite_request(run_id: u32, requester_id: u32, approver_id: u32, approve: bool) -> Result<(), String> {
+    let Some(db) = db() else { return Err("database not initialised".to_string()) };
+    let mut state = db.lock_or_recover();
+
+    let row = state.client.query_opt(
+        "SELECT user_id FROM runs WHERE id = $1",
+        &[&(run_id as i32)],
+    ).map_err(|e| format!("DB error: {e}"))?;
+    let owner: Option<i32> = row.as_ref().and_then(|r| r.get(0));
+    if owner != Some(approver_id as i32) {
+        return Err("you do not own this run".to_string());
+    }
+
+    let status = if approve { "accepted" } else { "declined" };
+    let n = state.client.execute(
+        "UPDATE run_invites SET status = $1, responded_at = $2
+         WHERE run_id = $3 AND invited_user = $4 AND is_request = TRUE AND status = 'pending'",
+        &[&status, &(unix_now() as i64), &(run_id as i32), &(requester_id as i32)],
+    ).map_err(|e| format!("DB error: {e}"))?;
+
+    if n == 0 { Err("no pending request found".to_string()) } else { Ok(()) }
+}
+
+/// List pending access requests for a run (owner view).
+pub fn get_run_invite_requests_json(conn_str: &str, run_id: u32) -> serde_json::Value {
+    let mut client = match Client::connect(conn_str, NoTls) {
+        Ok(c) => c,
+        Err(e) => return serde_json::json!({ "error": format!("DB connection failed: {e}") }),
+    };
+    let rows = match client.query(
+        "SELECT ri.id, u.id AS uid, u.username, ri.created_at
+         FROM run_invites ri
+         JOIN users u ON u.id = ri.invited_user
+         WHERE ri.run_id = $1 AND ri.is_request = TRUE AND ri.status = 'pending'
+         ORDER BY ri.created_at ASC",
+        &[&(run_id as i32)],
+    ) {
+        Ok(r) => r,
+        Err(e) => return serde_json::json!({ "error": format!("Query failed: {e}") }),
+    };
+    let requests: Vec<serde_json::Value> = rows.iter().map(|row| {
+        let created: i64 = row.get(3);
+        serde_json::json!({
+            "invite_id":  row.get::<_, i32>(0),
+            "user_id":    row.get::<_, i32>(1),
+            "username":   row.get::<_, String>(2),
+            "created_at": format_timestamp(created as u64),
+        })
+    }).collect();
+    serde_json::json!({ "run_id": run_id, "requests": requests })
+}
+
+/// Return each run's access status for the given user.
+///
+/// `"owner"` | `"accepted"` | `"pending_invite"` | `"pending_request"`.
+/// Declined / non-existent entries are omitted.
+pub fn get_my_run_statuses_json(conn_str: &str, user_id: u32) -> serde_json::Value {
+    let mut client = match Client::connect(conn_str, NoTls) {
+        Ok(c) => c,
+        Err(e) => return serde_json::json!({ "error": format!("DB connection failed: {e}") }),
+    };
+    let owned = match client.query(
+        "SELECT id FROM runs WHERE user_id = $1",
+        &[&(user_id as i32)],
+    ) {
+        Ok(r) => r,
+        Err(e) => return serde_json::json!({ "error": format!("Query failed: {e}") }),
+    };
+    let invite_rows = match client.query(
+        "SELECT run_id, status, is_request FROM run_invites WHERE invited_user = $1",
+        &[&(user_id as i32)],
+    ) {
+        Ok(r) => r,
+        Err(e) => return serde_json::json!({ "error": format!("Invite query failed: {e}") }),
+    };
+
+    let mut statuses = serde_json::Map::new();
+    for row in &owned {
+        let id: i32 = row.get(0);
+        statuses.insert(id.to_string(), serde_json::json!("owner"));
+    }
+    for row in &invite_rows {
+        let run_id: i32 = row.get(0);
+        let status: String = row.get(1);
+        let is_request: bool = row.get(2);
+        let label = match (status.as_str(), is_request) {
+            ("accepted", _) => "accepted",
+            ("pending", false) => "pending_invite",
+            ("pending", true) => "pending_request",
+            _ => continue,
+        };
+        statuses.entry(run_id.to_string())
+            .or_insert_with(|| serde_json::json!(label));
+    }
+    serde_json::json!({ "statuses": statuses })
+}
+
+/// Return all pending access requests on runs owned by the given user.
+///
+/// Used by the join-page owner view to approve/deny requests in bulk.
+pub fn get_my_run_requests_json(conn_str: &str, owner_id: u32) -> serde_json::Value {
+    let mut client = match Client::connect(conn_str, NoTls) {
+        Ok(c) => c,
+        Err(e) => return serde_json::json!({ "error": format!("DB connection failed: {e}") }),
+    };
+    let rows = match client.query(
+        "SELECT ri.id, ri.run_id, r.player_name, u.id AS uid, u.username, ri.created_at
+         FROM run_invites ri
+         JOIN runs  r ON r.id  = ri.run_id
+         JOIN users u ON u.id  = ri.invited_user
+         WHERE ri.is_request = TRUE AND ri.status = 'pending'
+           AND r.user_id = $1
+         ORDER BY ri.created_at ASC",
+        &[&(owner_id as i32)],
+    ) {
+        Ok(r) => r,
+        Err(e) => return serde_json::json!({ "error": format!("Query failed: {e}") }),
+    };
+    let requests: Vec<serde_json::Value> = rows.iter().map(|row| {
+        let created: i64 = row.get(5);
+        serde_json::json!({
+            "invite_id":   row.get::<_, i32>(0),
+            "run_id":      row.get::<_, i32>(1),
+            "player_name": row.get::<_, String>(2),
+            "user_id":     row.get::<_, i32>(3),
+            "username":    row.get::<_, String>(4),
+            "created_at":  format_timestamp(created as u64),
+        })
+    }).collect();
+    serde_json::json!({ "requests": requests })
 }
