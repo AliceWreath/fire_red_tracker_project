@@ -224,6 +224,8 @@ Supported viewer commands:
 
 The bot reconnects automatically on disconnect, with exponential backoff from 2 seconds up to 60 seconds. The OAuth token is stored in plaintext in the TOML config — keep this file private. The `[twitch]` section works in both headless (`--ws-port`) and GUI modes.
 
+**Per-user Twitch bots** are also supported when user accounts are enabled. Any logged-in user can configure their own Twitch bot at `/integrations`. Each user's bot runs in an isolated background thread scoped to their own runs and slots, independent of the global `[twitch]` config. The user's config is stored in the `user_integrations` DB table and the thread is started/stopped via `PUT /api/me/integrations/twitch` and `DELETE /api/me/integrations/twitch`.
+
 #### Delivery mechanics
 
 ### Twitch Helix API integration
@@ -281,6 +283,8 @@ channel_id = 123456789012345678   # forum or text channel where threads are crea
 
 A new thread named `"Run #N — PlayerName"` is created when a new run ID is detected. Subsequent badge events post milestone replies (e.g. "🏅 Badge #3 earned!") into the thread. Requires `Create Public Threads` permission.
 
+Both Discord integration types support **per-user configuration** via the `/integrations` page. Per-user threads only show data for that user's runs. Managed via `PUT /DELETE /api/me/integrations/discord_embed` and `discord_thread`.
+
 ### YouTube Live chat bot
 
 The aggregator can poll a YouTube Live Chat and respond to viewer commands. Configure the optional `[youtube_chat]` section:
@@ -294,6 +298,8 @@ poll_secs    = 5                # polling interval (default: 5)
 ```
 
 Supported commands match the Twitch IRC bot: `!party`, `!deaths`, `!shinies`, `!status`. Responses are posted back to the live chat using the same API key (requires `youtube.force-ssl` OAuth scope if posting; read-only polling requires only an API key). The bot polls for new messages on a background thread with no impact on the game-polling loop.
+
+**Per-user YouTube bots** are supported via the `/integrations` page. Managed via `PUT / DELETE /api/me/integrations/youtube`.
 
 ---
 
@@ -449,7 +455,9 @@ The following pages are available:
 | `http://localhost:PORT/:index/types` | Type coverage dashboard for one player — party type badges, per-type defensive exposure chart, next gym leader with their primary type highlighted, and Elite 4 progress track |
 | `http://localhost:PORT/alerts` | Slot 0 alerts overlay — shorthand for `/0/alerts`; append `?slot=N` to target a different player |
 | `http://localhost:PORT/about` | Version info and quick reference — tracker version, available pages, themes, and REST API summary |
-| `http://localhost:PORT/join` | Direct mode join page — allows a remote player to connect their RetroArch instance to the aggregator without pre-configuration. Only available when direct mode is enabled (`--direct` flag or `direct_mode = true` in config). |
+| `http://localhost:PORT/join` | Run-picker and direct-mode join page — shows login/register forms for unauthenticated users; for logged-in users shows their existing runs with Resume buttons and an optional RetroArch IP connect form (only when direct mode is enabled). |
+| `http://localhost:PORT/dashboard` | User dashboard — account stats (catches, deaths, encounters), active runs table with per-run actions (Overlay, History, Stats, Invite, Quick Connect), recent party snapshot, and pending run invites. Requires login. |
+| `http://localhost:PORT/integrations` | Per-user integration settings — forms for Twitch IRC bot, YouTube Live Chat bot, Discord live embed, and Discord run thread. Configs are stored per-user in the DB; saving starts a new thread immediately. Requires login. |
 | `http://localhost:PORT/0/dex` | Player 1's Pokédex caught-species counter — species count for the active run, updated every 30 seconds |
 | `http://localhost:PORT/1/dex` | Player 2's Pokédex caught-species counter |
 | `http://localhost:PORT/0/typechart` | Gen III 17×17 type effectiveness chart — static overlay, no WebSocket needed |
@@ -557,6 +565,31 @@ All endpoints are served on the same port as the WebSocket overlay (`--ws-port`)
 | `/api/config/reload` | `POST` | Re-read and validate the aggregator config file from disk. Returns `{ "ok": true, "path": "...", "db": bool }` or an error description. No live state is hot-swapped |
 | `/api/webhook/donation` | `POST` | Donation trigger bridge. Body: `{ "type": "...", "amount": <f64>, "name": "..." }`. Broadcasts a `donation` WebSocket event to all overlay clients. Append `?heal_on_donation=true` to also queue `HealParty` for all connected slots. No DB required |
 | `/api/savefile` | `POST` | Parse a raw Gen III `.sav` file (raw bytes, `Content-Type: application/octet-stream`). Returns `{ "player_name": "..." }` decoded from the save header. No DB required |
+| `/api/users` | `POST` | Register a new user account. Body: `{ "username": "...", "password": "..." }`. Returns `{ "id": N, "username": "..." }`. Usernames must be unique |
+| `/api/users` | `GET` | List all registered users (id + username only, no password hashes). Requires `--db` |
+| `/api/login` | `POST` | Authenticate. Body: `{ "username": "...", "password": "..." }`. Returns `{ "token": "...", "user": { ... } }` and sets the `frt_token` HttpOnly cookie. Requires `--db` |
+| `/api/logout` | `POST` | Invalidate the current session. Requires a valid session token (cookie or `Authorization: Bearer`). Requires `--db` |
+| `/api/me` | `GET` | Return the authenticated user's profile: `{ "id", "username" }`. Requires login |
+| `/api/me/dashboard` | `GET` | Full dashboard JSON: `{ stats, open_runs, recent_party, pending_invites }`. Requires login |
+| `/api/me/active_run` | `GET` | Return the run ID currently associated with the caller's session. Requires login |
+| `/api/me/active_run` | `PUT` | Set the caller's active run. Body: `{ "run_id": N }`. Requires login |
+| `/api/me/integrations` | `GET` | List all per-user integration configs stored in DB (Twitch, YouTube, Discord, OBS). Returns `{ kind: config_object, ... }`. Requires login |
+| `/api/me/integrations/:kind` | `PUT` | Save an integration config and (re)start its background thread. Body: the config object for the given kind. Kinds: `twitch`, `youtube`, `discord_embed`, `discord_thread`. Requires login |
+| `/api/me/integrations/:kind` | `DELETE` | Delete an integration config and stop its thread. Requires login |
+| `/api/user/:id/runs` | `GET` | List all runs owned by user `id`. Returns 403 if the caller is not that user. Requires login |
+| `/api/me/run_statuses` | `GET` | All runs accessible to the caller with invite status for each. Requires login |
+| `/api/me/run_requests` | `GET` | All pending access requests submitted by the caller. Requires login |
+| `/api/run/:id/invite` | `POST` | Invite another registered user to a run by username. Body: `{ "username": "..." }`. Caller must own the run. Requires login |
+| `/api/run/:id/invites` | `GET` | List all pending and accepted invites for run `id`. Caller must own the run. Requires login |
+| `/api/run/:id/invite/accept` | `POST` | Accept an incoming invite to run `id`. Requires login |
+| `/api/run/:id/invite/decline` | `POST` | Decline an incoming invite to run `id`. Requires login |
+| `/api/run/:id/invite/request` | `POST` | Request access to a run you don't own. Requires login |
+| `/api/run/:id/invite/requests` | `GET` | List all incoming access requests for run `id` (owner only). Requires login |
+| `/api/run/:id/invite/request/:uid/approve` | `POST` | Approve user `uid`'s access request. Run owner only. Requires login |
+| `/api/run/:id/invite/request/:uid/deny` | `POST` | Deny user `uid`'s access request. Run owner only. Requires login |
+| `/api/direct/hosts` | `GET` | List active RetroArch hosts for the caller's accessible slots. Returns `{ my_hosts: [...], all_hosts: [...] }`. Requires login in auth mode |
+| `/api/direct/connect` | `POST` | Connect a RetroArch instance to a slot. Body: `{ "host": "ip:port", "run_id": N (optional) }`. Requires direct mode enabled |
+| `/api/direct/disconnect` | `POST` | Disconnect a RetroArch host and free its slot. Body: `{ "host": "ip:port" }`. Caller must own the slot's run. Requires login |
 
 ##### WebSocket payload filtering (`?show=`)
 
@@ -1012,6 +1045,95 @@ Add `http://localhost:9090/cmd` in a browser tab to manage runs — **End Run** 
 - **`?run=<id>` on the main overlay (`/`)** — filters the rendered slot columns to only the slot whose `active_run_id` matches. Shows `"Run #X is not active on any connected tracker."` if nothing matches.
 - **`?run=<id>` on focused pages (`/:index/party`, `/:index/encounters`, `/:index/dead`, `/:index/caught`, etc.)** — if the slot's active run does not match the requested ID, a yellow banner is shown: `"Run #X is not active here (active: #Y)"`.
 - **`?run=<id>` on `/history`** — shows only that run's card, auto-expanded, with a "← All Runs" link in the header. `/memorial` and `/shiny` already supported this parameter.
+
+---
+
+**v0.9.72** — per-user integration threads with stop flags, OBS thread-local isolation, integrations settings page:
+
+- **Per-user integration threads** — all five integration spawn functions (`twitch`, `eventsub`, `youtube_chat`, `discord_live_embed`, `discord_run_thread`) now accept `user_id: Option<u32>` and `stop: Arc<AtomicBool>`. When `user_id` is `Some`, each thread filters its output to only that user's accessible slots: Twitch/YouTube chat commands read from the user's first active slot; Discord embed/thread only shows slots whose run the user owns. Global config-file integrations pass `None` and a never-set stop flag.
+- **Integration management API** — three new endpoints manage per-user integrations:
+  - `GET /api/me/integrations` — returns all stored integration configs for the authenticated user.
+  - `PUT /api/me/integrations/:kind` — saves config, stops the old thread if running, spawns a new one. Supported kinds: `twitch`, `youtube`, `discord_embed`, `discord_thread`.
+  - `DELETE /api/me/integrations/:kind` — deletes config from DB and stops the running thread.
+- **`/integrations` settings page** — web UI with forms for Twitch IRC bot, YouTube Live Chat bot, Discord live embed, and Discord run thread. Shows "active" badge when a config is stored; populates form fields from stored config on load.
+- **Integration manager in WebState** — `integration_manager: Arc<Mutex<HashMap<u32, HashMap<String, Arc<AtomicBool>>>>>` tracks stop flags per user per kind, allowing clean shutdown when configs are replaced or deleted.
+- **OBS per-thread isolation** — `webhook.rs` now has a thread-local `THREAD_STATE: RefCell<Option<WebhookState>>` alongside the global `STATE: OnceLock`. `init_for_thread(webhook_cfg, obs_cfg)` spawns a per-thread worker for direct-mode game loop threads. `fire_event()` checks thread-local state first, falling back to global. `WorkerTask::ObsClip(ObsConfig)` and `ObsScene(ObsConfig, String)` carry the config through to the worker thread so each user's OBS config is used, not the global one.
+- **`GameLoopConfig.obs_config`** — new optional field `obs_config: Option<(WebhookConfig, ObsConfig)>`. When present, `spawn_game_loop` calls `webhook::init_for_thread` at the start of the game loop thread. Direct-mode connections look up the run owner's `user_integrations` "obs" entry and populate this field automatically.
+- **Schema v27 (from v0.9.71)** — `user_integrations` table: `(user_id, kind, config JSON, updated_at)` with `PRIMARY KEY (user_id, kind)`. New DB functions: `get_user_integration`, `set_user_integration`, `delete_user_integration`, `list_user_integrations`, `get_run_owner_id`.
+
+---
+
+**v0.9.71** — per-endpoint access control (all methods scoped to the authenticated user):
+
+- **`slot_access_middleware` (renamed from `slot_write_middleware`)** — now covers ALL HTTP methods on `/api/slot/:index/*`, not just non-GET requests. Both inner middlewares (`run_access_middleware`, `slot_access_middleware`) now extract the user manually from extensions with an early return when absent, preventing panics on public routes.
+- **`/api/runs`, `/api/timeline`, `/api/run/import`** — scoped to the caller: runs and timeline return only the user's accessible runs; import links the new run to the caller.
+- **`/api/runs/compare`, `/api/command`** — compare filters the requested run IDs to the user's accessible set; command only dispatches to slots whose run the user can access.
+- **`/api/run/:id/goals`, `/api/run/:id/goal/:gid/complete`, `/api/run/:id/goal/:gid`** — goal create/complete/delete all verify the caller owns or has access to the run. New `get_run_id_for_goal(goal_id)` DB helper for ownership checks.
+- **`/api/slot/:index/batch_inject`, `/api/slot/:index/apply_preset`** — batch injection and preset application check each slot's run against the user's accessible IDs.
+- **`/api/direct/hosts`, `/api/direct/disconnect`** — direct hosts returns only the user's own active hosts; disconnect verifies the caller owns the host's slot run.
+- **`/api/user/:id/runs`, `/api/run/:id/summary`** — user runs returns 403 if the path user does not match the caller; bot summary checks slot run ownership.
+- **Clippy fixes** — three `map_or(true, ...)` patterns collapsed to `is_none_or(...)`, two nested `if let` chains flattened with `&&`.
+
+---
+
+**v0.9.70** — full authentication wall and per-user data scoping:
+
+- **Three-layer axum middleware** — all routes are covered by `auth_middleware` (outermost, reads `frt_token` cookie or `Authorization: Bearer` header), `run_access_middleware` (checks `user_can_access_run` for `/api/run/:id/*`), and `slot_access_middleware` (checks slot ownership for `/api/slot/:index/*`). Public routes (login, register, overlay pages, WebSocket with token) are explicitly exempted.
+- **`frt_token` cookie auth** — sessions use a 64-byte hex token set as an `HttpOnly; SameSite=Strict` cookie. OBS Browser Sources can authenticate via `?token=<token>` URL parameter. The auth middleware accepts both.
+- **`/api/state` and `/ws` user-scoped** — the state API and WebSocket feed now filter the slot array to only slots whose active run is accessible to the authenticated user. Unauthenticated connections that pass through the exemption (e.g. OBS with `?token=`) see all their own slots.
+- **Session DB** — `users` table (id, username, password_hash bcrypt) and `sessions` table (token, user_id, created_at, expires_at) added in schema v24. Login returns a session token; logout deletes it.
+
+---
+
+**v0.9.69** — multi-connection direct mode (per-connection memory and party contexts):
+
+- **`MemoryContext` / `PartyContext` / `TrainerContext`** — each direct-mode game loop thread now has its own isolated memory and party state, preventing slots from reading each other's EWRAM. Contexts are created per-connection and registered as thread-locals via `set_thread_memory_context` / `set_thread_party_context` / `set_thread_trainer_context`.
+- **`start_loop_ctx` / `stop_loop_ctx`** — new entry points in `fire_red_loop` that accept explicit context objects instead of touching global singletons. `spawn_game_loop` now calls `start_loop_ctx` so multiple concurrent direct-mode connections each run fully independently.
+- **Per-connection shutdown** — `GameLoopConfig.shutdown: Option<Arc<AtomicBool>>` allows `DirectConnector::disconnect` to stop a specific slot's game loop thread without affecting others.
+
+---
+
+**v0.9.65** — user dashboard and run invite system:
+
+- **`/dashboard` page** — logged-in users land here after login/join. Shows account stats (total catches, deaths, encounters), active runs with per-run action buttons (Overlay, History, Stats, Invite, Quick Connect), recent party snapshot, and a pending invites section. Pulls data from `GET /api/me/dashboard` which returns all of the above in a single JSON response.
+- **Run invite system** — run owners can invite other registered users to view/collaborate on a run:
+  - `POST /api/run/:id/invite` — invite a user by username.
+  - `GET /api/run/:id/invites` — list all invites for a run.
+  - `POST /api/run/:id/invite/accept` / `/decline` — accept or decline an incoming invite.
+  - `POST /api/run/:id/invite/request` — request access to a run you don't own.
+  - `GET /api/run/:id/invite/requests` — list incoming access requests (owner only).
+  - `POST /api/run/:id/invite/request/:uid/approve` / `/deny` — approve or deny a request.
+  - `GET /api/me/run_statuses` — all runs accessible to the caller with invite status.
+  - `GET /api/me/run_requests` — all pending access requests from the caller.
+- **Schema v25** — `run_invites` table: `(run_id, invited_by, invited_user, is_request, status, created_at, responded_at)`.
+
+---
+
+**v0.9.61–v0.9.64** — direct-mode reliability improvements and CLI config editor:
+
+- **Direct-mode disconnect button** — `POST /api/direct/disconnect` (body: `{ "host": "ip:port" }`) stops the game loop, sprite loader, and bridge threads for the named host and frees the slot. Only the user who owns the slot's run can disconnect it.
+- **`start_loop_ctx` singleton fix** — the global `start_loop` was gated by a `OnceLock`, preventing a second game start after the first ended. `start_loop_ctx` takes explicit contexts and has no singleton restriction, allowing direct-mode slots to start and stop freely.
+- **`DbReader.forced_run_id`** — `db.set_forced_run_id(id)` pins a slot to a specific run so `sync_player` does not silently switch to the newest run. Used when a direct-mode user resumes a specific run from the join page.
+- **CLI config editor** — `aggregator --config-editor` opens an interactive TUI to edit all aggregator config fields without manually editing TOML. Supports DB URL, ports, RetroArch hosts, webhook URLs, Twitch, OBS, and test overrides.
+
+---
+
+**v0.9.57** — multi-run simultaneous connections and run-picker join page:
+
+- **Per-thread run ID** — `fire_red_database::set_thread_run_id(id)` stores the active run ID in a thread-local so each direct-mode game loop thread writes to its own run without touching the global `DbState.run_id`. All DB write functions that reference the active run consult the thread-local first.
+- **`create_run_for_slot`** — new DB function that creates a run and immediately sets it as the thread-local active run. Used by direct-mode connection setup.
+- **`GameLoopConfig.thread_run_id`** — optional field passed to `spawn_game_loop`; if set, the game loop thread immediately calls `set_thread_run_id` so all events from that thread are credited to the correct run.
+- **Run-picker join page** — `/join` now shows a list of the user's existing runs (when logged in) with a **Resume** button per run. Connecting to a RetroArch host with an existing run resumes it; without a selection, a new run is created. The join page also shows login/register forms for unauthenticated users.
+
+---
+
+**v0.9.56** — user login and registration system:
+
+- **User accounts** — `POST /api/users` creates a new account (username + password, bcrypt-hashed). `POST /api/login` returns a session token. `POST /api/logout` invalidates the token. `GET /api/me` returns the authenticated user's profile.
+- **Session tokens** — 64-byte hex tokens stored in the `sessions` table (schema v24), set as an `HttpOnly` cookie (`frt_token`) or accepted as a `Bearer` token in the `Authorization` header.
+- **Run ownership** — runs created while a user is logged in are linked to that user via `runs.user_id`. `link_run_to_user(run_id, user_id)` can backfill ownership for imported runs.
+- **`GET /api/user/:id/runs`** — returns all runs owned by the specified user. Requires the caller to be that user.
+- **`GET /api/me/active_run` / `PUT /api/me/active_run`** — get or set which run is currently associated with the logged-in user's session. Used by the join page to remember the selected run across reconnects.
 
 ---
 
