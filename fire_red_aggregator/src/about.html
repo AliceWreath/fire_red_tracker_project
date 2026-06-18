@@ -1,325 +1,298 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-<meta charset="utf-8">
-<title>About — FireRed Tracker</title>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>About – Fire Red Tracker</title>
 <style>
-* { box-sizing: border-box; margin: 0; padding: 0; }
-html, body {
-    background: #0f0f0f;
-    font-family: 'Segoe UI', Tahoma, sans-serif;
-    color: #e0e0e0;
-    min-height: 100vh;
-}
-#root { max-width: 680px; margin: 0 auto; padding: 24px 16px; }
-
-.page-header {
-    display: flex; align-items: baseline; gap: 10px;
-    padding-bottom: 12px; border-bottom: 1px solid rgba(255,255,255,0.1);
-    margin-bottom: 20px;
-}
-.page-title { font-size: 22px; font-weight: bold; color: #fff; }
-.version-tag {
-    font-size: 13px; font-weight: 600; color: #ffd040;
-    background: rgba(255,208,64,0.1); border-radius: 4px;
-    padding: 1px 7px;
-}
-
-.card {
-    background: rgba(255,255,255,0.04);
-    border: 1px solid rgba(255,255,255,0.08);
-    border-radius: 10px;
-    padding: 16px 18px;
-    margin-bottom: 16px;
-}
-.card-title {
-    font-size: 11px; font-weight: 700; color: #aaa;
-    text-transform: uppercase; letter-spacing: 0.5px;
-    margin-bottom: 10px; padding-bottom: 6px;
-    border-bottom: 1px solid rgba(255,255,255,0.06);
-}
-
-/* Identity block */
-.meta-line { font-size: 13px; color: #ccc; margin-top: 4px; }
-.meta-line:first-of-type { margin-top: 0; }
-.meta-label { color: #888; margin-right: 4px; }
-.lic-badge {
-    display: inline-block; font-size: 11px; font-weight: 700;
-    padding: 1px 7px; border-radius: 4px;
-    background: rgba(96,224,96,0.12); color: #60e060;
-    border: 1px solid rgba(96,224,96,0.25);
-}
-
-/* Description */
-.desc { font-size: 13px; color: #bbb; line-height: 1.65; }
-
-/* Page table */
-.page-table { width: 100%; border-collapse: collapse; font-size: 13px; }
-.page-table th {
-    text-align: left; color: #888; font-size: 11px; font-weight: 600;
-    text-transform: uppercase; letter-spacing: 0.4px;
-    padding: 4px 8px; border-bottom: 1px solid rgba(255,255,255,0.08);
-}
-.page-table td { padding: 7px 8px; border-bottom: 1px solid rgba(255,255,255,0.04); vertical-align: top; }
-.page-table tr:last-child td { border-bottom: none; }
-.page-table tr:hover td { background: rgba(255,255,255,0.03); }
-.page-url { font-family: 'Consolas', 'Courier New', monospace; font-size: 12px; white-space: nowrap; }
-.page-url a { color: #8ecfff; text-decoration: none; }
-.page-url a:hover { text-decoration: underline; }
-.page-desc-td { color: #aaa; font-size: 12px; line-height: 1.5; }
-.badge-obs {
-    font-size: 10px; font-weight: 700; color: #ffd040;
-    background: rgba(255,208,64,0.12); border-radius: 3px;
-    padding: 0 5px; margin-left: 5px; vertical-align: middle;
-    white-space: nowrap;
-}
-.badge-db {
-    font-size: 10px; font-weight: 700; color: #8ecfff;
-    background: rgba(142,207,255,0.1); border-radius: 3px;
-    padding: 0 5px; margin-left: 5px; vertical-align: middle;
-    white-space: nowrap;
-}
-.section-row td {
-    padding-top: 12px; padding-bottom: 3px;
-    font-size: 10px; font-weight: 700; color: #777;
-    text-transform: uppercase; letter-spacing: 0.5px;
-    border-bottom: none;
-}
-
-/* Theme note */
-.theme-row { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 6px; }
-.theme-chip {
-    font-family: 'Consolas', 'Courier New', monospace;
-    font-size: 12px; padding: 2px 9px;
-    background: rgba(255,255,255,0.06); border-radius: 4px;
-    color: #ccc; cursor: default;
-}
-.note { font-size: 12px; color: #777; margin-top: 8px; line-height: 1.6; }
-
-/* Footer */
-.footer {
-    text-align: center; font-size: 11px; color: #555;
-    margin-top: 24px; padding-top: 12px;
-    border-top: 1px solid rgba(255,255,255,0.06);
-}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:sans-serif;background:#1a1a2e;color:#eee;display:flex;min-height:100vh}
+.sidebar{width:190px;min-width:190px;background:#0d1b30;border-right:1px solid #0f3460;padding:.75rem 0;overflow-y:auto;min-height:100vh;flex-shrink:0;position:sticky;top:0;height:100vh}
+.sidebar-group-label{font-size:.63rem;font-weight:700;text-transform:uppercase;letter-spacing:.7px;color:#4a6080;padding:.55rem 1rem .15rem}
+.sidebar a{display:block;padding:.32rem 1rem;font-size:.8rem;color:#8aa;text-decoration:none;border-left:2px solid transparent;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sidebar a:hover{background:#1a2a45;color:#eee;border-left-color:#5090e0}
+.sidebar a.active{background:#1a2a40;color:#e94560;border-left-color:#e94560;font-weight:600}
+.main{flex:1;padding:2rem 2rem;max-width:860px;min-width:0}
+h1{font-size:1.4rem;color:#e94560;margin-bottom:.25rem}
+.version{display:inline-block;font-size:.75rem;font-weight:700;color:#ffd040;background:rgba(255,208,64,.1);border-radius:4px;padding:.1rem .5rem;margin-left:.5rem;vertical-align:middle}
+h2{font-size:1rem;color:#e94560;margin:1.8rem 0 .7rem;padding-top:.4rem;border-top:1px solid #1e3a6e}
+h2:first-of-type{border-top:none;margin-top:.8rem}
+h3{font-size:.88rem;color:#ccc;font-weight:700;margin:1rem 0 .3rem}
+p{font-size:.85rem;color:#bbb;line-height:1.65;margin-bottom:.6rem}
+ul{font-size:.85rem;color:#bbb;line-height:1.65;padding-left:1.3rem;margin-bottom:.6rem}
+li{margin-bottom:.18rem}
+a{color:#5090e0;text-decoration:none}
+a:hover{text-decoration:underline}
+code{background:#0f3460;color:#7de;padding:.1rem .32rem;border-radius:3px;font-size:.8rem;font-family:monospace}
+.meta-row{font-size:.85rem;color:#ccc;margin-bottom:.3rem}
+.meta-row span{color:#888;margin-right:.4rem}
+.lic{display:inline-block;font-size:.72rem;font-weight:700;padding:.1rem .45rem;border-radius:3px;background:rgba(96,224,96,.12);color:#60e060;border:1px solid rgba(96,224,96,.25)}
+table{width:100%;border-collapse:collapse;font-size:.83rem;margin-bottom:.8rem}
+th{text-align:left;color:#888;font-weight:600;font-size:.7rem;text-transform:uppercase;letter-spacing:.4px;padding:.4rem .6rem;border-bottom:1px solid #1e3a6e}
+td{padding:.38rem .6rem;border-bottom:1px solid rgba(255,255,255,.05);vertical-align:top}
+tr:hover td{background:rgba(255,255,255,.02)}
+td:first-child{font-family:monospace;font-size:.8rem;color:#7de;white-space:nowrap}
+.section-row td{padding-top:.9rem;padding-bottom:.2rem;font-size:.68rem;font-weight:700;color:#4a6080;text-transform:uppercase;letter-spacing:.5px;border-bottom:none;font-family:sans-serif}
+.badge{font-size:.65rem;font-weight:700;padding:.05rem .35rem;border-radius:3px;margin-left:.3rem;vertical-align:middle;white-space:nowrap}
+.badge-obs{color:#ffd040;background:rgba(255,208,64,.12);border:1px solid rgba(255,208,64,.3)}
+.badge-db{color:#8ecfff;background:rgba(142,207,255,.1);border:1px solid rgba(142,207,255,.25)}
+.badge-auth{color:#c07dce;background:rgba(192,125,206,.1);border:1px solid rgba(192,125,206,.25)}
+.theme-row{display:flex;gap:.5rem;flex-wrap:wrap;margin:.4rem 0 .6rem}
+.theme-chip{font-family:monospace;font-size:.8rem;padding:.18rem .6rem;background:rgba(255,255,255,.06);border-radius:4px;color:#ccc}
+.footer{margin-top:2rem;padding-top:.9rem;border-top:1px solid #1e3a6e;font-size:.75rem;color:#555;text-align:center}
 </style>
 </head>
 <body>
-<div id="root">
+<nav class="sidebar">
+  <div class="sidebar-group-label">Main</div>
+  <a href="/dashboard">Dashboard</a>
+  <a href="/join">Join / Run Select</a>
+  <a href="/history">Run History</a>
+  <a href="/integrations">Integrations</a>
+  <a href="/guide">Guide / Help</a>
+  <a href="/about" class="active">About</a>
+  <a href="/mobile" onclick="localStorage.removeItem('desktop_mode')" style="color:#666;font-size:.75rem">Mobile View</a>
 
-  <div class="page-header">
-    <span class="page-title">FireRed Nuzlocke Tracker</span>
-    <span class="version-tag">v__VERSION__</span>
-  </div>
+  <div class="sidebar-group-label" style="margin-top:.5rem">Run Views (slot 0)</div>
+  <a href="/0/party">Party</a>
+  <a href="/0/routes">Routes</a>
+  <a href="/0/encounters">Encounters</a>
+  <a href="/0/caught">Caught</a>
+  <a href="/0/dead">Dead</a>
+  <a href="/0/box">Box</a>
+  <a href="/0/types">Type Coverage</a>
+  <a href="/0/items">Items</a>
+  <a href="/0/moves">Moves</a>
+
+  <div class="sidebar-group-label" style="margin-top:.5rem">Stats</div>
+  <a href="/shiny">Shinies</a>
+  <a href="/memorial">Memorial</a>
+  <a href="/soullink">Soul Link</a>
+  <a href="/timeline">Timeline</a>
+  <a href="/species">Species</a>
+  <a href="/trainers">Trainers</a>
+
+  <div class="sidebar-group-label" style="margin-top:.5rem">OBS Browser Sources</div>
+  <a href="/alerts">Alerts</a>
+  <a href="/0/deaths">Deaths</a>
+  <a href="/0/encounter_count">Enc. Count</a>
+  <a href="/0/hp">HP Bars</a>
+  <a href="/0/badges">Badges</a>
+  <a href="/0/nextgym">Next Gym</a>
+  <a href="/0/encounter_table">Enc. Table</a>
+  <a href="/0/money">Money</a>
+  <a href="/0/playtime">Playtime</a>
+  <a href="/0/goals">Goals</a>
+  <a href="/0/vs_leader">vs Leader</a>
+
+  <div class="sidebar-group-label" style="margin-top:.5rem">Admin</div>
+  <a href="/db">DB Viewer</a>
+  <a href="/db/query">DB Query</a>
+  <a href="/cmd">Commands</a>
+</nav>
+
+<div class="main">
+  <h1>Fire Red Tracker <span class="version">v__VERSION__</span></h1>
 
   <!-- Identity -->
-  <div class="card">
-    <div class="card-title">About</div>
-    <p class="meta-line"><span class="meta-label">Author</span> © 2026 AliceWreath</p>
-    <p class="meta-line"><span class="meta-label">License</span> <span class="lic-badge">MIT</span></p>
-    <p class="meta-line" style="margin-top:10px">
-      <span class="meta-label">Third-party</span>
-      This build includes open-source dependencies. Full attribution is in
-      <code style="font-size:12px;color:#8ecfff">THIRD_PARTY_LICENSES.html</code>
-      bundled with the release tarball.
-    </p>
+  <div class="meta-row"><span>Author</span> © 2026 AliceWreath</div>
+  <div class="meta-row"><span>License</span> <span class="lic">MIT</span></div>
+  <div class="meta-row" style="margin-top:.5rem;font-size:.8rem;color:#666">
+    Third-party open-source dependencies are listed in
+    <code>THIRD_PARTY_LICENSES.html</code> bundled with each release.
   </div>
 
-  <!-- What is this -->
-  <div class="card">
-    <div class="card-title">Description</div>
-    <p class="desc">
-      A real-time Pokémon FireRed/LeafGreen Nuzlocke companion. The tracker reads
-      game memory via RetroArch's UDP interface and streams party state, encounters,
-      deaths, badges, and events to this aggregator over TCP. The aggregator serves
-      live WebSocket overlays suitable for OBS Browser Sources, a web-based DB
-      viewer, and a REST API for run data.
-    </p>
+  <h2>Description</h2>
+  <p>
+    A real-time Pokémon FireRed / LeafGreen Nuzlocke companion. The
+    <strong style="color:#ccc">tracker</strong> binary reads game memory via
+    RetroArch's UDP network-commands interface and streams party state,
+    encounters, deaths, badges, and events to the
+    <strong style="color:#ccc">aggregator</strong> over TCP. The aggregator
+    stores everything in PostgreSQL and serves live WebSocket overlays,
+    a full REST API, and this web UI.
+  </p>
+  <p>
+    Both binaries ship with an interactive terminal config editor
+    (<code>--config-editor-cli</code>) and a graphical egui editor
+    (<code>--config-editor</code>). The aggregator also supports
+    <em>direct mode</em>, where it polls RetroArch itself — no tracker binary
+    needed — and exposes a <a href="/join">/join</a> page for players to
+    connect on demand.
+  </p>
+
+  <h2>Features</h2>
+  <h3>Tracking &amp; Runs</h3>
+  <ul>
+    <li>Real-time party, encounter, death, badge, and game-clear detection</li>
+    <li>Per-run PostgreSQL storage with full event log and timeline</li>
+    <li>Multi-player support — each connected tracker gets its own slot</li>
+    <li>Direct-mode multi-connection — one aggregator, multiple RetroArch hosts</li>
+    <li>Nuzlocke rule enforcement: dupes clause (off / per-player / shared), randomizer mode</li>
+    <li>Soul Link partner pairing with manual override</li>
+    <li>Run rules, goals, catch attempts, and area-visit time tracking</li>
+    <li>Trainer battle log, difficulty score, luck analysis</li>
+    <li>Run comparison, HP closest-call tracking, catch rate calculator</li>
+    <li>Auto JSON backup on game clear; CSV and JSON export; Pokepaste export</li>
+    <li>Run import / resume; injection undo</li>
+  </ul>
+  <h3>Overlays &amp; OBS</h3>
+  <ul>
+    <li>Live party, routes, caught, dead, box, HP bars, badges, next-gym, money, playtime, goals, type coverage, move usage, encounter count, vs-leader, encounter table overlays</li>
+    <li>Toast alerts for deaths, shinies, badges, zone entry</li>
+    <li>OBS WebSocket integration — replay-buffer clips and scene switches on game events</li>
+    <li>Overlay themes: <code>?theme=dark</code> / <code>light</code> / <code>minimal</code></li>
+    <li>Per-user OBS config with thread-local isolation</li>
+  </ul>
+  <h3>User Accounts &amp; Access Control</h3>
+  <ul>
+    <li>Full login wall with bcrypt password hashing and session tokens</li>
+    <li>Per-endpoint access control — all data scoped to the authenticated caller</li>
+    <li>Run invite system — invite other users to access your runs</li>
+    <li>Run ownership and shared-access model</li>
+    <li>User dashboard with stats, active runs, party preview, and pending invites</li>
+    <li>OBS overlay access via <code>?token=</code> URL parameter (no cookie needed)</li>
+  </ul>
+  <h3>Integrations</h3>
+  <ul>
+    <li><strong style="color:#ccc">Twitch IRC bot</strong> — <code>!party</code>, <code>!deaths</code>, <code>!shinies</code>, <code>!status</code>, <code>!caught</code>, <code>!badges</code>, <code>!hp</code>, <code>!encounters</code>; Channel Points EventSub</li>
+    <li><strong style="color:#ccc">YouTube Live chat bot</strong> — same commands via YouTube Data API v3</li>
+    <li><strong style="color:#ccc">Discord live embed</strong> — persistent pinned message updated with party/run info</li>
+    <li><strong style="color:#ccc">Discord run thread</strong> — new thread per run with milestone messages</li>
+    <li><strong style="color:#ccc">Discord slash commands</strong> — Application Commands via <code>/interactions</code> endpoint</li>
+    <li><strong style="color:#ccc">Webhooks</strong> — per-event HTTP POST with template variables and optional HMAC-SHA256 signing</li>
+    <li><strong style="color:#ccc">LiveSplit bridge</strong> — badge and game-clear splits via LiveSplit Server</li>
+    <li><strong style="color:#ccc">Desktop notifications</strong> — <code>notify-send</code> on death, shiny, and wipe</li>
+    <li>All integrations configurable globally or per-user via <a href="/integrations">/integrations</a></li>
+  </ul>
+  <h3>Other</h3>
+  <ul>
+    <li>Mobile-optimized site at <a href="/mobile">/mobile</a> with auto-detection and desktop mode toggle</li>
+    <li>Stream Deck support via <code>POST /api/command/:cmd</code></li>
+    <li>Batch injection, injection presets</li>
+    <li>Injection undo</li>
+    <li>Death heat map, level curve, friendship tracker, EV efficiency overlay</li>
+    <li>Dex completion overlay, type chart overlay</li>
+    <li>Savefile import, YouTube clip trigger, ghost-run comparison</li>
+    <li>Session summary Markdown export</li>
+  </ul>
+
+  <h2>Pages</h2>
+  <table>
+    <thead><tr><th>Path</th><th>Description</th></tr></thead>
+    <tbody>
+
+      <tr class="section-row"><td colspan="2">Account</td></tr>
+      <tr><td>/</td><td>Login page. Redirects to <code>/mobile</code> on mobile devices, <code>/dashboard</code> on desktop. <span class="badge badge-auth">auth</span></td></tr>
+      <tr><td>/register</td><td>Create a new account.</td></tr>
+      <tr><td>/dashboard</td><td>User dashboard — stats overview, open runs, current party, pending invites. <span class="badge badge-auth">auth</span></td></tr>
+      <tr><td>/join</td><td>Run picker — all accessible runs, your runs, pending invites. <span class="badge badge-auth">auth</span></td></tr>
+      <tr><td>/mobile</td><td>Mobile-optimised app with bottom navigation. <span class="badge badge-auth">auth</span></td></tr>
+      <tr><td>/integrations</td><td>Per-user integration settings (Twitch, YouTube, Discord, OBS). <span class="badge badge-auth">auth</span></td></tr>
+
+      <tr class="section-row"><td colspan="2">Live overlays (WebSocket)</td></tr>
+      <tr><td>/overlay</td><td>Main live view — all connected players. Supports <code>?show=box|dead|caught</code>. <span class="badge badge-obs">OBS</span></td></tr>
+      <tr><td>/:index/party</td><td>Single-slot party view. <span class="badge badge-obs">OBS</span></td></tr>
+      <tr><td>/:index/routes</td><td>Route encounter table. <span class="badge badge-obs">OBS</span></td></tr>
+      <tr><td>/:index/encounters</td><td>Encounter-only view. <span class="badge badge-obs">OBS</span></td></tr>
+      <tr><td>/:index/caught</td><td>Caught Pokémon list. <span class="badge badge-obs">OBS</span></td></tr>
+      <tr><td>/:index/dead</td><td>Dead Pokémon list. <span class="badge badge-obs">OBS</span></td></tr>
+      <tr><td>/:index/box</td><td>PC box grid. <span class="badge badge-obs">OBS</span></td></tr>
+      <tr><td>/:index/hp</td><td>HP bar strip. <span class="badge badge-obs">OBS</span></td></tr>
+      <tr><td>/:index/badges</td><td>Badge dot-bar. <span class="badge badge-obs">OBS</span></td></tr>
+      <tr><td>/:index/deaths</td><td>Death counter. <span class="badge badge-obs">OBS</span></td></tr>
+      <tr><td>/:index/encounter_count</td><td>Encounter counter for current area. <span class="badge badge-obs">OBS</span></td></tr>
+      <tr><td>/:index/nextgym</td><td>Type-advantage panel for next gym. <span class="badge badge-obs">OBS</span></td></tr>
+      <tr><td>/:index/vs_leader</td><td>Type matchup against next gym leader. <span class="badge badge-obs">OBS</span></td></tr>
+      <tr><td>/:index/encounter_table</td><td>Full area encounter table. <span class="badge badge-obs">OBS</span></td></tr>
+      <tr><td>/:index/money</td><td>Current money. <span class="badge badge-obs">OBS</span></td></tr>
+      <tr><td>/:index/playtime</td><td>In-game playtime. <span class="badge badge-obs">OBS</span></td></tr>
+      <tr><td>/:index/goals</td><td>Run goals progress. <span class="badge badge-obs">OBS</span></td></tr>
+      <tr><td>/:index/types</td><td>Party type coverage. <span class="badge badge-obs">OBS</span></td></tr>
+      <tr><td>/:index/moves</td><td>Move usage stats. <span class="badge badge-obs">OBS</span></td></tr>
+      <tr><td>/alerts &nbsp;/ /:index/alerts</td><td>Toast notifications — death, shiny, badge, zone entry. Transparent bg. <span class="badge badge-obs">OBS</span></td></tr>
+
+      <tr class="section-row"><td colspan="2">Stats &amp; History</td></tr>
+      <tr><td>/history</td><td>All runs list. <span class="badge badge-db">DB</span></td></tr>
+      <tr><td>/shiny</td><td>Shiny encounter log. <span class="badge badge-db">DB</span></td></tr>
+      <tr><td>/memorial</td><td>All-time fallen Pokémon memorial. <span class="badge badge-db">DB</span></td></tr>
+      <tr><td>/soullink</td><td>Soul Link partner table. <span class="badge badge-db">DB</span></td></tr>
+      <tr><td>/soullink/manage</td><td>Soul Link pairing management. <span class="badge badge-db">DB</span></td></tr>
+      <tr><td>/timeline</td><td>Event timeline for the active run. <span class="badge badge-db">DB</span></td></tr>
+      <tr><td>/species</td><td>Pokédex completion tracker. <span class="badge badge-db">DB</span></td></tr>
+      <tr><td>/trainers</td><td>Trainer battle log. <span class="badge badge-db">DB</span></td></tr>
+      <tr><td>/compare</td><td>Side-by-side run comparison. <span class="badge badge-db">DB</span></td></tr>
+      <tr><td>/run/:id/stats</td><td>Per-run statistics: catch rate, deaths by zone, playtime. <span class="badge badge-db">DB</span></td></tr>
+      <tr><td>/run/:id/timeline</td><td>Event timeline for a specific run. <span class="badge badge-db">DB</span></td></tr>
+      <tr><td>/run/:id/memorial</td><td>Memorial filtered to a single run. <span class="badge badge-db">DB</span></td></tr>
+      <tr><td>/run/:id/trainers</td><td>Trainer log for a specific run. <span class="badge badge-db">DB</span></td></tr>
+      <tr><td>/party/mobile</td><td>Mobile-friendly party viewer. <span class="badge badge-obs">OBS</span></td></tr>
+
+      <tr class="section-row"><td colspan="2">Tools</td></tr>
+      <tr><td>/guide</td><td>Interactive guide — API, OBS, Twitch, YouTube, Discord, Webhooks.</td></tr>
+      <tr><td>/db</td><td>Database table browser. <span class="badge badge-db">DB</span></td></tr>
+      <tr><td>/db/query</td><td>Interactive SQL query interface. <span class="badge badge-db">DB</span></td></tr>
+      <tr><td>/cmd</td><td>Command console — End Run, New Run, Heal All.</td></tr>
+      <tr><td>/about</td><td>This page.</td></tr>
+
+    </tbody>
+  </table>
+
+  <h2>Themes</h2>
+  <p>Most overlay pages accept a <code>?theme=</code> query parameter:</p>
+  <div class="theme-row">
+    <span class="theme-chip">?theme=dark</span>
+    <span class="theme-chip">?theme=light</span>
+    <span class="theme-chip">?theme=minimal</span>
   </div>
+  <p>
+    <strong style="color:#ccc">dark</strong> — semi-transparent dark panels, suitable for OBS chroma-key or overlay on gameplay footage (default).<br>
+    <strong style="color:#ccc">light</strong> — light panels on a white background, better for screen-share setups.<br>
+    <strong style="color:#ccc">minimal</strong> — dark with reduced shadow and blur for lower-overhead rendering.
+  </p>
+  <p style="margin-top:.4rem">
+    OBS overlays also accept <code>?token=&lt;session_token&gt;</code> for authentication without a cookie.
+  </p>
 
-  <!-- Available pages -->
-  <div class="card">
-    <div class="card-title">Available Pages</div>
-    <table class="page-table">
-      <thead>
-        <tr><th>Path</th><th>Description</th></tr>
-      </thead>
-      <tbody>
-
-        <!-- Live overlays -->
-        <tr class="section-row"><td colspan="2">Live overlays (WebSocket)</td></tr>
-
-        <tr>
-          <td class="page-url"><a href="/overlay">/overlay</a></td>
-          <td class="page-desc-td">
-            Main party overlay — all connected players side by side.
-            Supports <code>?show=box</code>, <code>?show=dead</code>, <code>?show=caught</code>.
-            <span class="badge-obs">OBS</span>
-          </td>
-        </tr>
-        <tr>
-          <td class="page-url"><a href="/0/party">/:index/party</a></td>
-          <td class="page-desc-td">
-            Single-player focused party view. Append <code>?plain-view</code> for a
-            compact layout with no encounter section. <span class="badge-obs">OBS</span>
-          </td>
-        </tr>
-        <tr>
-          <td class="page-url"><a href="/0/encounters">/:index/encounters</a></td>
-          <td class="page-desc-td">
-            Encounters-only focused view for a single player.
-            <span class="badge-obs">OBS</span>
-          </td>
-        </tr>
-        <tr>
-          <td class="page-url"><a href="/0/dead">/:index/dead</a></td>
-          <td class="page-desc-td">Dead Pokémon list for a single player. <span class="badge-obs">OBS</span></td>
-        </tr>
-        <tr>
-          <td class="page-url"><a href="/0/caught">/:index/caught</a></td>
-          <td class="page-desc-td">Caught Pokémon list for a single player. <span class="badge-obs">OBS</span></td>
-        </tr>
-        <tr>
-          <td class="page-url"><a href="/0/box">/:index/box</a></td>
-          <td class="page-desc-td">PC box grid for a single player. <span class="badge-obs">OBS</span></td>
-        </tr>
-        <tr>
-          <td class="page-url"><a href="/0/alerts">/:index/alerts</a></td>
-          <td class="page-desc-td">
-            Toast alerts — zone entry, death, shiny, and wipe notifications.
-            Transparent background; designed as an always-on-top OBS source.
-            <span class="badge-obs">OBS</span>
-          </td>
-        </tr>
-        <tr>
-          <td class="page-url"><a href="/0/routes">/:index/routes</a></td>
-          <td class="page-desc-td">Route encounter table for a single player. <span class="badge-obs">OBS</span></td>
-        </tr>
-        <tr>
-          <td class="page-url"><a href="/alerts">/alerts</a></td>
-          <td class="page-desc-td">Alert toasts for player 0 (shorthand for <code>/0/alerts</code>). <span class="badge-obs">OBS</span></td>
-        </tr>
-
-        <!-- DB-backed pages -->
-        <tr class="section-row"><td colspan="2">Database pages</td></tr>
-
-        <tr>
-          <td class="page-url"><a href="/history">/history</a></td>
-          <td class="page-desc-td">Run history — timeline of all recorded runs. <span class="badge-db">DB</span></td>
-        </tr>
-        <tr>
-          <td class="page-url"><a href="/shiny">/shiny</a></td>
-          <td class="page-desc-td">Shiny encounter statistics for the active run. <span class="badge-db">DB</span></td>
-        </tr>
-        <tr>
-          <td class="page-url"><a href="/memorial">/memorial</a></td>
-          <td class="page-desc-td">Memorial — all Pokémon that have died across all runs. <span class="badge-db">DB</span></td>
-        </tr>
-        <tr>
-          <td class="page-url"><a href="/soullink">/soullink</a></td>
-          <td class="page-desc-td">Soul-link partner table for the active run. <span class="badge-db">DB</span></td>
-        </tr>
-        <tr>
-          <td class="page-url"><a href="/run/1/stats">/run/:id/stats</a></td>
-          <td class="page-desc-td">Per-run statistics: playtime, catch rate, death breakdown by zone. <span class="badge-db">DB</span></td>
-        </tr>
-        <tr>
-          <td class="page-url"><a href="/run/1/memorial">/run/:id/memorial</a></td>
-          <td class="page-desc-td">Memorial filtered to a single run. <span class="badge-db">DB</span></td>
-        </tr>
-
-        <!-- Tools -->
-        <tr class="section-row"><td colspan="2">Tools</td></tr>
-
-        <tr>
-          <td class="page-url"><a href="/db">/db</a></td>
-          <td class="page-desc-td">Database viewer — browse all tables. <span class="badge-db">DB</span></td>
-        </tr>
-        <tr>
-          <td class="page-url"><a href="/db/query">/db/query</a></td>
-          <td class="page-desc-td">Interactive SQL query interface. <span class="badge-db">DB</span></td>
-        </tr>
-        <tr>
-          <td class="page-url"><a href="/cmd">/cmd</a></td>
-          <td class="page-desc-td">Command console — send End Run / New Run commands.</td>
-        </tr>
-        <tr>
-          <td class="page-url"><a href="/about">/about</a></td>
-          <td class="page-desc-td">This page.</td>
-        </tr>
-
-      </tbody>
-    </table>
-  </div>
-
-  <!-- Themes -->
-  <div class="card">
-    <div class="card-title">Themes</div>
-    <p class="desc" style="margin-bottom:8px">
-      Most overlay pages accept a <code style="font-size:12px;color:#8ecfff">?theme=</code>
-      query parameter. Append it to any overlay URL:
-    </p>
-    <div class="theme-row">
-      <span class="theme-chip">?theme=dark</span>
-      <span class="theme-chip">?theme=light</span>
-      <span class="theme-chip">?theme=minimal</span>
-    </div>
-    <p class="note">
-      <strong style="color:#ccc">dark</strong> is the default — semi-transparent dark panels, suitable for OBS chroma-key or
-      overlay on top of gameplay footage.<br>
-      <strong style="color:#ccc">light</strong> — light-grey panels on a white-ish background, better for screen-share setups.<br>
-      <strong style="color:#ccc">minimal</strong> — same as dark but with reduced shadow and blur for lower-overhead rendering.
-    </p>
-  </div>
-
-  <!-- REST API quick ref -->
-  <div class="card">
-    <div class="card-title">REST API</div>
-    <table class="page-table">
-      <thead>
-        <tr><th>Endpoint</th><th>Description</th></tr>
-      </thead>
-      <tbody>
-        <tr>
-          <td class="page-url"><code>/api/state</code></td>
-          <td class="page-desc-td">Full JSON snapshot of all connected player slots.</td>
-        </tr>
-        <tr>
-          <td class="page-url"><code>/api/slot/:index</code></td>
-          <td class="page-desc-td">JSON for a single slot.</td>
-        </tr>
-        <tr>
-          <td class="page-url"><code>/api/timeline</code></td>
-          <td class="page-desc-td">Chronological event log for the active run. <span class="badge-db">DB</span></td>
-        </tr>
-        <tr>
-          <td class="page-url"><code>/api/run/:id/events</code></td>
-          <td class="page-desc-td">Event log for a specific run. <span class="badge-db">DB</span></td>
-        </tr>
-        <tr>
-          <td class="page-url"><code>/api/run/:id/export</code></td>
-          <td class="page-desc-td">Full run export as JSON or CSV (<code>?format=csv</code>). <span class="badge-db">DB</span></td>
-        </tr>
-        <tr>
-          <td class="page-url"><code>/api/run/:id/stats</code></td>
-          <td class="page-desc-td">Playtime, catch rate, zone stats. <span class="badge-db">DB</span></td>
-        </tr>
-        <tr>
-          <td class="page-url"><code>/api/runs</code></td>
-          <td class="page-desc-td">Summary list of all stored runs. <span class="badge-db">DB</span></td>
-        </tr>
-        <tr>
-          <td class="page-url"><code>/api/run/import</code></td>
-          <td class="page-desc-td">POST — import a previously exported run. <span class="badge-db">DB</span></td>
-        </tr>
-      </tbody>
-    </table>
-  </div>
+  <h2>REST API — Quick Reference</h2>
+  <p>Full documentation at <a href="/guide">/guide</a>. All endpoints require <code>Authorization: Bearer &lt;token&gt;</code> except login/register.</p>
+  <table>
+    <thead><tr><th>Endpoint</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr class="section-row"><td colspan="2">Auth</td></tr>
+      <tr><td>POST /api/login</td><td>Returns session token. Body: <code>{"username","password"}</code></td></tr>
+      <tr><td>POST /api/register</td><td>Create account.</td></tr>
+      <tr><td>POST /api/logout</td><td>Invalidate session.</td></tr>
+      <tr><td>GET /api/me</td><td>Current user profile.</td></tr>
+      <tr><td>GET /api/me/dashboard</td><td>Stats, open runs, party, invites.</td></tr>
+      <tr class="section-row"><td colspan="2">Runs</td></tr>
+      <tr><td>GET /api/runs</td><td>All runs accessible to the caller.</td></tr>
+      <tr><td>POST /api/run</td><td>Create a new run.</td></tr>
+      <tr><td>GET /api/run/:id</td><td>Run details.</td></tr>
+      <tr><td>POST /api/run/:id/end</td><td>Mark a run as ended (owner only).</td></tr>
+      <tr><td>GET /api/run/:id/export</td><td>JSON or CSV export (<code>?format=csv</code>).</td></tr>
+      <tr><td>POST /api/run/import</td><td>Import a previously exported run.</td></tr>
+      <tr><td>GET /api/run/:id/summary</td><td>Markdown session summary.</td></tr>
+      <tr class="section-row"><td colspan="2">Live State</td></tr>
+      <tr><td>GET /api/state</td><td>Full snapshot of all connected slots.</td></tr>
+      <tr><td>GET /api/slot/:i/odds</td><td>Encounter odds for current area.</td></tr>
+      <tr><td>POST /api/slot/:i/command/:cmd</td><td><code>heal_all</code>, <code>new_run</code>, <code>end_run</code>, <code>reset_area</code></td></tr>
+      <tr><td>POST /api/slot/:i/undo</td><td>Undo the last injection command.</td></tr>
+      <tr class="section-row"><td colspan="2">Integrations</td></tr>
+      <tr><td>GET /api/me/integrations</td><td>List saved integration configs.</td></tr>
+      <tr><td>PUT /api/me/integrations/:kind</td><td>Save and (re)start an integration thread.</td></tr>
+      <tr><td>DELETE /api/me/integrations/:kind</td><td>Remove config and stop thread.</td></tr>
+      <tr class="section-row"><td colspan="2">Invites &amp; Access</td></tr>
+      <tr><td>POST /api/run/:id/invite</td><td>Invite a user to a run (owner only).</td></tr>
+      <tr><td>GET /api/run/:id/invites</td><td>List pending invites (owner only).</td></tr>
+      <tr><td>POST /api/run/invite/:id/accept</td><td>Accept an invite.</td></tr>
+      <tr><td>POST /api/run/invite/:id/decline</td><td>Decline an invite.</td></tr>
+    </tbody>
+  </table>
 
   <div class="footer">
-    FireRed Nuzlocke Tracker v__VERSION__ &nbsp;·&nbsp; MIT License &nbsp;·&nbsp; © 2026 AliceWreath
+    Fire Red Tracker v__VERSION__ &nbsp;·&nbsp; MIT License &nbsp;·&nbsp; © 2026 AliceWreath
   </div>
-
 </div>
 </body>
 </html>

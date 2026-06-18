@@ -1488,6 +1488,32 @@ pub fn end_run() -> Option<u32> {
     Some(id)
 }
 
+/// End a specific run by ID, verifying the caller owns it.
+/// Returns `Err` if the DB is not initialised, the run doesn't exist, the
+/// caller doesn't own it, or the run is already ended.
+pub fn end_run_by_id(run_id: u32, user_id: u32) -> Result<(), String> {
+    let Some(db) = db() else { return Err("database not initialised".to_string()) };
+    let mut state = db.lock_or_recover();
+    let row = state.client.query_opt(
+        "SELECT user_id, ended_at FROM runs WHERE id = $1",
+        &[&(run_id as i32)],
+    ).map_err(|e| format!("DB error: {e}"))?
+    .ok_or_else(|| "run not found".to_string())?;
+    let owner_id: Option<i32> = row.get(0);
+    if owner_id != Some(user_id as i32) {
+        return Err("you do not own this run".to_string());
+    }
+    let already_ended: Option<i64> = row.get(1);
+    if already_ended.is_some() {
+        return Err("run is already ended".to_string());
+    }
+    state.client.execute(
+        "UPDATE runs SET ended_at = $1 WHERE id = $2",
+        &[&(unix_now() as i64), &(run_id as i32)],
+    ).map_err(|e| format!("DB error: {e}"))?;
+    Ok(())
+}
+
 /// Returns a summary of every run: `(id, player_name, started_at, dead_count)`.
 pub fn list_runs() -> Result<Vec<(u32, String, u64, usize)>, String> {
     let Some(db) = db() else { return Ok(vec![]) };

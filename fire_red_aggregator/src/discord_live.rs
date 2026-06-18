@@ -58,9 +58,8 @@ fn build_live_embed(slots: &SharedSlots, accessible: Option<&HashSet<u32>>) -> s
     for slot in locked.iter() {
         if let Some(ids) = accessible {
             let run_id = slot.db.as_ref().and_then(|db| db.get_run_id());
-            if let Some(rid) = run_id {
-                if !ids.contains(&rid) { continue; }
-            }
+            if let Some(rid) = run_id
+                && !ids.contains(&rid) { continue; }
         }
         let state = slot.state.lock_or_recover();
         let Some(ref gs) = *state else { continue };
@@ -160,9 +159,8 @@ pub fn spawn_run_thread(config: DiscordRunThreadConfig, slots: SharedSlots, user
                 // Skip slots that don't belong to this user.
                 if let Some(ref ids) = accessible {
                     let run_id = slot.db.as_ref().and_then(|db| db.get_run_id());
-                    if let Some(rid) = run_id {
-                        if !ids.contains(&rid) { continue; }
-                    }
+                    if let Some(rid) = run_id
+                        && !ids.contains(&rid) { continue; }
                 }
                 let state = slot.state.lock_or_recover();
                 let Some(ref gs) = *state else { continue };

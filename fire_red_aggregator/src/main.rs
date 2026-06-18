@@ -15,6 +15,7 @@
 mod app;
 mod client;
 mod config;
+mod config_cli;
 mod direct;
 mod discord_live;
 mod eventsub;
@@ -54,9 +55,13 @@ struct Cli {
     #[arg(long = "ws-port", value_name = "PORT")]
     ws_port: Option<u16>,
 
-    /// Open the configuration editor and exit.
+    /// Open the configuration editor (egui GUI) and exit.
     #[arg(long)]
     config_editor: bool,
+
+    /// Open the interactive terminal configuration editor and exit.
+    #[arg(long)]
+    config_editor_cli: bool,
 
     /// Check GitHub for a newer release and replace this binary if one is found.
     #[arg(long)]
@@ -151,6 +156,11 @@ fn main() {
 
     if cli.config_editor {
         config::run_config_editor(&config_path);
+        return;
+    }
+
+    if cli.config_editor_cli {
+        config_cli::run_config_editor_cli(&config_path);
         return;
     }
 
