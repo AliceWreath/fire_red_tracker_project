@@ -30,6 +30,8 @@
 use crate::client::SharedSlots;
 use crate::config::TwitchConfig;
 use fire_red_states::{ClientMessage, LockOrRecover};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 use tungstenite::Message;
 
@@ -41,8 +43,12 @@ const HELIX_SUBSCRIPTIONS: &str = "https://api.twitch.tv/helix/eventsub/subscrip
 // ---------------------------------------------------------------------------
 
 /// Spawns the EventSub thread if the config has the required fields.
-/// Returns immediately; the thread lives for the lifetime of the process.
-pub fn spawn(config: TwitchConfig, slots: SharedSlots) {
+///
+/// `user_id`: when `Some`, commands are dispatched only to slots whose active run
+/// is accessible to that user.  `None` dispatches to all slots (global config).
+///
+/// `stop`: set to `true` to signal the thread to exit on its next iteration.
+pub fn spawn(config: TwitchConfig, slots: SharedSlots, user_id: Option<u32>, stop: Arc<AtomicBool>) {
     if config.client_id.is_none()
         || config.broadcaster_id.is_none()
         || config.reward_commands.is_empty()
@@ -50,13 +56,14 @@ pub fn spawn(config: TwitchConfig, slots: SharedSlots) {
         return;
     }
 
-    let config = std::sync::Arc::new(config);
+    let config = Arc::new(config);
     let spawn_result = std::thread::Builder::new()
         .name("twitch-eventsub".into())
         .spawn(move || {
             let mut delay = Duration::from_secs(2);
             loop {
-                match run_session(&config, &slots) {
+                if stop.load(Ordering::Relaxed) { return; }
+                match run_session(&config, &slots, user_id) {
                     Ok(()) => {
                         tracing::info!(
                             "Twitch EventSub session ended; reconnecting immediately."
@@ -84,7 +91,7 @@ pub fn spawn(config: TwitchConfig, slots: SharedSlots) {
 // Session
 // ---------------------------------------------------------------------------
 
-fn run_session(config: &TwitchConfig, slots: &SharedSlots) -> Result<(), String> {
+fn run_session(config: &TwitchConfig, slots: &SharedSlots, user_id: Option<u32>) -> Result<(), String> {
     let (mut ws, _) = tungstenite::connect(EVENTSUB_URL)
         .map_err(|e| format!("WS connect to {EVENTSUB_URL}: {e}"))?;
 
@@ -182,7 +189,7 @@ fn run_session(config: &TwitchConfig, slots: &SharedSlots) -> Result<(), String>
 
         match val["metadata"]["message_type"].as_str() {
             Some("notification") => {
-                handle_notification(&val, config, slots);
+                handle_notification(&val, config, slots, user_id);
             }
             Some("session_keepalive") => {
                 tracing::trace!("EventSub keepalive received.");
@@ -219,7 +226,7 @@ fn run_session(config: &TwitchConfig, slots: &SharedSlots) -> Result<(), String>
 // Notification dispatch
 // ---------------------------------------------------------------------------
 
-fn handle_notification(val: &serde_json::Value, config: &TwitchConfig, slots: &SharedSlots) {
+fn handle_notification(val: &serde_json::Value, config: &TwitchConfig, slots: &SharedSlots, user_id: Option<u32>) {
     let sub_type = val["metadata"]["subscription_type"].as_str().unwrap_or("");
     if sub_type != "channel.channel_points_custom_reward_redemption.add" {
         return;
@@ -232,7 +239,7 @@ fn handle_notification(val: &serde_json::Value, config: &TwitchConfig, slots: &S
             return;
         }
     };
-    let user = val["payload"]["event"]["user_name"]
+    let viewer = val["payload"]["event"]["user_name"]
         .as_str()
         .unwrap_or("viewer");
 
@@ -255,12 +262,26 @@ fn handle_notification(val: &serde_json::Value, config: &TwitchConfig, slots: &S
     };
 
     let slot_list = slots.lock_or_recover().clone();
+
+    // When user_id is set, only dispatch to that user's accessible slots.
+    let accessible = user_id
+        .and_then(|uid| fire_red_database::get_accessible_run_ids(uid).ok());
+
+    let mut count = 0usize;
     for slot in &slot_list {
-        slot.command_queue.lock_or_recover().push_back(msg.clone());
+        let run_id = slot.db.as_ref().and_then(|db| db.get_run_id());
+        let allowed = match (&accessible, run_id) {
+            (None, _) => true,                                        // global — all slots
+            (Some(_), None) => true,                                  // no run yet — allow
+            (Some(ids), Some(rid)) => ids.contains(&rid),
+        };
+        if allowed {
+            slot.command_queue.lock_or_recover().push_back(msg.clone());
+            count += 1;
+        }
     }
     tracing::info!(
-        "Channel point redemption by {user}: dispatched '{cmd_name}' to {} slot(s)",
-        slot_list.len()
+        "Channel point redemption by {viewer}: dispatched '{cmd_name}' to {count} slot(s)"
     );
 }
 

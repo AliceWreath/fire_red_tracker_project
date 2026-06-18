@@ -53,6 +53,7 @@
 
 use crate::config::{ObsConfig, WebhookConfig};
 use serde::Serialize;
+use std::cell::RefCell;
 use std::sync::OnceLock;
 use std::sync::mpsc::{Sender, channel};
 
@@ -200,8 +201,8 @@ enum WorkerTask {
         url: String,
         payload: String,
     },
-    ObsClip,
-    ObsScene(String),
+    ObsClip(ObsConfig),
+    ObsScene(ObsConfig, String),
 }
 
 struct WebhookState {
@@ -211,6 +212,12 @@ struct WebhookState {
 }
 
 static STATE: OnceLock<WebhookState> = OnceLock::new();
+
+// Thread-local state for direct-mode game loop threads. Each thread that calls
+// `init_for_thread` gets its own worker and config, isolated from the global STATE.
+thread_local! {
+    static THREAD_STATE: RefCell<Option<WebhookState>> = const { RefCell::new(None) };
+}
 
 // ---------------------------------------------------------------------------
 // Template rendering
@@ -556,8 +563,8 @@ pub fn init(config: WebhookConfig, obs_config: ObsConfig) {
                         tracing::warn!("Discord embed POST to {url} failed: {e}");
                     }
                 }
-                WorkerTask::ObsClip => obs_clip_inner(),
-                WorkerTask::ObsScene(scene) => obs_scene_inner(&scene),
+                WorkerTask::ObsClip(obs) => obs_clip_inner(&obs),
+                WorkerTask::ObsScene(obs, scene) => obs_scene_inner(&obs, &scene),
             }
         }
     });
@@ -593,27 +600,109 @@ pub fn reinit(config: WebhookConfig, obs_config: ObsConfig) {
     }
 }
 
+/// Initialize per-thread webhook/OBS state for a direct-mode game loop thread.
+///
+/// Each direct-mode connection thread should call this once with the user's OBS
+/// config so that `fire_event` uses the per-user OBS settings instead of the
+/// global config-file settings.
+pub fn init_for_thread(config: WebhookConfig, obs_config: ObsConfig) {
+    validate_templates(&config);
+    let (tx, rx) = channel::<WorkerTask>();
+    let spawn_result = std::thread::Builder::new()
+        .name("webhook-worker-thread".into())
+        .spawn(move || {
+            let client = reqwest::blocking::Client::builder()
+                .timeout(std::time::Duration::from_secs(5))
+                .build()
+                .unwrap_or_else(|_| reqwest::blocking::Client::new());
+            for task in rx {
+                match task {
+                    WorkerTask::Webhook { url, body, event_type, run_id, signature } => {
+                        let payload = match &body {
+                            PostBody::Raw(t) => t.clone(),
+                            PostBody::Json(ev) => serde_json::to_string(ev).unwrap_or_default(),
+                        };
+                        let raw_text = if let PostBody::Raw(t) = &body { Some(t.clone()) } else { None };
+                        let mut attempts = 0u32;
+                        let mut success = false;
+                        loop {
+                            let sig_header = if signature.is_empty() { None } else { Some(format!("sha256={signature}")) };
+                            let result = match &body {
+                                PostBody::Json(event) => {
+                                    let mut rb = client.post(&url).json(event);
+                                    if let Some(ref sig) = sig_header { rb = rb.header("X-Tracker-Signature", sig); }
+                                    rb.send()
+                                }
+                                PostBody::Raw(_) => {
+                                    let mut rb = client.post(&url).header("content-type", "application/json").body(raw_text.clone().unwrap_or_default());
+                                    if let Some(ref sig) = sig_header { rb = rb.header("X-Tracker-Signature", sig); }
+                                    rb.send()
+                                }
+                            };
+                            match result {
+                                Ok(_) => { success = true; break; }
+                                Err(e) => {
+                                    attempts += 1;
+                                    if attempts >= 3 { tracing::warn!("Webhook POST to {url} failed: {e}"); break; }
+                                    std::thread::sleep(std::time::Duration::from_secs(1 << (attempts - 1)));
+                                }
+                            }
+                        }
+                        fire_red_database::record_webhook_delivery(run_id, &event_type, &url, success, attempts.max(1), &payload);
+                    }
+                    WorkerTask::DiscordEmbed { url, payload } => {
+                        let result = client.post(&url).header("content-type", "application/json").body(payload.clone()).send();
+                        if let Err(e) = result { tracing::warn!("Discord embed POST to {url} failed: {e}"); }
+                    }
+                    WorkerTask::ObsClip(obs) => obs_clip_inner(&obs),
+                    WorkerTask::ObsScene(obs, scene) => obs_scene_inner(&obs, &scene),
+                }
+            }
+        });
+    match spawn_result {
+        Err(e) => tracing::error!("Failed to spawn per-thread webhook worker: {e}"),
+        Ok(_) => {
+            THREAD_STATE.with(|cell| {
+                *cell.borrow_mut() = Some(WebhookState {
+                    tx,
+                    config: std::sync::Mutex::new(config),
+                    obs_config: std::sync::Mutex::new(obs_config),
+                });
+            });
+        }
+    }
+}
+
 /// Enqueue a webhook event for delivery. Returns immediately; the HTTP POST
 /// is performed by the background thread started in [`init`].
 ///
 /// Also triggers an OBS replay-buffer clip if configured for the event type.
 ///
-/// Does nothing if [`init`] was never called.
+/// Checks thread-local state first (direct-mode per-user), falls back to global.
+/// Does nothing if neither was initialized.
 pub fn fire_event(event: WebhookEvent) {
-    let Some(state) = STATE.get() else {
-        return;
+    // Prefer per-thread state (direct-mode); fall back to global.
+    let thread_has_state = THREAD_STATE.with(|cell| cell.borrow().is_some());
+    let (config, obs_config, tx) = if thread_has_state {
+        let result = THREAD_STATE.with(|cell| {
+            let borrow = cell.borrow();
+            let state = borrow.as_ref()?;
+            let config = state.config.lock().unwrap_or_else(|p| p.into_inner()).clone();
+            let obs_config = state.obs_config.lock().unwrap_or_else(|p| p.into_inner()).clone();
+            let tx = state.tx.clone();
+            Some((config, obs_config, tx))
+        });
+        match result {
+            Some(v) => v,
+            None => return,
+        }
+    } else {
+        let Some(state) = STATE.get() else { return; };
+        let config = state.config.lock().unwrap_or_else(|p| p.into_inner()).clone();
+        let obs_config = state.obs_config.lock().unwrap_or_else(|p| p.into_inner()).clone();
+        let tx = state.tx.clone();
+        (config, obs_config, tx)
     };
-    let config = state
-        .config
-        .lock()
-        .unwrap_or_else(|p| p.into_inner())
-        .clone();
-    let obs_config = state
-        .obs_config
-        .lock()
-        .unwrap_or_else(|p| p.into_inner())
-        .clone();
-
     // Extract notify-send title/body before `event` is potentially moved.
     let notify_desktop: Option<(String, String)> = match &event {
         WebhookEvent::Death { pokemon, .. } if config.notify_on_death => Some((
@@ -715,7 +804,7 @@ pub fn fire_event(event: WebhookEvent) {
             };
             hmac_hex(secret.as_bytes(), payload_str.as_bytes())
         }).unwrap_or_default();
-        let _ = state.tx.send(WorkerTask::Webhook {
+        let _ = tx.send(WorkerTask::Webhook {
             url: url.to_string(),
             body,
             event_type: event_type_str.to_string(),
@@ -725,11 +814,11 @@ pub fn fire_event(event: WebhookEvent) {
     }
 
     if obs_clip {
-        let _ = state.tx.send(WorkerTask::ObsClip);
+        let _ = tx.send(WorkerTask::ObsClip(obs_config.clone()));
     }
 
     if let Some(scene) = obs_scene {
-        let _ = state.tx.send(WorkerTask::ObsScene(scene));
+        let _ = tx.send(WorkerTask::ObsScene(obs_config.clone(), scene));
     }
 
     if let Some((title, body)) = notify_desktop {
@@ -738,7 +827,7 @@ pub fn fire_event(event: WebhookEvent) {
 
     // Dispatch the pre-built Discord embed (if any).
     if let Some((discord_url, payload)) = discord_embed {
-        let _ = state.tx.send(WorkerTask::DiscordEmbed { url: discord_url, payload });
+        let _ = tx.send(WorkerTask::DiscordEmbed { url: discord_url, payload });
     }
 }
 
@@ -851,19 +940,14 @@ fn notify_send_inner(title: &str, body: &str) {
 // OBS WebSocket clip trigger (v5 protocol, local TCP, no TLS)
 // ---------------------------------------------------------------------------
 
-fn obs_clip_inner() {
-    if let Err(e) = try_obs_clip() {
+fn obs_clip_inner(obs_config: &ObsConfig) {
+    if let Err(e) = try_obs_clip(obs_config) {
         tracing::warn!("OBS clip failed: {e}");
     }
 }
 
-fn try_obs_clip() -> Result<(), String> {
-    let state = STATE.get().ok_or("webhook not initialized")?;
-    let obs = state
-        .obs_config
-        .lock()
-        .unwrap_or_else(|p| p.into_inner())
-        .clone();
+fn try_obs_clip(obs: &ObsConfig) -> Result<(), String> {
+    let obs = obs.clone();
 
     // Raw TCP connection — OBS WebSocket is always local, no TLS needed.
     let stream = std::net::TcpStream::connect(format!("{}:{}", obs.host, obs.port))
@@ -930,19 +1014,14 @@ fn try_obs_clip() -> Result<(), String> {
 // OBS WebSocket scene switch (v5 protocol, reuses auth helpers above)
 // ---------------------------------------------------------------------------
 
-fn obs_scene_inner(scene: &str) {
-    if let Err(e) = try_obs_scene_switch(scene) {
+fn obs_scene_inner(obs_config: &ObsConfig, scene: &str) {
+    if let Err(e) = try_obs_scene_switch(obs_config, scene) {
         tracing::warn!("OBS scene switch failed: {e}");
     }
 }
 
-fn try_obs_scene_switch(scene: &str) -> Result<(), String> {
-    let state = STATE.get().ok_or("webhook not initialized")?;
-    let obs = state
-        .obs_config
-        .lock()
-        .unwrap_or_else(|p| p.into_inner())
-        .clone();
+fn try_obs_scene_switch(obs_config: &ObsConfig, scene: &str) -> Result<(), String> {
+    let obs = obs_config.clone();
 
     let stream = std::net::TcpStream::connect(format!("{}:{}", obs.host, obs.port))
         .map_err(|e| format!("TCP connect: {e}"))?;

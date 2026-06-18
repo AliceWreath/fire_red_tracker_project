@@ -62,6 +62,10 @@ pub struct GameLoopConfig {
     /// If set, the game loop exits when this flag becomes `true`.
     /// Used by direct-mode `DirectConnector::disconnect` to stop a slot.
     pub shutdown: Option<Arc<AtomicBool>>,
+    /// Per-user OBS/webhook config for this direct-mode slot. When set,
+    /// `spawn_game_loop` calls `webhook::init_for_thread` so that OBS events
+    /// use this user's config instead of the global config-file settings.
+    pub obs_config: Option<(crate::config::WebhookConfig, crate::config::ObsConfig)>,
 }
 
 /// Shared state written by the game-polling loop and read by the caller.
@@ -261,6 +265,9 @@ pub fn spawn_game_loop(
         fire_red_retroarch_interfacing::set_thread_addr(&cfg.retroarch_host, cfg.retroarch_port);
         if let Some(run_id) = cfg.thread_run_id {
             fire_red_database::set_thread_run_id(run_id);
+        }
+        if let Some((wh_cfg, obs_cfg)) = cfg.obs_config {
+            crate::webhook::init_for_thread(wh_cfg, obs_cfg);
         }
         let thread_shutdown = cfg.shutdown.clone();
         use fire_red_loop::*;

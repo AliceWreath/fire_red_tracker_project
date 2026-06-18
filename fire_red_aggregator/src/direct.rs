@@ -314,6 +314,15 @@ fn try_add_host(
 
         let loop_state = Arc::new(GameLoopState::new());
 
+        // Load per-user OBS config for this slot's run owner (if any).
+        let per_user_obs: Option<(fire_red_game_loop::config::WebhookConfig, fire_red_game_loop::config::ObsConfig)> = slot_run_id
+            .and_then(fire_red_database::get_run_owner_id)
+            .and_then(|uid| {
+                let cfg_json = fire_red_database::get_user_integration(db.as_deref()?, uid, "obs")?;
+                let obs_cfg: fire_red_game_loop::config::ObsConfig = serde_json::from_str(&cfg_json).ok()?;
+                Some((fire_red_game_loop::config::WebhookConfig::default(), obs_cfg))
+            });
+
         let rom_path_for_sprites = resolved_rom.clone();
         let loop_cfg = GameLoopConfig {
             retroarch_host: host.clone(),
@@ -329,6 +338,7 @@ fn try_add_host(
             livesplit_split_on_clear: true,
             thread_run_id: slot_run_id,
             shutdown: Some(slot.shutdown.clone()),
+            obs_config: per_user_obs,
         };
 
         fire_red_game_loop::spawn_game_loop(loop_cfg, loop_state.clone());

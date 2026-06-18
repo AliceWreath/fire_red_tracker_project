@@ -28,6 +28,7 @@ use clap::Parser;
 use client::{MonitorSlot, SharedSlots, handle_tracker_connection};
 use fire_red_states::LockOrRecover;
 use std::net::TcpListener;
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 
 // ---------------------------------------------------------------------------
@@ -326,8 +327,8 @@ fn main() {
 
     // Twitch IRC bot — runs in both GUI and headless modes.
     if let Some(twitch_cfg) = cfg_ref.twitch.clone() {
-        twitch::spawn(twitch_cfg.clone(), shared_slots.clone(), db.clone());
-        eventsub::spawn(twitch_cfg, shared_slots.clone());
+        twitch::spawn(twitch_cfg.clone(), shared_slots.clone(), db.clone(), None, Arc::new(AtomicBool::new(false)));
+        eventsub::spawn(twitch_cfg, shared_slots.clone(), None, Arc::new(AtomicBool::new(false)));
     }
 
     // LiveSplit One bridge (aggregator side).
@@ -341,17 +342,17 @@ fn main() {
 
     // YouTube Live chat bot.
     if let Some(yt_cfg) = cfg_ref.youtube_chat.clone() {
-        youtube_chat::spawn(yt_cfg, shared_slots.clone(), db.clone());
+        youtube_chat::spawn(yt_cfg, shared_slots.clone(), db.clone(), None, Arc::new(AtomicBool::new(false)));
     }
 
     // Discord persistent live embed.
     if let Some(embed_cfg) = cfg_ref.discord_live_embed.clone() {
-        discord_live::spawn_live_embed(embed_cfg, shared_slots.clone());
+        discord_live::spawn_live_embed(embed_cfg, shared_slots.clone(), None, Arc::new(AtomicBool::new(false)));
     }
 
     // Discord run thread.
     if let Some(thread_cfg) = cfg_ref.discord_run_thread.clone() {
-        discord_live::spawn_run_thread(thread_cfg, shared_slots.clone());
+        discord_live::spawn_run_thread(thread_cfg, shared_slots.clone(), None, Arc::new(AtomicBool::new(false)));
     }
 
     // Discord slash commands — register at startup if configured.

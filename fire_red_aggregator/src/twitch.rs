@@ -28,8 +28,11 @@
 use crate::client::SharedSlots;
 use crate::config::TwitchConfig;
 use fire_red_states::LockOrRecover;
+use std::collections::HashSet;
 use std::io::{BufRead, BufReader, Write};
 use std::net::TcpStream;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 // ---------------------------------------------------------------------------
@@ -37,14 +40,18 @@ use std::time::Duration;
 // ---------------------------------------------------------------------------
 
 /// Spawn the Twitch IRC bot as a daemon thread. Returns immediately.
-pub fn spawn(config: TwitchConfig, slots: SharedSlots, db_conn: Option<String>) {
-    let config = std::sync::Arc::new(config);
+///
+/// `user_id`: when `Some`, bot responses are read from that user's first active slot.
+/// `stop`: set to `true` to signal the thread to exit on its next reconnect cycle.
+pub fn spawn(config: TwitchConfig, slots: SharedSlots, db_conn: Option<String>, user_id: Option<u32>, stop: Arc<AtomicBool>) {
+    let config = Arc::new(config);
     let spawn_result = std::thread::Builder::new()
         .name("twitch-irc".into())
         .spawn(move || {
             let mut delay = Duration::from_secs(2);
             loop {
-                match run_session(&config, &slots, db_conn.as_deref()) {
+                if stop.load(Ordering::Relaxed) { return; }
+                match run_session(&config, &slots, db_conn.as_deref(), user_id) {
                     Ok(()) => {
                         tracing::info!("Twitch IRC session ended cleanly; reconnecting.");
                         delay = Duration::from_secs(2);
@@ -62,6 +69,23 @@ pub fn spawn(config: TwitchConfig, slots: SharedSlots, db_conn: Option<String>) 
     }
 }
 
+/// Return the slot index for `user_id`'s first accessible active slot, or fall
+/// back to `default_slot` when `user_id` is None or no accessible slot is found.
+pub fn resolve_slot(default_slot: usize, slots: &SharedSlots, user_id: Option<u32>) -> usize {
+    let Some(uid) = user_id else { return default_slot; };
+    let accessible: HashSet<u32> =
+        fire_red_database::get_accessible_run_ids(uid).unwrap_or_default();
+    let locked = slots.lock_or_recover();
+    locked
+        .iter()
+        .position(|s| {
+            s.db.as_ref()
+                .and_then(|db| db.get_run_id())
+                .is_some_and(|rid| accessible.contains(&rid))
+        })
+        .unwrap_or(default_slot)
+}
+
 // ---------------------------------------------------------------------------
 // Session loop
 // ---------------------------------------------------------------------------
@@ -70,6 +94,7 @@ fn run_session(
     config: &TwitchConfig,
     slots: &SharedSlots,
     db_conn: Option<&str>,
+    user_id: Option<u32>,
 ) -> Result<(), String> {
     let stream = TcpStream::connect("irc.chat.twitch.tv:6667")
         .map_err(|e| format!("TCP connect: {e}"))?;
@@ -100,7 +125,8 @@ fn run_session(
         }
 
         // Parse: `:nick!user@host PRIVMSG #channel :!command`
-        if let Some(reply) = handle_privmsg(line, &channel, config.slot, slots, db_conn) {
+        let slot_idx = resolve_slot(config.slot, slots, user_id);
+        if let Some(reply) = handle_privmsg(line, &channel, slot_idx, slots, db_conn) {
             irc_send(&mut write_half, &format!("PRIVMSG {channel} :{reply}"))?;
         }
     }

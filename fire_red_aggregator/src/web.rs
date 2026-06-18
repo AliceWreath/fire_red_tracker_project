@@ -25,6 +25,7 @@ use fire_red_states::{
 use futures_util::{SinkExt, StreamExt};
 use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::sync::watch;
@@ -1489,6 +1490,8 @@ struct WebState {
     config_path: Option<Arc<String>>,
     /// In-memory map from user_id to their most recently connected run_id.
     user_active_run: Arc<Mutex<HashMap<u32, u32>>>,
+    /// Stop flags for per-user integration threads: user_id → kind → stop flag.
+    integration_manager: Arc<Mutex<HashMap<u32, HashMap<String, Arc<AtomicBool>>>>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -5972,6 +5975,8 @@ fn build_router(web_state: WebState) -> Router {
         .route("/api/me", get(api_me))
         .route("/api/me/dashboard", get(api_me_dashboard))
         .route("/api/me/active_run", get(api_me_active_run).put(api_me_set_active_run))
+        .route("/api/me/integrations", get(api_get_integrations))
+        .route("/api/me/integrations/:kind", axum::routing::put(api_put_integration).delete(api_delete_integration))
         .route("/api/user/:id/runs", get(api_user_runs))
         // Run invites and access requests
         .route("/api/run/:id/invite", post(api_run_invite))
@@ -5984,8 +5989,9 @@ fn build_router(web_state: WebState) -> Router {
         .route("/api/run/:id/invite/request/:uid/deny", post(api_run_invite_request_deny))
         .route("/api/me/run_statuses", get(api_me_run_statuses))
         .route("/api/me/run_requests", get(api_me_run_requests))
-        // Dashboard page
+        // Dashboard + integrations pages
         .route("/dashboard", get(serve_dashboard))
+        .route("/integrations", get(serve_integrations_page))
         // Overlays
         .route("/:index/dex", get(serve_dex_overlay))
         .route("/:index/typechart", get(serve_typechart_overlay))
@@ -6075,6 +6081,7 @@ pub fn run(live_slots: SharedSlots, port: u16, cfg: WebRunConfig) {
         discord_slash,
         config_path: config_path.map(Arc::new),
         user_active_run: Arc::new(Mutex::new(HashMap::new())),
+        integration_manager: Arc::new(Mutex::new(HashMap::new())),
     };
 
     let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
@@ -7334,10 +7341,14 @@ async fn auth_middleware(
 /// Exceptions: invite-flow paths where the user doesn't yet have access
 /// (`/invite/accept`, `/invite/decline`, `/invite/request`).
 async fn run_access_middleware(
-    Extension(user): Extension<User>,
     request: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> axum::response::Response {
+    // Public routes pass through auth_middleware without a User extension — skip.
+    let Some(user) = request.extensions().get::<User>().cloned() else {
+        return next.run(request).await;
+    };
+
     let path = request.uri().path();
 
     // Invite-flow routes: caller may not have access yet.
@@ -7379,10 +7390,14 @@ async fn run_access_middleware(
 /// verifies the authenticated user has access to that slot's run.
 async fn slot_access_middleware(
     State(state): State<WebState>,
-    Extension(user): Extension<User>,
     request: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> axum::response::Response {
+    // Public routes pass through auth_middleware without a User extension — skip.
+    let Some(user) = request.extensions().get::<User>().cloned() else {
+        return next.run(request).await;
+    };
+
     let path = request.uri().path();
     let slot_idx: Option<usize> = path
         .strip_prefix("/api/slot/")
@@ -7705,6 +7720,133 @@ async fn api_user_runs(
     })
     .await;
     axum::Json(result.unwrap_or_else(|_| serde_json::json!({ "error": "Task panicked" })))
+}
+
+// ---------------------------------------------------------------------------
+// Per-user integration management
+// ---------------------------------------------------------------------------
+
+async fn api_get_integrations(
+    State(state): State<WebState>,
+    Extension(user): Extension<User>,
+) -> axum::Json<serde_json::Value> {
+    let conn = require_db!(state);
+    let uid = user.id;
+    let result = tokio::task::spawn_blocking(move || {
+        fire_red_database::list_user_integrations(&conn, uid)
+    })
+    .await;
+    axum::Json(result.unwrap_or_else(|_| serde_json::json!({})))
+}
+
+async fn api_put_integration(
+    State(state): State<WebState>,
+    Extension(user): Extension<User>,
+    Path(kind): Path<String>,
+    axum::Json(body): axum::Json<serde_json::Value>,
+) -> impl IntoResponse {
+    let conn = match &state.db_conn {
+        Some(c) => c.clone(),
+        None => return (StatusCode::SERVICE_UNAVAILABLE, axum::Json(serde_json::json!({ "error": "No database configured" }))),
+    };
+    let uid = user.id;
+    let config_str = body.to_string();
+    let kind2 = kind.clone();
+    let conn2 = conn.clone();
+    let set_result = tokio::task::spawn_blocking(move || {
+        fire_red_database::set_user_integration(&conn2, uid, &kind2, &config_str)
+    })
+    .await;
+    if let Err(e) = set_result.unwrap_or(Err("task panicked".into())) {
+        return (StatusCode::INTERNAL_SERVER_ERROR, axum::Json(serde_json::json!({ "error": e })));
+    }
+
+    // Stop any existing thread for this user+kind.
+    {
+        let mgr = state.integration_manager.lock_or_recover();
+        if let Some(stop) = mgr.get(&uid).and_then(|m| m.get(&kind)).cloned() {
+            stop.store(true, Ordering::Relaxed);
+        }
+    }
+
+    // Spawn new thread based on kind.
+    let slots = state.live_slots.clone();
+    let stop = Arc::new(AtomicBool::new(false));
+    let stop2 = stop.clone();
+    let spawned = spawn_integration_thread(&kind, body, slots, &conn, uid, stop2);
+
+    if spawned {
+        let mut mgr = state.integration_manager.lock_or_recover();
+        mgr.entry(uid).or_default().insert(kind, stop);
+    }
+
+    (StatusCode::OK, axum::Json(serde_json::json!({ "ok": true })))
+}
+
+fn spawn_integration_thread(
+    kind: &str,
+    config_val: serde_json::Value,
+    slots: SharedSlots,
+    conn: &str,
+    user_id: u32,
+    stop: Arc<AtomicBool>,
+) -> bool {
+    match kind {
+        "twitch" => {
+            if let Ok(cfg) = serde_json::from_value::<crate::config::TwitchConfig>(config_val) {
+                crate::twitch::spawn(cfg.clone(), slots.clone(), Some(conn.to_owned()), Some(user_id), stop.clone());
+                crate::eventsub::spawn(cfg, slots, Some(user_id), stop);
+                true
+            } else { false }
+        }
+        "youtube" => {
+            if let Ok(cfg) = serde_json::from_value::<crate::config::YouTubeChatConfig>(config_val) {
+                crate::youtube_chat::spawn(cfg, slots, Some(conn.to_owned()), Some(user_id), stop);
+                true
+            } else { false }
+        }
+        "discord_embed" => {
+            if let Ok(cfg) = serde_json::from_value::<crate::config::DiscordLiveEmbedConfig>(config_val) {
+                crate::discord_live::spawn_live_embed(cfg, slots, Some(user_id), stop);
+                true
+            } else { false }
+        }
+        "discord_thread" => {
+            if let Ok(cfg) = serde_json::from_value::<crate::config::DiscordRunThreadConfig>(config_val) {
+                crate::discord_live::spawn_run_thread(cfg, slots, Some(user_id), stop);
+                true
+            } else { false }
+        }
+        _ => false,
+    }
+}
+
+async fn api_delete_integration(
+    State(state): State<WebState>,
+    Extension(user): Extension<User>,
+    Path(kind): Path<String>,
+) -> impl IntoResponse {
+    let conn = match &state.db_conn {
+        Some(c) => c.clone(),
+        None => return (StatusCode::SERVICE_UNAVAILABLE, axum::Json(serde_json::json!({ "error": "No database configured" }))),
+    };
+    let uid = user.id;
+    let kind2 = kind.clone();
+    tokio::task::spawn_blocking(move || {
+        fire_red_database::delete_user_integration(&conn, uid, &kind2)
+    })
+    .await
+    .ok();
+
+    let mut mgr = state.integration_manager.lock_or_recover();
+    if let Some(stop) = mgr.get(&uid).and_then(|m| m.get(&kind)).cloned() {
+        stop.store(true, Ordering::Relaxed);
+    }
+    if let Some(user_map) = mgr.get_mut(&uid) {
+        user_map.remove(&kind);
+    }
+
+    (StatusCode::OK, axum::Json(serde_json::json!({ "ok": true })))
 }
 
 // ---------------------------------------------------------------------------
@@ -8164,6 +8306,193 @@ async fn serve_dashboard(
     )
 }
 
+const INTEGRATIONS_HTML: &str = r#"<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Integrations — Fire Red Tracker</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:sans-serif;background:#1a1a2e;color:#eee;min-height:100vh;padding:2rem 1rem}
+.container{max-width:780px;margin:0 auto}
+h1{font-size:1.4rem;color:#e94560;margin-bottom:.3rem}
+.subtitle{font-size:.8rem;color:#556;margin-bottom:2rem}
+.card{background:#16213e;border:1px solid #0f3460;border-radius:10px;padding:1.5rem;margin-bottom:1.5rem}
+.card h2{font-size:1rem;margin-bottom:.1rem;display:flex;align-items:center;gap:.5rem}
+.card .desc{font-size:.78rem;color:#777;margin-bottom:1rem}
+label{display:block;font-size:.82rem;color:#ccc;margin-bottom:.25rem}
+input,textarea{width:100%;padding:.45rem .65rem;background:#0f3460;border:1px solid #444;border-radius:5px;color:#eee;font-size:.85rem;margin-bottom:.75rem}
+textarea{resize:vertical;min-height:60px}
+.btn{display:inline-block;padding:.4rem .9rem;border:none;border-radius:5px;font-size:.82rem;cursor:pointer;text-decoration:none}
+.btn-primary{background:#e94560;color:#fff}
+.btn-primary:hover{background:#c73652}
+.btn-del{background:#3a1a1a;color:#ce7d7d;border:1px solid #6a2d2d}
+.btn-del:hover{background:#5a2020}
+.btn-secondary{background:#1e3a6e;color:#aad;border:1px solid #2d5499}
+.btn-secondary:hover{background:#253d6a}
+.actions{display:flex;gap:.5rem;flex-wrap:wrap;margin-top:.5rem}
+.status{margin-top:.5rem;font-size:.78rem;padding:.3rem .6rem;border-radius:4px;display:none}
+.ok{background:#1a4a1a;border:1px solid #2d8a2d;color:#7dce7d;display:block}
+.err{background:#4a1a1a;border:1px solid #8a2d2d;color:#ce7d7d;display:block}
+.active-badge{font-size:.7rem;background:#1a4a1a;color:#7dce7d;border:1px solid #2d8a2d;border-radius:4px;padding:.1rem .4rem}
+nav{display:flex;gap:1rem;font-size:.85rem;margin-bottom:1.5rem}
+nav a{color:#aad;text-decoration:none}nav a:hover{color:#fff}
+</style>
+</head>
+<body>
+<div class="container">
+<nav><a href="/dashboard">← Dashboard</a></nav>
+<h1>Integration Settings</h1>
+<p class="subtitle">Per-user Twitch, YouTube, and Discord bots. Each integration runs independently for your runs.</p>
+
+<div class="card" id="card-twitch">
+<h2>Twitch IRC Bot <span id="badge-twitch" class="active-badge" style="display:none">active</span></h2>
+<p class="desc">Chat commands (!party, !deaths, !shinies, !status) and Channel Points EventSub.</p>
+<label>Channel (username)</label><input id="twitch-channel" placeholder="yourchannel">
+<label>OAuth Token (oauth:xxxxxxxx)</label><input id="twitch-token" placeholder="oauth:..." type="password">
+<label>Client ID (for Channel Points)</label><input id="twitch-client-id" placeholder="optional">
+<label>Broadcaster ID (for Channel Points)</label><input id="twitch-broadcaster-id" placeholder="optional">
+<div class="actions">
+  <button class="btn btn-primary" onclick="saveIntegration('twitch')">Save &amp; Start</button>
+  <button class="btn btn-del" onclick="deleteIntegration('twitch')">Remove</button>
+</div>
+<div class="status" id="status-twitch"></div>
+</div>
+
+<div class="card" id="card-youtube">
+<h2>YouTube Live Chat Bot <span id="badge-youtube" class="active-badge" style="display:none">active</span></h2>
+<p class="desc">Chat commands (!party, !deaths, etc.) for your YouTube Live stream.</p>
+<label>API Key</label><input id="youtube-api-key" placeholder="AIza...">
+<label>Broadcast ID</label><input id="youtube-broadcast-id" placeholder="video ID">
+<label>Poll interval (seconds, min 5)</label><input id="youtube-poll-secs" type="number" min="5" value="15">
+<div class="actions">
+  <button class="btn btn-primary" onclick="saveIntegration('youtube')">Save &amp; Start</button>
+  <button class="btn btn-del" onclick="deleteIntegration('youtube')">Remove</button>
+</div>
+<div class="status" id="status-youtube"></div>
+</div>
+
+<div class="card" id="card-discord_embed">
+<h2>Discord Live Embed <span id="badge-discord_embed" class="active-badge" style="display:none">active</span></h2>
+<p class="desc">Edits a pinned message in your Discord server with live party/badge info.</p>
+<label>Bot Token</label><input id="discord_embed-bot-token" placeholder="Bot token" type="password">
+<label>Channel ID</label><input id="discord_embed-channel-id" placeholder="channel snowflake">
+<label>Message ID</label><input id="discord_embed-message-id" placeholder="pinned message snowflake">
+<label>Update interval (seconds, min 10)</label><input id="discord_embed-interval" type="number" min="10" value="30">
+<div class="actions">
+  <button class="btn btn-primary" onclick="saveIntegration('discord_embed')">Save &amp; Start</button>
+  <button class="btn btn-del" onclick="deleteIntegration('discord_embed')">Remove</button>
+</div>
+<div class="status" id="status-discord_embed"></div>
+</div>
+
+<div class="card" id="card-discord_thread">
+<h2>Discord Run Threads <span id="badge-discord_thread" class="active-badge" style="display:none">active</span></h2>
+<p class="desc">Creates a new thread in a channel for each run and posts milestone updates.</p>
+<label>Bot Token</label><input id="discord_thread-bot-token" placeholder="Bot token" type="password">
+<label>Channel ID</label><input id="discord_thread-channel-id" placeholder="channel snowflake">
+<div class="actions">
+  <button class="btn btn-primary" onclick="saveIntegration('discord_thread')">Save &amp; Start</button>
+  <button class="btn btn-del" onclick="deleteIntegration('discord_thread')">Remove</button>
+</div>
+<div class="status" id="status-discord_thread"></div>
+</div>
+</div>
+
+<script>
+function showStatus(kind,msg,ok){
+  const el=document.getElementById('status-'+kind);
+  el.textContent=msg;el.className='status '+(ok?'ok':'err');
+  setTimeout(()=>el.className='status',4000);
+}
+function getConfig(kind){
+  if(kind==='twitch') return {
+    channel:document.getElementById('twitch-channel').value.trim(),
+    token:document.getElementById('twitch-token').value.trim(),
+    slot:0,
+    client_id:document.getElementById('twitch-client-id').value.trim()||null,
+    broadcaster_id:document.getElementById('twitch-broadcaster-id').value.trim()||null,
+    reward_commands:{},
+  };
+  if(kind==='youtube') return {
+    api_key:document.getElementById('youtube-api-key').value.trim(),
+    broadcast_id:document.getElementById('youtube-broadcast-id').value.trim(),
+    poll_secs:parseInt(document.getElementById('youtube-poll-secs').value)||15,
+    slot:0,
+  };
+  if(kind==='discord_embed') return {
+    bot_token:document.getElementById('discord_embed-bot-token').value.trim(),
+    channel_id:parseInt(document.getElementById('discord_embed-channel-id').value)||0,
+    message_id:parseInt(document.getElementById('discord_embed-message-id').value)||0,
+    update_interval_secs:parseInt(document.getElementById('discord_embed-interval').value)||30,
+  };
+  if(kind==='discord_thread') return {
+    bot_token:document.getElementById('discord_thread-bot-token').value.trim(),
+    channel_id:parseInt(document.getElementById('discord_thread-channel-id').value)||0,
+  };
+  return {};
+}
+function fillForm(kind,cfg){
+  if(kind==='twitch'){
+    document.getElementById('twitch-channel').value=cfg.channel||'';
+    document.getElementById('twitch-token').value=cfg.token||'';
+    document.getElementById('twitch-client-id').value=cfg.client_id||'';
+    document.getElementById('twitch-broadcaster-id').value=cfg.broadcaster_id||'';
+  }else if(kind==='youtube'){
+    document.getElementById('youtube-api-key').value=cfg.api_key||'';
+    document.getElementById('youtube-broadcast-id').value=cfg.broadcast_id||'';
+    document.getElementById('youtube-poll-secs').value=cfg.poll_secs||15;
+  }else if(kind==='discord_embed'){
+    document.getElementById('discord_embed-bot-token').value=cfg.bot_token||'';
+    document.getElementById('discord_embed-channel-id').value=cfg.channel_id||'';
+    document.getElementById('discord_embed-message-id').value=cfg.message_id||'';
+    document.getElementById('discord_embed-interval').value=cfg.update_interval_secs||30;
+  }else if(kind==='discord_thread'){
+    document.getElementById('discord_thread-bot-token').value=cfg.bot_token||'';
+    document.getElementById('discord_thread-channel-id').value=cfg.channel_id||'';
+  }
+}
+async function saveIntegration(kind){
+  const body=getConfig(kind);
+  const r=await fetch('/api/me/integrations/'+kind,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  const j=await r.json();
+  if(j.ok){showStatus(kind,'Saved and started.',true);document.getElementById('badge-'+kind).style.display='';}
+  else showStatus(kind,j.error||'Error',false);
+}
+async function deleteIntegration(kind){
+  if(!confirm('Remove this integration?'))return;
+  const r=await fetch('/api/me/integrations/'+kind,{method:'DELETE'});
+  const j=await r.json();
+  if(j.ok){showStatus(kind,'Removed.',true);document.getElementById('badge-'+kind).style.display='none';}
+  else showStatus(kind,j.error||'Error',false);
+}
+async function loadIntegrations(){
+  const r=await fetch('/api/me/integrations');
+  if(!r.ok)return;
+  const d=await r.json();
+  for(const[kind,cfg]of Object.entries(d)){
+    const badge=document.getElementById('badge-'+kind);
+    if(badge)badge.style.display='';
+    fillForm(kind,cfg);
+  }
+}
+loadIntegrations();
+</script>
+</body>
+</html>
+"#;
+
+async fn serve_integrations_page(
+    State(state): State<WebState>,
+) -> impl IntoResponse {
+    (
+        StatusCode::OK,
+        [(header::CONTENT_TYPE, "text/html; charset=utf-8")],
+        apply_page(INTEGRATIONS_HTML, state.testing),
+    )
+}
+
 /// `GET /api/me/dashboard` — full dashboard JSON for the authenticated user.
 async fn api_me_dashboard(
     State(state): State<WebState>,
@@ -8518,6 +8847,8 @@ mod tests {
             connector: None,
             discord_slash: None,
             config_path: None,
+            user_active_run: Arc::new(Mutex::new(HashMap::new())),
+            integration_manager: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 

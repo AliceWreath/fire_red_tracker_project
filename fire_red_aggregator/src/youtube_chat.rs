@@ -21,18 +21,23 @@
 
 use crate::client::SharedSlots;
 use crate::config::YouTubeChatConfig;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 const YT_API: &str = "https://www.googleapis.com/youtube/v3";
 
 /// Spawn the YouTube Live chat polling thread. Returns immediately.
-pub fn spawn(config: YouTubeChatConfig, slots: SharedSlots, db_conn: Option<String>) {
+///
+/// `user_id`: when `Some`, commands are read from that user's first active slot.
+/// `stop`: set to `true` to exit the polling loop.
+pub fn spawn(config: YouTubeChatConfig, slots: SharedSlots, db_conn: Option<String>, user_id: Option<u32>, stop: Arc<AtomicBool>) {
     std::thread::spawn(move || {
-        run_loop(config, slots, db_conn);
+        run_loop(config, slots, db_conn, user_id, stop);
     });
 }
 
-fn run_loop(config: YouTubeChatConfig, slots: SharedSlots, db_conn: Option<String>) {
+fn run_loop(config: YouTubeChatConfig, slots: SharedSlots, db_conn: Option<String>, user_id: Option<u32>, stop: Arc<AtomicBool>) {
     let client = reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(10))
         .build()
@@ -52,18 +57,20 @@ fn run_loop(config: YouTubeChatConfig, slots: SharedSlots, db_conn: Option<Strin
     let mut next_page_token: Option<String> = None;
 
     loop {
+        if stop.load(Ordering::Relaxed) { return; }
         std::thread::sleep(poll_interval);
 
+        let slot_idx = crate::twitch::resolve_slot(config.slot, &slots, user_id);
         let (messages, token) = fetch_chat_messages(&client, &config.api_key, &live_chat_id, next_page_token.as_deref());
         next_page_token = token;
 
         for (author, text) in &messages {
             let cmd = text.trim();
             let response = match cmd {
-                "!party"   => Some(crate::twitch::cmd_party(config.slot, &slots)),
-                "!deaths"  => Some(crate::twitch::cmd_deaths(config.slot, &slots)),
-                "!shinies" => Some(crate::twitch::cmd_shinies(config.slot, &slots, db_conn.as_deref())),
-                "!status"  => Some(crate::twitch::cmd_status(config.slot, &slots)),
+                "!party"   => Some(crate::twitch::cmd_party(slot_idx, &slots)),
+                "!deaths"  => Some(crate::twitch::cmd_deaths(slot_idx, &slots)),
+                "!shinies" => Some(crate::twitch::cmd_shinies(slot_idx, &slots, db_conn.as_deref())),
+                "!status"  => Some(crate::twitch::cmd_status(slot_idx, &slots)),
                 _ => None,
             };
             if let Some(resp) = response {

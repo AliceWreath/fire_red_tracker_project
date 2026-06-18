@@ -717,7 +717,7 @@ pub fn initialize_noop() {
 /// `initialize` has already been called.
 /// Increment this whenever a new migration or data-repair statement is added.
 /// `initialize` skips all SQL when the DB already records this version.
-const SCHEMA_VERSION: &str = "26";
+const SCHEMA_VERSION: &str = "27";
 
 pub fn initialize(connection_string: &str) -> Result<(), String> {
     // Accept bare `host/dbname` strings — prepend the scheme so callers don't have to.
@@ -1171,6 +1171,15 @@ pub fn initialize(connection_string: &str) -> Result<(), String> {
         CREATE INDEX IF NOT EXISTS run_invites_run    ON run_invites (run_id);
 
         ALTER TABLE run_invites ADD COLUMN IF NOT EXISTS is_request BOOLEAN NOT NULL DEFAULT FALSE;
+
+        -- Migration v27: per-user integration configs (Twitch, Discord, YouTube, OBS).
+        CREATE TABLE IF NOT EXISTS user_integrations (
+            user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            kind       TEXT    NOT NULL,
+            config     TEXT    NOT NULL DEFAULT '{}',
+            updated_at BIGINT  NOT NULL DEFAULT 0,
+            PRIMARY KEY (user_id, kind)
+        );
     ").map_err(|e| format!("Failed to create database schema: {e}"))?;
 
     // Record the schema version so future startups can skip all migrations.
@@ -7078,6 +7087,78 @@ pub fn get_accessible_run_ids(user_id: u32) -> Result<std::collections::HashSet<
     Ok(rows.iter().map(|r| r.get::<_, i32>(0) as u32).collect())
 }
 
+// ---------------------------------------------------------------------------
+// Per-user integration configs
+// ---------------------------------------------------------------------------
+
+/// Return the stored JSON config for `(user_id, kind)`, or `None` if not set.
+pub fn get_user_integration(conn_str: &str, user_id: u32, kind: &str) -> Option<String> {
+    let conn_str = normalize_conn_str(conn_str);
+    let Ok(mut client) = Client::connect(&conn_str, NoTls) else { return None };
+    let row = client
+        .query_opt(
+            "SELECT config FROM user_integrations WHERE user_id = $1 AND kind = $2",
+            &[&(user_id as i32), &kind],
+        )
+        .ok()??;
+    Some(row.get(0))
+}
+
+/// Upsert a JSON config for `(user_id, kind)`. `config` is a JSON string.
+pub fn set_user_integration(conn_str: &str, user_id: u32, kind: &str, config: &str) -> Result<(), String> {
+    let conn_str = normalize_conn_str(conn_str);
+    let mut client = Client::connect(&conn_str, NoTls)
+        .map_err(|e| format!("DB connection failed: {e}"))?;
+    let now = unix_now() as i64;
+    client
+        .execute(
+            "INSERT INTO user_integrations (user_id, kind, config, updated_at)
+             VALUES ($1, $2, $3, $4)
+             ON CONFLICT (user_id, kind) DO UPDATE
+             SET config = EXCLUDED.config, updated_at = EXCLUDED.updated_at",
+            &[&(user_id as i32), &kind, &config, &now],
+        )
+        .map_err(|e| format!("DB error: {e}"))?;
+    Ok(())
+}
+
+/// Delete the integration config for `(user_id, kind)`. Returns `true` if a row was deleted.
+pub fn delete_user_integration(conn_str: &str, user_id: u32, kind: &str) -> bool {
+    let conn_str = normalize_conn_str(conn_str);
+    let Ok(mut client) = Client::connect(&conn_str, NoTls) else { return false };
+    client
+        .execute(
+            "DELETE FROM user_integrations WHERE user_id = $1 AND kind = $2",
+            &[&(user_id as i32), &kind],
+        )
+        .map(|n| n > 0)
+        .unwrap_or(false)
+}
+
+/// Return all integration configs for a user as `{ kind: config_json_string }`.
+pub fn list_user_integrations(conn_str: &str, user_id: u32) -> serde_json::Value {
+    let conn_str = normalize_conn_str(conn_str);
+    let Ok(mut client) = Client::connect(&conn_str, NoTls) else {
+        return serde_json::json!({});
+    };
+    let rows = match client.query(
+        "SELECT kind, config FROM user_integrations WHERE user_id = $1 ORDER BY kind",
+        &[&(user_id as i32)],
+    ) {
+        Ok(r) => r,
+        Err(_) => return serde_json::json!({}),
+    };
+    let mut map = serde_json::Map::new();
+    for row in &rows {
+        let kind: String = row.get(0);
+        let config_str: String = row.get(1);
+        let val: serde_json::Value =
+            serde_json::from_str(&config_str).unwrap_or(serde_json::Value::Null);
+        map.insert(kind, val);
+    }
+    serde_json::Value::Object(map)
+}
+
 /// Associate an existing run with a user account.
 pub fn link_run_to_user(run_id: u32, user_id: u32) -> Result<(), String> {
     let Some(db) = db() else { return Ok(()) };
@@ -7397,6 +7478,18 @@ pub fn user_can_access_run(run_id: u32, user_id: u32) -> Result<bool, String> {
         &[&(run_id as i32), &(user_id as i32)],
     ).map_err(|e| format!("DB error: {e}"))?;
     Ok(row.is_some())
+}
+
+/// Return the user_id that owns `run_id`, or `None` if not found or unowned.
+pub fn get_run_owner_id(run_id: u32) -> Option<u32> {
+    let db = db()?;
+    let mut state = db.lock_or_recover();
+    let row = state.client.query_opt(
+        "SELECT user_id FROM runs WHERE id = $1",
+        &[&(run_id as i32)],
+    ).ok()??;
+    let owner: Option<i32> = row.get(0);
+    owner.map(|v| v as u32)
 }
 
 /// Submit an access request for a run the caller does not own.

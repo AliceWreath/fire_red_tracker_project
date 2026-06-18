@@ -16,6 +16,9 @@
 use crate::client::SharedSlots;
 use crate::config::{DiscordLiveEmbedConfig, DiscordRunThreadConfig};
 use fire_red_states::LockOrRecover;
+use std::collections::HashSet;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 const DISCORD_API: &str = "https://discord.com/api/v10";
@@ -26,7 +29,10 @@ const DISCORD_API: &str = "https://discord.com/api/v10";
 
 /// Spawn a background thread that periodically edits a pinned Discord message
 /// with the current tracker state. No-op if `slots` is empty on every tick.
-pub fn spawn_live_embed(config: DiscordLiveEmbedConfig, slots: SharedSlots) {
+///
+/// `user_id`: when `Some`, only that user's slots appear in the embed.
+/// `stop`: set to `true` to exit the loop.
+pub fn spawn_live_embed(config: DiscordLiveEmbedConfig, slots: SharedSlots, user_id: Option<u32>, stop: Arc<AtomicBool>) {
     std::thread::spawn(move || {
         let client = reqwest::blocking::Client::builder()
             .timeout(Duration::from_secs(8))
@@ -35,18 +41,27 @@ pub fn spawn_live_embed(config: DiscordLiveEmbedConfig, slots: SharedSlots) {
 
         let interval = Duration::from_secs(config.update_interval_secs.max(10));
         loop {
+            if stop.load(Ordering::Relaxed) { return; }
             std::thread::sleep(interval);
-            let embed = build_live_embed(&slots);
+            let accessible = user_id
+                .and_then(|uid| fire_red_database::get_accessible_run_ids(uid).ok());
+            let embed = build_live_embed(&slots, accessible.as_ref());
             edit_discord_message(&client, &config.bot_token, config.channel_id, config.message_id, embed);
         }
     });
 }
 
-fn build_live_embed(slots: &SharedSlots) -> serde_json::Value {
+fn build_live_embed(slots: &SharedSlots, accessible: Option<&HashSet<u32>>) -> serde_json::Value {
     let locked = slots.lock_or_recover();
     let mut fields: Vec<serde_json::Value> = Vec::new();
 
     for slot in locked.iter() {
+        if let Some(ids) = accessible {
+            let run_id = slot.db.as_ref().and_then(|db| db.get_run_id());
+            if let Some(rid) = run_id {
+                if !ids.contains(&rid) { continue; }
+            }
+        }
         let state = slot.state.lock_or_recover();
         let Some(ref gs) = *state else { continue };
 
@@ -115,7 +130,10 @@ fn edit_discord_message(
 
 /// Spawn a background thread that creates a Discord thread when a new run is
 /// detected and posts milestone messages for deaths, badges, shinies, and clear.
-pub fn spawn_run_thread(config: DiscordRunThreadConfig, slots: SharedSlots) {
+///
+/// `user_id`: when `Some`, only that user's slots are tracked.
+/// `stop`: set to `true` to exit the loop.
+pub fn spawn_run_thread(config: DiscordRunThreadConfig, slots: SharedSlots, user_id: Option<u32>, stop: Arc<AtomicBool>) {
     std::thread::spawn(move || {
         let client = reqwest::blocking::Client::builder()
             .timeout(Duration::from_secs(8))
@@ -126,7 +144,12 @@ pub fn spawn_run_thread(config: DiscordRunThreadConfig, slots: SharedSlots) {
         let mut slot_state: Vec<Option<(u32, u64, u32, u32)>> = Vec::new();
 
         loop {
+            if stop.load(Ordering::Relaxed) { return; }
             std::thread::sleep(Duration::from_secs(5));
+
+            let accessible: Option<HashSet<u32>> = user_id
+                .and_then(|uid| fire_red_database::get_accessible_run_ids(uid).ok());
+
             let locked = slots.lock_or_recover();
 
             if slot_state.len() < locked.len() {
@@ -134,6 +157,13 @@ pub fn spawn_run_thread(config: DiscordRunThreadConfig, slots: SharedSlots) {
             }
 
             for (slot_i, slot) in locked.iter().enumerate() {
+                // Skip slots that don't belong to this user.
+                if let Some(ref ids) = accessible {
+                    let run_id = slot.db.as_ref().and_then(|db| db.get_run_id());
+                    if let Some(rid) = run_id {
+                        if !ids.contains(&rid) { continue; }
+                    }
+                }
                 let state = slot.state.lock_or_recover();
                 let Some(ref gs) = *state else { continue };
 
