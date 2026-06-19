@@ -125,7 +125,8 @@ let slotData = [];
 function populateSelector(slots) {
     slotData = slots;
     // Fetch all run IDs from DB viewer JSON if possible
-    fetch('/db.json').then(r => r.json()).then(db => {
+    const _dbTok=localStorage.getItem('frt_session');
+    fetch('/db.json',_dbTok?{headers:{'Authorization':'Bearer '+_dbTok}}:{}).then(r => r.json()).then(db => {
         if (!db.runs) return;
         const sel = document.getElementById('run-select');
         const prev = sel.value;

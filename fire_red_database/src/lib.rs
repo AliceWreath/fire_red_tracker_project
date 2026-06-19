@@ -5396,10 +5396,41 @@ pub fn dump_all(conn_str: &str) -> serde_json::Value {
     serde_json::json!({ "runs": runs, "caught": caught, "dead": dead, "encounters": encounters })
 }
 
+/// Like `dump_all` but restricted to runs accessible to `user_id` (owned or accepted invite).
+pub fn dump_for_user(conn_str: &str, user_id: u32) -> serde_json::Value {
+    let mut client = match Client::connect(conn_str, NoTls) {
+        Ok(c) => c,
+        Err(e) => return serde_json::json!({ "error": format!("DB connection failed: {e}") }),
+    };
+
+    let ids: Vec<i32> = match client.query(
+        "SELECT r.id FROM runs r
+         WHERE r.user_id = $1
+            OR EXISTS (
+                SELECT 1 FROM run_invites ri
+                WHERE ri.run_id = r.id AND ri.invited_user = $1 AND ri.status = 'accepted'
+            )",
+        &[&(user_id as i32)],
+    ) {
+        Ok(rows) => rows.iter().map(|r| r.get::<_, i32>(0)).collect(),
+        Err(e) => return serde_json::json!({ "error": format!("Access query failed: {e}") }),
+    };
+
+    let runs = dump_runs_for(&mut client, &ids);
+    let caught = dump_caught_for(&mut client, &ids);
+    let dead = dump_dead_for(&mut client, &ids);
+    let encounters = dump_encounters_for(&mut client, &ids);
+
+    serde_json::json!({ "runs": runs, "caught": caught, "dead": dead, "encounters": encounters })
+}
+
 fn dump_runs(client: &mut Client) -> serde_json::Value {
-    let rows = client
-        .query(
-            "SELECT r.id, r.player_name, r.started_at, r.ended_at,
+    dump_runs_for(client, &[])
+}
+
+fn dump_runs_for(client: &mut Client, ids: &[i32]) -> serde_json::Value {
+    let filter = if ids.is_empty() { "1=1".to_string() } else { format!("r.id = ANY(ARRAY[{}]::int[])", ids.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(",")) };
+    let sql = format!("SELECT r.id, r.player_name, r.started_at, r.ended_at,
                 COUNT(DISTINCT d.personality) AS deaths,
                 COUNT(DISTINCT c.personality) AS catches,
                 COUNT(DISTINCT e.id) AS encounters
@@ -5407,10 +5438,9 @@ fn dump_runs(client: &mut Client) -> serde_json::Value {
          LEFT JOIN dead_pokemon d ON d.run_id = r.id
          LEFT JOIN caught_pokemon c ON c.run_id = r.id
          LEFT JOIN encounters e ON e.run_id = r.id
-         GROUP BY r.id ORDER BY r.id",
-            &[],
-        )
-        .unwrap_or_default();
+         WHERE {filter}
+         GROUP BY r.id ORDER BY r.id");
+    let rows = client.query(&sql, &[]).unwrap_or_default();
 
     serde_json::Value::Array(
         rows.iter()
@@ -5431,17 +5461,20 @@ fn dump_runs(client: &mut Client) -> serde_json::Value {
 }
 
 fn dump_caught(client: &mut Client) -> serde_json::Value {
-    let rows = client.query(
-        "SELECT run_id, player_name, nickname,
+    dump_caught_for(client, &[])
+}
+
+fn dump_caught_for(client: &mut Client, ids: &[i32]) -> serde_json::Value {
+    let filter = if ids.is_empty() { "1=1".to_string() } else { format!("run_id = ANY(ARRAY[{}]::int[])", ids.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(",")) };
+    let sql = format!("SELECT run_id, player_name, nickname,
                 CASE WHEN species = 29 THEN 'NIDORAN♀' WHEN species = 32 THEN 'NIDORAN♂' ELSE species_name END,
                 level, nature, is_shiny,
                 location_name,
                 iv_hp, iv_attack, iv_defense, iv_speed, iv_sp_attack, iv_sp_defense,
                 ev_hp, ev_attack, ev_defense, ev_speed, ev_sp_attack, ev_sp_defense,
                 caught_at, gender
-         FROM caught_pokemon ORDER BY caught_at ASC",
-        &[],
-    ).unwrap_or_default();
+         FROM caught_pokemon WHERE {filter} ORDER BY caught_at ASC");
+    let rows = client.query(&sql, &[]).unwrap_or_default();
 
     serde_json::Value::Array(
         rows.iter()
@@ -5470,8 +5503,12 @@ fn dump_caught(client: &mut Client) -> serde_json::Value {
 }
 
 fn dump_dead(client: &mut Client) -> serde_json::Value {
-    let rows = client.query(
-        "SELECT run_id, player_name, nickname,
+    dump_dead_for(client, &[])
+}
+
+fn dump_dead_for(client: &mut Client, ids: &[i32]) -> serde_json::Value {
+    let filter = if ids.is_empty() { "1=1".to_string() } else { format!("run_id = ANY(ARRAY[{}]::int[])", ids.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(",")) };
+    let sql = format!("SELECT run_id, player_name, nickname,
                 CASE WHEN species = 29 THEN 'NIDORAN♀' WHEN species = 32 THEN 'NIDORAN♂' ELSE species_name END,
                 level, nature, is_shiny,
                 max_hp, attack, defense, speed, sp_attack, sp_defense,
@@ -5479,9 +5516,8 @@ fn dump_dead(client: &mut Client) -> serde_json::Value {
                 ev_hp, ev_attack, ev_defense, ev_speed, ev_sp_attack, ev_sp_defense,
                 is_soul_link_death,
                 died_at, gender
-         FROM dead_pokemon ORDER BY died_at ASC",
-        &[],
-    ).unwrap_or_default();
+         FROM dead_pokemon WHERE {filter} ORDER BY died_at ASC");
+    let rows = client.query(&sql, &[]).unwrap_or_default();
 
     serde_json::Value::Array(
         rows.iter()
@@ -5513,13 +5549,16 @@ fn dump_dead(client: &mut Client) -> serde_json::Value {
 }
 
 fn dump_encounters(client: &mut Client) -> serde_json::Value {
-    let rows = client.query(
-        "SELECT run_id, player_name, map_group, map_name,
+    dump_encounters_for(client, &[])
+}
+
+fn dump_encounters_for(client: &mut Client, ids: &[i32]) -> serde_json::Value {
+    let filter = if ids.is_empty() { "1=1".to_string() } else { format!("run_id = ANY(ARRAY[{}]::int[])", ids.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(",")) };
+    let sql = format!("SELECT run_id, player_name, map_group, map_name,
                 CASE WHEN species = 29 THEN 'NIDORAN♀' WHEN species = 32 THEN 'NIDORAN♂' ELSE species_name END,
                 level, caught, encountered_at
-         FROM encounters ORDER BY encountered_at ASC",
-        &[],
-    ).unwrap_or_default();
+         FROM encounters WHERE {filter} ORDER BY encountered_at ASC");
+    let rows = client.query(&sql, &[]).unwrap_or_default();
 
     serde_json::Value::Array(
         rows.iter()
@@ -7284,7 +7323,7 @@ pub fn user_dashboard_json(conn_str: &str, user_id: u32) -> serde_json::Value {
                )
            )
          GROUP BY r.id, r.user_id
-         ORDER BY r.id DESC",
+         ORDER BY (r.user_id = $1) DESC, r.id DESC",
         &[&(user_id as i32)],
     ) {
         Ok(r) => r,

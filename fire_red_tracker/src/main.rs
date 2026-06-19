@@ -725,12 +725,13 @@ fn main() {
                     if !drained.is_empty() {
                         thread_warnings.lock_or_recover().extend(drained);
                     }
-                    last_badge_mask = game::check_for_new_badges(
+                    let (new_mask, _) = game::check_for_new_badges(
                         last_badge_mask,
                         livesplit_split_on_badges,
                         livesplit_split_on_clear,
                         &thread_party,
                     );
+                    last_badge_mask = new_mask;
                     last_trainer_flags = check_for_new_trainer_battles(last_trainer_flags);
                 }
 

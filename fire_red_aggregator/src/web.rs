@@ -1642,12 +1642,23 @@ async fn serve_routes(State(state): State<WebState>) -> Html<String> {
     Html(apply_page(ROUTES_HTML, state.testing))
 }
 
-async fn serve_db_json(State(state): State<WebState>) -> axum::Json<serde_json::Value> {
+async fn serve_db_json(
+    State(state): State<WebState>,
+    headers: axum::http::HeaderMap,
+) -> axum::Json<serde_json::Value> {
     let conn = match state.db_conn {
         Some(s) => s,
         None => return axum::Json(serde_json::json!({ "error": "No database configured" })),
     };
-    let result = tokio::task::spawn_blocking(move || fire_red_database::dump_all(&conn)).await;
+    let token = extract_bearer(&headers).map(|s| s.to_string());
+    let result = tokio::task::spawn_blocking(move || {
+        if let Some(tok) = token {
+            if let Ok(Some(user)) = fire_red_database::validate_session(&tok) {
+                return fire_red_database::dump_for_user(&conn, user.id);
+            }
+        }
+        fire_red_database::dump_all(&conn)
+    }).await;
     axum::Json(result.unwrap_or_else(|e| {
         tracing::error!("db dump task failed: {e}");
         serde_json::json!({ "error": "Query failed" })
@@ -6414,6 +6425,10 @@ select option{background:#0f3460}
       <label for="run-picker">Select run to resume</label>
       <select id="run-picker"><option value="">— loading runs —</option></select>
     </div>
+    <p style="font-size:.78rem;color:#8a9;margin:.5rem 0 .8rem;padding:.45rem .6rem;background:#0a2a15;border:1px solid #1a5a2a;border-radius:4px;display:none" id="mp-hint">
+      &#9432; Multi-player: to share history and analytics, all players must connect to the <strong>same run</strong>.
+      Invited players should select the <em>[invited]</em> run above.
+    </p>
     <button class="btn btn-primary" id="connect-btn" type="submit" style="width:100%">Connect</button>
   </form>
   <div id="msg-connect" class="msg"></div>
@@ -6697,15 +6712,31 @@ async function quickConnect(runId){
 function populateRunPicker(){
   const sel=document.getElementById('run-picker');
   sel.innerHTML='<option value="">— new run —</option>';
-  // Only show runs the user can access
+  let firstInvitedActive=null;
+  let hasOwnActive=false;
   for(const run of ALL_RUNS){
     const status=MY_STATUSES[String(run.id)];
     if(status!=='owner'&&status!=='accepted')continue;
+    const isInvited=status==='accepted';
+    const active=run.ended_at==null;
+    if(active&&!isInvited)hasOwnActive=true;
+    if(active&&isInvited&&!firstInvitedActive)firstInvitedActive=run;
     const opt=document.createElement('option');
     opt.value=run.id;
-    opt.textContent='#'+run.id+' '+(run.player_name||'Unknown')+' ('+fmtDate(run.started_at)+')';
+    opt.textContent=(isInvited?'[invited] ':'[owner] ')+'#'+run.id+' '+(run.player_name||'Unknown')+' ('+fmtDate(run.started_at)+(active?'':', ended')+')';
     sel.appendChild(opt);
   }
+  // If the user has an accepted active invite but no own active run, default to
+  // "existing run" mode with that invited run pre-selected so their catches go
+  // to the correct shared run rather than a brand-new unlinked run.
+  if(firstInvitedActive&&!hasOwnActive){
+    const radio=document.querySelector('input[name="run-choice"][value="existing"]');
+    if(radio){radio.checked=true;updateRunPicker();}
+    sel.value=String(firstInvitedActive.id);
+  }
+  // Show the multi-player hint whenever any invited run exists.
+  const hint=document.getElementById('mp-hint');
+  if(hint)hint.style.display=firstInvitedActive?'':'none';
 }
 
 function updateRunPicker(){
@@ -8090,16 +8121,16 @@ input:focus{outline:none;border-color:#e94560}
     <a href="/mobile" onclick="localStorage.removeItem('desktop_mode')" style="color:#666;font-size:.75rem">Mobile View</a>
   </div>
   <div class="sidebar-group">
-    <div class="sidebar-group-label">Run Views (slot 0)</div>
-    <a href="/0/party">Party</a>
-    <a href="/0/routes">Routes</a>
-    <a href="/0/encounters">Encounters</a>
-    <a href="/0/caught">Caught</a>
-    <a href="/0/dead">Dead</a>
-    <a href="/0/box">Box</a>
-    <a href="/0/types">Type Coverage</a>
-    <a href="/0/items">Items</a>
-    <a href="/0/moves">Moves</a>
+    <div class="sidebar-group-label" id="run-views-label">Run Views (slot 0)</div>
+    <a href="/0/party" data-slot>Party</a>
+    <a href="/0/routes" data-slot>Routes</a>
+    <a href="/0/encounters" data-slot>Encounters</a>
+    <a href="/0/caught" data-slot>Caught</a>
+    <a href="/0/dead" data-slot>Dead</a>
+    <a href="/0/box" data-slot>Box</a>
+    <a href="/0/types" data-slot>Type Coverage</a>
+    <a href="/0/items" data-slot>Items</a>
+    <a href="/0/moves" data-slot>Moves</a>
   </div>
   <div class="sidebar-group">
     <div class="sidebar-group-label">Stats</div>
@@ -8148,7 +8179,11 @@ input:focus{outline:none;border-color:#e94560}
 
 <!-- ── Open runs ───────────────────────────────────────────────────── -->
 <div class="section">
-  <div class="section-title">Open Runs</div>
+  <div class="section-title" style="display:flex;align-items:center;justify-content:space-between">
+    <span>Open Runs</span>
+    <button class="btn btn-primary btn-sm" onclick="doCreateRun()" id="create-run-btn">+ New Run</button>
+  </div>
+  <div id="create-run-msg" class="msg"></div>
   <div id="open-runs-status" class="loading">Loading…</div>
   <table id="open-runs-table" style="display:none">
     <thead><tr><th>#</th><th>Player</th><th>Started</th><th>Caught</th><th>Deaths</th><th>Invite</th><th></th></tr></thead>
@@ -8230,6 +8265,28 @@ async function doEndRun(runId){
   else{const d=await r.json().catch(()=>({}));alert(d.error||'Could not end run.');}
 }
 
+async function doCreateRun(){
+  const btn=document.getElementById('create-run-btn');
+  const msg=document.getElementById('create-run-msg');
+  btn.disabled=true;btn.textContent='Creating…';
+  msg.className='msg';msg.style.display='none';
+  const r=await fetch('/api/run',{method:'POST',headers:{'Content-Type':'application/json',...authHdr()},body:JSON.stringify({})}).catch(()=>null);
+  btn.disabled=false;btn.textContent='+ New Run';
+  if(!r){msg.className='msg err';msg.textContent='Network error.';msg.style.display='';return;}
+  const d=await r.json().catch(()=>({}));
+  if(r.ok){msg.className='msg ok';msg.textContent='Run #'+d.run_id+' created.';msg.style.display='';loadDashboard();}
+  else{msg.className='msg err';msg.textContent=d.error||'Could not create run.';msg.style.display='';}
+}
+
+function updateSidebarSlot(slot){
+  if(slot==null)return;
+  document.querySelectorAll('.sidebar a[data-slot]').forEach(a=>{
+    a.href=a.getAttribute('href').replace(/\/\d+\//,'/'+slot+'/');
+  });
+  const lbl=document.getElementById('run-views-label');
+  if(lbl)lbl.textContent='Run Views (slot '+slot+')';
+}
+
 async function init(){
   if(!SESSION){window.location.href='/join';return;}
   if(!localStorage.getItem('desktop_mode')&&(/Android|iPhone|iPad|iPod/i.test(navigator.userAgent)||window.innerWidth<768)){
@@ -8250,6 +8307,7 @@ async function loadDashboard(){
   }
   const d=await r.json();
   if(d.error){document.getElementById('open-runs-status').textContent=d.error;return;}
+  if(d.my_slot!=null)updateSidebarSlot(d.my_slot);
 
   // Stats
   const s=d.stats||{};
@@ -9033,10 +9091,32 @@ async fn api_me_dashboard(
     let Some(conn) = state.db_conn else {
         return (StatusCode::SERVICE_UNAVAILABLE, axum::Json(serde_json::json!({ "error": "No database configured" })));
     };
+    let live_slots = state.live_slots.clone();
     let result = tokio::task::spawn_blocking(move || -> Result<serde_json::Value, String> {
         let user = fire_red_database::validate_session(&token)?
             .ok_or_else(|| "session expired or invalid".to_string())?;
-        Ok(fire_red_database::user_dashboard_json(&conn, user.id))
+        let mut data = fire_red_database::user_dashboard_json(&conn, user.id);
+
+        // Find which live slot is running this user's first open run.
+        let my_run_id: Option<u32> = data["open_runs"]
+            .as_array()
+            .and_then(|arr| arr.iter().find(|r| r["is_owner"].as_bool() == Some(true)))
+            .and_then(|r| r["id"].as_i64())
+            .map(|id| id as u32);
+
+        if let Some(run_id) = my_run_id {
+            let slots = live_slots.lock_or_recover();
+            let my_slot = slots.iter().position(|s| {
+                s.db.as_ref().and_then(|db| db.active_run_id()) == Some(run_id)
+            });
+            if let Some(obj) = data.as_object_mut() {
+                obj.insert("my_slot".to_string(), serde_json::json!(my_slot));
+            }
+        } else if let Some(obj) = data.as_object_mut() {
+            obj.insert("my_slot".to_string(), serde_json::Value::Null);
+        }
+
+        Ok(data)
     }).await;
     match result {
         Ok(Ok(v)) => (StatusCode::OK, axum::Json(v)),

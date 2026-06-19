@@ -168,7 +168,8 @@ async function loadData() {
         document.getElementById('all-runs-link').style.display = '';
     }
     try {
-        const res  = await fetch('/db.json');
+        const _tok=localStorage.getItem('frt_session');
+        const res  = await fetch('/db.json',_tok?{headers:{'Authorization':'Bearer '+_tok}}:{});
         const data = await res.json();
         if (data.error) throw new Error(data.error);
         document.getElementById('status').textContent =

@@ -252,7 +252,8 @@ async function clearAll() {
 async function loadData() {
     document.getElementById('status').textContent = 'Loading...';
     try {
-        const res = await fetch('/db.json');
+        const _tok=localStorage.getItem('frt_session');
+        const res = await fetch('/db.json',_tok?{headers:{'Authorization':'Bearer '+_tok}}:{});
         data = await res.json();
         if (data.error) throw new Error(data.error);
         document.getElementById('status').textContent =

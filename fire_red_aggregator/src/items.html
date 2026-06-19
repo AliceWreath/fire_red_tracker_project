@@ -220,29 +220,27 @@ const ITEM_NAMES = {
   273:"Tri-Pass",274:"Rainbow Pass",275:"Tea",276:"MysticTicket",
   277:"AuroraTicket",278:"Powder Jar",279:"Ruby",280:"Sapphire",
   281:"Magma Emblem",282:"Old Sea Map",
-  // TMs — item IDs 305..354
-  305:"TM01 Focus Punch",306:"TM02 Dragon Claw",307:"TM03 Water Pulse",
-  308:"TM04 Calm Mind",309:"TM05 Roar",310:"TM06 Toxic",
-  311:"TM07 Hail",312:"TM08 Bulk Up",313:"TM09 Bullet Seed",
-  314:"TM10 Hidden Power",315:"TM11 Sunny Day",316:"TM12 Taunt",
-  317:"TM13 Ice Beam",318:"TM14 Blizzard",319:"TM15 Hyper Beam",
-  320:"TM16 Light Screen",321:"TM17 Protect",322:"TM18 Rain Dance",
-  323:"TM19 Giga Drain",324:"TM20 Safeguard",325:"TM21 Frustration",
-  326:"TM22 SolarBeam",327:"TM23 Iron Tail",328:"TM24 Thunderbolt",
-  329:"TM25 Thunder",330:"TM26 Earthquake",331:"TM27 Return",
-  332:"TM28 Dig",333:"TM29 Psychic",334:"TM30 Shadow Ball",
-  335:"TM31 Brick Break",336:"TM32 Double Team",337:"TM33 Reflect",
-  338:"TM34 Shock Wave",339:"TM35 Flamethrower",340:"TM36 Sludge Bomb",
-  341:"TM37 Sandstorm",342:"TM38 Fire Blast",343:"TM39 Rock Tomb",
-  344:"TM40 Aerial Ace",345:"TM41 Torment",346:"TM42 Facade",
-  347:"TM43 Secret Power",348:"TM44 Rest",349:"TM45 Attract",
-  350:"TM46 Thief",351:"TM47 Steel Wing",352:"TM48 Skill Swap",
-  353:"TM49 Snatch",354:"TM50 Overheat",
-  // HMs — item IDs 339..345 in some builds; FireRed uses 339-345
-  // (In pokefirered, HMs start at ITEM_HM01 = 339 in some builds; these may vary)
-  // Let's use the common FireRed values:
-  355:"HM01 Cut",356:"HM02 Fly",357:"HM03 Surf",358:"HM04 Strength",
-  359:"HM05 Flash",360:"HM06 Rock Smash",361:"HM07 Waterfall",362:"HM08 Dive",
+  // TMs — item IDs 289..338 (ITEM_TM01 = 0x121 = 289 in pokefirered)
+  289:"TM01 Focus Punch",290:"TM02 Dragon Claw",291:"TM03 Water Pulse",
+  292:"TM04 Calm Mind",293:"TM05 Roar",294:"TM06 Toxic",
+  295:"TM07 Hail",296:"TM08 Bulk Up",297:"TM09 Bullet Seed",
+  298:"TM10 Hidden Power",299:"TM11 Sunny Day",300:"TM12 Taunt",
+  301:"TM13 Ice Beam",302:"TM14 Blizzard",303:"TM15 Hyper Beam",
+  304:"TM16 Light Screen",305:"TM17 Protect",306:"TM18 Rain Dance",
+  307:"TM19 Giga Drain",308:"TM20 Safeguard",309:"TM21 Frustration",
+  310:"TM22 SolarBeam",311:"TM23 Iron Tail",312:"TM24 Thunderbolt",
+  313:"TM25 Thunder",314:"TM26 Earthquake",315:"TM27 Return",
+  316:"TM28 Dig",317:"TM29 Psychic",318:"TM30 Shadow Ball",
+  319:"TM31 Brick Break",320:"TM32 Double Team",321:"TM33 Reflect",
+  322:"TM34 Shock Wave",323:"TM35 Flamethrower",324:"TM36 Sludge Bomb",
+  325:"TM37 Sandstorm",326:"TM38 Fire Blast",327:"TM39 Rock Tomb",
+  328:"TM40 Aerial Ace",329:"TM41 Torment",330:"TM42 Facade",
+  331:"TM43 Secret Power",332:"TM44 Rest",333:"TM45 Attract",
+  334:"TM46 Thief",335:"TM47 Steel Wing",336:"TM48 Skill Swap",
+  337:"TM49 Snatch",338:"TM50 Overheat",
+  // HMs — item IDs 339..346 (ITEM_HM01 = 0x153 = 339)
+  339:"HM01 Cut",340:"HM02 Fly",341:"HM03 Surf",342:"HM04 Strength",
+  343:"HM05 Flash",344:"HM06 Rock Smash",345:"HM07 Waterfall",346:"HM08 Dive",
 };
 
 function itemName(id) {

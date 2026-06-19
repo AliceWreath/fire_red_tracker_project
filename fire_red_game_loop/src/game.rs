@@ -886,8 +886,10 @@ pub fn read_enemy_slot0_raw() -> Option<(u32, u16, u16)> {
 /// Compares the current badge state against `last_mask` (one bit per badge,
 /// LSB = Brock) and fires events/webhooks for any newly obtained badges.
 ///
-/// Returns `Some(updated_mask)` reflecting all currently held badges, or the
-/// unchanged `last_mask` if badge state could not be read from EWRAM.
+/// Returns `(updated_mask, badge_state)`. The mask reflects all currently held
+/// badges, or the unchanged `last_mask` if badge state could not be read from
+/// EWRAM. The badge state is `Some` whenever the read succeeded so that callers
+/// on other threads can cache it without a second EWRAM read.
 ///
 /// Pass `None` (the uninitialized sentinel) on the first call or after any
 /// run/wipe reset. The function will silently adopt all currently-held badges
@@ -899,9 +901,9 @@ pub fn check_for_new_badges(
     split_on_badges: bool,
     split_on_clear: bool,
     party: &Arc<Mutex<Vec<Pokemon>>>,
-) -> Option<u8> {
+) -> (Option<u8>, Option<fire_red_badge::BadgeState>) {
     let Some(bs) = fire_red_badge::read_badge_state() else {
-        return last_mask;
+        return (last_mask, None);
     };
 
     // Build a current mask from the 8 badge flags.
@@ -918,12 +920,12 @@ pub fn check_for_new_badges(
     //   • Badge mask reset after a wipe or run change (new run's badges
     //     should not be re-fired once the mask is re-established).
     let Some(last) = last_mask else {
-        return Some(current_mask);
+        return (Some(current_mask), Some(bs));
     };
 
     let newly_earned = current_mask & !last;
     if newly_earned == 0 {
-        return Some(current_mask);
+        return (Some(current_mask), Some(bs));
     }
 
     let player = fire_red_loop::get_trainer_name();
@@ -984,7 +986,7 @@ pub fn check_for_new_badges(
         }
     }
 
-    Some(current_mask)
+    (Some(current_mask), Some(bs))
 }
 
 /// Byte offset within the flags array where the trainer flag range starts (flag 0x100 ÷ 8).

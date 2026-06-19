@@ -93,6 +93,12 @@ pub struct GameLoopState {
     /// Injection commands to execute on the next tick
     /// (e.g. `ClientMessage::GiveItem { … }`).
     pub command_queue: Arc<Mutex<VecDeque<ClientMessage>>>,
+    /// Cached badge state written by the game-loop thread (which has the
+    /// per-connection MemoryContext).  Read by `assemble_game_state` from the
+    /// BroadcastLoop thread, which has no MemoryContext.
+    pub badge_state: Arc<Mutex<Option<fire_red_badge::BadgeState>>>,
+    /// Cached money value, same reasoning as `badge_state`.
+    pub money: Arc<Mutex<u32>>,
 }
 
 impl GameLoopState {
@@ -109,6 +115,8 @@ impl GameLoopState {
             wipe_signal: Arc::new(AtomicBool::new(false)),
             warnings: Arc::new(Mutex::new(Vec::new())),
             command_queue: Arc::new(Mutex::new(VecDeque::new())),
+            badge_state: Arc::new(Mutex::new(None)),
+            money: Arc::new(Mutex::new(0)),
         }
     }
 }
@@ -251,15 +259,17 @@ pub fn spawn_game_loop(
     cfg: GameLoopConfig,
     state: Arc<GameLoopState>,
 ) -> std::thread::JoinHandle<()> {
-    let thread_party     = state.party.clone();
-    let thread_encounters= state.encounters.clone();
-    let thread_box       = state.box_entries.clone();
-    let thread_bag       = state.bag.clone();
-    let thread_loaded    = state.game_loaded.clone();
-    let thread_run_chg   = state.run_changed.clone();
-    let thread_wipe      = state.wipe_signal.clone();
-    let thread_warnings  = state.warnings.clone();
-    let thread_cmds      = state.command_queue.clone();
+    let thread_party        = state.party.clone();
+    let thread_encounters   = state.encounters.clone();
+    let thread_box          = state.box_entries.clone();
+    let thread_bag          = state.bag.clone();
+    let thread_loaded       = state.game_loaded.clone();
+    let thread_run_chg      = state.run_changed.clone();
+    let thread_wipe         = state.wipe_signal.clone();
+    let thread_warnings     = state.warnings.clone();
+    let thread_cmds         = state.command_queue.clone();
+    let thread_badge_state  = state.badge_state.clone();
+    let thread_money        = state.money.clone();
 
     std::thread::spawn(move || {
         fire_red_retroarch_interfacing::set_thread_addr(&cfg.retroarch_host, cfg.retroarch_port);
@@ -602,12 +612,17 @@ pub fn spawn_game_loop(
                 if !drained.is_empty() {
                     thread_warnings.lock_or_recover().extend(drained);
                 }
-                last_badge_mask = game::check_for_new_badges(
+                let (new_mask, cached_bs) = game::check_for_new_badges(
                     last_badge_mask,
                     cfg.livesplit_split_on_badges,
                     cfg.livesplit_split_on_clear,
                     &thread_party,
                 );
+                last_badge_mask = new_mask;
+                if let Some(bs) = cached_bs {
+                    *thread_badge_state.lock_or_recover() = Some(bs);
+                }
+                *thread_money.lock_or_recover() = game::read_money();
                 last_trainer_flags = game::check_for_new_trainer_battles(last_trainer_flags);
             }
 
@@ -642,11 +657,6 @@ pub fn assemble_game_state(
 
     let pos = get_value();
     let player_name = fire_red_loop::get_trainer_name();
-    let badge_state = if state.game_loaded.load(Ordering::Acquire) {
-        fire_red_badge::read_badge_state()
-    } else {
-        None
-    };
 
     let party     = state.party.lock_or_recover().clone();
     let encounters = state.encounters.lock_or_recover().clone();
@@ -669,7 +679,8 @@ pub fn assemble_game_state(
 
     let warnings: Vec<String> = state.warnings.lock_or_recover().drain(..).collect();
 
-    let money = crate::game::read_money();
+    let badge_state = state.badge_state.lock_or_recover().clone();
+    let money = *state.money.lock_or_recover();
     let (play_time_hours, play_time_minutes, play_time_seconds) =
         fire_red_loop::get_play_time_components();
 

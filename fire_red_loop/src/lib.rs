@@ -600,6 +600,16 @@ pub fn get_area_name() -> &'static str {
 /// a well-formed ROM), the last match wins.
 pub fn get_area_pokemon_id() -> WildPokemonHeader {
     let state = get_value();
+    get_area_pokemon_id_for_state(&state)
+}
+
+/// Like [`get_area_pokemon_id`] but uses the provided state instead of
+/// reading from [`STATE`]. Used for the initial encounter load before the
+/// map-polling thread has ticked.
+pub fn get_area_pokemon_id_for_state(state: &FireRedState) -> WildPokemonHeader {
+    if let Some(h) = get_area_pokemon_id_live(state) {
+        return h;
+    }
     let mut area_header = WildPokemonHeader::default();
     for header in get_wild_headers() {
         if header.map_group == state.map_group_id && header.map_num == state.map_name_id {
@@ -609,17 +619,104 @@ pub fn get_area_pokemon_id() -> WildPokemonHeader {
     area_header
 }
 
-/// Like [`get_area_pokemon_id`] but uses the provided state instead of
-/// reading from [`STATE`]. Used for the initial encounter load before the
-/// map-polling thread has ticked.
-pub fn get_area_pokemon_id_for_state(state: &FireRedState) -> WildPokemonHeader {
-    let mut area_header = WildPokemonHeader::default();
-    for header in get_wild_headers() {
-        if header.map_group == state.map_group_id && header.map_num == state.map_name_id {
-            area_header = WildPokemonHeader::fill_head(header, get_rom());
+/// Reads the wild-encounter header for the current map directly from RetroArch's
+/// ROM memory space (GBA bus addresses 0x08000000+).
+///
+/// This gives correct encounter data for randomized ROMs: the local ROM file on
+/// disk is only used to determine encounter-table structure (which map maps to
+/// which ROM offset), while the actual Pokémon species are read live from the
+/// game instance running in RetroArch.
+///
+/// Returns `None` if RetroArch is unreachable or no header matches the current map.
+pub fn get_area_pokemon_id_live(state: &FireRedState) -> Option<WildPokemonHeader> {
+    use fire_red_retroarch_interfacing::{generate_command, get_from_retroarch, make_socket};
+
+    let rom_header = get_wild_headers()
+        .iter()
+        .rev()
+        .find(|h| h.map_group == state.map_group_id && h.map_num == state.map_name_id)?;
+
+    // Read `len` bytes from a GBA bus address via RetroArch.
+    let read_at = |gba_addr: u32, len: usize| -> Option<Vec<u8>> {
+        let socket = make_socket().ok()?;
+        let cmd = generate_command(gba_addr, len);
+        let resp = get_from_retroarch(&socket, &cmd, len + 2)?;
+        resp.iter()
+            .skip(2)
+            .map(|s| u8::from_str_radix(s.trim(), 16).ok())
+            .collect()
+    };
+
+    // Read one encounter type: the WildPokemonInfoROM struct (8 bytes) followed
+    // by the species list at the pointer it contains.
+    let read_info = |rom_ptr: u32| -> WildPokemonInfo {
+        if rom_ptr == 0 {
+            return WildPokemonInfo::default();
         }
-    }
-    area_header
+        let info_bytes = match read_at(rom_ptr | 0x08000000, 8) {
+            Some(b) if b.len() >= 8 => b,
+            _ => return WildPokemonInfo::default(),
+        };
+        let encounter_rate = info_bytes[0];
+        let list_ptr = u32::from_le_bytes([
+            info_bytes[4], info_bytes[5], info_bytes[6], info_bytes[7],
+        ]) & 0x07FFFFFF;
+        if list_ptr == 0 {
+            return WildPokemonInfo::default();
+        }
+
+        // Read up to 200 entries × 4 bytes each.
+        let list_bytes = match read_at(list_ptr | 0x08000000, 200 * 4) {
+            Some(b) => b,
+            None => return WildPokemonInfo::default(),
+        };
+
+        let sentinel = list_ptr | 0x08000000;
+        let mut pokemon_list: Vec<WildPokemon> = Vec::new();
+        for i in 0..200usize {
+            let off = i * 4;
+            if off + 4 > list_bytes.len() {
+                break;
+            }
+            let word = u32::from_le_bytes([
+                list_bytes[off],
+                list_bytes[off + 1],
+                list_bytes[off + 2],
+                list_bytes[off + 3],
+            ]);
+            if word == sentinel {
+                break;
+            }
+            let min_level = list_bytes[off];
+            let max_level = list_bytes[off + 1];
+            let species = u16::from_le_bytes([list_bytes[off + 2], list_bytes[off + 3]]);
+            if species == 0 || max_level == 0 {
+                break;
+            }
+            if !pokemon_list.iter().any(|m: &WildPokemon| m.species == species) {
+                pokemon_list.push(WildPokemon { min_level, max_level, species });
+            }
+        }
+
+        WildPokemonInfo {
+            encounter_rate,
+            pokemon_count: pokemon_list.len(),
+            wild_pokemon_list: pokemon_list,
+        }
+    };
+
+    let mut area_header = WildPokemonHeader {
+        map_group: rom_header.map_group,
+        map_num:   rom_header.map_num,
+        ..Default::default()
+    };
+
+    area_header.land_mon_encounters  = read_info(rom_header.land_mon_encounters_rom_ptr);
+    area_header.water_mon_encounters = read_info(rom_header.water_mon_encounters_rom_ptr);
+    area_header.rock_smash_encounters = read_info(rom_header.rock_smash_encounters_rom_ptr);
+    area_header.fishing_encounters   = read_info(rom_header.fishing_encounters_rom_ptr);
+
+    Some(area_header)
 }
 
 /// Returns the wild-encounter pokemon for the current map as resolved name strings.
