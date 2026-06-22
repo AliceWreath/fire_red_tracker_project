@@ -8129,6 +8129,9 @@ input:focus{outline:none;border-color:#e94560}
 .empty{color:#666;font-size:.85rem;text-align:center;padding:1.5rem 0}
 .loading{color:#888;font-size:.85rem}
 .td-actions{text-align:right;white-space:nowrap;display:flex;justify-content:flex-end;gap:3px;flex-wrap:wrap}
+.token-row{display:flex;gap:.5rem;align-items:center;margin-top:.6rem}
+.token-display{font-family:monospace;font-size:.8rem;color:#7de;background:#0d1b30;box-shadow:0 0 0 1px rgba(255,255,255,0.08);border-radius:6px;padding:.5rem .75rem;word-break:break-all;flex:1;user-select:all;min-height:2.2rem;display:flex;align-items:center}
+.token-copied{font-size:.78rem;color:#7dce7d;margin-top:.4rem;display:none}
 </style>
 </head>
 <body>
@@ -8224,6 +8227,18 @@ input:focus{outline:none;border-color:#e94560}
 <div class="section" id="invites-section" style="display:none">
   <div class="section-title">Pending Run Invites</div>
   <div id="invites-list"></div>
+</div>
+
+<!-- ── Auth token ──────────────────────────────────────────────────── -->
+<div class="section">
+  <div class="section-title">Auth Token</div>
+  <p style="font-size:.82rem;color:#888;text-wrap:pretty">Use this token to authenticate API calls or add <code style="background:#0d1b30;color:#7de;padding:.1rem .3rem;border-radius:3px;font-size:.78rem">?token=…</code> to any OBS overlay URL.</p>
+  <div class="token-row">
+    <div class="token-display" id="token-display">••••••••••••••••••••••••••••••••</div>
+    <button class="btn btn-secondary btn-sm" id="token-toggle-btn" onclick="toggleToken()">Show</button>
+    <button class="btn btn-secondary btn-sm" onclick="copyToken()">Copy</button>
+  </div>
+  <div class="token-copied" id="token-copied">Copied to clipboard</div>
 </div>
 
 </div><!-- /container -->
@@ -8463,6 +8478,20 @@ async function respondInvite(runId,accept,inviteId){
     if(!list.children.length)sec.style.display='none';
     if(accept)loadDashboard();
   }
+}
+
+let tokenVisible=false;
+function toggleToken(){
+  tokenVisible=!tokenVisible;
+  document.getElementById('token-display').textContent=tokenVisible?(SESSION||'—'):'••••••••••••••••••••••••••••••••';
+  document.getElementById('token-toggle-btn').textContent=tokenVisible?'Hide':'Show';
+}
+function copyToken(){
+  if(!SESSION)return;
+  const msg=document.getElementById('token-copied');
+  const show=()=>{msg.style.display='';setTimeout(()=>{msg.style.display='none';},2000);};
+  if(navigator.clipboard){navigator.clipboard.writeText(SESSION).then(show).catch(()=>{});}
+  else{const el=document.createElement('textarea');el.value=SESSION;document.body.appendChild(el);el.select();document.execCommand('copy');document.body.removeChild(el);show();}
 }
 
 init();
