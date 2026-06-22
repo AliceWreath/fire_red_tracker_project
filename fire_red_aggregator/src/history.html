@@ -7,9 +7,11 @@
 * { box-sizing: border-box; margin: 0; padding: 0; }
 html, body {
     background: #0f0f0f;
-    font-family: 'Segoe UI', Tahoma, sans-serif;
+    font-family: 'Segoe UI', system-ui, sans-serif;
     color: #e0e0e0;
     min-height: 100vh;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
 }
 #root { max-width: 1100px; margin: 0 auto; padding: 16px; }
 
@@ -21,26 +23,34 @@ html, body {
     border-bottom: 1px solid rgba(255,255,255,0.1);
     margin-bottom: 20px;
 }
-.page-title { font-size: 20px; font-weight: bold; color: #fff; }
+.page-title { font-size: 20px; font-weight: bold; color: #fff; text-wrap: balance; }
 .status { font-size: 12px; color: #888; }
 .refresh-btn {
     margin-left: auto;
     font-size: 12px; font-weight: 600; padding: 4px 12px;
     background: #1a4a1a; border: 1px solid #2a7a2a; border-radius: 5px;
     color: #80e080; cursor: pointer;
+    transition-property: background, transform;
+    transition-duration: 150ms;
+    transition-timing-function: ease-out;
 }
 .refresh-btn:hover { background: #224a22; }
+.refresh-btn:active { transform: scale(0.96); }
 .empty { text-align: center; color: #555; padding: 40px; font-size: 14px; }
 .error { padding: 16px; background: rgba(80,20,20,0.4); border-radius: 6px; color: #e06060; }
 
 /* Run card */
 .run-card {
     background: rgba(255,255,255,0.03);
-    border: 1px solid rgba(255,255,255,0.08);
+    box-shadow: 0 0 0 1px rgba(255,255,255,0.08);
     border-radius: 8px;
     margin-bottom: 16px;
     overflow: hidden;
+    transition-property: box-shadow;
+    transition-duration: 150ms;
+    transition-timing-function: ease-out;
 }
+.run-card:hover { box-shadow: 0 0 0 1px rgba(255,255,255,0.15); }
 .run-header {
     display: flex;
     align-items: center;
@@ -62,7 +72,7 @@ html, body {
 .run-dates { font-size: 11px; color: #888; margin-left: auto; text-align: right; }
 .run-stats { display: flex; gap: 14px; font-size: 12px; }
 .stat { display: flex; flex-direction: column; align-items: center; gap: 1px; }
-.stat-val { font-size: 15px; font-weight: bold; }
+.stat-val { font-size: 15px; font-weight: bold; font-variant-numeric: tabular-nums; }
 .stat-val.catches  { color: #60d060; }
 .stat-val.deaths   { color: #e06060; }
 .stat-val.encs     { color: #d0a040; }

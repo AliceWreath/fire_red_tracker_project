@@ -6314,13 +6314,16 @@ const JOIN_HTML: &str = r#"<!DOCTYPE html>
 <title>Run Select – Fire Red Tracker</title>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
-body{font-family:sans-serif;background:#1a1a2e;color:#eee;min-height:100vh;padding:2rem 1rem}
+html{-webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale}
+body{font-family:'Segoe UI',system-ui,sans-serif;background:#1a1a2e;color:#eee;min-height:100vh;padding:2rem 1rem}
 .container{max-width:860px;margin:0 auto}
-h1{font-size:1.5rem;color:#e94560;margin-bottom:1.5rem;display:flex;align-items:center;justify-content:space-between}
+h1{font-size:1.5rem;color:#e94560;margin-bottom:1.5rem;display:flex;align-items:center;justify-content:space-between;text-wrap:balance}
 h1 .user-pill{display:inline-flex;align-items:center;gap:.6rem;background:#1a3a1a;border:1px solid #2d5a2d;border-radius:20px;padding:.2rem .85rem;font-size:.82rem;color:#7dce7d}
-.section{background:#16213e;border:1px solid #0f3460;border-radius:8px;padding:1.5rem;margin-bottom:1.5rem}
+.section{background:#16213e;box-shadow:0 0 0 1px rgba(255,255,255,0.08);border-radius:12px;padding:1.5rem;margin-bottom:1.5rem;transition-property:box-shadow;transition-duration:150ms;transition-timing-function:ease-out}
+.section:hover{box-shadow:0 0 0 1px rgba(255,255,255,0.13)}
 .section-title{font-size:.95rem;font-weight:700;color:#ccc;margin-bottom:1rem;padding-bottom:.5rem;border-bottom:1px solid #1e3a6e;display:flex;align-items:center;justify-content:space-between}
-.btn{display:inline-block;padding:.45rem 1.1rem;border:none;border-radius:4px;font-size:.875rem;cursor:pointer;text-decoration:none;line-height:1.4}
+.btn{display:inline-block;padding:.45rem 1.1rem;border:none;border-radius:6px;font-size:.875rem;cursor:pointer;text-decoration:none;line-height:1.4;transition-property:transform,background;transition-duration:150ms;transition-timing-function:ease-out}
+.btn:not(:disabled):active{transform:scale(0.96)}
 .btn-primary{background:#e94560;color:#fff}
 .btn-primary:hover{background:#c73652}
 .btn-primary:disabled{background:#555;cursor:default}
@@ -6341,14 +6344,14 @@ table{width:100%;border-collapse:collapse;font-size:.85rem}
 th{text-align:left;color:#888;font-weight:600;font-size:.72rem;text-transform:uppercase;letter-spacing:.4px;padding:.4rem .6rem;border-bottom:1px solid #1e3a6e}
 td{padding:.42rem .6rem;border-bottom:1px solid rgba(255,255,255,0.04);vertical-align:middle}
 tr:hover td{background:rgba(255,255,255,0.03)}
-.run-id{color:#5090e0;font-weight:600}
+.run-id{color:#5090e0;font-weight:600;font-variant-numeric:tabular-nums}
 .run-active{color:#60e060;font-size:.75rem;font-weight:700}
-.deaths{color:#e06060}
-.catches{color:#60d060}
+.deaths{color:#e06060;font-variant-numeric:tabular-nums}
+.catches{color:#60d060;font-variant-numeric:tabular-nums}
 .badge-owner{display:inline-block;font-size:.65rem;padding:.1rem .35rem;border-radius:3px;background:#1a3a5c;color:#5090e0;border:1px solid #2d5499;vertical-align:middle;margin-left:.3rem}
 .badge-invited{display:inline-block;font-size:.65rem;padding:.1rem .35rem;border-radius:3px;background:#1a3a1a;color:#7dce7d;border:1px solid #2d8a2d;vertical-align:middle;margin-left:.3rem}
 label{display:block;font-size:.85rem;color:#ccc;margin-bottom:.3rem}
-input[type=text],input[type=password],input[type=number],select{width:100%;padding:.5rem .7rem;background:#0f3460;border:1px solid #444;border-radius:4px;color:#eee;font-size:.9rem;margin-bottom:.8rem}
+input[type=text],input[type=password],input[type=number],select{width:100%;padding:.5rem .7rem;background:#0f3460;border:1px solid #444;border-radius:4px;color:#eee;font-size:.9rem;margin-bottom:.8rem;transition-property:border-color;transition-duration:150ms;transition-timing-function:ease-out}
 input:focus,select:focus{outline:none;border-color:#e94560}
 select option{background:#0f3460}
 .msg{margin-top:.6rem;padding:.5rem;border-radius:4px;text-align:center;font-size:.85rem;display:none}
@@ -7925,14 +7928,17 @@ const LOGIN_HTML: &str = r#"<!DOCTYPE html>
 <title>Fire Red Tracker</title>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
-body{font-family:sans-serif;background:#1a1a2e;color:#eee;min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:2rem 1rem}
-.card{background:#16213e;border:1px solid #0f3460;border-radius:10px;padding:2rem;width:100%;max-width:380px}
-h1{font-size:1.4rem;color:#e94560;margin-bottom:.3rem;text-align:center}
-.subtitle{font-size:.8rem;color:#556;text-align:center;margin-bottom:1.8rem}
+html{-webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale}
+body{font-family:'Segoe UI',system-ui,sans-serif;background:#1a1a2e;color:#eee;min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:2rem 1rem}
+@keyframes cardIn{from{opacity:0;transform:translateY(12px);filter:blur(4px)}to{opacity:1;transform:translateY(0);filter:blur(0)}}
+.card{background:#16213e;box-shadow:0 0 0 1px rgba(255,255,255,0.1);border-radius:12px;padding:2rem;width:100%;max-width:380px;animation:cardIn 350ms ease-out both}
+h1{font-size:1.4rem;color:#e94560;margin-bottom:.3rem;text-align:center;text-wrap:balance}
+.subtitle{font-size:.8rem;color:#556;text-align:center;margin-bottom:1.8rem;text-wrap:pretty}
 label{display:block;font-size:.85rem;color:#ccc;margin-bottom:.3rem}
-input{width:100%;padding:.55rem .75rem;background:#0f3460;border:1px solid #444;border-radius:5px;color:#eee;font-size:.9rem;margin-bottom:1rem}
+input{width:100%;padding:.55rem .75rem;background:#0f3460;border:1px solid #444;border-radius:5px;color:#eee;font-size:.9rem;margin-bottom:1rem;transition-property:border-color;transition-duration:150ms;transition-timing-function:ease-out}
 input:focus{outline:none;border-color:#e94560}
-.btn{display:block;width:100%;padding:.55rem;border:none;border-radius:5px;font-size:.9rem;cursor:pointer;text-align:center;text-decoration:none;line-height:1.4}
+.btn{display:block;width:100%;padding:.55rem;border:none;border-radius:7px;font-size:.9rem;cursor:pointer;text-align:center;text-decoration:none;line-height:1.4;transition-property:transform,background;transition-duration:150ms;transition-timing-function:ease-out}
+.btn:active{transform:scale(0.96)}
 .btn-primary{background:#e94560;color:#fff;margin-bottom:.7rem}
 .btn-primary:hover{background:#c73652}
 .btn-secondary{background:#1e3a6e;color:#aad;border:1px solid #2d5499;margin-bottom:.5rem}
@@ -7943,7 +7949,7 @@ input:focus{outline:none;border-color:#e94560}
 .divider{border:none;border-top:1px solid #1e3a6e;margin:1.2rem 0}
 .links{display:flex;flex-direction:column;gap:.5rem}
 .user-info{text-align:center;margin-bottom:1rem;font-size:.9rem;color:#7dce7d}
-.hint{font-size:.75rem;color:#556;text-align:center;margin-top:.4rem}
+.hint{font-size:.75rem;color:#556;text-align:center;margin-top:.4rem;text-wrap:pretty}
 </style>
 </head>
 <body>
@@ -8054,25 +8060,28 @@ const DASHBOARD_HTML: &str = r#"<!DOCTYPE html>
 <title>Dashboard – Fire Red Tracker</title>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
-body{font-family:sans-serif;background:#1a1a2e;color:#eee;min-height:100vh;display:flex}
-.sidebar{width:190px;min-width:190px;background:#0d1b30;border-right:1px solid #0f3460;padding:.75rem 0;overflow-y:auto;min-height:100vh;flex-shrink:0}
+html{-webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale}
+body{font-family:'Segoe UI',system-ui,sans-serif;background:#1a1a2e;color:#eee;min-height:100vh;display:flex}
+.sidebar{width:190px;min-width:190px;background:#0d1b30;border-right:1px solid rgba(255,255,255,0.06);padding:.75rem 0;overflow-y:auto;min-height:100vh;flex-shrink:0}
 .sidebar-group{margin-bottom:.1rem}
 .sidebar-group-label{font-size:.63rem;font-weight:700;text-transform:uppercase;letter-spacing:.7px;color:#4a6080;padding:.55rem 1rem .15rem}
-.sidebar a{display:block;padding:.32rem 1rem;font-size:.8rem;color:#8aa;text-decoration:none;border-left:2px solid transparent;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sidebar a{display:block;padding:.32rem 1rem;font-size:.8rem;color:#8aa;text-decoration:none;border-left:2px solid transparent;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;transition-property:color,background,border-left-color;transition-duration:150ms;transition-timing-function:ease-out}
 .sidebar a:hover{background:#1a2a45;color:#eee;border-left-color:#5090e0}
 .sidebar a.active{background:#1a2a40;color:#e94560;border-left-color:#e94560;font-weight:600}
 .main{flex:1;padding:2rem 1.5rem;min-width:0}
 .container{max-width:860px}
-h1{font-size:1.5rem;color:#e94560;margin-bottom:1.5rem;display:flex;align-items:center;justify-content:space-between}
-h1 a{font-size:.85rem;color:#5090e0;text-decoration:none}
-h1 a:hover{text-decoration:underline}
-.section{background:#16213e;border:1px solid #0f3460;border-radius:8px;padding:1.5rem;margin-bottom:1.5rem}
+h1{font-size:1.5rem;color:#e94560;margin-bottom:1.5rem;display:flex;align-items:center;justify-content:space-between;text-wrap:balance}
+h1 a{font-size:.85rem;color:#5090e0;text-decoration:none;transition-property:color;transition-duration:150ms;transition-timing-function:ease-out}
+h1 a:hover{text-decoration:underline;color:#70b0ff}
+.section{background:#16213e;box-shadow:0 0 0 1px rgba(255,255,255,0.08);border-radius:12px;padding:1.5rem;margin-bottom:1.5rem;transition-property:box-shadow;transition-duration:150ms;transition-timing-function:ease-out}
+.section:hover{box-shadow:0 0 0 1px rgba(255,255,255,0.13)}
 .section-title{font-size:.95rem;font-weight:700;color:#ccc;margin-bottom:1rem;padding-bottom:.5rem;border-bottom:1px solid #1e3a6e}
 .stat-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:1rem;margin-bottom:.5rem}
-.stat-card{background:#0f3460;border-radius:6px;padding:1rem;text-align:center}
-.stat-num{font-size:1.8rem;font-weight:700;color:#e94560;line-height:1}
+.stat-card{background:#0f3460;border-radius:8px;padding:1rem;text-align:center}
+.stat-num{font-size:1.8rem;font-weight:700;color:#e94560;line-height:1;font-variant-numeric:tabular-nums}
 .stat-label{font-size:.75rem;color:#888;margin-top:.3rem;text-transform:uppercase;letter-spacing:.5px}
-.btn{display:inline-block;padding:.4rem 1rem;border:none;border-radius:4px;font-size:.85rem;cursor:pointer;text-decoration:none;line-height:1.4}
+.btn{display:inline-block;padding:.4rem 1rem;border:none;border-radius:6px;font-size:.85rem;cursor:pointer;text-decoration:none;line-height:1.4;transition-property:transform,background;transition-duration:150ms;transition-timing-function:ease-out}
+.btn:not(:disabled):active{transform:scale(0.96)}
 .btn-primary{background:#e94560;color:#fff}
 .btn-primary:hover{background:#c73652}
 .btn-secondary{background:#1e3a6e;color:#aad;border:1px solid #2d5499}
@@ -8091,24 +8100,25 @@ table{width:100%;border-collapse:collapse;font-size:.85rem}
 th{text-align:left;color:#888;font-weight:600;font-size:.72rem;text-transform:uppercase;letter-spacing:.4px;padding:.4rem .6rem;border-bottom:1px solid #1e3a6e}
 td{padding:.42rem .6rem;border-bottom:1px solid rgba(255,255,255,0.04);vertical-align:middle}
 tr:hover td{background:rgba(255,255,255,0.03)}
-.run-id{color:#5090e0;font-weight:600}
-.deaths{color:#e06060}
-.catches{color:#60d060}
+.run-id{color:#5090e0;font-weight:600;font-variant-numeric:tabular-nums}
+.deaths{color:#e06060;font-variant-numeric:tabular-nums}
+.catches{color:#60d060;font-variant-numeric:tabular-nums}
 .badge-owner{display:inline-block;font-size:.65rem;padding:.1rem .35rem;border-radius:3px;background:#1a3a5c;color:#5090e0;border:1px solid #2d5499;vertical-align:middle;margin-left:.35rem}
 .badge-invited{display:inline-block;font-size:.65rem;padding:.1rem .35rem;border-radius:3px;background:#1a3a1a;color:#7dce7d;border:1px solid #2d8a2d;vertical-align:middle;margin-left:.35rem}
 .party-grid{display:flex;flex-wrap:wrap;gap:.6rem}
-.party-mon{background:#0f3460;border-radius:6px;padding:.6rem .9rem;min-width:110px;font-size:.82rem}
+.party-mon{background:#0f3460;border-radius:8px;padding:.6rem .9rem;min-width:110px;font-size:.82rem;transition-property:box-shadow;transition-duration:150ms;transition-timing-function:ease-out}
+.party-mon:hover{box-shadow:0 0 0 1px rgba(255,255,255,0.12)}
 .mon-name{font-weight:600;color:#eee}
 .mon-species{color:#888;font-size:.75rem}
-.mon-level{color:#5090e0;font-size:.75rem}
+.mon-level{color:#5090e0;font-size:.75rem;font-variant-numeric:tabular-nums}
 .mon-shiny{color:#f0d060;font-size:.7rem;margin-left:.3rem}
 .invite-row{display:flex;align-items:center;gap:.7rem;padding:.6rem 0;border-bottom:1px solid rgba(255,255,255,0.05);flex-wrap:wrap}
 .invite-row:last-child{border-bottom:none}
 .invite-info{flex:1;font-size:.85rem}
-.invite-run{color:#5090e0;font-weight:600}
+.invite-run{color:#5090e0;font-weight:600;font-variant-numeric:tabular-nums}
 .invite-from{color:#888;font-size:.78rem}
 label{display:block;font-size:.85rem;color:#ccc;margin-bottom:.3rem}
-input[type=text]{width:100%;padding:.5rem .7rem;background:#0f3460;border:1px solid #444;border-radius:4px;color:#eee;font-size:.9rem;margin-bottom:.8rem}
+input[type=text]{width:100%;padding:.5rem .7rem;background:#0f3460;border:1px solid #444;border-radius:4px;color:#eee;font-size:.9rem;margin-bottom:.8rem;transition-property:border-color;transition-duration:150ms;transition-timing-function:ease-out}
 input:focus{outline:none;border-color:#e94560}
 .form-row{display:flex;gap:.6rem;align-items:flex-end}
 .form-row>*{flex:1;margin-bottom:0}
@@ -8221,7 +8231,7 @@ input:focus{outline:none;border-color:#e94560}
 
 <!-- Invite modal overlay -->
 <div id="invite-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:100;align-items:center;justify-content:center">
-  <div style="background:#16213e;border:1px solid #0f3460;border-radius:8px;padding:1.5rem;width:340px;max-width:95vw">
+  <div style="background:#16213e;box-shadow:0 0 0 1px rgba(255,255,255,0.1),0 8px 32px rgba(0,0,0,0.5);border-radius:12px;padding:1.5rem;width:340px;max-width:95vw">
     <div style="font-size:.95rem;font-weight:700;color:#ccc;margin-bottom:1rem">Invite User to Run <span id="modal-run-id" style="color:#5090e0"></span></div>
     <label for="invite-username">Username to invite</label>
     <input id="invite-username" type="text" placeholder="their username" autocomplete="off">
@@ -8486,17 +8496,21 @@ const INTEGRATIONS_HTML: &str = r#"<!DOCTYPE html>
 <title>Integrations — Fire Red Tracker</title>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
-body{font-family:sans-serif;background:#1a1a2e;color:#eee;min-height:100vh;padding:2rem 1rem}
+html{-webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale}
+body{font-family:'Segoe UI',system-ui,sans-serif;background:#1a1a2e;color:#eee;min-height:100vh;padding:2rem 1rem}
 .container{max-width:780px;margin:0 auto}
-h1{font-size:1.4rem;color:#e94560;margin-bottom:.3rem}
-.subtitle{font-size:.8rem;color:#556;margin-bottom:2rem}
-.card{background:#16213e;border:1px solid #0f3460;border-radius:10px;padding:1.5rem;margin-bottom:1.5rem}
+h1{font-size:1.4rem;color:#e94560;margin-bottom:.3rem;text-wrap:balance}
+.subtitle{font-size:.8rem;color:#556;margin-bottom:2rem;text-wrap:pretty}
+.card{background:#16213e;box-shadow:0 0 0 1px rgba(255,255,255,0.08);border-radius:12px;padding:1.5rem;margin-bottom:1.5rem;transition-property:box-shadow;transition-duration:150ms;transition-timing-function:ease-out}
+.card:hover{box-shadow:0 0 0 1px rgba(255,255,255,0.13)}
 .card h2{font-size:1rem;margin-bottom:.1rem;display:flex;align-items:center;gap:.5rem}
-.card .desc{font-size:.78rem;color:#777;margin-bottom:1rem}
+.card .desc{font-size:.78rem;color:#777;margin-bottom:1rem;text-wrap:pretty}
 label{display:block;font-size:.82rem;color:#ccc;margin-bottom:.25rem}
-input,textarea{width:100%;padding:.45rem .65rem;background:#0f3460;border:1px solid #444;border-radius:5px;color:#eee;font-size:.85rem;margin-bottom:.75rem}
+input,textarea{width:100%;padding:.45rem .65rem;background:#0f3460;border:1px solid #444;border-radius:5px;color:#eee;font-size:.85rem;margin-bottom:.75rem;transition-property:border-color;transition-duration:150ms;transition-timing-function:ease-out}
+input:focus,textarea:focus{outline:none;border-color:#e94560}
 textarea{resize:vertical;min-height:60px}
-.btn{display:inline-block;padding:.4rem .9rem;border:none;border-radius:5px;font-size:.82rem;cursor:pointer;text-decoration:none}
+.btn{display:inline-block;padding:.4rem .9rem;border:none;border-radius:6px;font-size:.82rem;cursor:pointer;text-decoration:none;transition-property:transform,background;transition-duration:150ms;transition-timing-function:ease-out}
+.btn:active{transform:scale(0.96)}
 .btn-primary{background:#e94560;color:#fff}
 .btn-primary:hover{background:#c73652}
 .btn-del{background:#3a1a1a;color:#ce7d7d;border:1px solid #6a2d2d}
@@ -8509,7 +8523,7 @@ textarea{resize:vertical;min-height:60px}
 .err{background:#4a1a1a;border:1px solid #8a2d2d;color:#ce7d7d;display:block}
 .active-badge{font-size:.7rem;background:#1a4a1a;color:#7dce7d;border:1px solid #2d8a2d;border-radius:4px;padding:.1rem .4rem}
 nav{display:flex;gap:1rem;font-size:.85rem;margin-bottom:1.5rem}
-nav a{color:#aad;text-decoration:none}nav a:hover{color:#fff}
+nav a{color:#aad;text-decoration:none;transition-property:color;transition-duration:150ms;transition-timing-function:ease-out}nav a:hover{color:#fff}
 </style>
 </head>
 <body>
@@ -8673,17 +8687,18 @@ const GUIDE_HTML: &str = r##"<!DOCTYPE html>
 <title>Guide – Fire Red Tracker</title>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
-body{font-family:sans-serif;background:#1a1a2e;color:#eee;display:flex;min-height:100vh}
-.sidebar{width:200px;min-width:200px;background:#0d1b30;border-right:1px solid #0f3460;padding:.75rem 0;overflow-y:auto;min-height:100vh;flex-shrink:0;position:sticky;top:0;height:100vh}
+html{-webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale}
+body{font-family:'Segoe UI',system-ui,sans-serif;background:#1a1a2e;color:#eee;display:flex;min-height:100vh}
+.sidebar{width:200px;min-width:200px;background:#0d1b30;border-right:1px solid rgba(255,255,255,0.06);padding:.75rem 0;overflow-y:auto;min-height:100vh;flex-shrink:0;position:sticky;top:0;height:100vh}
 .sidebar-group-label{font-size:.63rem;font-weight:700;text-transform:uppercase;letter-spacing:.7px;color:#4a6080;padding:.55rem 1rem .15rem}
-.sidebar a{display:block;padding:.32rem 1rem;font-size:.8rem;color:#8aa;text-decoration:none;border-left:2px solid transparent;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sidebar a{display:block;padding:.32rem 1rem;font-size:.8rem;color:#8aa;text-decoration:none;border-left:2px solid transparent;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;transition-property:color,background,border-left-color;transition-duration:150ms;transition-timing-function:ease-out}
 .sidebar a:hover{background:#1a2a45;color:#eee;border-left-color:#5090e0}
-.sidebar a.back{color:#5090e0;border-bottom:1px solid #0f3460;margin-bottom:.4rem;padding-bottom:.5rem}
+.sidebar a.back{color:#5090e0;border-bottom:1px solid rgba(255,255,255,0.06);margin-bottom:.4rem;padding-bottom:.5rem}
 .main{flex:1;padding:2rem 2.5rem;max-width:860px;min-width:0}
-h1{font-size:1.5rem;color:#e94560;margin-bottom:.4rem}
-h2{font-size:1.15rem;color:#e94560;margin:2.2rem 0 .8rem;padding-top:.5rem;border-top:1px solid #1e3a6e}
+h1{font-size:1.5rem;color:#e94560;margin-bottom:.4rem;text-wrap:balance}
+h2{font-size:1.15rem;color:#e94560;margin:2.2rem 0 .8rem;padding-top:.5rem;border-top:1px solid #1e3a6e;text-wrap:balance}
 h2:first-of-type{border-top:none;margin-top:1rem}
-h3{font-size:.95rem;color:#ccc;margin:1.2rem 0 .4rem;font-weight:700}
+h3{font-size:.95rem;color:#ccc;margin:1.2rem 0 .4rem;font-weight:700;text-wrap:balance}
 p{font-size:.88rem;color:#bbb;line-height:1.6;margin-bottom:.7rem}
 ul,ol{font-size:.88rem;color:#bbb;line-height:1.6;margin-bottom:.7rem;padding-left:1.4rem}
 li{margin-bottom:.2rem}
