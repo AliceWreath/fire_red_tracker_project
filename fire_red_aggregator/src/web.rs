@@ -5212,16 +5212,19 @@ async fn api_complete_goal(
     })
     .await
     .unwrap_or(None);
-    if let Some(rid) = run_id {
-        let can = tokio::task::spawn_blocking(move || {
-            fire_red_database::user_can_access_run(rid, uid)
-        })
-        .await
-        .unwrap_or(Ok(false))
-        .unwrap_or(false);
-        if !can {
-            return axum::Json(serde_json::json!({ "error": "access denied" }));
-        }
+    // Fail-closed: if the goal doesn't exist or the lookup failed, deny the
+    // operation rather than skipping the ownership check.
+    let Some(rid) = run_id else {
+        return axum::Json(serde_json::json!({ "error": "goal not found" }));
+    };
+    let can = tokio::task::spawn_blocking(move || {
+        fire_red_database::user_can_access_run(rid, uid)
+    })
+    .await
+    .unwrap_or(Ok(false))
+    .unwrap_or(false);
+    if !can {
+        return axum::Json(serde_json::json!({ "error": "access denied" }));
     }
     let result = tokio::task::spawn_blocking(move || {
         fire_red_database::complete_goal(&conn, goal_id)
@@ -5248,16 +5251,19 @@ async fn api_delete_goal(
     })
     .await
     .unwrap_or(None);
-    if let Some(rid) = run_id {
-        let can = tokio::task::spawn_blocking(move || {
-            fire_red_database::user_can_access_run(rid, uid)
-        })
-        .await
-        .unwrap_or(Ok(false))
-        .unwrap_or(false);
-        if !can {
-            return axum::Json(serde_json::json!({ "error": "access denied" }));
-        }
+    // Fail-closed: if the goal doesn't exist or the lookup failed, deny the
+    // operation rather than skipping the ownership check.
+    let Some(rid) = run_id else {
+        return axum::Json(serde_json::json!({ "error": "goal not found" }));
+    };
+    let can = tokio::task::spawn_blocking(move || {
+        fire_red_database::user_can_access_run(rid, uid)
+    })
+    .await
+    .unwrap_or(Ok(false))
+    .unwrap_or(false);
+    if !can {
+        return axum::Json(serde_json::json!({ "error": "access denied" }));
     }
     let result = tokio::task::spawn_blocking(move || {
         fire_red_database::delete_goal(&conn, goal_id)
@@ -7563,10 +7569,17 @@ async fn api_register_user(
     }
 }
 
-/// `GET /api/users` — list all registered users (admin view).
+/// `GET /api/users` — list all registered users (server-owner only).
 ///
+/// Restricted to user ID 1 (the first registered account = server owner).
 /// Returns: `[{ "id": N, "username": "...", "created_at": N }, ...]`
-async fn api_list_users() -> impl IntoResponse {
+async fn api_list_users(Extension(user): Extension<User>) -> impl IntoResponse {
+    if user.id != 1 {
+        return (
+            StatusCode::FORBIDDEN,
+            axum::Json(serde_json::json!({ "error": "only the server owner can list users" })),
+        );
+    }
     let result = tokio::task::spawn_blocking(fire_red_database::list_users).await;
     match result {
         Ok(Ok(users)) => {
@@ -9624,14 +9637,19 @@ async fn api_run_invite_requests(
     let Some(conn) = state.db_conn else {
         return (StatusCode::SERVICE_UNAVAILABLE, axum::Json(serde_json::json!({ "error": "No database configured" })));
     };
-    let result = tokio::task::spawn_blocking(move || -> Result<serde_json::Value, String> {
-        fire_red_database::validate_session(&token)?
-            .ok_or_else(|| "session expired or invalid".to_string())?;
+    let result = tokio::task::spawn_blocking(move || -> Result<serde_json::Value, (StatusCode, String)> {
+        let user = fire_red_database::validate_session(&token)
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?
+            .ok_or_else(|| (StatusCode::UNAUTHORIZED, "session expired or invalid".to_string()))?;
+        let owner_id = fire_red_database::get_run_owner_id(run_id);
+        if owner_id != Some(user.id) {
+            return Err((StatusCode::FORBIDDEN, "only the run owner can view access requests".to_string()));
+        }
         Ok(fire_red_database::get_run_invite_requests_json(&conn, run_id))
     }).await;
     match result {
         Ok(Ok(v)) => (StatusCode::OK, axum::Json(v)),
-        Ok(Err(e)) => (StatusCode::UNAUTHORIZED, axum::Json(serde_json::json!({ "error": e }))),
+        Ok(Err((status, e))) => (status, axum::Json(serde_json::json!({ "error": e }))),
         Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, axum::Json(serde_json::json!({ "error": "Task panicked" }))),
     }
 }

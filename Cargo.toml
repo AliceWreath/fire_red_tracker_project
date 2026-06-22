@@ -59,6 +59,7 @@ reqwest     = { version = "0.13", default-features = false, features = ["blockin
 tungstenite     = { version = "0.24", default-features = false, features = ["handshake", "rustls-tls-webpki-roots"] }
 sha2            = "0.10"
 bcrypt          = "0.15"
+rand            = "0.9"
 
 # Internal path crates (used as dependencies by other workspace members)
 fire_red_badge                 = { path = "fire_red_badge" }

@@ -1386,7 +1386,10 @@ pub fn resume_run(id: u32) -> Result<bool, String> {
         .map_err(|e| format!("Failed to query runs: {e}"))?
         .is_some();
     if exists {
-        state.run_id = Some(id);
+        // Update only the persisted metadata (used by --list-runs and tracker
+        // startup). Do NOT touch state.run_id — mutating the global would
+        // silently redirect writes from all tracker-TCP game-loop threads to
+        // this run ID until they restart.
         set_meta(&mut state.client, "active_run_id", &id.to_string());
     }
     Ok(exists)
@@ -7071,8 +7074,6 @@ pub fn list_users() -> Result<Vec<User>, String> {
 ///
 /// Tokens expire after 30 days. Old expired sessions are pruned on each call.
 pub fn create_session(user_id: u32) -> Result<String, String> {
-    use sha2::{Digest, Sha256};
-
     let Some(db) = db() else {
         return Err("database not initialised".to_string());
     };
@@ -7084,15 +7085,15 @@ pub fn create_session(user_id: u32) -> Result<String, String> {
         &[&(unix_now() as i64)],
     );
 
-    // Generate a token: SHA-256 of (user_id || current nanos || random bytes).
-    let nonce: u64 = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .subsec_nanos() as u64;
+    // Generate a token: SHA-256 of (user_id || 32 CSPRNG bytes).
+    let mut rng_bytes = [0u8; 32];
+    {
+        use rand::RngCore;
+        rand::rng().fill_bytes(&mut rng_bytes);
+    }
     let mut hasher = Sha256::new();
     hasher.update(user_id.to_le_bytes());
-    hasher.update(nonce.to_le_bytes());
-    hasher.update(unix_now().to_le_bytes());
+    hasher.update(rng_bytes);
     let digest = hasher.finalize();
     let token: String = digest.iter().fold(String::with_capacity(64), |mut s, b| {
         use std::fmt::Write;
@@ -7576,6 +7577,10 @@ pub fn request_run_invite(run_id: u32, requester_id: u32) -> Result<u32, String>
         .as_ref()
         .ok_or_else(|| format!("run #{run_id} not found"))?
         .get(0);
+
+    if owner.is_none() {
+        return Err("this run has no owner and cannot accept access requests".to_string());
+    }
 
     if owner == Some(requester_id as i32) {
         return Err("you already own this run".to_string());

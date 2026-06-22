@@ -83,24 +83,50 @@ pub struct MemoryContext {
     pub ewram: ArcSwap<Vec<u8>>,
     pub iwram: ArcSwap<Vec<u8>>,
     pub running: AtomicBool,
+    /// Persistent IWRAM worker: send the RetroArch address to trigger a read.
+    iwram_tx: mpsc::Sender<String>,
+    iwram_rx: Mutex<mpsc::Receiver<Result<Vec<u8>, &'static str>>>,
+    /// Persistent EWRAM worker: send the RetroArch address to trigger a read.
+    ewram_tx: mpsc::Sender<String>,
+    ewram_rx: Mutex<mpsc::Receiver<Result<Vec<u8>, &'static str>>>,
 }
 
 impl MemoryContext {
     pub fn new() -> Arc<Self> {
-        Arc::new(Self {
-            ewram: ArcSwap::from_pointee(Vec::new()),
-            iwram: ArcSwap::from_pointee(Vec::new()),
-            running: AtomicBool::new(false),
-        })
+        Arc::new(Self::default())
     }
 }
 
 impl Default for MemoryContext {
     fn default() -> Self {
+        let (iwram_cmd_tx, iwram_cmd_rx) = mpsc::channel::<String>();
+        let (iwram_res_tx, iwram_res_rx) = mpsc::sync_channel::<Result<Vec<u8>, &'static str>>(1);
+        let (ewram_cmd_tx, ewram_cmd_rx) = mpsc::channel::<String>();
+        let (ewram_res_tx, ewram_res_rx) = mpsc::sync_channel::<Result<Vec<u8>, &'static str>>(1);
+
+        std::thread::spawn(move || {
+            while let Ok(addr) = iwram_cmd_rx.recv() {
+                set_thread_addr_string(addr);
+                let result = update_ram_type::<Iwram>().ok_or("Unable to update IWRAM.");
+                if iwram_res_tx.send(result).is_err() { break; }
+            }
+        });
+        std::thread::spawn(move || {
+            while let Ok(addr) = ewram_cmd_rx.recv() {
+                set_thread_addr_string(addr);
+                let result = update_ram_type::<Ewram>().ok_or("Unable to update EWRAM.");
+                if ewram_res_tx.send(result).is_err() { break; }
+            }
+        });
+
         Self {
             ewram: ArcSwap::from_pointee(Vec::new()),
             iwram: ArcSwap::from_pointee(Vec::new()),
             running: AtomicBool::new(false),
+            iwram_tx: iwram_cmd_tx,
+            iwram_rx: Mutex::new(iwram_res_rx),
+            ewram_tx: ewram_cmd_tx,
+            ewram_rx: Mutex::new(ewram_res_rx),
         }
     }
 }
@@ -350,30 +376,23 @@ pub fn end_loop_ctx(ctx: &MemoryContext) {
 
 /// Per-connection variant of [`update_memory`]: writes results into `ctx`
 /// instead of the global [`LOADED_EWRAM`] / [`LOADED_IWRAM`] singletons.
+///
+/// Delegates to the persistent IWRAM/EWRAM worker threads that were spawned in
+/// [`MemoryContext::default`], avoiding OS thread creation overhead per tick.
 fn update_memory_ctx(ctx: &Arc<MemoryContext>) -> Result<(), &'static str> {
     let ra_addr = get_thread_addr_string();
-    let ra_addr2 = ra_addr.clone();
-    let ctx_i = ctx.clone();
-    let ctx_e = ctx.clone();
-    let iwram_thread = std::thread::spawn(move || -> Option<()> {
-        set_thread_addr_string(ra_addr);
-        let data = update_ram_type::<Iwram>()?;
-        ctx_i.iwram.store(Arc::new(data));
-        Some(())
-    });
-    let ewram_thread = std::thread::spawn(move || -> Option<()> {
-        set_thread_addr_string(ra_addr2);
-        let data = update_ram_type::<Ewram>()?;
-        ctx_e.ewram.store(Arc::new(data));
-        Some(())
-    });
-    let iwram_ok = iwram_thread.join().map_err(|_| "IWRAM thread panicked.")?;
-    let ewram_ok = ewram_thread.join().map_err(|_| "EWRAM thread panicked.")?;
-    match (iwram_ok, ewram_ok) {
-        (Some(()), Some(())) => Ok(()),
-        (None, _) => Err("Unable to update IWRAM."),
-        (_, None) => Err("Unable to update EWRAM."),
-    }
+    // Trigger both workers concurrently before waiting on either result.
+    ctx.iwram_tx.send(ra_addr.clone()).map_err(|_| "IWRAM worker disconnected.")?;
+    ctx.ewram_tx.send(ra_addr).map_err(|_| "EWRAM worker disconnected.")?;
+    let iwram_data = ctx.iwram_rx.lock().unwrap()
+        .recv()
+        .map_err(|_| "IWRAM worker disconnected.")??;
+    let ewram_data = ctx.ewram_rx.lock().unwrap()
+        .recv()
+        .map_err(|_| "EWRAM worker disconnected.")??;
+    ctx.iwram.store(Arc::new(iwram_data));
+    ctx.ewram.store(Arc::new(ewram_data));
+    Ok(())
 }
 
 /// Reads IWRAM and EWRAM concurrently, storing each region as soon as it
