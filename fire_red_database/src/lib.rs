@@ -673,6 +673,10 @@ thread_local! {
 /// Call this once at the start of a direct-mode game-loop thread so that all
 /// DB writes from that thread go to the correct run, independent of the global
 /// `DbState.run_id`.
+///
+/// For short-lived contexts (e.g. `spawn_blocking` closures) prefer
+/// [`set_thread_run_id_scoped`], which returns a guard that auto-clears on
+/// drop and prevents accidental leakage to subsequent tasks on the same thread.
 pub fn set_thread_run_id(run_id: u32) {
     THREAD_RUN_ID.with(|c| c.set(Some(run_id)));
 }
@@ -680,6 +684,28 @@ pub fn set_thread_run_id(run_id: u32) {
 /// Clear the per-thread run ID override set by [`set_thread_run_id`].
 pub fn clear_thread_run_id() {
     THREAD_RUN_ID.with(|c| c.set(None));
+}
+
+/// RAII guard returned by [`set_thread_run_id_scoped`].
+/// Clears the thread-local run ID when dropped so it cannot leak to the next
+/// task scheduled on the same OS thread.
+pub struct ThreadRunIdGuard;
+
+impl Drop for ThreadRunIdGuard {
+    fn drop(&mut self) {
+        THREAD_RUN_ID.with(|c| c.set(None));
+    }
+}
+
+/// Override the active run ID for the current thread and return a guard that
+/// clears it automatically when dropped.
+///
+/// Use this instead of [`set_thread_run_id`] in any context that may return
+/// (e.g. a `spawn_blocking` closure or a test) to ensure the value does not
+/// persist across unrelated tasks on the same tokio blocking-pool thread.
+pub fn set_thread_run_id_scoped(run_id: u32) -> ThreadRunIdGuard {
+    THREAD_RUN_ID.with(|c| c.set(Some(run_id)));
+    ThreadRunIdGuard
 }
 
 static DB: OnceLock<Option<Mutex<DbState>>> = OnceLock::new();
@@ -1503,7 +1529,9 @@ pub fn end_run_by_id(run_id: u32, user_id: u32) -> Result<(), String> {
     ).map_err(|e| format!("DB error: {e}"))?
     .ok_or_else(|| "run not found".to_string())?;
     let owner_id: Option<i32> = row.get(0);
-    if owner_id != Some(user_id as i32) {
+    // Allow if the run belongs to the caller, or if the run has no owner
+    // (created before the user-account system was introduced).
+    if owner_id.is_some_and(|oid| oid != user_id as i32) {
         return Err("you do not own this run".to_string());
     }
     let already_ended: Option<i64> = row.get(1);
@@ -7230,7 +7258,7 @@ pub fn link_run_to_user(run_id: u32, user_id: u32) -> Result<(), String> {
     let Some(db) = db() else { return Ok(()) };
     let mut state = db.lock_or_recover();
     state.client.execute(
-        "UPDATE runs SET user_id = $1 WHERE id = $2",
+        "UPDATE runs SET user_id = $1 WHERE id = $2 AND user_id IS NULL",
         &[&(user_id as i32), &(run_id as i32)],
     ).map_err(|e| format!("DB error: {e}"))?;
     Ok(())
@@ -7247,6 +7275,18 @@ pub fn create_run_for_slot(player_name: &str) -> Result<u32, String> {
         &[&player_name, &(unix_now() as i64)],
     ).map_err(|e| format!("Failed to create run: {e}"))?;
     Ok(row.get::<_, i32>(0) as u32)
+}
+
+/// Delete a run row created by this process (used to clean up orphan rows when
+/// direct-mode setup fails after the run was already inserted).
+pub fn delete_run(run_id: u32) -> Result<(), String> {
+    let Some(db) = db() else { return Ok(()) };
+    let mut state = db.lock_or_recover();
+    state.client.execute(
+        "DELETE FROM runs WHERE id = $1",
+        &[&(run_id as i32)],
+    ).map_err(|e| format!("DB error: {e}"))?;
+    Ok(())
 }
 
 /// Verify that a run with the given ID exists (for resuming in direct mode).

@@ -196,7 +196,7 @@ fn handle_party_events(
 // ---------------------------------------------------------------------------
 
 /// Drains and executes any pending injection commands from the queue.
-fn process_commands(command_queue: &Arc<Mutex<VecDeque<ClientMessage>>>) {
+fn process_commands(command_queue: &Arc<Mutex<VecDeque<ClientMessage>>>, run_changed: &Arc<AtomicBool>) {
     let cmds: Vec<ClientMessage> = {
         let mut q = command_queue.lock_or_recover();
         q.drain(..).collect()
@@ -236,6 +236,7 @@ fn process_commands(command_queue: &Arc<Mutex<VecDeque<ClientMessage>>>) {
             ClientMessage::NewRun => {
                 if let Ok(id) = fire_red_database::new_run("Unknown") {
                     tracing::info!("New run #{} started via command queue.", id);
+                    run_changed.store(true, Ordering::Release);
                 }
             }
             ClientMessage::RequestTextures(_) | ClientMessage::Hello(_) => {}
@@ -368,7 +369,7 @@ pub fn spawn_game_loop(
                 && sd.load(Ordering::Acquire) { break; }
 
             // Process injection commands first so they're applied on next read.
-            process_commands(&thread_cmds);
+            process_commands(&thread_cmds, &thread_run_chg);
 
             if !game::game_is_loaded() {
                 thread_loaded.store(false, Ordering::Release);

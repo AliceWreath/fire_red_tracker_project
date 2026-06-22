@@ -52,7 +52,7 @@ impl DirectConnector {
     /// Returns `true` if the host was newly accepted, `false` if it is already
     /// being polled.  The actual connection (ROM fetch + game-loop start) happens
     /// in a background thread; the slot may take a few seconds to appear.
-    pub fn connect(&self, host: String, port: u16, run_id: Option<u32>) -> bool {
+    pub fn connect(&self, host: String, port: u16, run_id: Option<u32>, user_id: Option<u32>) -> bool {
         try_add_host(
             host,
             port,
@@ -65,6 +65,7 @@ impl DirectConnector {
             self.slots.clone(),
             self.known.clone(),
             run_id,
+            user_id,
         )
     }
 
@@ -80,12 +81,10 @@ impl DirectConnector {
     /// was not in the active set.
     pub fn disconnect(&self, host: &str, port: u16) -> bool {
         let key = format!("{}:{}", host, port);
-        if !self.known.lock_or_recover().remove(&key) {
-            return false;
-        }
-        // Signal the slot's game-loop thread to stop.  The game-loop thread
-        // detects this flag and calls stop_loop_ctx() for its own per-connection
-        // subsystems before exiting — no global stop_loop() needed.
+        // Signal the slot's shutdown flag BEFORE removing from `known`.
+        // This closes the race where a concurrent connect() sees the key absent
+        // but finds shutdown=false on the old slot — without this ordering it
+        // would fall into the else-branch and push a duplicate slot entry.
         {
             let lock = self.slots.lock_or_recover();
             for slot in lock.iter() {
@@ -95,7 +94,7 @@ impl DirectConnector {
                 }
             }
         }
-        true
+        self.known.lock_or_recover().remove(&key)
     }
 }
 
@@ -144,6 +143,7 @@ pub fn spawn(
             slots.clone(),
             known.clone(),
             None, // pre-configured hosts always start a new run
+            None, // no authenticated user at startup
         );
     }
 
@@ -214,6 +214,7 @@ fn try_add_host(
     slots: SharedSlots,
     known: Arc<Mutex<HashSet<String>>>,
     run_id: Option<u32>,
+    user_id: Option<u32>,
 ) -> bool {
     let key = format!("{}:{}", host, retroarch_port);
     if !known.lock_or_recover().insert(key.clone()) {
@@ -228,6 +229,11 @@ fn try_add_host(
                     match fire_red_database::create_run_for_slot("Unknown") {
                         Ok(id) => {
                             tracing::info!("Direct mode: created run #{} for {}", id, host);
+                            if let Some(uid) = user_id {
+                                if let Err(e) = fire_red_database::link_run_to_user(id, uid) {
+                                    tracing::warn!("Direct mode: could not link run #{} to user {}: {}", id, uid, e);
+                                }
+                            }
                             Some(id)
                         }
                         Err(e) => {
@@ -244,7 +250,11 @@ fn try_add_host(
                         }
                         Ok(false) => {
                             tracing::error!("Direct mode: run #{} not found; creating new run for {}", id, host);
-                            fire_red_database::create_run_for_slot("Unknown").ok()
+                            let new_id = fire_red_database::create_run_for_slot("Unknown").ok();
+                            if let (Some(new_id), Some(uid)) = (new_id, user_id) {
+                                let _ = fire_red_database::link_run_to_user(new_id, uid);
+                            }
+                            new_id
                         }
                         Err(e) => {
                             tracing::warn!("Direct mode: could not verify run #{}: {}", id, e);
@@ -269,6 +279,11 @@ fn try_add_host(
                         host, e
                     );
                     known.lock_or_recover().remove(&key);
+                    // Remove any run row we created above so it doesn't become
+                    // a permanent orphan in the database.
+                    if let Some(id) = slot_run_id {
+                        let _ = fire_red_database::delete_run(id);
+                    }
                     return;
                 }
             }

@@ -4931,7 +4931,7 @@ async fn api_command(
     let mut count = 0usize;
     for slot in &slots {
         let run_id = slot.db.as_ref().and_then(|db| db.get_run_id());
-        if run_id.is_none_or(|rid| accessible.contains(&rid)) {
+        if run_id.is_some_and(|rid| accessible.contains(&rid)) {
             slot.command_queue.lock_or_recover().push_back(msg.clone());
             count += 1;
         }
@@ -6843,6 +6843,7 @@ struct DirectConnectBody {
 
 async fn api_direct_connect(
     State(state): State<WebState>,
+    Extension(caller): Extension<User>,
     headers: axum::http::HeaderMap,
     axum::Json(body): axum::Json<DirectConnectBody>,
 ) -> impl IntoResponse {
@@ -6893,7 +6894,7 @@ async fn api_direct_connect(
         connector.disconnect(&host, port);
     }
 
-    let accepted = connector.connect(host.clone(), port, body.run_id);
+    let accepted = connector.connect(host.clone(), port, body.run_id, Some(caller.id));
 
     // Record user → run association so the overlay can auto-detect it.
     if let (Some(uid), Some(run_id)) = (authed_user_id, body.run_id) {
@@ -7669,9 +7670,11 @@ async fn api_login(
 /// Requires `Authorization: Bearer <token>` or `X-Session-Token: <token>`.
 /// Returns `200` whether or not the token existed.
 async fn api_logout(
+    uri: axum::http::Uri,
     headers: axum::http::HeaderMap,
 ) -> impl IntoResponse {
-    if let Some(token) = extract_bearer(&headers) {
+    let token = extract_query_token(&uri).or_else(|| extract_bearer(&headers));
+    if let Some(token) = token {
         tokio::task::spawn_blocking(move || fire_red_database::delete_session(&token))
             .await
             .ok();
@@ -7768,6 +7771,14 @@ async fn api_me_set_active_run(
         Ok(Err(e)) => return (StatusCode::INTERNAL_SERVER_ERROR, axum::Json(serde_json::json!({"error": e}))),
         Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, axum::Json(serde_json::json!({"error": "Task panicked"}))),
     };
+    let uid = user.id;
+    let can = tokio::task::spawn_blocking(move || fire_red_database::user_can_access_run(run_id, uid))
+        .await
+        .unwrap_or(Ok(false))
+        .unwrap_or(false);
+    if !can {
+        return (StatusCode::FORBIDDEN, axum::Json(serde_json::json!({"error": "access denied"})));
+    }
     state.user_active_run.lock().unwrap().insert(user.id, run_id);
     (StatusCode::OK, axum::Json(serde_json::json!({"ok": true})))
 }
