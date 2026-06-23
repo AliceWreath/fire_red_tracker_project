@@ -1,27 +1,7 @@
-//! Shared message types and network serialization for the tracker ↔ aggregator protocol.
+//! Shared message types for the tracker ↔ aggregator API.
 //!
 //! [`ServerMessage`] flows from tracker → aggregator (game state, sprites, box data).
 //! [`ClientMessage`] flows from aggregator → tracker (commands, texture requests).
-//! Both are length-prefixed bincode on a plain TCP stream; see [`send_message`] /
-//! [`recv_message`] for the framing details.
-
-use std::io::{Read, Write};
-use std::net::TcpStream;
-
-/// Maximum allowed network message size: 20 MB.
-///
-/// Guards against malformed or malicious packets that would otherwise cause
-/// runaway heap allocation.  The 4-byte length prefix could theoretically
-/// claim up to ~4 GB; this constant is the application-layer sanity cap.
-///
-/// **Why 20 MB?**  The largest legitimate `ServerMessage` variant is
-/// `Textures(Vec<SpriteData>)`.  In the worst case the tracker sends all 386
-/// species × 2 (normal + shiny) as zlib-compressed 64×64 RGBA sprites; even
-/// at a conservative 2 KB per sprite that is under 1.6 MB.  20 MB leaves a
-/// comfortable margin for future sprite-count growth or higher-resolution
-/// assets without admitting absurdly large allocations from a buggy or
-/// hostile peer.
-const MAX_MESSAGE_SIZE: usize = 20 * 1024 * 1024;
 
 /// The highest valid National Pokédex number in FireRed (Generation III cap).
 ///
@@ -431,94 +411,6 @@ pub struct GameState {
     /// In-game save-file play time: seconds component (0–59).
     #[serde(default)]
     pub play_time_seconds: u8,
-}
-
-/// Network operating mode for the tracker.
-#[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
-pub enum Mode {
-    /// Run entirely locally with no networking.
-    Standalone,
-
-    /// Connect to an aggregator and stream game state to it.
-    Connected {
-        /// Aggregator host or IP address.
-        host: String,
-        /// Aggregator TCP port.
-        port: u16,
-    },
-}
-
-// ---------------------------------------------------------------------------
-// Wire helpers — length-prefixed bincode frames
-// ---------------------------------------------------------------------------
-
-/// Serializes and sends a message over a TCP stream.
-///
-/// Messages are encoded using 'bincode' and prefixed with a 4-byte
-/// big-endian length header.
-///
-/// # Arguments
-///
-/// * 'stream' - Connected TCP stream.
-/// * 'msg' - Serializable message to send.
-///
-/// # Errors
-///
-/// Returns an error if serialization or network I/O fails.
-///
-/// # Protocol
-///
-/// Packet layout:
-///
-/// ```text
-/// [4-byte big-endian length][bincode-encoded message bytes]
-/// ```
-pub fn send_message<T: serde::Serialize>(stream: &mut TcpStream, msg: &T) -> std::io::Result<()> {
-    let encoded = bincode::serialize(msg).map_err(std::io::Error::other)?;
-    let len = u32::try_from(encoded.len())
-        .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidData, "message too large"))?;
-    stream.write_all(&len.to_be_bytes())?;
-    stream.write_all(&encoded)?;
-    Ok(())
-}
-
-/// Receives and deserializes a message from a TCP stream.
-///
-/// Reads a 4-byte big-endian prefix followed by a bincode message of the specified length.
-///
-/// # Type Parameters
-///
-/// * `T` - Message type implementing [`serde::de::DeserializeOwned`].
-///
-/// # Arguments
-///
-/// * 'stream' - Connected TCP stream.
-///
-/// # Errors
-///
-/// returns an error if:
-///
-/// - The connection closes unexpectedly.
-/// - The packet exceeds ['MAX_MESSAGE_SIZE'].
-/// - Deserialization fails.
-///
-/// # Security
-///
-/// Incoming packet sizes are validated before allocation to avoid
-/// excessive memory usage from malformed or malicious packets.
-pub fn recv_message<T: serde::de::DeserializeOwned>(stream: &mut TcpStream) -> std::io::Result<T> {
-    let mut len_buf = [0u8; 4];
-    stream.read_exact(&mut len_buf)?;
-    let len = u32::from_be_bytes(len_buf) as usize;
-    if len > MAX_MESSAGE_SIZE {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            format!("message too large: {} bytes", len),
-        ));
-    }
-    let mut buf = vec![0u8; len];
-    stream.read_exact(&mut buf)?;
-    bincode::deserialize(&buf).map_err(std::io::Error::other)
 }
 
 // ---------------------------------------------------------------------------

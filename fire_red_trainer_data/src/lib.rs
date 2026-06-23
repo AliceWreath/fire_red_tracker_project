@@ -87,6 +87,8 @@ const SLEEP_TIMER: std::time::Duration = std::time::Duration::from_secs(15);
 
 /// Base address of EWRAM in the GBA address space.
 const EWRAM_BASE: usize = 0x02000000;
+/// Base address of IWRAM in the GBA address space.
+const IWRAM_BASE: usize = 0x03000000;
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -211,12 +213,39 @@ fn ewram_offset(addr: usize) -> usize {
     addr - EWRAM_BASE
 }
 
+/// Resolves the live EWRAM address of SaveBlock2 by reading `gSaveBlock2Ptr`
+/// from IWRAM.  Falls back to the static `save_block_2_base` address if the
+/// pointer can't be read or lies outside EWRAM.
+fn resolve_save_block2(iwram: &[u8], ewram: &[u8]) -> usize {
+    let addrs = fire_red_rom_buffer::get_rom_addresses();
+    let ptr_off = addrs.save_block_2_ptr - IWRAM_BASE;
+    if iwram.len() >= ptr_off + 4 {
+        let ptr = u32::from_le_bytes([
+            iwram[ptr_off],
+            iwram[ptr_off + 1],
+            iwram[ptr_off + 2],
+            iwram[ptr_off + 3],
+        ]) as usize;
+        if ptr >= EWRAM_BASE && ptr < EWRAM_BASE + ewram.len() {
+            return ptr;
+        }
+    }
+    addrs.save_block_2_base
+}
+
 /// Reads and parses [`PlayerData`] from the current EWRAM snapshot.
+///
+/// Follows `gSaveBlock2Ptr` from IWRAM to find the live SaveBlock2 address so
+/// that all fields — including the playtime counter — are read from the correct
+/// location.  Falls back to `save_block_2_base` when the pointer is
+/// unavailable.
 ///
 /// Returns `None` if the snapshot is too small or the data cannot be parsed.
 fn read_player_data_from_ewram() -> Option<PlayerData> {
     let ewram = fire_red_memory::get_ewram();
-    let offset = ewram_offset(trainer_data::player_data_addr());
+    let iwram = fire_red_memory::get_iwram();
+    let sb2 = resolve_save_block2(&iwram, &ewram);
+    let offset = ewram_offset(sb2);
 
     let end = offset + PLAYER_DATA_SIZE;
     if ewram.len() < end {

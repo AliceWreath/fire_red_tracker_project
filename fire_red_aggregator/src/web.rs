@@ -294,6 +294,8 @@ struct SlotCache {
     encounters: Vec<fire_red_database::Encounter>,
     prev_encounters: Vec<fire_red_database::Encounter>,
     last_refresh: Instant,
+    /// Owner-pinned display column (1 = leftmost). `None` = no preference.
+    slot_index: Option<u8>,
 }
 
 impl SlotCache {
@@ -305,6 +307,7 @@ impl SlotCache {
             last_refresh: Instant::now()
                 .checked_sub(Duration::from_secs(60))
                 .unwrap_or_else(Instant::now),
+            slot_index: None,
         }
     }
 }
@@ -369,18 +372,39 @@ const ROM_BUS_BASE: u32 = 0x0800_0000;
 fn build_leader_party(leader_name: &str) -> Vec<LeaderPartyMonDto> {
     let trainer_idx = match leader_trainer_index(leader_name) {
         Some(i) => i,
-        None => return vec![],
+        None => {
+            tracing::warn!("vs_leader: no trainer index for {:?}", leader_name);
+            return vec![];
+        }
     };
     let rom = match fire_red_rom_buffer::try_get_rom() {
         Some(r) => r,
-        None => return vec![],
+        None => {
+            tracing::warn!("vs_leader: ROM buffer not yet initialized");
+            return vec![];
+        }
     };
     let trainer_table = fire_red_rom_buffer::get_rom_addresses().trainer_data_addr;
     if trainer_table == 0 {
+        // Log once per process; the overlay polls every 100 ms so without this
+        // guard the warning would fill the log immediately.
+        static WARNED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+        WARNED.get_or_init(|| {
+            tracing::warn!(
+                "vs_leader: trainer table could not be located for this ROM \
+                 revision ({:?}) — overlay disabled (this message won't repeat)",
+                fire_red_rom_buffer::get_rom_revision()
+            );
+        });
         return vec![];
     }
     let entry_off = trainer_table + trainer_idx * TRAINER_ENTRY_SIZE;
     if rom.len() < entry_off + TRAINER_ENTRY_SIZE {
+        tracing::warn!(
+            "vs_leader: ROM too small for trainer entry — \
+             rom_len={} entry_off={:#X} need={}",
+            rom.len(), entry_off, entry_off + TRAINER_ENTRY_SIZE
+        );
         return vec![];
     }
     let entry = &rom[entry_off..entry_off + TRAINER_ENTRY_SIZE];
@@ -390,6 +414,12 @@ fn build_leader_party(leader_name: &str) -> Vec<LeaderPartyMonDto> {
     let party_ptr    = u32::from_le_bytes([entry[0x24], entry[0x25], entry[0x26], entry[0x27]]);
 
     if party_ptr < ROM_BUS_BASE || party_size == 0 || party_size > 6 {
+        tracing::warn!(
+            "vs_leader: invalid trainer entry for {:?} (idx {}) at ROM offset {:#X} — \
+             party_flags={:#010X} party_size={} party_ptr={:#010X} ROM_BUS_BASE={:#010X}",
+            leader_name, trainer_idx, entry_off,
+            party_flags, party_size, party_ptr, ROM_BUS_BASE
+        );
         return vec![];
     }
     let party_off = (party_ptr - ROM_BUS_BASE) as usize;
@@ -405,16 +435,35 @@ fn build_leader_party(leader_name: &str) -> Vec<LeaderPartyMonDto> {
     };
 
     if rom.len() < party_off + party_size * entry_bytes {
+        tracing::warn!(
+            "vs_leader: party data out of ROM bounds for {:?} — \
+             party_ptr={:#010X} party_off={:#X} party_size={} entry_bytes={} rom_len={}",
+            leader_name, party_ptr, party_off, party_size, entry_bytes, rom.len()
+        );
         return vec![];
     }
 
-    (0..party_size)
+    let result: Vec<LeaderPartyMonDto> = (0..party_size)
         .filter_map(|i| {
             let base = party_off + i * entry_bytes;
             let b = &rom[base..base + entry_bytes];
             let level   = b[1];
             let species = u16::from_le_bytes([b[2], b[3]]);
+            if level == 0 {
+                // Level 0 is never valid for a trainer's Pokémon; reject the
+                // entire leader entry rather than silently showing garbage data.
+                tracing::warn!(
+                    "vs_leader: {:?} slot {} has level 0 (species={}) — \
+                     trainer table address is likely wrong",
+                    leader_name, i, species
+                );
+                return None;
+            }
             if species == 0 || species > fire_red_states::MAX_NATIONAL_DEX_FIRERED {
+                tracing::warn!(
+                    "vs_leader: {:?} slot {} has out-of-range species {} (max {})",
+                    leader_name, i, species, fire_red_states::MAX_NATIONAL_DEX_FIRERED
+                );
                 return None;
             }
             let mut moves = [String::new(), String::new(), String::new(), String::new()];
@@ -440,7 +489,20 @@ fn build_leader_party(leader_name: &str) -> Vec<LeaderPartyMonDto> {
                 sprite: None, // sprites are not pre-loaded for leader panel; overlay fetches via /api/sprite
             })
         })
-        .collect()
+        .collect();
+    if result.is_empty() {
+        tracing::warn!(
+            "vs_leader: build_leader_party({:?}) produced no mons \
+             (party_size={} entry_bytes={} has_item={} has_moves={})",
+            leader_name, party_size, entry_bytes, has_item, has_moves
+        );
+    } else {
+        tracing::debug!(
+            "vs_leader: built {} mons for {:?}",
+            result.len(), leader_name
+        );
+    }
+    result
 }
 
 struct BroadcastLoop {
@@ -973,6 +1035,7 @@ impl BroadcastLoop {
                 self.caches[i].caught = db.list_caught(label);
                 self.caches[i].encounters = db.list_encounters(label);
                 self.caches[i].prev_encounters = db.list_prev_run_encounters(label);
+                self.caches[i].slot_index = db.query_slot_index();
                 self.caches[i].last_refresh = now;
                 // Overrides are run-wide; load once from the first slot that has a DB.
                 // The map is cleared on run_id change below, so this stays consistent.
@@ -1063,20 +1126,17 @@ impl BroadcastLoop {
         // Soul-link death propagation (DB-persisted + live)
         let live_soul_link_dead = self.propagate_soul_links(&slots, &states, &all_dead);
 
-        // Determine display order: sort by (preferred_player, player_name).
-        // Slots with no preference sort last; ties break alphabetically by name.
+        // Determine display order: sort by (slot_index, player_name).
+        // slot_index is the owner-pinned column (DB); falls back to preferred_player
+        // from game state, then u32::MAX (sorts last with alphabetical tiebreak).
         let mut display_order: Vec<usize> = (0..n).collect();
         display_order.sort_by(|&i, &j| {
-            let pi = states[i]
-                .1
-                .as_ref()
-                .and_then(|gs| gs.preferred_player)
+            let pi = self.caches[i].slot_index
+                .or_else(|| states[i].1.as_ref().and_then(|gs| gs.preferred_player))
                 .map(u32::from)
                 .unwrap_or(u32::MAX);
-            let pj = states[j]
-                .1
-                .as_ref()
-                .and_then(|gs| gs.preferred_player)
+            let pj = self.caches[j].slot_index
+                .or_else(|| states[j].1.as_ref().and_then(|gs| gs.preferred_player))
                 .map(u32::from)
                 .unwrap_or(u32::MAX);
             pi.cmp(&pj)
@@ -5502,6 +5562,76 @@ async fn api_patch_run_rules(
 }
 
 // ---------------------------------------------------------------------------
+// Slot index (display column order) — GET/PATCH /api/run/:id/slot_index
+// ---------------------------------------------------------------------------
+
+/// `GET /api/run/:id/slot_index` — return the pinned display column for this run.
+///
+/// Response: `{ "run_id": N, "slot_index": N|null }`.
+async fn api_get_run_slot_index(
+    State(state): State<WebState>,
+    Path(run_id): Path<u32>,
+) -> axum::Json<serde_json::Value> {
+    let conn = require_db!(state);
+    let result =
+        tokio::task::spawn_blocking(move || fire_red_database::get_run_slot_index(&conn, run_id))
+            .await
+            .unwrap_or(None);
+    axum::Json(serde_json::json!({ "run_id": run_id, "slot_index": result }))
+}
+
+#[derive(serde::Deserialize)]
+struct SlotIndexBody {
+    slot_index: Option<u8>,
+}
+
+/// `PATCH /api/run/:id/slot_index` — pin this run to a display column.
+///
+/// Caller must be the run owner. Body: `{ "slot_index": 1 }` (1 = leftmost
+/// column) or `{ "slot_index": null }` to clear. The new ordering is reflected
+/// in the WebSocket feed within ~1 second.
+async fn api_patch_run_slot_index(
+    State(state): State<WebState>,
+    headers: axum::http::HeaderMap,
+    Path(run_id): Path<u32>,
+    axum::Json(body): axum::Json<SlotIndexBody>,
+) -> (StatusCode, axum::Json<serde_json::Value>) {
+    let conn = match state.db_conn {
+        Some(s) => s,
+        None => return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            axum::Json(serde_json::json!({ "error": "No database configured" })),
+        ),
+    };
+    let token = match extract_bearer(&headers) {
+        Some(t) => t.to_string(),
+        None => return (
+            StatusCode::UNAUTHORIZED,
+            axum::Json(serde_json::json!({ "error": "authentication required" })),
+        ),
+    };
+    let result = tokio::task::spawn_blocking(move || -> Result<(), (StatusCode, String)> {
+        let user = fire_red_database::validate_session(&token)
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?
+            .ok_or_else(|| (StatusCode::UNAUTHORIZED, "session expired or invalid".to_string()))?;
+        fire_red_database::set_run_slot_index(&conn, run_id, user.id, body.slot_index)
+            .map_err(|e| (StatusCode::FORBIDDEN, e))
+    })
+    .await;
+    match result {
+        Ok(Ok(())) => (
+            StatusCode::OK,
+            axum::Json(serde_json::json!({ "run_id": run_id, "slot_index": body.slot_index })),
+        ),
+        Ok(Err((status, e))) => (status, axum::Json(serde_json::json!({ "error": e }))),
+        Err(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            axum::Json(serde_json::json!({ "error": "Task panicked" })),
+        ),
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Per-section CSV exports
 // ---------------------------------------------------------------------------
 
@@ -5968,6 +6098,8 @@ fn build_router(web_state: WebState) -> Router {
         .route("/api/preset/:name/apply", post(api_apply_preset))
         // Challenge rules
         .route("/api/run/:id/rules", get(api_get_run_rules).patch(api_patch_run_rules))
+        // Display column order
+        .route("/api/run/:id/slot_index", get(api_get_run_slot_index).patch(api_patch_run_slot_index))
         // Per-section CSV exports
         .route("/api/run/:id/encounters.csv", get(api_run_encounters_csv))
         .route("/api/run/:id/deaths.csv", get(api_run_deaths_csv))

@@ -1,4 +1,4 @@
-use clap::{Parser, Subcommand};
+use clap::Parser;
 
 /// Real-time Pokémon FireRed party and encounter tracker.
 ///
@@ -63,32 +63,9 @@ pub struct Cli {
     #[arg(long, value_name = "QTY")]
     pub scan_security_key: Option<u16>,
 
-    /// Preferred display column in the aggregator (1 = first, 2 = second, …).
-    /// Overrides the value in the config file for this run only.
-    #[arg(long, value_name = "N")]
-    pub preferred_player: Option<u8>,
-
     /// Apply the [test] section from the config file on top of normal settings,
     /// and always start a new run (implies --new-run).
-    /// Explicit flags (--db, --preferred-player, connect host/port) still win.
+    /// Explicit flags (--db) still win.
     #[arg(long, default_value_t = false)]
     pub test: bool,
-
-    /// Override the operating mode for this run only.
-    #[command(subcommand)]
-    pub command: Option<Command>,
-}
-
-/// Mode override subcommands.
-#[derive(Subcommand, Debug)]
-pub enum Command {
-    /// Connect to an aggregator and stream game state to it (headless).
-    Connect {
-        /// Aggregator host or IP address.
-        #[arg(long, default_value = "127.0.0.1")]
-        host: String,
-        /// Aggregator port.
-        #[arg(long, default_value_t = 7878)]
-        port: u16,
-    },
 }

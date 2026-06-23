@@ -743,7 +743,7 @@ pub fn initialize_noop() {
 /// `initialize` has already been called.
 /// Increment this whenever a new migration or data-repair statement is added.
 /// `initialize` skips all SQL when the DB already records this version.
-const SCHEMA_VERSION: &str = "27";
+const SCHEMA_VERSION: &str = "28";
 
 pub fn initialize(connection_string: &str) -> Result<(), String> {
     // Accept bare `host/dbname` strings — prepend the scheme so callers don't have to.
@@ -1206,6 +1206,9 @@ pub fn initialize(connection_string: &str) -> Result<(), String> {
             updated_at BIGINT  NOT NULL DEFAULT 0,
             PRIMARY KEY (user_id, kind)
         );
+
+        -- Migration v28: run owner can pin each player to a display column.
+        ALTER TABLE runs ADD COLUMN IF NOT EXISTS slot_index INTEGER;
     ").map_err(|e| format!("Failed to create database schema: {e}"))?;
 
     // Record the schema version so future startups can skip all migrations.
@@ -3440,6 +3443,18 @@ impl DbReader {
                 vec![]
             }
         }
+    }
+
+    /// Returns the pinned display-column index for the current run, or `None`.
+    pub fn query_slot_index(&self) -> Option<u8> {
+        let run_id = self.get_run_id()? as i32;
+        let row = self
+            .client
+            .lock_or_recover()
+            .query_opt("SELECT slot_index FROM runs WHERE id = $1", &[&run_id])
+            .ok()??;
+        let v: Option<i32> = row.get(0);
+        v.and_then(|n| u8::try_from(n).ok())
     }
 
     /// Returns all soul-link overrides for the current run as a JSON array.
@@ -5968,6 +5983,51 @@ pub fn set_run_rules(conn_str: &str, run_id: u32, patch: &serde_json::Value) -> 
         "shiny_clause":     shiny,
         "updated_at":       format_timestamp(now as u64),
     })
+}
+
+// ---------------------------------------------------------------------------
+// Slot-index (display column order) for a run
+// ---------------------------------------------------------------------------
+
+/// Returns the pinned display-column index (1 = leftmost) for the given run,
+/// or `None` if no preference has been set.
+pub fn get_run_slot_index(conn_str: &str, run_id: u32) -> Option<u8> {
+    let mut client = Client::connect(conn_str, NoTls).ok()?;
+    let row = client
+        .query_opt("SELECT slot_index FROM runs WHERE id = $1", &[&(run_id as i32)])
+        .ok()??;
+    let v: Option<i32> = row.get(0);
+    v.and_then(|n| u8::try_from(n).ok())
+}
+
+/// Set (or clear) the display-column index for a run.
+///
+/// `owner_id` must match the run's `user_id`; returns an error string otherwise.
+/// Pass `slot_index = None` to remove the preference.
+pub fn set_run_slot_index(
+    conn_str: &str,
+    run_id: u32,
+    owner_id: u32,
+    slot_index: Option<u8>,
+) -> Result<(), String> {
+    let mut client =
+        Client::connect(conn_str, NoTls).map_err(|e| format!("DB connection failed: {e}"))?;
+    let rid = run_id as i32;
+
+    let row = client
+        .query_opt("SELECT user_id FROM runs WHERE id = $1", &[&rid])
+        .map_err(|e| format!("DB query failed: {e}"))?
+        .ok_or_else(|| format!("run {run_id} not found"))?;
+    let stored_owner: Option<i32> = row.get(0);
+    if stored_owner != Some(owner_id as i32) {
+        return Err("only the run owner can set the slot index".to_string());
+    }
+
+    let val: Option<i32> = slot_index.map(|v| v as i32);
+    client
+        .execute("UPDATE runs SET slot_index = $1 WHERE id = $2", &[&val, &rid])
+        .map_err(|e| format!("DB update failed: {e}"))?;
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------

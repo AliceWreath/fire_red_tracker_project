@@ -1,14 +1,11 @@
 //! # FireRed Aggregator
 //!
-//! Listens for incoming tracker connections and displays all connected players
-//! side-by-side.  Each tracker dials out to the aggregator — no addresses need
-//! to be pre-configured here.
+//! Displays game state for one or more RetroArch instances (direct mode).
 //!
 //! # Usage
 //!
 //! ```text
 //! aggregator                          # use config defaults
-//! aggregator --listen-port <PORT>     # override listen port
 //! aggregator --ws-port <PORT>         # headless WebSocket overlay mode
 //! ```
 
@@ -26,9 +23,8 @@ mod youtube_chat;
 
 use app::AggregatorApp;
 use clap::Parser;
-use client::{MonitorSlot, SharedSlots, handle_tracker_connection};
+use client::SharedSlots;
 use fire_red_states::LockOrRecover;
-use std::net::TcpListener;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 
@@ -47,10 +43,6 @@ struct Cli {
     #[arg(long = "db", value_name = "CONN")]
     db: Option<String>,
 
-    /// Override: listen for tracker connections on this port.
-    #[arg(long = "listen-port", value_name = "PORT")]
-    listen_port: Option<u16>,
-
     /// Override: run headless with a WebSocket overlay server on this port.
     #[arg(long = "ws-port", value_name = "PORT")]
     ws_port: Option<u16>,
@@ -68,7 +60,7 @@ struct Cli {
     update: bool,
 
     /// Apply the [test] section from the config file on top of normal settings.
-    /// Explicit flags (--db, --listen-port, --ws-port) still override the test section.
+    /// Explicit flags (--db, --ws-port) still override the test section.
     #[arg(long)]
     test: bool,
 
@@ -182,10 +174,6 @@ fn main() {
         .or_else(|| test.and_then(|t| t.db.clone()))
         .or(cfg.db);
 
-    let listen_port = cli
-        .listen_port
-        .or_else(|| test.and_then(|t| t.listen_port))
-        .unwrap_or(cfg.listen_port);
     let ws_port = cli
         .ws_port
         .or_else(|| test.and_then(|t| t.ws_port))
@@ -228,6 +216,12 @@ fn main() {
     // is set.  Discovery and retries are handled inside direct::spawn — the
     // background scanner runs immediately then every 30 s, so RetroArch
     // instances that aren't running at startup are picked up automatically.
+    // Apply trainer-table override before any ROM is loaded so fill_rom picks
+    // it up on first call (the OnceLock is a no-op after that).
+    if let Some(offset) = cfg.trainer_table_rom_offset {
+        fire_red_rom_buffer::set_trainer_table_addr_override(offset);
+    }
+
     let want_direct = cli.direct || cfg.direct_mode || !retroarch_hosts.is_empty() || rom_path.is_some();
 
     let direct_connector = if want_direct {
@@ -245,95 +239,6 @@ fn main() {
     } else {
         None
     };
-
-    // TCP listener — accepts incoming tracker connections.
-    let listener = TcpListener::bind(format!("0.0.0.0:{}", listen_port)).unwrap_or_else(|e| {
-        tracing::error!("Failed to bind port {}: {}", listen_port, e);
-        std::process::exit(1);
-    });
-    tracing::info!(
-        "Aggregator listening on port {} for tracker connections.",
-        listen_port
-    );
-
-    let listener_slots = shared_slots.clone();
-    let listener_db = db.clone();
-    std::thread::spawn(move || {
-        for stream in listener.incoming() {
-            let stream = match stream {
-                Ok(s) => s,
-                Err(e) => {
-                    tracing::warn!("Accept error: {}", e);
-                    std::thread::sleep(std::time::Duration::from_millis(100));
-                    continue;
-                }
-            };
-            let peer = stream
-                .peer_addr()
-                .map(|a| a.to_string())
-                .unwrap_or_else(|_| "unknown".to_string());
-            tracing::info!("Tracker connected from {}", peer);
-
-            // Reuse the first disconnected slot, or create a new one.
-            let slot_arc = {
-                let mut slots = listener_slots.lock_or_recover();
-                let reuse = slots
-                    .iter()
-                    .find(|s| s.state.lock_or_recover().is_none())
-                    .cloned();
-                if let Some(s) = reuse {
-                    // Reset stale per-connection state before handing to a new tracker.
-                    s.known_species.lock_or_recover().clear();
-                    s.command_queue.lock_or_recover().clear();
-                    s.run_changed
-                        .store(false, std::sync::atomic::Ordering::Relaxed);
-                    s
-                } else {
-                    let idx = slots.len();
-                    let new = Arc::new(MonitorSlot::new(idx, peer.clone(), listener_db.clone(), None));
-                    slots.push(new.clone());
-                    new
-                }
-            };
-
-            let state = slot_arc.state.clone();
-            let pending = slot_arc.pending_textures.clone();
-            let known = slot_arc.known_species.clone();
-            let tex_queue = slot_arc.texture_request_queue.clone();
-            let label = slot_arc.label.clone();
-            let sprite_cache = slot_arc.sprite_cache.clone();
-            let bag_data = slot_arc.bag_data.clone();
-            let cmd_queue = slot_arc.command_queue.clone();
-            let run_chg = slot_arc.run_changed.clone();
-            let box_data = slot_arc.box_data.clone();
-
-            std::thread::spawn(move || {
-                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    handle_tracker_connection(
-                        stream,
-                        state.clone(),
-                        pending,
-                        known,
-                        tex_queue,
-                        label,
-                        sprite_cache,
-                        cmd_queue,
-                        run_chg,
-                        box_data,
-                        bag_data,
-                    );
-                }));
-                if result.is_err() {
-                    tracing::error!(
-                        "Tracker thread for {} panicked — clearing slot state.",
-                        peer
-                    );
-                    *state.lock_or_recover() = None;
-                }
-                tracing::info!("Tracker from {} disconnected.", peer);
-            });
-        }
-    });
 
     // Twitch IRC bot — runs in both GUI and headless modes.
     if let Some(twitch_cfg) = cfg_ref.twitch.clone() {

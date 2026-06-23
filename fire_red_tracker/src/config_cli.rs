@@ -5,7 +5,7 @@
 //! username, desktop notifications).
 
 use crate::config::{
-    ConfigMode, DupesClauseMode, ObsConfig, TrackerConfig, TrackerTestOverrides,
+    DupesClauseMode, ObsConfig, TrackerConfig, TrackerTestOverrides,
     WebhookConfig, save_config,
 };
 use std::io::{self, Write};
@@ -167,52 +167,6 @@ fn prompt_bool(label: &str, current: bool) -> bool {
     }
 }
 
-/// Prompt for a player slot number (1+) or blank for auto.
-fn prompt_player_number(current: Option<u8>) -> Option<u8> {
-    loop {
-        let display = current.map(|n| n.to_string()).unwrap_or_else(|| "(auto)".to_string());
-        print!("  Player number [{display}] (1, 2, … or blank for auto): ");
-        flush();
-        let input = read_line();
-        match input.as_str() {
-            "" => return current,
-            v => match v.parse::<u8>().ok().filter(|&n| n >= 1) {
-                Some(n) => return Some(n),
-                None => println!("    ✗  Enter a number ≥ 1 or leave blank."),
-            },
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Enum prompts
-// ---------------------------------------------------------------------------
-
-fn prompt_mode(current: &ConfigMode) -> ConfigMode {
-    let idx = match current {
-        ConfigMode::Standalone => 1,
-        ConfigMode::Connected => 2,
-    };
-    loop {
-        let cur_label = match current {
-            ConfigMode::Standalone => "standalone",
-            ConfigMode::Connected => "connected",
-        };
-        println!("  Mode (current: {cur_label})");
-        println!("    1) Standalone — tracker runs independently");
-        println!("    2) Connected  — connects to an aggregator over TCP");
-        print!("  Choice [{idx}]: ");
-        flush();
-        let input = read_line();
-        match input.as_str() {
-            "" => return current.clone(),
-            "1" => return ConfigMode::Standalone,
-            "2" => return ConfigMode::Connected,
-            _ => println!("    ✗  Enter 1 or 2."),
-        }
-    }
-}
-
 fn prompt_dupes_clause(current: DupesClauseMode) -> DupesClauseMode {
     let idx = match current {
         DupesClauseMode::Off => 1,
@@ -316,33 +270,6 @@ pub fn run_config_editor_cli(path: &PathBuf) {
         d.map(|c| c.clean).unwrap_or(false),
     );
 
-    // ── Connection Mode ────────────────────────────────────────────────────
-
-    section("Connection Mode");
-
-    let mode = prompt_mode(d.map(|c| &c.mode).unwrap_or(&ConfigMode::Standalone));
-
-    let (aggregator_host, aggregator_port, preferred_player) = if mode == ConfigMode::Connected {
-        let host = prompt_str(
-            "Aggregator host",
-            d.map(|c| c.aggregator_host.as_str()).unwrap_or("127.0.0.1"),
-            "",
-        );
-        let port = prompt_u16(
-            "Aggregator port",
-            d.map(|c| c.aggregator_port).unwrap_or(7878),
-        );
-        let player = prompt_player_number(d.and_then(|c| c.preferred_player));
-        (host, port, player)
-    } else {
-        (
-            d.map(|c| c.aggregator_host.clone())
-                .unwrap_or_else(|| "127.0.0.1".to_string()),
-            d.map(|c| c.aggregator_port).unwrap_or(7878),
-            d.and_then(|c| c.preferred_player),
-        )
-    };
-
     // ── Run Settings ───────────────────────────────────────────────────────
 
     section("Run Settings");
@@ -389,29 +316,7 @@ pub fn run_config_editor_cli(path: &PathBuf) {
             "overrides DB when running in test mode",
         )
         .map(|s| db_full(&s));
-        let test_host = prompt_opt_str(
-            "  Test aggregator host",
-            prev.and_then(|t| t.aggregator_host.as_deref()),
-            "",
-        );
-        let test_port =
-            prompt_opt_u16("  Test aggregator port", prev.and_then(|t| t.aggregator_port));
-        let test_player =
-            prompt_opt_u8("  Test player number", prev.and_then(|t| t.preferred_player));
-        if test_db.is_none()
-            && test_host.is_none()
-            && test_port.is_none()
-            && test_player.is_none()
-        {
-            None
-        } else {
-            Some(TrackerTestOverrides {
-                db: test_db,
-                aggregator_host: test_host,
-                aggregator_port: test_port,
-                preferred_player: test_player,
-            })
-        }
+        test_db.map(|db| TrackerTestOverrides { db: Some(db) })
     };
 
     // ── OBS Clips ──────────────────────────────────────────────────────────
@@ -576,10 +481,6 @@ pub fn run_config_editor_cli(path: &PathBuf) {
         rom,
         db: db_full(&db_raw),
         clean,
-        mode,
-        aggregator_host,
-        aggregator_port,
-        preferred_player,
         default_test,
         test,
         poll_ms,

@@ -26,10 +26,6 @@ struct SettingsDraft {
     rom: String,
     db: String,
     clean: bool,
-    mode: crate::config::ConfigMode,
-    aggregator_host: String,
-    aggregator_port: String,
-    preferred_player: String,
     // Run / polling
     poll_ms: String,
     dupes_clause: crate::config::DupesClauseMode,
@@ -38,9 +34,6 @@ struct SettingsDraft {
     // Test mode
     default_test: bool,
     test_db: String,
-    test_agg_host: String,
-    test_agg_port: String,
-    test_player: String,
     // OBS clip trigger
     obs_host: String,
     obs_port: String,
@@ -87,13 +80,6 @@ impl SettingsDraft {
                 .trim_start_matches("postgres://")
                 .to_string(),
             clean: cfg.clean,
-            mode: cfg.mode.clone(),
-            aggregator_host: cfg.aggregator_host.clone(),
-            aggregator_port: cfg.aggregator_port.to_string(),
-            preferred_player: cfg
-                .preferred_player
-                .map(|n| n.to_string())
-                .unwrap_or_default(),
             poll_ms: if cfg.poll_ms == 100 {
                 String::new()
             } else {
@@ -115,23 +101,6 @@ impl SettingsDraft {
                         .trim_start_matches("postgres://")
                         .to_string()
                 })
-                .unwrap_or_default(),
-            test_agg_host: cfg
-                .test
-                .as_ref()
-                .and_then(|t| t.aggregator_host.clone())
-                .unwrap_or_default(),
-            test_agg_port: cfg
-                .test
-                .as_ref()
-                .and_then(|t| t.aggregator_port)
-                .map(|p| p.to_string())
-                .unwrap_or_default(),
-            test_player: cfg
-                .test
-                .as_ref()
-                .and_then(|t| t.preferred_player)
-                .map(|n| n.to_string())
                 .unwrap_or_default(),
             obs_host: cfg.obs.host.clone(),
             obs_port: cfg.obs.port.to_string(),
@@ -545,7 +514,7 @@ fn gender_label(gender: u8) -> (&'static str, egui::Color32) {
 impl WindowInfo {
     fn draw_settings(&mut self, ui: &mut egui::Ui) {
         use crate::config::{
-            ConfigMode, DupesClauseMode, ObsConfig, TrackerTestOverrides, WebhookConfig,
+            DupesClauseMode, ObsConfig, TrackerTestOverrides, WebhookConfig,
         };
         let s = &mut self.settings;
 
@@ -577,30 +546,6 @@ impl WindowInfo {
                     ui.small("Deletes all run data at startup. Uncheck after use.");
                 });
                 ui.end_row();
-
-                // ── Connection mode ───────────────────────────────────────────
-                ui.separator();
-                ui.end_row();
-                ui.label("Default mode:");
-                ui.horizontal(|ui| {
-                    ui.selectable_value(&mut s.mode, ConfigMode::Standalone, "Standalone");
-                    ui.selectable_value(&mut s.mode, ConfigMode::Connected,  "Connected");
-                });
-                ui.end_row();
-
-                if s.mode == ConfigMode::Connected {
-                    ui.label("Aggregator host:");
-                    ui.add(egui::TextEdit::singleline(&mut s.aggregator_host).desired_width(200.0));
-                    ui.end_row();
-
-                    ui.label("Aggregator port:");
-                    ui.add(egui::TextEdit::singleline(&mut s.aggregator_port).desired_width(80.0));
-                    ui.end_row();
-
-                    ui.label("Player number:");
-                    ui.add(egui::TextEdit::singleline(&mut s.preferred_player).desired_width(60.0).hint_text("1, 2, …"));
-                    ui.end_row();
-                }
 
                 // ── Run settings ──────────────────────────────────────────────
                 ui.separator();
@@ -651,18 +596,6 @@ impl WindowInfo {
 
                 ui.label("  Test DB:");
                 ui.add(egui::TextEdit::singleline(&mut s.test_db).desired_width(260.0).hint_text("leave blank to use main DB"));
-                ui.end_row();
-
-                ui.label("  Test agg. host:");
-                ui.add(egui::TextEdit::singleline(&mut s.test_agg_host).desired_width(200.0).hint_text("leave blank"));
-                ui.end_row();
-
-                ui.label("  Test agg. port:");
-                ui.add(egui::TextEdit::singleline(&mut s.test_agg_port).desired_width(80.0).hint_text("leave blank"));
-                ui.end_row();
-
-                ui.label("  Test player #:");
-                ui.add(egui::TextEdit::singleline(&mut s.test_player).desired_width(60.0).hint_text("leave blank"));
                 ui.end_row();
 
                 // ── OBS clip trigger ──────────────────────────────────────────
@@ -779,37 +712,13 @@ impl WindowInfo {
 
         ui.add_space(8.0);
         let rom_ok = !s.rom.trim().is_empty();
-        let port_ok = s.mode != ConfigMode::Connected
-            || s.aggregator_port
-                .parse::<u16>()
-                .map(|p| p > 0)
-                .unwrap_or(false);
-        let player_parse: Option<u8> = s
-            .preferred_player
-            .trim()
-            .parse()
-            .ok()
-            .filter(|&n: &u8| n >= 1);
-        let player_ok = s.preferred_player.trim().is_empty() || player_parse.is_some();
         ui.horizontal(|ui| {
             let saved = ui
-                .add_enabled(rom_ok && port_ok && player_ok, egui::Button::new("Save"))
+                .add_enabled(rom_ok, egui::Button::new("Save"))
                 .clicked();
             if !rom_ok {
                 ui.label(
                     egui::RichText::new("ROM path is required")
-                        .color(egui::Color32::from_rgb(220, 80, 80))
-                        .small(),
-                );
-            } else if !port_ok {
-                ui.label(
-                    egui::RichText::new("Invalid port")
-                        .color(egui::Color32::from_rgb(220, 80, 80))
-                        .small(),
-                );
-            } else if !player_ok {
-                ui.label(
-                    egui::RichText::new("Player number must be 1 or higher")
                         .color(egui::Color32::from_rgb(220, 80, 80))
                         .small(),
                 );
@@ -834,29 +743,8 @@ impl WindowInfo {
                         } else {
                             Some(format!("postgresql://{}", test_db_raw))
                         },
-                        aggregator_host: if s.test_agg_host.trim().is_empty() {
-                            None
-                        } else {
-                            Some(s.test_agg_host.trim().to_string())
-                        },
-                        aggregator_port: s
-                            .test_agg_port
-                            .trim()
-                            .parse()
-                            .ok()
-                            .filter(|&p: &u16| p > 0),
-                        preferred_player: s
-                            .test_player
-                            .trim()
-                            .parse()
-                            .ok()
-                            .filter(|&n: &u8| n >= 1),
                     };
-                    if t.db.is_none()
-                        && t.aggregator_host.is_none()
-                        && t.aggregator_port.is_none()
-                        && t.preferred_player.is_none()
-                    {
+                    if t.db.is_none() {
                         None
                     } else {
                         Some(t)
@@ -866,10 +754,6 @@ impl WindowInfo {
                     rom: s.rom.trim().to_string(),
                     db,
                     clean: s.clean,
-                    mode: s.mode.clone(),
-                    aggregator_host: s.aggregator_host.trim().to_string(),
-                    aggregator_port: s.aggregator_port.parse().unwrap_or(7878),
-                    preferred_player: player_parse,
                     default_test: s.default_test,
                     test,
                     poll_ms: if s.poll_ms.trim().is_empty() {

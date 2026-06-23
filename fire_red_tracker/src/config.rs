@@ -12,30 +12,12 @@ use std::sync::{Arc, Mutex};
 // Tracker-specific types
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "lowercase")]
-pub enum ConfigMode {
-    #[default]
-    Standalone,
-    Connected,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TrackerConfig {
     pub rom: String,
     pub db: String,
     #[serde(default)]
     pub clean: bool,
-    #[serde(default)]
-    pub mode: ConfigMode,
-    #[serde(default = "default_aggregator_host")]
-    pub aggregator_host: String,
-    #[serde(default = "default_aggregator_port")]
-    pub aggregator_port: u16,
-    /// Preferred display slot in the aggregator (1 = first column, 2 = second, …).
-    /// Leave unset to let the aggregator assign order by connection time.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub preferred_player: Option<u8>,
     /// When true, behaves as if `--test` is always passed. Can still be overridden per-run.
     #[serde(default)]
     pub default_test: bool,
@@ -108,12 +90,6 @@ pub struct TrackerConfig {
     pub username: Option<String>,
 }
 
-fn default_aggregator_host() -> String {
-    "127.0.0.1".to_string()
-}
-fn default_aggregator_port() -> u16 {
-    7878
-}
 fn default_poll_ms() -> u64 {
     100
 }
@@ -128,9 +104,6 @@ fn default_true() -> bool {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct TrackerTestOverrides {
     pub db: Option<String>,
-    pub aggregator_host: Option<String>,
-    pub aggregator_port: Option<u16>,
-    pub preferred_player: Option<u8>,
 }
 
 // ---------------------------------------------------------------------------
@@ -284,10 +257,6 @@ struct SetupApp {
     rom: String,
     db: String,
     clean: bool,
-    mode: ConfigMode,
-    aggregator_host: String,
-    aggregator_port: String,
-    preferred_player: String,
     result: Arc<Mutex<Option<TrackerConfig>>>,
     should_close: bool,
     heading: &'static str,
@@ -299,9 +268,6 @@ struct SetupApp {
     // Test mode
     default_test: bool,
     test_db: String,
-    test_agg_host: String,
-    test_agg_port: String,
-    test_player: String,
     // OBS clip trigger
     obs_host: String,
     obs_port: String,
@@ -341,10 +307,6 @@ impl SetupApp {
             rom: String::new(),
             db: "localhost/nuzlocke".to_string(),
             clean: false,
-            mode: ConfigMode::Standalone,
-            aggregator_host: "127.0.0.1".to_string(),
-            aggregator_port: "7878".to_string(),
-            preferred_player: String::new(),
             result,
             should_close: false,
             heading: "First-Run Setup",
@@ -354,9 +316,6 @@ impl SetupApp {
             run_start_balls: String::new(),
             default_test: false,
             test_db: String::new(),
-            test_agg_host: String::new(),
-            test_agg_port: String::new(),
-            test_player: String::new(),
             obs_host: "localhost".to_string(),
             obs_port: "4455".to_string(),
             obs_password: String::new(),
@@ -399,13 +358,6 @@ impl SetupApp {
             rom: cfg.rom.clone(),
             db: db_display,
             clean: cfg.clean,
-            mode: cfg.mode.clone(),
-            aggregator_host: cfg.aggregator_host.clone(),
-            aggregator_port: cfg.aggregator_port.to_string(),
-            preferred_player: cfg
-                .preferred_player
-                .map(|n| n.to_string())
-                .unwrap_or_default(),
             result,
             should_close: false,
             heading: "Edit Config",
@@ -430,23 +382,6 @@ impl SetupApp {
                         .trim_start_matches("postgres://")
                         .to_string()
                 })
-                .unwrap_or_default(),
-            test_agg_host: cfg
-                .test
-                .as_ref()
-                .and_then(|t| t.aggregator_host.clone())
-                .unwrap_or_default(),
-            test_agg_port: cfg
-                .test
-                .as_ref()
-                .and_then(|t| t.aggregator_port)
-                .map(|p| p.to_string())
-                .unwrap_or_default(),
-            test_player: cfg
-                .test
-                .as_ref()
-                .and_then(|t| t.preferred_player)
-                .map(|n| n.to_string())
                 .unwrap_or_default(),
             obs_host: cfg.obs.host.clone(),
             obs_port: cfg.obs.port.to_string(),
@@ -538,43 +473,6 @@ impl eframe::App for SetupApp {
                 });
                 ui.end_row();
 
-                // ── Connection mode ───────────────────────────────────────────
-                ui.separator();
-                ui.end_row();
-                ui.label("Default mode:");
-                ui.horizontal(|ui| {
-                    ui.selectable_value(&mut self.mode, ConfigMode::Standalone, "Standalone");
-                    ui.selectable_value(&mut self.mode, ConfigMode::Connected,  "Connected");
-                });
-                ui.end_row();
-
-                if self.mode == ConfigMode::Connected {
-                    ui.label("Aggregator host:");
-                    ui.add(
-                        egui::TextEdit::singleline(&mut self.aggregator_host)
-                            .desired_width(200.0),
-                    );
-                    ui.end_row();
-
-                    ui.label("Aggregator port:");
-                    ui.add(
-                        egui::TextEdit::singleline(&mut self.aggregator_port)
-                            .desired_width(80.0),
-                    );
-                    ui.end_row();
-
-                    ui.label("Player number:");
-                    ui.vertical(|ui| {
-                        ui.add(
-                            egui::TextEdit::singleline(&mut self.preferred_player)
-                                .desired_width(60.0)
-                                .hint_text("1, 2, …"),
-                        );
-                        ui.small("Display column in the aggregator (leave blank for auto)");
-                    });
-                    ui.end_row();
-                }
-
                 // ── Run settings ──────────────────────────────────────────────
                 ui.separator();
                 ui.end_row();
@@ -635,30 +533,6 @@ impl eframe::App for SetupApp {
                     );
                     ui.small("Overrides the database connection when running in test mode.");
                 });
-                ui.end_row();
-
-                ui.label("  Test agg. host:");
-                ui.add(
-                    egui::TextEdit::singleline(&mut self.test_agg_host)
-                        .desired_width(200.0)
-                        .hint_text("leave blank to use main host"),
-                );
-                ui.end_row();
-
-                ui.label("  Test agg. port:");
-                ui.add(
-                    egui::TextEdit::singleline(&mut self.test_agg_port)
-                        .desired_width(80.0)
-                        .hint_text("leave blank to use main port"),
-                );
-                ui.end_row();
-
-                ui.label("  Test player #:");
-                ui.add(
-                    egui::TextEdit::singleline(&mut self.test_player)
-                        .desired_width(60.0)
-                        .hint_text("leave blank"),
-                );
                 ui.end_row();
 
                 // ── OBS clip trigger ──────────────────────────────────────────
@@ -753,19 +627,9 @@ impl eframe::App for SetupApp {
         ui.add_space(4.0);
 
         let rom_ok = !self.rom.trim().is_empty();
-        let port_val: Option<u16> = self.aggregator_port.trim().parse().ok().filter(|&p| p > 0);
-        let port_ok = self.mode != ConfigMode::Connected || port_val.is_some();
-        let player_parse: Option<u8> = self
-            .preferred_player
-            .trim()
-            .parse()
-            .ok()
-            .filter(|&n: &u8| n >= 1);
-        let player_ok = self.preferred_player.trim().is_empty() || player_parse.is_some();
-        let can_save = rom_ok && port_ok && player_ok;
 
         ui.horizontal(|ui| {
-            let btn = ui.add_enabled(can_save, egui::Button::new("Save & Continue"));
+            let btn = ui.add_enabled(rom_ok, egui::Button::new("Save & Continue"));
             if btn.clicked() {
                 let db_raw = self.db.trim().to_string();
                 let db = if db_raw.starts_with("postgresql://") || db_raw.starts_with("postgres://")
@@ -777,53 +641,22 @@ impl eframe::App for SetupApp {
 
                 let test_db_raw = self.test_db.trim().to_string();
                 let test = {
-                    let t = TrackerTestOverrides {
-                        db: if test_db_raw.is_empty() {
-                            None
-                        } else if test_db_raw.starts_with("postgresql://")
-                            || test_db_raw.starts_with("postgres://")
-                        {
-                            Some(test_db_raw)
-                        } else {
-                            Some(format!("postgresql://{}", test_db_raw))
-                        },
-                        aggregator_host: if self.test_agg_host.trim().is_empty() {
-                            None
-                        } else {
-                            Some(self.test_agg_host.trim().to_string())
-                        },
-                        aggregator_port: self
-                            .test_agg_port
-                            .trim()
-                            .parse()
-                            .ok()
-                            .filter(|&p: &u16| p > 0),
-                        preferred_player: self
-                            .test_player
-                            .trim()
-                            .parse()
-                            .ok()
-                            .filter(|&n: &u8| n >= 1),
-                    };
-                    if t.db.is_none()
-                        && t.aggregator_host.is_none()
-                        && t.aggregator_port.is_none()
-                        && t.preferred_player.is_none()
-                    {
+                    let db = if test_db_raw.is_empty() {
                         None
+                    } else if test_db_raw.starts_with("postgresql://")
+                        || test_db_raw.starts_with("postgres://")
+                    {
+                        Some(test_db_raw)
                     } else {
-                        Some(t)
-                    }
+                        Some(format!("postgresql://{}", test_db_raw))
+                    };
+                    db.map(|db| TrackerTestOverrides { db: Some(db) })
                 };
 
                 let config = TrackerConfig {
                     rom: self.rom.trim().to_string(),
                     db,
                     clean: self.clean,
-                    mode: self.mode.clone(),
-                    aggregator_host: self.aggregator_host.trim().to_string(),
-                    aggregator_port: port_val.unwrap_or(7878),
-                    preferred_player: player_parse,
                     default_test: self.default_test,
                     test,
                     poll_ms: if self.poll_ms.trim().is_empty() {
@@ -934,18 +767,6 @@ impl eframe::App for SetupApp {
             if !rom_ok {
                 ui.label(
                     egui::RichText::new("  ROM path is required")
-                        .color(egui::Color32::from_rgb(220, 80, 80))
-                        .small(),
-                );
-            } else if !port_ok {
-                ui.label(
-                    egui::RichText::new("  Invalid aggregator port (1–65535)")
-                        .color(egui::Color32::from_rgb(220, 80, 80))
-                        .small(),
-                );
-            } else if !player_ok {
-                ui.label(
-                    egui::RichText::new("  Player number must be 1 or higher")
                         .color(egui::Color32::from_rgb(220, 80, 80))
                         .small(),
                 );
@@ -1123,10 +944,6 @@ mod tests {
             rom: rom.to_string(),
             db: "postgresql://localhost/test".to_string(),
             clean: false,
-            mode: ConfigMode::default(),
-            aggregator_host: "127.0.0.1".to_string(),
-            aggregator_port: 7878,
-            preferred_player: None,
             default_test: false,
             test: None,
             poll_ms: 100,

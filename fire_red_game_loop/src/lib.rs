@@ -99,6 +99,12 @@ pub struct GameLoopState {
     pub badge_state: Arc<Mutex<Option<fire_red_badge::BadgeState>>>,
     /// Cached money value, same reasoning as `badge_state`.
     pub money: Arc<Mutex<u32>>,
+    /// Cached player name, same reasoning as `badge_state`.
+    pub player_name: Arc<Mutex<String>>,
+    /// Cached play-time (hours, minutes, seconds), same reasoning as `badge_state`.
+    pub play_time: Arc<Mutex<(u16, u8, u8)>>,
+    /// Cached current map (group_id, name_id), same reasoning as `badge_state`.
+    pub current_map: Arc<Mutex<(u8, u8)>>,
 }
 
 impl GameLoopState {
@@ -117,6 +123,9 @@ impl GameLoopState {
             command_queue: Arc::new(Mutex::new(VecDeque::new())),
             badge_state: Arc::new(Mutex::new(None)),
             money: Arc::new(Mutex::new(0)),
+            player_name: Arc::new(Mutex::new(String::new())),
+            play_time: Arc::new(Mutex::new((0, 0, 0))),
+            current_map: Arc::new(Mutex::new((0, 0))),
         }
     }
 }
@@ -271,6 +280,9 @@ pub fn spawn_game_loop(
     let thread_cmds         = state.command_queue.clone();
     let thread_badge_state  = state.badge_state.clone();
     let thread_money        = state.money.clone();
+    let thread_player_name  = state.player_name.clone();
+    let thread_play_time    = state.play_time.clone();
+    let thread_current_map  = state.current_map.clone();
 
     std::thread::spawn(move || {
         fire_red_retroarch_interfacing::set_thread_addr(&cfg.retroarch_host, cfg.retroarch_port);
@@ -326,6 +338,7 @@ pub fn spawn_game_loop(
             map_name_id: 0,
         });
         *thread_encounters.lock_or_recover() = get_area_pokemon_id_for_state(&initial_state);
+        *thread_current_map.lock_or_recover() = (initial_state.map_group_id, initial_state.map_name_id);
 
         let mut current_state = initial_state;
         let mut old_party_size = get_party_size();
@@ -352,6 +365,7 @@ pub fn spawn_game_loop(
             let name = get_trainer_name();
             if !name.trim().is_empty() {
                 fire_red_database::set_player_name(&name);
+                *thread_player_name.lock_or_recover() = name;
                 true
             } else {
                 false
@@ -381,6 +395,7 @@ pub fn spawn_game_loop(
                 last_badge_mask    = None;
                 last_trainer_flags = None;
                 current_state      = FireRedState { map_group_id: 0xFF, map_name_id: 0xFF };
+                *thread_current_map.lock_or_recover() = (0, 0);
                 enc_tracker.reset();
                 last_party_hp.clear();
                 last_enemy_personality = 0;
@@ -405,6 +420,7 @@ pub fn spawn_game_loop(
                     }
                     last_player_name = name.clone();
                     fire_red_database::set_player_name(&name);
+                    *thread_player_name.lock_or_recover() = name;
                     player_name_set = true;
                     enc_tracker.seed_from_db();
                 }
@@ -417,6 +433,7 @@ pub fn spawn_game_loop(
                 state_initialized = true;
                 current_state = state;
                 *thread_encounters.lock_or_recover() = get_area_pokemon_id_for_state(&current_state);
+                *thread_current_map.lock_or_recover() = (current_state.map_group_id, current_state.map_name_id);
                 let zone = get_area_name_for(current_state.map_group_id, current_state.map_name_id);
                 last_area_visit_id = fire_red_database::open_area_visit(
                     current_state.map_group_id,
@@ -429,6 +446,7 @@ pub fn spawn_game_loop(
             if state_initialized && current_state != state {
                 current_state = state;
                 *thread_encounters.lock_or_recover() = get_area_pokemon_id_for_state(&current_state);
+                *thread_current_map.lock_or_recover() = (current_state.map_group_id, current_state.map_name_id);
                 let zone = get_area_name_for(current_state.map_group_id, current_state.map_name_id);
                 let now = fire_red_database::unix_now();
                 if let Some(vid) = last_area_visit_id.take() {
@@ -624,6 +642,7 @@ pub fn spawn_game_loop(
                     *thread_badge_state.lock_or_recover() = Some(bs);
                 }
                 *thread_money.lock_or_recover() = game::read_money();
+                *thread_play_time.lock_or_recover() = fire_red_loop::get_play_time_components();
                 last_trainer_flags = game::check_for_new_trainer_battles(last_trainer_flags);
             }
 
@@ -654,10 +673,8 @@ pub fn assemble_game_state(
     state: &GameLoopState,
     preferred_player: Option<u8>,
 ) -> GameState {
-    use fire_red_loop::get_value;
-
-    let pos = get_value();
-    let player_name = fire_red_loop::get_trainer_name();
+    let player_name = state.player_name.lock_or_recover().clone();
+    let (map_group_id, map_name_id) = *state.current_map.lock_or_recover();
 
     let party     = state.party.lock_or_recover().clone();
     let encounters = state.encounters.lock_or_recover().clone();
@@ -683,7 +700,7 @@ pub fn assemble_game_state(
     let badge_state = state.badge_state.lock_or_recover().clone();
     let money = *state.money.lock_or_recover();
     let (play_time_hours, play_time_minutes, play_time_seconds) =
-        fire_red_loop::get_play_time_components();
+        *state.play_time.lock_or_recover();
 
     GameState {
         party,
@@ -691,8 +708,8 @@ pub fn assemble_game_state(
         player_name,
         badge_state,
         zone_name,
-        current_map_group: pos.map_group_id,
-        current_map_name:  pos.map_name_id,
+        current_map_group: map_group_id,
+        current_map_name:  map_name_id,
         preferred_player,
         warnings,
         money,

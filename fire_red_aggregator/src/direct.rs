@@ -426,6 +426,7 @@ fn try_add_host(
 
         // Bridge thread: assemble GameState → slot and forward commands.
         let slot_state    = slot.state.clone();
+        let slot_label    = slot.label.clone();
         let slot_box      = slot.box_data.clone();
         let slot_bag      = slot.bag_data.clone();
         let slot_cmds     = slot.command_queue.clone();
@@ -462,6 +463,9 @@ fn try_add_host(
 
                 // Assemble and publish the current GameState.
                 let gs = assemble_game_state(&loop_br, None);
+                if !gs.player_name.is_empty() {
+                    *slot_label.lock_or_recover() = gs.player_name.clone();
+                }
                 *slot_state.lock_or_recover() = Some(gs);
 
                 // Forward box snapshot every 5 s.

@@ -70,6 +70,8 @@ html, body {
 .status-frz { background: #336688; color: #aaddff; }
 .status-par { background: #887700; color: #ffee88; }
 .status-tox { background: #550077; color: #dd99ff; }
+.soul-link { font-size: 9px; color: #c080e0; margin-top: 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+html[data-theme=light] .soul-link { color: #8830b0; }
 #disconnected { display: none; font-size: 11px; color: #666; text-align: center; padding: 4px; }
 html[data-theme=light] #root {
     background: rgba(235, 240, 255, 0.93);
@@ -153,6 +155,12 @@ function handleState(slots) {
             if (sb) nrow.appendChild(sb);
         }
         info.appendChild(nrow);
+
+        if (mon.soul_link_partner) {
+            const p = mon.soul_link_partner;
+            const label = p.player ? p.nickname + ' (' + p.player + ')' : p.nickname;
+            info.appendChild(el('div', 'soul-link', '♥ ' + label));
+        }
 
         const hpPct = mon.max_hp > 0 ? mon.hp / mon.max_hp : 0;
         const barCls = hpPct > 0.5 ? 'bar-high' : hpPct > 0.25 ? 'bar-mid' : 'bar-low';

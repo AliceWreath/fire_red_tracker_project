@@ -97,28 +97,38 @@ pub fn force_fetch_rom(host: &str, port: u16) -> Result<PathBuf, String> {
 pub fn fetch_or_load_rom(host: &str, port: u16) -> Result<PathBuf, String> {
     let socket = connect_socket(host, port)?;
 
-    // Read the GBA ROM header (first 256 bytes) to identify the game.
-    let header = read_retry(&socket, ROM_BASE, 256)
+    // Read probe A: first 4 KiB of the GBA ROM (header + ARM startup code).
+    // The GBA header (bytes 0xA0-0xBF) uniquely identifies title/code/version.
+    // Comparing 4 KiB instead of just 256 bytes also catches ROM hacks that
+    // patch the startup code while leaving the header fields identical.
+    let probe_a = read_retry(&socket, ROM_BASE, CHUNK)
         .ok_or_else(|| format!(
             "Could not read ROM header from RetroArch at {}:{}. \
              Is the game loaded and are network commands enabled?",
             host, port
         ))?;
 
+    // Read probe B: 4 KiB from offset 0x23C000 (trainer-data region in vanilla
+    // FireRed).  Data-only ROM hacks often leave the startup code intact but
+    // modify ROM data starting at this range, so the second probe catches stale
+    // caches that the startup-code probe misses.  Failure here is non-fatal —
+    // if RetroArch can't supply this read we fall back to probe A only.
+    let probe_b = read_retry(&socket, ROM_BASE + 0x0023_C000, CHUNK);
+
     // GBA header layout (all at ROM byte offsets):
     //   0xA0..0xAC  — game title (12 ASCII bytes, null-padded)
     //   0xAC..0xB0  — game code  (4 ASCII bytes, e.g. "BPRE")
     //   0xBC        — ROM version (u8)
-    let title = std::str::from_utf8(&header[0xA0..0xAC])
+    let title = std::str::from_utf8(&probe_a[0xA0..0xAC])
         .unwrap_or("")
         .trim_end_matches('\0')
         .trim()
         .to_string();
-    let code = std::str::from_utf8(&header[0xAC..0xB0])
+    let code = std::str::from_utf8(&probe_a[0xAC..0xB0])
         .unwrap_or("????")
         .trim_end_matches('\0')
         .to_string();
-    let version = header[0xBC];
+    let version = probe_a[0xBC];
 
     tracing::info!(
         "ROM fetch: identified \"{}\" ({}) v{} at {}",
@@ -127,8 +137,39 @@ pub fn fetch_or_load_rom(host: &str, port: u16) -> Result<PathBuf, String> {
 
     let cache = cache_path(&title, &code, version)?;
     if cache.exists() {
-        tracing::info!("ROM fetch: using cached ROM at {}", cache.display());
-        return Ok(cache);
+        // Validate the cached file against both probes.  Probe A checks the
+        // startup code; probe B (trainer-data region) catches data-only ROM
+        // hacks that leave the startup code identical to vanilla FireRed.
+        let cache_ok = std::fs::File::open(&cache)
+            .and_then(|mut f| {
+                use std::io::{Read, Seek, SeekFrom};
+                let mut buf_a = [0u8; CHUNK];
+                f.read_exact(&mut buf_a)?;
+                if buf_a.as_ref() != probe_a.as_slice() {
+                    return Ok(false);
+                }
+                if let Some(ref pb) = probe_b {
+                    let mut buf_b = [0u8; CHUNK];
+                    f.seek(SeekFrom::Start(0x0023_C000))?;
+                    f.read_exact(&mut buf_b)?;
+                    Ok(buf_b.as_ref() == pb.as_slice())
+                } else {
+                    Ok(true)
+                }
+            })
+            .unwrap_or(false);
+
+        if cache_ok {
+            tracing::info!("ROM fetch: using cached ROM at {}", cache.display());
+            return Ok(cache);
+        }
+        tracing::warn!(
+            "ROM fetch: cached ROM at {} does not match the running game \
+             (probe mismatch — ROM was likely switched) — deleting stale \
+             cache and re-downloading",
+            cache.display()
+        );
+        let _ = std::fs::remove_file(&cache);
     }
 
     // Not in cache — download the full ROM via the pipelined downloader.

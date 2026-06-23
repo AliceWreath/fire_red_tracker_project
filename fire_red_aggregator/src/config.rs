@@ -10,9 +10,6 @@ use std::sync::{Arc, Mutex};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AggregatorConfig {
-    /// TCP port to listen on for incoming tracker connections.
-    #[serde(default = "default_listen_port")]
-    pub listen_port: u16,
     /// PostgreSQL connection string (optional).
     pub db: Option<String>,
     /// WebSocket overlay port (optional — omit for GUI window mode).
@@ -93,6 +90,12 @@ pub struct AggregatorConfig {
     /// and responds to `!party`, `!deaths`, `!shinies`, `!status`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub youtube_chat: Option<YouTubeChatConfig>,
+    /// Manual gTrainers ROM offset override (byte offset within the file, not
+    /// the GBA bus address).  When set, all auto-detection is skipped.
+    /// Example: if a ROM tool reports the table at bus address `0x08240000`,
+    /// set this to `0x240000`.  Leave unset to use auto-detection.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trainer_table_rom_offset: Option<usize>,
 }
 
 /// Discord Application Commands configuration.
@@ -162,7 +165,6 @@ pub struct TwitchConfig {
     pub reward_commands: std::collections::HashMap<String, String>,
 }
 
-fn default_listen_port() -> u16 { 7878 }
 fn default_true() -> bool { true }
 fn default_retroarch_port() -> u16 { 55355 }
 fn is_default_retroarch_port(v: &u16) -> bool { *v == 55355 }
@@ -240,7 +242,6 @@ fn is_default_livesplit_port(v: &u16) -> bool { *v == 16834 }
 /// All fields are optional; omit a field to inherit the base config value.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct AggregatorTestOverrides {
-    pub listen_port: Option<u16>,
     pub db: Option<String>,
     pub ws_port: Option<u16>,
 }
@@ -304,7 +305,6 @@ pub fn save_config(config: &AggregatorConfig, path: &PathBuf) {
 // ---------------------------------------------------------------------------
 
 struct SetupApp {
-    listen_port_str: String,
     db: String,
     db_enabled: bool,
     ws_port_str: String,
@@ -329,7 +329,6 @@ struct SetupApp {
 impl SetupApp {
     fn new(result: Arc<Mutex<Option<AggregatorConfig>>>) -> Self {
         Self {
-            listen_port_str: "7878".to_string(),
             db: "localhost/nuzlocke".to_string(),
             db_enabled: false,
             ws_port_str: "9090".to_string(),
@@ -373,7 +372,6 @@ impl SetupApp {
             all_hosts.push(h.clone());
         }
         Self {
-            listen_port_str: cfg.listen_port.to_string(),
             db,
             db_enabled,
             ws_port_str,
@@ -417,14 +415,6 @@ impl eframe::App for SetupApp {
                 .spacing([12.0, 10.0])
                 .min_col_width(140.0)
                 .show(ui, |ui| {
-                    // Listen port
-                    ui.label("Listen port:");
-                    ui.vertical(|ui| {
-                        ui.add(egui::TextEdit::singleline(&mut self.listen_port_str).desired_width(80.0));
-                        ui.small("trackers connect to this port");
-                    });
-                    ui.end_row();
-
                     // Database (optional)
                     ui.checkbox(&mut self.db_enabled, "Database:");
                     ui.add_enabled_ui(self.db_enabled, |ui| {
@@ -552,16 +542,14 @@ impl eframe::App for SetupApp {
             ui.separator();
             ui.add_space(4.0);
 
-            let listen_parse: Result<u16, _> = self.listen_port_str.trim().parse();
             let ws_parse: Result<u16, _> = self.ws_port_str.trim().parse();
             let port_parse: Result<u16, _> = self.retroarch_port_str.trim().parse();
-            let listen_ok = listen_parse.is_ok();
             let ws_ok = !self.ws_port_enabled || ws_parse.is_ok();
             let port_ok = port_parse.is_ok();
 
             ui.horizontal(|ui| {
                 let btn = ui.add_enabled(
-                    listen_ok && ws_ok && port_ok,
+                    ws_ok && port_ok,
                     egui::Button::new("Save & Continue"),
                 );
                 if btn.clicked() {
@@ -588,7 +576,6 @@ impl eframe::App for SetupApp {
                     };
 
                     *self.result.lock().unwrap_or_else(|p| p.into_inner()) = Some(AggregatorConfig {
-                        listen_port: listen_parse.unwrap_or(7878),
                         db,
                         ws_port,
                         default_test: self.default_test,
@@ -612,12 +599,12 @@ impl eframe::App for SetupApp {
                         discord_live_embed: None,
                         discord_run_thread: None,
                         youtube_chat: None,
+                        trainer_table_rom_offset: None,
                     });
                     self.should_close = true;
                 }
 
                 for msg in [
-                    (!listen_ok).then_some("Invalid listen port"),
                     (!ws_ok).then_some("Invalid WebSocket port"),
                     (!port_ok).then_some("Invalid RetroArch port"),
                 ].into_iter().flatten() {

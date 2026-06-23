@@ -249,11 +249,6 @@ pub fn run_config_editor_cli(path: &PathBuf) {
 
     section("Network / Ports");
 
-    let listen_port = prompt_u16(
-        "Listen port (trackers connect here)",
-        d.map(|c| c.listen_port).unwrap_or(7878),
-    );
-
     let ws_port = prompt_opt_u16(
         "WebSocket overlay port",
         d.and_then(|c| c.ws_port).or(None),
@@ -297,6 +292,28 @@ pub fn run_config_editor_cli(path: &PathBuf) {
         d.and_then(|c| c.rom_path.as_deref()),
         "path/to/firered.gba — required for direct mode",
     );
+
+    let trainer_table_rom_offset: Option<usize> = {
+        let current = d.and_then(|c| c.trainer_table_rom_offset)
+            .map(|v| format!("{:#X}", v))
+            .unwrap_or_else(|| "(auto)".to_string());
+        loop {
+            print!("  gTrainers ROM offset override [{current}] (Enter=keep/auto, 'clear'=auto, hex e.g. 0x23CAE0): ");
+            flush();
+            let input = read_line();
+            match input.trim() {
+                "" => break d.and_then(|c| c.trainer_table_rom_offset),
+                "clear" | "auto" => break None,
+                s => {
+                    let s = s.trim_start_matches("0x").trim_start_matches("0X");
+                    match usize::from_str_radix(s, 16) {
+                        Ok(v) => break Some(v),
+                        Err(_) => println!("    ✗  Enter a hex offset (e.g. 0x23CAE0), 'clear', or Enter to keep."),
+                    }
+                }
+            }
+        }
+    };
 
     // Merge legacy single host into the host list for display.
     let existing_hosts: Vec<String> = {
@@ -620,10 +637,6 @@ pub fn run_config_editor_cli(path: &PathBuf) {
 
     let test = {
         let prev = d.and_then(|c| c.test.as_ref());
-        let test_listen = prompt_opt_u16(
-            "  Test listen port",
-            prev.and_then(|t| t.listen_port),
-        );
         let test_db_raw = prompt_opt_str(
             "  Test database",
             prev.and_then(|t| t.db.as_deref()).map(db_strip).as_deref(),
@@ -632,11 +645,10 @@ pub fn run_config_editor_cli(path: &PathBuf) {
         let test_db = test_db_raw.map(|s| db_full(&s));
         let test_ws = prompt_opt_u16("  Test WebSocket port", prev.and_then(|t| t.ws_port));
 
-        if test_listen.is_none() && test_db.is_none() && test_ws.is_none() {
+        if test_db.is_none() && test_ws.is_none() {
             None
         } else {
             Some(AggregatorTestOverrides {
-                listen_port: test_listen,
                 db: test_db,
                 ws_port: test_ws,
             })
@@ -646,7 +658,6 @@ pub fn run_config_editor_cli(path: &PathBuf) {
     // ── Assemble config ────────────────────────────────────────────────────
 
     let cfg = AggregatorConfig {
-        listen_port,
         db,
         ws_port,
         default_test,
@@ -670,6 +681,7 @@ pub fn run_config_editor_cli(path: &PathBuf) {
         discord_live_embed,
         discord_run_thread,
         youtube_chat,
+        trainer_table_rom_offset,
     };
 
     // ── Confirm & save ─────────────────────────────────────────────────────

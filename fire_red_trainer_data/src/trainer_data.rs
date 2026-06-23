@@ -11,9 +11,9 @@ pub const PLAYER_NAME_LENGTH: usize = 7;
 /// Length in bytes of the packed trainer ID field.
 pub const TRAINER_ID_LENGTH: usize = 4;
 
-/// Returns the GBA address of SaveBlock2, which contains trainer/player metadata.
+/// Number of raw bytes that make up the [`PlayerData`] block in memory.
 ///
-/// The data block starting here spans 19 bytes:
+/// Spans the first 19 bytes of SaveBlock2:
 /// - 8 bytes: trainer name (7 chars + 0xFF terminator)
 /// - 1 byte:  trainer gender
 /// - 1 byte:  special save warp flags
@@ -22,14 +22,6 @@ pub const TRAINER_ID_LENGTH: usize = 4;
 /// - 1 byte:  play time minutes
 /// - 1 byte:  play time seconds
 /// - 1 byte:  play time V-blank counter
-///
-/// Reads from the revision-specific address table so alternate ROM versions
-/// and compatible ROM hacks resolve the correct address automatically.
-pub fn player_data_addr() -> usize {
-    fire_red_rom_buffer::get_rom_addresses().player_data_addr
-}
-
-/// Number of raw bytes that make up the [`PlayerData`] block in memory.
 pub const PLAYER_DATA_SIZE: usize = 19;
 
 /// Trainer and play-time metadata read from SaveBlock2.

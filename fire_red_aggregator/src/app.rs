@@ -89,7 +89,6 @@ impl SlotDbCache {
 // ---------------------------------------------------------------------------
 
 struct SettingsDraft {
-    listen_port_str: String,
     db: String,
     db_enabled: bool,
     ws_port_str: String,
@@ -117,7 +116,6 @@ impl SettingsDraft {
             all_hosts.push(h.clone());
         }
         Self {
-            listen_port_str: cfg.listen_port.to_string(),
             db: cfg
                 .db
                 .as_deref()
@@ -671,10 +669,6 @@ impl AggregatorApp {
                 .spacing([12.0, 8.0])
                 .min_col_width(140.0)
                 .show(ui, |ui| {
-                    ui.label("Listen port:");
-                    ui.add(egui::TextEdit::singleline(&mut s.listen_port_str).desired_width(80.0));
-                    ui.end_row();
-
                     ui.checkbox(&mut s.db_enabled, "Database:");
                     ui.add_enabled_ui(s.db_enabled, |ui| {
                         ui.add(
@@ -775,16 +769,14 @@ impl AggregatorApp {
         });
 
         ui.add_space(8.0);
-        let port_ok = s.listen_port_str.trim().parse::<u16>().is_ok();
         let ws_ok = !s.ws_port_enabled || s.ws_port_str.trim().parse::<u16>().is_ok();
         let ra_port_ok = s.retroarch_port_str.trim().parse::<u16>().is_ok();
 
         ui.horizontal(|ui| {
             let saved = ui
-                .add_enabled(port_ok && ws_ok && ra_port_ok, egui::Button::new("Save"))
+                .add_enabled(ws_ok && ra_port_ok, egui::Button::new("Save"))
                 .clicked();
             for msg in [
-                (!port_ok).then_some("Invalid listen port"),
                 (!ws_ok).then_some("Invalid WebSocket port"),
                 (!ra_port_ok).then_some("Invalid RetroArch port"),
             ].into_iter().flatten() {
@@ -816,7 +808,6 @@ impl AggregatorApp {
                     Some(s.rom_path.trim().to_string())
                 };
                 let cfg = AggregatorConfig {
-                    listen_port: s.listen_port_str.trim().parse().unwrap_or(7878),
                     db,
                     ws_port: if s.ws_port_enabled { s.ws_port_str.trim().parse().ok() } else { None },
                     default_test: s.default_test,
@@ -840,6 +831,7 @@ impl AggregatorApp {
                     discord_live_embed: None,
                     discord_run_thread: None,
                     youtube_chat: None,
+                    trainer_table_rom_offset: None,
                 };
                 save_config(&cfg, &self.config_path);
                 self.settings_open = false;
