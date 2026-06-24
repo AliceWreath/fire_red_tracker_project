@@ -321,7 +321,7 @@ The tracker starts a single long-lived background thread at startup that owns a 
 
 ## Modes
 
-### Standalone
+### Tracker — Standalone
 Runs locally. Reads the ROM and polls RetroArch on the same machine. Displays a local GUI.
 
 10 seconds after the window opens, a background thread checks GitHub for a newer release. If one is found the window title changes to `Tracker — v{X} available` as a passive reminder. Run `--update` to apply it.
@@ -336,29 +336,28 @@ tracker firered.gba --scan-security-key=<QTY>  # locate bag security key offset 
 tracker firered.gba --update                    # check GitHub for a newer release and self-update
 ```
 
-### Connected
-Like standalone but connects to a running aggregator and streams game state to it. Runs headless (no local GUI). The aggregator is the display surface.
+The tracker binary is fully self-contained. It maintains its own SQLite-backed or PostgreSQL-backed run history and does not require a running aggregator.
 
-```
-tracker firered.gba connect
-tracker firered.gba connect --host 192.168.1.10 --port 7878
-```
-
-Default host is `127.0.0.1`, default port is `7878`. The tracker reconnects automatically if the aggregator restarts.
-
-### Aggregator
-A separate binary for Soul Link / co-op runs. **Listens** for incoming tracker connections — no addresses need to be configured in advance. Each tracker dials out to the aggregator when started in connected mode.
+### Aggregator — Direct Mode
+A separate binary for Soul Link / co-op runs. The aggregator polls RetroArch directly over UDP — no tracker binary is required on each player machine.
 
 The same background version check runs here: 10 seconds after the window opens, if a newer release is found the title bar changes to `Fire Red Aggregator — v{X} available`.
 
 ```
 aggregator
-aggregator --listen-port 7878
 aggregator --no-injections       # disable all injection endpoints (give_item, change_species, set_ivs, heal_party, etc.)
 aggregator --update              # check GitHub for a newer release and self-update
 ```
 
-The window width scales as trackers connect. Soul Link matches (Pokémon sharing the same caught location across players) are highlighted automatically. If a tracker disconnects, its slot shows as disconnected and its last known data is preserved; when it reconnects it reuses the same slot.
+Configure RetroArch hosts to poll in `~/.config/fire_red_aggregator/config.toml`:
+
+```toml
+retroarch_hosts = ["192.168.1.10", "192.168.1.11"]   # one slot per entry
+rom_path = "/path/to/firered.gba"                      # required for direct mode
+direct_mode = true
+```
+
+Or start one connection on demand via the `/join` page (when `direct_mode = true`). The aggregator shows all connected players side by side and updates each slot independently. Soul Link matches (Pokémon sharing the same caught location across players) are highlighted automatically. Disconnected slots preserve their last known data and resume from where they left off when the connection is re-established.
 
 #### Database integration
 
@@ -382,14 +381,14 @@ The database must already exist (`CREATE DATABASE nuzlocke;`). The schema is cre
 
 #### Run management
 
-Run commands can be issued from three places, all of which broadcast to **all connected trackers simultaneously**:
+Run commands can be issued from three places, all of which broadcast to **all active slots simultaneously**:
 
-- **`/cmd` page** — dedicated command control page at `http://localhost:PORT/cmd`. Shows all connected slots with their current run IDs and party counts. Has **End Run** and **New Run** buttons that POST to the REST API below.
+- **`/cmd` page** — dedicated command control page at `http://localhost:PORT/cmd`. Shows all active slots with their current run IDs and party counts. Has **End Run** and **New Run** buttons that POST to the REST API below.
 - **REST API** — `POST /api/command/end_run` and `POST /api/command/new_run` (see REST API section below).
 - **WebSocket** — send `{ "cmd": "end_run" }` or `{ "cmd": "new_run" }` as a text frame from any connected WebSocket client.
 
-- **End Run** — marks the current run as ended (sets `ended_at`). The tracker stops recording deaths, catches, and encounters. The web display switches to the run summary / history view.
-- **New Run** — creates a fresh run on every connected tracker and makes it active. Recording resumes immediately.
+- **End Run** — marks the current run as ended (sets `ended_at`). The slot stops recording deaths, catches, and encounters. The web display switches to the run summary / history view.
+- **New Run** — creates a fresh run on every active slot and makes it active. Recording resumes immediately.
 
 #### WebSocket overlay mode
 
@@ -722,16 +721,18 @@ A **Soul Link** is a Nuzlocke variant played with a partner: each player's catch
 
 | Module | Responsibility |
 |---|---|
-| `main.rs` | Entry point, thread spawning, mode dispatch |
-| `cli.rs` | `Cli` and `Command` structs (clap definitions) |
-| `config.rs` | Config file load/save, first-run setup dialog |
+| `main.rs` | Entry point, thread spawning |
+| `cli.rs` | `Cli` struct (clap definitions) |
+| `config.rs` | Config file load/save, first-run setup dialog, `--config-editor` GUI |
+| `config_cli.rs` | `--config-editor-cli` interactive terminal editor |
 | `encounter.rs` | `EncounterTracker` — wild battle detection via personality change, balls-gate latch, duplicate species check, shiny detection (Gen III formula), catch detection via party membership |
 | `game.rs` | `fill_party_list`, `check_for_dead_pokemon`, `check_for_new_pokemon`, `check_for_run_over`, `map_state_from_ewram`, `game_is_loaded`, `has_pokeballs`, `count_pokeballs`, `read_security_key`, `scan_for_balls_pocket`, `scan_for_security_key`; injection commands: `give_item`, `take_item`, `make_shiny`, `change_species`, `change_ability`, `change_gender`, `change_nickname`, `change_held_item`, `cure_status`, `change_nature`, `restore_pp`, `set_friendship`, `change_move`, `set_ivs`, `increase_ivs`, `set_evs`, `increase_evs`, `restore_hp`, `heal_party` |
 | `textures.rs` | `PendingTexture`, sprite compression, `build_sprite_data` |
 | `gui.rs` | `WindowInfo`, `eframe::App` impl, party panel, encounters viewport |
-| `server.rs` | Aggregator connection handler — manages the bidirectional push stream over an established TCP connection |
 | `webhook.rs` | `WebhookEvent` enum, channel-backed background sender, `init` / `fire_event` — HTTP POST dispatch for death, catch, shiny, wipe, badge, nickname-change, and NuzlockeViolation events; `render_template` for `{placeholder}` substitution; OBS WebSocket v5 clip trigger (`SaveReplayBuffer`) and scene switching (`SetCurrentProgramScene`) via plain TCP `tungstenite` with SHA-256 authentication; `notify-send` desktop notifications for death/shiny/wipe events |
 | `helix.rs` | Twitch Helix API integration. Background worker thread firing stream markers (`POST /streams/markers`), polls (`POST /polls`), and predictions (`POST /predictions` + `PATCH` to resolve). Public entry points: `init`, `on_death`, `on_shiny_encounter`, `on_badge`, `on_legendary_encounter`, `resolve_prediction`, `is_legendary`. Active prediction ID and outcome IDs stored in a `Mutex<Option<ActivePrediction>>` so the create → resolve lifecycle spans multiple game events |
+| `discord.rs` | Discord integration helpers (live embed and run thread for the tracker's own event loop) |
+| `livesplit.rs` | LiveSplit Server bridge — sends split events over TCP on badge earn and game clear |
 | `type_coverage.rs` | `TypeCoverage` struct and `compute` function — given a slice of `(type1, type2)` pairs for the living party, returns team types present, types the team is collectively weak to, and types the team can hit super-effectively. Uses the full Gen III 17-type effectiveness table (eighths arithmetic). |
 
 ### Key external dependencies
@@ -800,7 +801,7 @@ If any check fails, the shared party, encounter, and badge data are cleared and 
 
 ### Thread model
 
-#### Tracker — standalone
+#### Tracker
 
 ```
 main thread  (GUI)
@@ -812,63 +813,47 @@ main thread  (GUI)
 │                             run every 1 s or immediately on party-size change
 ├── box-monitor thread        read all 14 PC boxes every 5 s
 ├── trainer-data thread       read trainer name / play time every 15 s
-└── webhook thread            drains event channel; fires HTTP POSTs (5 s timeout each)
+├── webhook thread            drains event channel; fires HTTP POSTs (5 s timeout each)
+└── helix thread              (optional) Twitch Helix markers, polls, predictions
 ```
 
-#### Tracker — connected
+#### Aggregator — direct mode
 
-```
-main thread  (headless, parked until Ctrl-C)
-│
-├── game-polling thread       (same as standalone)
-│                             also signals wipe_signal AtomicBool on party wipe
-│
-└── network thread            outer reconnect loop (retry every 5 s on disconnect)
-        └── on each connection: handle_client(stream, ...)
-                ├── writer loop    push GameState snapshot every 100 ms;
-                │                  sends RunChanged(None) when wipe_signal fires
-                └── reader thread  receive ClientMessage (RequestTextures / EndRun / NewRun)
-```
-
-#### Aggregator
+Each RetroArch connection runs an isolated set of threads that exactly mirror the standalone tracker's layout, scoped to that slot:
 
 ```
 main thread  (GUI window or headless WebSocket server)
 │
-├── TCP listener thread       accept incoming tracker connections
-│       └── per-tracker thread   handle_tracker_connection(stream, slot_arcs)
-│               ├── writer thread    drain texture_request_queue + command_queue every 50 ms
-│               └── reader loop      receive State + Textures + RunChanged, update shared Arcs
+├── per-slot game loop        start_loop_ctx() — independent MemoryContext / PartyContext
+│       ├── memory thread     EWRAM + IWRAM snapshots (thread-local, not shared with other slots)
+│       ├── game-polling thread
+│       ├── box-monitor thread
+│       └── trainer-data thread
 │
 └── [ws-port mode] broadcast thread   BroadcastLoop::tick() every 100 ms → push JSON to WebSocket clients
 ```
 
-Slots are created (or reused from a disconnected slot) when a tracker connects. `SharedSlots = Arc<Mutex<Vec<Arc<MonitorSlot>>>>` is shared between the listener, `BroadcastLoop`, and the WebSocket handler. The GUI and BroadcastLoop snapshot the slot list each frame/tick so the mutex is held only briefly.
+`SharedSlots = Arc<Mutex<Vec<Arc<MonitorSlot>>>>` is shared between the direct connector, `BroadcastLoop`, and the WebSocket handler. The GUI and BroadcastLoop snapshot the slot list each frame/tick so the mutex is held only briefly.
 
 All inter-thread data flows through `Arc<Mutex<_>>` or `AtomicBool`. The GUI never holds a mutex during rendering — state is snapshotted at the start of each frame.
 
 ---
 
-### Network protocol
+### Internal message types (aggregator ↔ game loop)
 
-All TCP messages use a simple length-prefixed bincode frame:
+Within the aggregator process, the direct-mode game loop communicates with the WebSocket broadcast loop via `ClientMessage` variants in the `fire_red_states` crate. These are Rust enum variants, not a network protocol — they are dispatched via `mpsc` channel within the same process.
 
-```
-[4-byte big-endian length][bincode-encoded message body]
-```
-
-The tracker always sends `ServerMessage` and receives `ClientMessage`, regardless of which side initiated the TCP connection.
-
-| Direction | Message | Contents |
+| Message | Direction | Contents |
 |---|---|---|
-| Tracker → Aggregator | `ServerMessage::State` | Full `GameState` (party + encounters + badges + trainer name), sent every 100 ms |
-| Tracker → Aggregator | `ServerMessage::Textures` | `Vec<SpriteData>` (zlib-compressed RGBA + metadata) |
-| Tracker → Aggregator | `ServerMessage::RunChanged(Option<u32>)` | Confirms a run change: `None` = run ended, `Some(id)` = new run ID |
-| Aggregator → Tracker | `ClientMessage::RequestTextures` | `Vec<u16>` of species IDs to fetch |
-| Aggregator → Tracker | `ClientMessage::EndRun` | End the active run on this tracker |
-| Aggregator → Tracker | `ClientMessage::NewRun` | Start a new run on this tracker |
+| `ClientMessage::EndRun` | Command layer → game loop | End the active run for this slot |
+| `ClientMessage::NewRun` | Command layer → game loop | Start a new run for this slot |
+| `ClientMessage::GiveItem { item_id, quantity }` | Command layer → game loop | EWRAM injection: add item |
+| `ClientMessage::MakeShiny { party_position }` | Command layer → game loop | EWRAM injection: patch shiny OT Secret ID |
+| `ClientMessage::ChangeSpecies { … }` | Command layer → game loop | EWRAM injection: rewrite species |
+| `ClientMessage::HealParty` | Command layer → game loop | EWRAM injection: restore HP and cure status |
+| `ClientMessage::UndoLastCommand` | Command layer → game loop | Replay pre-write bytes from `LAST_UNDO` buffer |
 
-Maximum allowed message size is 20 MB, enforced on receive.
+The `fire_red_states` crate also contains the shared `GameState`, `BagPockets`, and `SpriteData` types used throughout both binaries.
 
 ---
 
@@ -992,32 +977,39 @@ RUST_LOG=warn  ./aggregator --ws-port 9090 # quiet  — warnings and errors only
 
 ### Quick start — solo Nuzlocke
 
-```
-./aggregator --db postgresql://localhost/nuzlocke &
-./tracker firered.gba connect
-```
-
-Or standalone with just the local GUI:
+Standalone (local GUI, no aggregator needed):
 
 ```
 ./tracker firered.gba
 ```
 
+Or with the aggregator's web UI and OBS overlay:
+
+```
+./aggregator --db postgresql://localhost/nuzlocke --ws-port 9090
+```
+
+Then open `http://localhost:9090/` in a browser and use the `/join` page to connect your RetroArch instance. Set `direct_mode = true` and `rom_path` in the aggregator config first.
+
 ### Quick start — Soul Link with a friend
 
-**Start the aggregator first (one machine, accessible to both players):**
+**Start the aggregator on a machine accessible to both players:**
 ```
-./aggregator --db postgresql://localhost/nuzlocke
-```
-
-**Each player then starts their tracker in connected mode:**
-```
-./tracker firered.gba connect --host aggregator-ip --port 7878
+./aggregator --db postgresql://localhost/nuzlocke --ws-port 9090
 ```
 
-The aggregator window shows both players side by side as soon as each tracker connects.
+**Configure direct-mode hosts** in `~/.config/fire_red_aggregator/config.toml`:
+```toml
+direct_mode = true
+rom_path = "/path/to/firered.gba"
+retroarch_hosts = ["192.168.1.10", "192.168.1.11"]   # each player's RetroArch IP
+```
 
-**OBS WebSocket overlay (headless aggregator):**
+Or each player can join on demand via `http://aggregator-ip:9090/join` — enter their RetroArch IP and press Connect.
+
+The aggregator window and web overlay both update as soon as each RetroArch connection is established. Soul Link matches are highlighted automatically.
+
+**OBS WebSocket overlay:**
 ```
 ./aggregator --db postgresql://localhost/nuzlocke --ws-port 9090
 ```
@@ -1038,6 +1030,73 @@ Add `http://localhost:9090/cmd` in a browser tab to manage runs — **End Run** 
 ---
 
 ## Project status
+
+**v0.9.91** — goals/timeline fixes (current):
+
+- **Goals timeline** — goal completion timestamps and timeline ordering fixed.
+
+---
+
+**v0.9.87** — multi-player overlay reliability, run slot-index, Soul Link HP labels:
+
+- **Multi-player slot flickering fixed** — slot assignment is now stable across reconnects; the aggregator reuses an existing slot by matching run ID before falling back to creating a new one.
+- **Run slot-index setting** — the `/join` page and direct connector now record and restore which RetroArch IP maps to which slot index so overlays don't shift after a disconnect/reconnect cycle.
+- **Soul Link names on HP overlay** — the `/:index/hp` Browser Source now shows the soul-link partner's nickname and player label beside each HP bar.
+
+---
+
+**v0.9.86** — manual gTrainers ROM offset override:
+
+- **`trainer_table_rom_offset`** — new optional field in `AggregatorConfig`. When set, the heuristic ROM scanner is skipped and the trainer data table is read from the specified ROM byte offset directly. Useful for ROM hacks where the scanner cannot find a valid sentinel sequence.
+- Added a prompt for this field in both the GUI config editor (`--config-editor`) and the terminal editor (`--config-editor-cli`).
+
+---
+
+**v0.9.85** — party-data anchor scan for ROM hacks without a TRAINER_NONE sentinel:
+
+- **Anchor scan** — when both the heuristic scanner and the `gTrainers` symbol lookup fail, a third-tier fallback searches the ROM for the party data of Brock's Geodude (Lv 12) and Onix (Lv 14) and derives the trainer table offset from their offset relative to trainer 0. Falls back further to Misty's Staryu/Starmie if Brock's data is altered. Logged at `WARN` level with offset and confidence.
+
+---
+
+**v0.9.80–v0.9.84** — vs-leader battle data investigation and ROM scanner reliability:
+
+- **Stale ROM cache fix** — `build_leader_party` now performs a dual-probe (reads two non-adjacent addresses) to detect a stale ROM cache before using data, eliminating the "party data unavailable" false-positive.
+- **Scanner false-positive reduction** — candidate headers now require `level >= 1` and a gym-leader spot-check; the scan cap was raised to cover the full ROM.
+- **Scanner log spam fixed** — repeated scan-failure messages are now gated behind a `OnceLock` so they appear at most once per process lifetime.
+- **ROM hack limitation noted** — ROMs without a `TRAINER_NONE` sentinel are still unscannable via the heuristic path; use `trainer_table_rom_offset` (v0.9.86) or the anchor scan (v0.9.85) as fallbacks.
+
+---
+
+**v0.9.79** — diagnostic logging for `build_leader_party` silent failures:
+
+- Added `warn!` calls at all six early-exit paths in `build_leader_party` (ROM not loaded, trainer table not found, out-of-range index, null party pointer, empty party, checksum failure) so the "vs. leader" overlay going blank is diagnosable from the log.
+
+---
+
+**v0.9.77** — removed tracker↔aggregator TCP connection; both binaries now independent:
+
+- **Deleted** `server.rs` (aggregator connection handler), `Mode` enum, `send_message` / `recv_message` helpers, `listen_port` config field, and `ConnectedMode` from the tracker.
+- The tracker binary is now purely standalone. The aggregator no longer listens for incoming tracker connections.
+- Multi-player Soul Link now works exclusively via the aggregator's **direct mode**, which polls each RetroArch instance directly (see `retroarch_hosts` config).
+- `fire_red_states` is retained for shared `GameState`, `BagPockets`, `ClientMessage`, and `SpriteData` types used internally within the aggregator.
+
+---
+
+**v0.9.75–v0.9.76** — security and correctness fixes:
+
+- **CSPRNG session tokens** — session tokens now use `OsRng` instead of the seeded PRNG.
+- **`resume_run` global race fixed** — `forced_run_id` is set atomically before the game loop reads the DB state.
+- **Goal auth bypass patched** — goal create/complete/delete endpoints now verify run ownership before acting.
+- **`api_logout` accepts `?token=`** — the logout endpoint now accepts the session token as a query parameter in addition to the `Authorization` header (for OBS-style URL auth).
+- **`link_run_to_user` ownership** — `link_run_to_user` now checks that the run is not already owned by a different user before overwriting.
+- **Owner-less run invite rejection** — inviting a user to a run that has no owner returns a clear `403`.
+- **Persistent memory worker threads** — direct-mode memory threads are no longer recreated on reconnect; they park and resume instead, eliminating a race on the first read after reconnect.
+- **`api_list_users` restricted to owner** — `GET /api/users` now requires the caller to be the instance owner (first registered user).
+- **`active_run` access check** — `GET /api/me/active_run` verifies the caller can access the returned run ID before returning it.
+- **Orphan run cleanup** — runs created by a direct-mode connection that exits before any data is written are cleaned up automatically.
+- **`THREAD_RUN_ID` guard** — the game loop thread now asserts `THREAD_RUN_ID` is set before writing any DB records, preventing silent writes to run 0.
+
+---
 
 **v0.9.55** — run select page and `?run=` filtering across all pages:
 

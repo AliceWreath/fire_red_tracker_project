@@ -45,12 +45,12 @@ Support crates (no external deps):
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
 │  RetroArch  (UDP :55355)                                            │
-│  responds to READ_CORE_MEMORY commands                              │
+│  responds to READ_CORE_MEMORY / WRITE_CORE_MEMORY commands          │
 └──────────┬──────────────────────────────────────────────────────────┘
-           │ UDP (127.0.0.1)
+           │ UDP (one connection per slot)
            ▼
 ┌──────────────────────────────────────────────────────┐
-│  fire_red_tracker                                     │
+│  fire_red_tracker  (standalone binary, optional)      │
 │                                                       │
 │  ┌──────────────┐    ┌───────────────────────────┐   │
 │  │ Memory thread│───▶│ EWRAM/IWRAM snapshots      │   │
@@ -64,60 +64,38 @@ Support crates (no external deps):
 │  │  • wild encounters             │                   │
 │  │  • EncounterTracker::tick()    │                   │
 │  │  • check_for_dead/new_pokemon  │                   │
-│  └────────────┬───────────────────┘                   │
-│               │ Arc-shared                            │
-│  ┌────────────▼──────────────────────┐               │
-│  │ Network thread (Connected mode)   │               │
-│  │  reconnect loop → handle_client() │               │
-│  │  ┌────────────────────────────┐   │               │
-│  │  │ Reader thread              │   │               │
-│  │  │  • receives ClientMessage  │   │               │
-│  │  │  • EndRun / NewRun → DB    │   │               │
-│  │  │  • RequestTextures → build │   │               │
-│  │  │  • GiveItem / TakeItem /   │   │               │
-│  │  │    MakeShiny /             │   │               │
-│  │  │    ChangeSpecies /         │   │               │
-│  │  │    ChangeAbility /         │   │               │
-│  │  │    ChangeGender            │   │               │
-│  │  │    → game::* fn →          │   │               │
-│  │  │      WRITE_CORE_MEMORY UDP │   │               │
-│  │  └────────────────────────────┘   │               │
-│  │  Writer loop (100 ms)             │               │
-│  │  • sends ServerMessage::State     │               │
-│  └────────────┬──────────────────────┘               │
-└───────────────┼──────────────────────────────────────┘
-                │ TCP (bincode, length-prefixed)
-                ▼
+│  └────────────────────────────────┘                   │
+│  ┌────────────────────────────────┐                   │
+│  │ Box-monitor thread  (5 s)      │                   │
+│  └────────────────────────────────┘                   │
+│  ┌────────────────────────────────┐                   │
+│  │ Webhook / OBS thread           │                   │
+│  │  drains event channel;         │                   │
+│  │  fires HTTP POSTs + OBS clips  │                   │
+│  └────────────────────────────────┘                   │
+└──────────────────────────────────────────────────────┘
+
+  (Aggregator connects directly to RetroArch — no tracker binary required)
+
 ┌──────────────────────────────────────────────────────┐
 │  fire_red_aggregator                                  │
 │                                                       │
-│  ┌──────────────────────────────┐                    │
-│  │ TCP listener thread          │                    │
-│  │  for each accepted stream:   │                    │
-│  │   reuse/create MonitorSlot   │                    │
-│  │   spawn tracker thread       │                    │
-│  └──────────────────────────────┘                    │
+│  Per-slot game loop (one per RetroArch host):         │
+│  start_loop_ctx() — isolated MemoryContext/           │
+│                      PartyContext/TrainerContext       │
+│  ┌────────────────────────────────────────────┐      │
+│  │  Memory thread      EWRAM + IWRAM (100 ms) │      │
+│  │  Game-polling thread                100 ms │      │
+│  │  Box-monitor thread                   5 s  │      │
+│  │  Trainer-data thread                 15 s  │      │
+│  │  Webhook/OBS thread         event-driven   │      │
+│  └────────────────────────────────────────────┘      │
 │                                                       │
 │  SharedSlots = Arc<Mutex<Vec<Arc<MonitorSlot>>>>      │
 │                                                       │
-│  ┌─────────────────────────────────────────────┐     │
-│  │  Per-tracker thread (one per connection)    │     │
-│  │  handle_tracker_connection()                │     │
-│  │  ┌─────────────────────────────────────┐   │     │
-│  │  │ Writer thread  (50 ms)              │   │     │
-│  │  │  • drains command_queue             │   │     │
-│  │  │    EndRun / NewRun /                │   │     │
-│  │  │    GiveItem / TakeItem /            │   │     │
-│  │  │    MakeShiny / ChangeSpecies /      │   │     │
-│  │  │    ChangeAbility / ChangeGender     │   │     │
-│  │  │    → tracker over TCP               │   │     │
-│  │  │  • drains texture_request_queue     │   │     │
-│  │  └─────────────────────────────────────┘   │     │
-│  │  Reader loop                                │     │
-│  │  • State → MonitorSlot.state               │     │
-│  │  • Textures → pending_textures / cache     │     │
-│  │  • RunChanged → run_changed flag           │     │
-│  └─────────────────────────────────────────────┘     │
+│  Injection commands:                                  │
+│  HTTP handler → mpsc → game loop thread               │
+│  → game::* fn → WRITE_CORE_MEMORY UDP → RetroArch    │
 │                                                       │
 │  ┌─────────────────┐   ┌────────────────────────┐   │
 │  │  egui GUI       │   │  axum WebSocket server  │   │
@@ -138,8 +116,7 @@ Support crates (no external deps):
 
 | Mode | Description |
 |------|-------------|
-| `Standalone` | Full egui window; no network; DB optional |
-| `Connected { host, port }` | No GUI; streams state to aggregator over TCP |
+| `Standalone` | Full egui window; reads ROM + polls RetroArch directly; DB optional |
 
 ### Aggregator modes
 
@@ -150,20 +127,24 @@ Support crates (no external deps):
 
 Both modes can be running simultaneously — the aggregator detects whether `ws_port` is set and takes the appropriate path.
 
+The aggregator always runs in **direct mode** — it polls each configured RetroArch host directly over UDP. Players can be pre-configured via `retroarch_hosts` in the config, or they can connect on demand via the `/join` page when `direct_mode = true`.
+
 ## Thread Inventory
 
 | Process | Thread | Purpose | Period |
 |---------|--------|---------|--------|
 | tracker | memory | UDP snapshot of EWRAM + IWRAM | 100 ms |
-| tracker | box monitor | Reads all 420 box slots from EWRAM | 250 ms |
+| tracker | box monitor | Reads all 420 box slots from EWRAM | 5 s |
+| tracker | trainer-data | Reads trainer name / play time | 15 s |
 | tracker | game-polling | Map, party, encounters, encounter detection, badge/status events | 100 ms |
-| tracker | network (connected) | Reconnect loop; `handle_client` reader + writer | on connect |
 | tracker | webhook worker | Drains webhook channel; fires HTTP POSTs with retry + HMAC signing | event-driven |
 | tracker | Twitch Helix worker | Markers, polls, predictions, clip creation (optional) | event-driven |
-| aggregator | TCP listener | Accepts incoming tracker connections | blocking |
-| aggregator | per-tracker | `handle_tracker_connection` writer + reader | on connect |
+| aggregator | per-slot memory | UDP snapshot of EWRAM + IWRAM (one thread per RetroArch host) | 100 ms |
+| aggregator | per-slot box monitor | Reads PC box contents for one slot | 5 s |
+| aggregator | per-slot game-polling | Map, party, encounters, events for one slot | 100 ms |
+| aggregator | per-slot webhook worker | Event HTTP POSTs for one slot (optional) | event-driven |
 | aggregator | broadcast | Drains sprites, builds JSON, WS broadcast | 100 ms |
-| aggregator | Twitch IRC bot | IRC connection; dispatches `!party`/`!deaths`/`!shinies`/`!status`/`!box`/`!run` (optional) | event-driven |
+| aggregator | Twitch IRC bot | IRC connection; dispatches `!party`/`!deaths`/`!shinies`/`!status`/`!moves`/`!ivs`/`!badges`/`!bag`/`!map`/`!encounter`/`!luck`/`!timer`/`!box`/`!run` (optional) | event-driven |
 | aggregator | Channel Points EventSub | Twitch EventSub WebSocket; redeems mapped to run commands (optional) | event-driven |
 | aggregator | Discord live embed | Edits pinned Discord message with party/badge state (optional) | configurable interval |
 | aggregator | Discord run thread | Creates per-run threads; posts badge milestones (optional) | 5 s poll |
@@ -171,7 +152,7 @@ Both modes can be running simultaneously — the aggregator detects whether `ws_
 
 ## Database Schema Notes
 
-### Table inventory (schema v23)
+### Table inventory (schema v27+)
 
 | Table | Key columns | Notes |
 |---|---|---|
@@ -190,6 +171,10 @@ Both modes can be running simultaneously — the aggregator detects whether `ws_
 | `friendship_log` | `run_id`, `player_name`, `personality`, `friendship`, `logged_at` | Appended when friendship byte changes; threshold event at 220 (v22) |
 | `status_events` | `run_id`, `player_name`, `personality`, `nickname`, `status_name`, `event_type`, `occurred_at` | `event_type` is `onset` or `clear`; indexed on `run_id` (v23) |
 | `meta` | `key`, `value` | Key-value store; `active_run_id` is the primary key; share tokens stored as `share:<token>` → `<run_id>:<expires_unix>` |
+| `users` | `id`, `username`, `password_hash` | One row per registered account; password is bcrypt-hashed (v24) |
+| `sessions` | `token`, `user_id`, `created_at`, `expires_at` | Active login sessions; 64-byte hex token set as `frt_token` HttpOnly cookie (v24) |
+| `run_invites` | `run_id`, `invited_by`, `invited_user`, `is_request`, `status`, `created_at`, `responded_at` | Run access invites and access requests (v25) |
+| `user_integrations` | `user_id`, `kind`, `config JSON`, `updated_at` | Per-user integration configs (Twitch/YouTube/Discord/OBS). PRIMARY KEY `(user_id, kind)` (v27) |
 
 ### Badge boot guard
 

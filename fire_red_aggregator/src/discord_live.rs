@@ -87,7 +87,7 @@ fn build_live_embed(slots: &SharedSlots, accessible: Option<&HashSet<u32>>) -> s
     if fields.is_empty() {
         fields.push(serde_json::json!({
             "name":   "Status",
-            "value":  "No trackers connected.",
+            "value":  "No active slots.",
             "inline": false,
         }));
     }

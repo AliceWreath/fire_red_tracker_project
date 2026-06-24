@@ -5,7 +5,7 @@
 //! Twitch EventSub WebSocket endpoint and subscribes to
 //! `channel.channel_points_custom_reward_redemption.add` for the configured
 //! channel.  When a viewer redeems a reward whose ID is in `reward_commands`,
-//! the mapped command is dispatched to every connected tracker slot.
+//! the mapped command is dispatched to every active game slot.
 //!
 //! # Supported command values in `reward_commands`
 //!

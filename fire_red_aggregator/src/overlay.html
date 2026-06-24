@@ -324,7 +324,7 @@ function render(slots) {
     }
 
     if (RUN_PARAM && visible.length === 0 && root.children.length === 0) {
-        const msg = el('div', 'disconnected', 'Run #' + RUN_PARAM + ' is not active on any connected tracker.');
+        const msg = el('div', 'disconnected', 'Run #' + RUN_PARAM + ' is not active on any connected slot.');
         root.appendChild(msg);
     }
 }

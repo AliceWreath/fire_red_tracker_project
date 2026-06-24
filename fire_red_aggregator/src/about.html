@@ -104,20 +104,22 @@ td:first-child{font-family:monospace;font-size:.8rem;color:#7de;white-space:nowr
   <h2>Description</h2>
   <p>
     A real-time Pokémon FireRed / LeafGreen Nuzlocke companion. The
-    <strong style="color:#ccc">tracker</strong> binary reads game memory via
-    RetroArch's UDP network-commands interface and streams party state,
-    encounters, deaths, badges, and events to the
-    <strong style="color:#ccc">aggregator</strong> over TCP. The aggregator
-    stores everything in PostgreSQL and serves live WebSocket overlays,
-    a full REST API, and this web UI.
+    <strong style="color:#ccc">tracker</strong> binary is a standalone tool
+    that reads game memory via RetroArch's UDP network-commands interface,
+    shows a local egui party/encounter panel, and records deaths, catches,
+    badges, and encounters to a local database. The
+    <strong style="color:#ccc">aggregator</strong> is a separate multi-player
+    server that polls RetroArch instances directly (<em>direct mode</em>) —
+    no tracker binary required. It stores everything in PostgreSQL and serves
+    live WebSocket overlays, a full REST API, and this web UI.
   </p>
   <p>
     Both binaries ship with an interactive terminal config editor
     (<code>--config-editor-cli</code>) and a graphical egui editor
-    (<code>--config-editor</code>). The aggregator also supports
-    <em>direct mode</em>, where it polls RetroArch itself — no tracker binary
-    needed — and exposes a <a href="/join">/join</a> page for players to
-    connect on demand.
+    (<code>--config-editor</code>). The aggregator exposes a
+    <a href="/join">/join</a> page for players to connect their RetroArch
+    instance on demand when <code>direct_mode = true</code> is set in the
+    config.
   </p>
 
   <h2>Features</h2>
@@ -125,8 +127,8 @@ td:first-child{font-family:monospace;font-size:.8rem;color:#7de;white-space:nowr
   <ul>
     <li>Real-time party, encounter, death, badge, and game-clear detection</li>
     <li>Per-run PostgreSQL storage with full event log and timeline</li>
-    <li>Multi-player support — each connected tracker gets its own slot</li>
-    <li>Direct-mode multi-connection — one aggregator, multiple RetroArch hosts</li>
+    <li>Multi-player support — one aggregator polls multiple RetroArch hosts directly</li>
+    <li>On-demand player connect via <code>/join</code> page (direct mode)</li>
     <li>Nuzlocke rule enforcement: dupes clause (off / per-player / shared), randomizer mode</li>
     <li>Soul Link partner pairing with manual override</li>
     <li>Run rules, goals, catch attempts, and area-visit time tracking</li>

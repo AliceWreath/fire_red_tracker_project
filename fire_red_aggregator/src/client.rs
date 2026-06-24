@@ -7,14 +7,14 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 
-/// Shared list of tracker slots, grown dynamically as trackers connect.
+/// Shared list of active game slots.
 pub type SharedSlots = Arc<Mutex<Vec<Arc<MonitorSlot>>>>;
 
 // ---------------------------------------------------------------------------
 // Sprite cache
 // ---------------------------------------------------------------------------
 
-/// PNG-encoded sprite cache shared between the TCP reader thread and the HTTP
+/// PNG-encoded sprite cache shared between the game-polling thread and the HTTP
 /// sprite endpoint. Keyed by `(species, is_shiny)`.
 pub type PngSpriteCache = Arc<Mutex<HashMap<(u16, bool), Vec<u8>>>>;
 
@@ -58,11 +58,11 @@ pub struct PendingTexture {
 // Monitor slot
 // ---------------------------------------------------------------------------
 
-/// All shared state for one connected tracker server.
+/// All shared state for one active RetroArch game slot.
 ///
-/// A [`MonitorSlot`] is created for each server address before the GUI starts.
-/// [`spawn_client`] is then called with clones of the inner `Arc`s to wire up
-/// the background network thread. The GUI reads from these arcs each frame.
+/// A [`MonitorSlot`] is created for each RetroArch host before the game loop
+/// starts. The game-polling threads write into the inner `Arc`s; the GUI and
+/// web layer read from them each frame / request.
 pub struct MonitorSlot {
     /// Display label shown as the column heading (e.g. `"Player 1"`)
     pub label: Arc<Mutex<String>>,
@@ -91,7 +91,7 @@ pub struct MonitorSlot {
     /// reader thread encodes received sprites directly into this cache so the
     /// HTTP sprite endpoint can serve them without a separate drain step.
     pub sprite_cache: Arc<Mutex<Option<PngSpriteCache>>>,
-    /// Commands queued by the web server to be forwarded to the tracker over TCP.
+    /// Commands queued by the web server to be dispatched to the slot's game loop.
     pub command_queue: Arc<Mutex<VecDeque<ClientMessage>>>,
     /// Injection events queued by API endpoints and drained by BroadcastLoop each
     /// tick into the WebSocket JSON so alerts.html can show toasts.
@@ -103,8 +103,9 @@ pub struct MonitorSlot {
     pub box_data: Arc<Mutex<Vec<fire_red_states::BoxEntry>>>,
     /// Latest bag pockets snapshot received from the tracker (~2 s cadence).
     pub bag_data: Arc<Mutex<Option<BagPockets>>>,
-    /// `"host:port"` of the RetroArch instance this slot is polling in direct
-    /// mode, or `None` for tracker-TCP slots.  Read-only after construction.
+    /// `"host:port"` of the RetroArch instance this slot is polling.
+    /// `None` only if the slot was constructed without a host (uncommon).
+    /// Read-only after construction.
     pub direct_host: Option<String>,
     /// Raw ROM bytes used by the direct-mode sprite loader.  Replaced in-place
     /// when the caller triggers a ROM force-refresh via the API.
@@ -120,8 +121,7 @@ pub struct MonitorSlot {
     /// endpoint so stale encounter tables from the old ROM are evicted.
     pub game_encounters: Arc<Mutex<Option<Arc<Mutex<fire_red_pokemon_data::WildPokemonHeader>>>>>,
     /// Signals the game loop, sprite loader, and bridge threads for this slot
-    /// to exit.  Set by `DirectConnector::disconnect`; always `false` for
-    /// tracker-TCP slots (those stop when the connection drops).
+    /// to exit.  Set by `DirectConnector::disconnect`.
     pub shutdown: Arc<AtomicBool>,
 }
 
@@ -133,9 +133,9 @@ impl MonitorSlot {
     ///
     /// # Arguments
     /// * `index`       - Zero-based slot index; used to generate the display label.
-    /// * `addr`        - TCP address of the tracker server (or `"direct:<host>"` in direct mode).
+    /// * `addr`        - Display address string (e.g. `"direct:<host>"`).
     /// * `db_path`     - Optional path to this player's SQLite nuzlocke database.
-    /// * `direct_host` - `Some("host:port")` for direct-mode slots; `None` for tracker-TCP slots.
+    /// * `direct_host` - `Some("host:port")` for the RetroArch instance to poll; `None` if unset.
     pub fn new(
         index: usize,
         addr: String,

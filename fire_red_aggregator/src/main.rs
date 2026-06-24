@@ -209,7 +209,7 @@ fn main() {
         fire_red_database::initialize_noop();
     }
 
-    // Shared slot list — grown as trackers connect.
+    // Shared slot list — grown as RetroArch hosts are added.
     let shared_slots: SharedSlots = Arc::new(std::sync::Mutex::new(Vec::new()));
 
     // Direct mode activates when hosts are explicitly configured or a ROM path

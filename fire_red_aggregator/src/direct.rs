@@ -1,5 +1,5 @@
-//! Direct mode: the aggregator polls one or more RetroArch instances instead
-//! of waiting for incoming tracker connections.
+//! Direct mode: the aggregator polls one or more RetroArch instances directly
+//! over UDP.
 //!
 //! # Startup
 //!

@@ -605,8 +605,8 @@ impl BroadcastLoop {
         }
     }
 
-    /// Drains any pending textures from the TCP pipeline into the sprite cache.
-    /// Also wires the shared sprite cache into any slot that connected after
+    /// Drains any pending textures from the game-polling pipeline into the sprite cache.
+    /// Also wires the shared sprite cache into any slot that was added after
     /// `run()` started (identified by having `sprite_cache = None`).
     fn drain_sprites(&mut self, slots: &[Arc<MonitorSlot>]) {
         for slot in slots {
@@ -2607,7 +2607,7 @@ fn now_secs() -> u64 {
 /// - `200 OK` — command enqueued.
 /// - `400 Bad Request` — missing or invalid body fields.
 /// - `404 Not Found` — slot index out of range.
-/// - `503 Service Unavailable` — slot exists but tracker is not connected.
+/// - `503 Service Unavailable` — slot exists but not connected to RetroArch.
 async fn api_give_item(
     State(state): State<WebState>,
     Path(index): Path<usize>,
@@ -2733,7 +2733,7 @@ async fn api_make_shiny(
 /// - `200 OK` — command enqueued.
 /// - `400 Bad Request` — missing or invalid body fields.
 /// - `404 Not Found` — slot index out of range.
-/// - `503 Service Unavailable` — slot exists but tracker is not connected.
+/// - `503 Service Unavailable` — slot exists but not connected to RetroArch.
 async fn api_take_item(
     State(state): State<WebState>,
     Path(index): Path<usize>,
@@ -2802,7 +2802,7 @@ async fn api_take_item(
 /// - `200 OK` — command enqueued.
 /// - `400 Bad Request` — missing or invalid body fields.
 /// - `404 Not Found` — slot index out of range.
-/// - `503 Service Unavailable` — slot exists but tracker is not connected.
+/// - `503 Service Unavailable` — slot exists but not connected to RetroArch.
 async fn api_change_species(
     State(state): State<WebState>,
     Path(index): Path<usize>,
@@ -2882,7 +2882,7 @@ async fn api_change_species(
 /// - `200 OK` — command enqueued.
 /// - `400 Bad Request` — missing or invalid body fields.
 /// - `404 Not Found` — slot index out of range.
-/// - `503 Service Unavailable` — slot exists but tracker is not connected.
+/// - `503 Service Unavailable` — slot exists but not connected to RetroArch.
 async fn api_change_ability(
     State(state): State<WebState>,
     Path(index): Path<usize>,
@@ -2969,7 +2969,7 @@ async fn api_change_ability(
 /// - `200 OK` — command enqueued.
 /// - `400 Bad Request` — missing or invalid body fields.
 /// - `404 Not Found` — slot index out of range.
-/// - `503 Service Unavailable` — slot exists but tracker is not connected.
+/// - `503 Service Unavailable` — slot exists but not connected to RetroArch.
 async fn api_change_gender(
     State(state): State<WebState>,
     Path(index): Path<usize>,
@@ -4347,10 +4347,10 @@ async fn api_revive_pokemon(
 
 /// `POST /api/slot/:index/undo` — revert the last injection command for the given slot.
 ///
-/// Sends [`ClientMessage::UndoLastCommand`] to the tracker, which writes the
+/// Sends [`ClientMessage::UndoLastCommand`] to the slot's game loop, which writes the
 /// bytes that were captured before the last `write_to_retroarch` call back to
 /// RetroArch memory.  No-op if no injection command has been executed since the
-/// tracker connected.
+/// slot was started.
 ///
 /// - `200 OK` — command enqueued.
 /// - `403 Forbidden` — injection commands are disabled.
@@ -4961,7 +4961,7 @@ async fn api_slot_ev_progress(
     axum::Json(serde_json::json!(ev_list))
 }
 
-/// Broadcasts a command to all connected tracker slots.
+/// Broadcasts a command to all active game slots.
 ///
 /// Supported commands (no request body needed — suitable for Stream Deck buttons):
 ///
@@ -5920,7 +5920,7 @@ fn build_slash_response(cmd: &str, slots: &[Arc<crate::client::MonitorSlot>]) ->
     match cmd {
         "party" => {
             if slots.is_empty() {
-                return "No trackers connected.".to_string();
+                return "No active slots.".to_string();
             }
             let mut lines = Vec::new();
             for (i, slot) in slots.iter().enumerate() {
@@ -5939,7 +5939,7 @@ fn build_slash_response(cmd: &str, slots: &[Arc<crate::client::MonitorSlot>]) ->
         }
         "status" => {
             if slots.is_empty() {
-                return "No trackers connected.".to_string();
+                return "No active slots.".to_string();
             }
             let slot = &slots[0];
             let gs = slot.state.lock_or_recover();
@@ -7717,7 +7717,7 @@ async fn slot_access_middleware(
 /// when multiple users share the same server.
 ///
 /// A slot with no `active_run_id` is kept as-is (accessible to all
-/// authenticated users, e.g. unlinked tracker-TCP connections).
+/// authenticated users, e.g. slots not yet linked to a run).
 async fn filter_slots_for_user(json: &str, user_id: u32) -> String {
     let arr: serde_json::Value =
         serde_json::from_str(json).unwrap_or(serde_json::Value::Array(vec![]));
@@ -9001,10 +9001,11 @@ td:first-child{font-family:monospace;color:#7de;white-space:nowrap}
 
 <!-- ── Overview ──────────────────────────────────────────────────────── -->
 <h2 id="overview">Overview</h2>
-<p>The aggregator runs a web server (default port <code>9090</code>) and a WebSocket server (default port <code>7878</code> — also used by trackers to connect). Everything — the API, all pages, and the WebSocket overlay — is served from that address.</p>
+<p>The aggregator runs a single HTTP + WebSocket server. Set <code>ws_port</code> in the config (e.g. <code>ws_port = 9090</code>) to enable it. All pages, the REST API, and the live WebSocket overlay are served from that one port.</p>
 <ul>
   <li>Visit <code>http://&lt;host&gt;:9090/</code> to log in.</li>
   <li>Open <code>http://&lt;host&gt;:9090/dashboard</code> after logging in to see your runs and stats.</li>
+  <li>Open <code>http://&lt;host&gt;:9090/join</code> to connect a RetroArch instance (direct mode).</li>
   <li>Add browser sources in OBS pointing at overlay URLs like <code>http://&lt;host&gt;:9090/0/party</code>.</li>
 </ul>
 <div class="note">All page and API requests that return user data require a valid session token. See <a href="#auth">Authentication</a>.</div>
@@ -9070,15 +9071,30 @@ curl -H "Authorization: Bearer $TOKEN" http://localhost:9090/api/me</code></pre>
 </table>
 
 <h3>Injection Commands</h3>
-<p>These mutate game state directly. Require <code>allow_injections = true</code> (default) in config.</p>
+<p>These mutate game state directly via <code>WRITE_CORE_MEMORY</code>. Require <code>allow_injections = true</code> (default) in config. All return <code>403</code> when injections are disabled.</p>
 <table>
   <thead><tr><th>Path</th><th>Body</th><th>Effect</th></tr></thead>
   <tbody>
-    <tr><td>POST /api/slot/:i/give_item</td><td><code>{"item_id":…,"quantity":…}</code></td><td>Add item to bag.</td></tr>
-    <tr><td>POST /api/slot/:i/make_shiny</td><td><code>{"slot":…}</code></td><td>Make party member shiny.</td></tr>
-    <tr><td>POST /api/slot/:i/change_species</td><td><code>{"slot":…,"species":…}</code></td><td>Change species of a party member.</td></tr>
-    <tr><td>POST /api/slot/:i/set_pp_ups</td><td><code>{"slot":…,"move":…,"pp_ups":…}</code></td><td>Set PP Ups on a move.</td></tr>
-    <tr><td>POST /api/slot/:i/revive</td><td><code>{"slot":…}</code></td><td>Revive a fainted party member.</td></tr>
+    <tr><td>POST /api/slot/:i/give_item</td><td><code>{"item_id":&lt;u16&gt;,"quantity":&lt;u16 1–99&gt;}</code></td><td>Add items to the bag items pocket.</td></tr>
+    <tr><td>POST /api/slot/:i/take_item</td><td><code>{"item_id":&lt;u16&gt;,"quantity":&lt;u16&gt;}</code></td><td>Remove items from the bag.</td></tr>
+    <tr><td>POST /api/slot/:i/make_shiny</td><td><code>{"party_position":&lt;u8 0–5&gt;}</code></td><td>Patch OT Secret ID so the Gen III shiny formula is satisfied. Preserves nature, ability, gender, and IVs.</td></tr>
+    <tr><td>POST /api/slot/:i/change_species</td><td><code>{"party_position":&lt;u8 0–5&gt;,"new_species":&lt;u16 1–386&gt;}</code></td><td>Rewrite species in the Growth substructure; recalculates checksum.</td></tr>
+    <tr><td>POST /api/slot/:i/change_ability</td><td><code>{"party_position":&lt;u8 0–5&gt;,"ability_slot":&lt;u8 0 or 1&gt;}</code></td><td>Toggle primary vs. secondary ability.</td></tr>
+    <tr><td>POST /api/slot/:i/change_gender</td><td><code>{"party_position":&lt;u8 0–5&gt;,"target_gender":&lt;u8 0 or 1&gt;}</code></td><td>Adjust personality low byte to satisfy target gender (0=male, 1=female).</td></tr>
+    <tr><td>POST /api/slot/:i/change_nature</td><td><code>{"party_position":&lt;u8 0–5&gt;,"nature":&lt;u8 0–24&gt;}</code></td><td>Set nature by adjusting personality so <code>personality % 25 == nature</code>.</td></tr>
+    <tr><td>POST /api/slot/:i/change_nickname</td><td><code>{"party_position":&lt;u8 0–5&gt;,"nickname":&lt;string&gt;}</code></td><td>Write a new nickname (max 10 chars, GBA encoding).</td></tr>
+    <tr><td>POST /api/slot/:i/change_held_item</td><td><code>{"party_position":&lt;u8 0–5&gt;,"item_id":&lt;u16&gt;}</code></td><td>Set held item. <code>item_id=0</code> removes it.</td></tr>
+    <tr><td>POST /api/slot/:i/cure_status</td><td><code>{"party_position":&lt;u8 0–5&gt;}</code></td><td>Zero the 4-byte status word (clears all status conditions).</td></tr>
+    <tr><td>POST /api/slot/:i/restore_hp</td><td><code>{"party_position":&lt;u8 0–5&gt;}</code></td><td>Write max HP to current HP.</td></tr>
+    <tr><td>POST /api/slot/:i/restore_pp</td><td><code>{"party_position":&lt;u8 0–5&gt;}</code></td><td>Restore all four move PP to current maximum.</td></tr>
+    <tr><td>POST /api/slot/:i/set_friendship</td><td><code>{"party_position":&lt;u8 0–5&gt;,"friendship":&lt;u8 0–255&gt;}</code></td><td>Set the friendship byte.</td></tr>
+    <tr><td>POST /api/slot/:i/change_move</td><td><code>{"party_position":&lt;u8 0–5&gt;,"slot":&lt;u8 0–3&gt;,"move_id":&lt;u16&gt;}</code></td><td>Replace a move slot. <code>move_id=0</code> clears the slot.</td></tr>
+    <tr><td>POST /api/slot/:i/set_ivs</td><td><code>{"party_position":&lt;u8 0–5&gt;,"hp":…,"atk":…,"def":…,"spd":…,"spa":…,"spdef":…}</code></td><td>Set all six IVs (each clamped to 31).</td></tr>
+    <tr><td>POST /api/slot/:i/set_evs</td><td><code>{"party_position":&lt;u8 0–5&gt;,"hp":…,"atk":…,"def":…,"spd":…,"spa":…,"spdef":…}</code></td><td>Set all six EVs (0–255 each).</td></tr>
+    <tr><td>POST /api/slot/:i/set_pp_ups</td><td><code>{"party_position":&lt;u8 0–5&gt;,"pp0":…,"pp1":…,"pp2":…,"pp3":…}</code></td><td>Set PP-Up bonus for all four moves (0–3 each).</td></tr>
+    <tr><td>POST /api/slot/:i/revive_pokemon</td><td><code>{"party_position":&lt;u8 0–5&gt;,"personality":&lt;u32&gt;}</code></td><td>Look up a dead Pokémon by personality and write it into the specified slot (HP=1, status=0).</td></tr>
+    <tr><td>POST /api/slot/:i/heal_party</td><td><em>no body</em></td><td>Restore HP and cure status for all six party slots in one pass.</td></tr>
+    <tr><td>POST /api/slot/:i/undo</td><td><em>no body</em></td><td>Revert the most recent injection by replaying pre-write EWRAM bytes.</td></tr>
   </tbody>
 </table>
 
@@ -9185,14 +9201,20 @@ broadcaster_id = "12345678"         # numeric Twitch user ID of the channel</cod
 <table>
   <thead><tr><th>Command</th><th>Response</th></tr></thead>
   <tbody>
-    <tr><td>!party</td><td>Lists current party members with levels.</td></tr>
-    <tr><td>!deaths</td><td>Total death count for the active run.</td></tr>
-    <tr><td>!shinies</td><td>Number of shinies encountered.</td></tr>
-    <tr><td>!status</td><td>Current location and run progress.</td></tr>
-    <tr><td>!caught</td><td>Number of Pokémon caught.</td></tr>
-    <tr><td>!encounters</td><td>Encounters in the current area.</td></tr>
-    <tr><td>!badges</td><td>Badges earned so far.</td></tr>
-    <tr><td>!hp</td><td>HP percentages for the current party.</td></tr>
+    <tr><td>!party</td><td>Current party members — nickname, species, level, HP.</td></tr>
+    <tr><td>!deaths</td><td>Death count and the five most recent deaths (requires DB).</td></tr>
+    <tr><td>!shinies</td><td>Shiny count and last shiny name (requires DB).</td></tr>
+    <tr><td>!status</td><td>One-liner: <code>Player — HP/MaxHP — Zone</code></td></tr>
+    <tr><td>!moves</td><td>Lead Pokémon's move set with current PP for each slot.</td></tr>
+    <tr><td>!ivs</td><td>Lead Pokémon's IVs for all six stats.</td></tr>
+    <tr><td>!badges</td><td>Badge count and names earned so far.</td></tr>
+    <tr><td>!bag</td><td>Items and Pokéballs currently in the player's bag.</td></tr>
+    <tr><td>!map</td><td>Player's current map / location name.</td></tr>
+    <tr><td>!encounter</td><td>Current route's encounter table — species and percentage rates.</td></tr>
+    <tr><td>!luck</td><td>Shiny count / total encounters with expected-rate comparison (requires DB).</td></tr>
+    <tr><td>!timer</td><td>Elapsed HH:MM:SS from run start (requires DB).</td></tr>
+    <tr><td>!box</td><td>PC box Pokémon count with species list (requires DB).</td></tr>
+    <tr><td>!run</td><td>Current run ID, caught count, and death count (requires DB).</td></tr>
   </tbody>
 </table>
 
@@ -9269,7 +9291,7 @@ nickname_url = ""
 
 # Optional: custom JSON body template.
 # Omit to use the default structured payload.
-death_template = "{\"content\":\"{{pokemon.nickname}} ({{pokemon.species}}) fainted at Lv {{pokemon.level}}!\"}"
+death_template = "{\"content\":\"{pokemon.nickname} ({pokemon.species}) fainted at Lv {pokemon.level}!\"}"
 
 # Optional: HMAC-SHA256 request signing
 hmac_secret = "your-shared-secret"
@@ -9278,17 +9300,21 @@ hmac_secret = "your-shared-secret"
 discord_webhook_url = "https://discord.com/api/webhooks/…"</code></pre>
 
 <h3>Template variables</h3>
+<p>Use single braces: <code>{player}</code>, <code>{pokemon.nickname}</code>, etc. Unknown placeholders are left unchanged.</p>
 <table>
-  <thead><tr><th>Variable</th><th>Value</th></tr></thead>
+  <thead><tr><th>Variable</th><th>Value</th><th>Notes</th></tr></thead>
   <tbody>
-    <tr><td>{{player}}</td><td>Player name / slot label</td></tr>
-    <tr><td>{{pokemon.nickname}}</td><td>Pokémon nickname</td></tr>
-    <tr><td>{{pokemon.species}}</td><td>Species name</td></tr>
-    <tr><td>{{pokemon.level}}</td><td>Level at time of event</td></tr>
-    <tr><td>{{pokemon.is_shiny}}</td><td><code>true</code> or <code>false</code></td></tr>
-    <tr><td>{{run.id}}</td><td>Numeric run ID</td></tr>
-    <tr><td>{{run.deaths}}</td><td>Total deaths in the run so far</td></tr>
-    <tr><td>{{event}}</td><td>Event type: <code>death</code>, <code>catch</code>, <code>shiny</code>, etc.</td></tr>
+    <tr><td>{event}</td><td><code>death</code>, <code>catch</code>, <code>shiny</code>, <code>wipe</code>, <code>badge</code></td><td></td></tr>
+    <tr><td>{player}</td><td>Player name from config</td><td></td></tr>
+    <tr><td>{timestamp}</td><td>Unix timestamp in seconds</td><td></td></tr>
+    <tr><td>{pokemon.nickname}</td><td>Pokémon's in-game nickname</td><td>Empty string for <code>wipe</code></td></tr>
+    <tr><td>{pokemon.species}</td><td>Species name</td><td>Empty string for <code>wipe</code></td></tr>
+    <tr><td>{pokemon.level}</td><td>Level as a plain integer string</td><td>Empty string for <code>wipe</code></td></tr>
+    <tr><td>{pokemon.shiny}</td><td><code>true</code> or <code>false</code></td><td>Empty string for <code>wipe</code></td></tr>
+    <tr><td>{pokemon.nature}</td><td>Nature name</td><td>Empty string for <code>wipe</code></td></tr>
+    <tr><td>{badge.name}</td><td>Badge name (e.g. <code>Boulder Badge</code>)</td><td>Only meaningful for <code>badge</code> events</td></tr>
+    <tr><td>{pokemon.old_name}</td><td>Previous nickname before rename</td><td>Only meaningful for <code>nickname_change</code></td></tr>
+    <tr><td>{pokemon.new_name}</td><td>New nickname after rename</td><td>Only meaningful for <code>nickname_change</code></td></tr>
   </tbody>
 </table>
 
@@ -9316,7 +9342,6 @@ discord_webhook_url = "https://discord.com/api/webhooks/…"</code></pre>
 <table>
   <thead><tr><th>Key</th><th>Default</th><th>Description</th></tr></thead>
   <tbody>
-    <tr><td>listen_port</td><td>7878</td><td>Port trackers connect to (TCP).</td></tr>
     <tr><td>ws_port</td><td>—</td><td>WebSocket overlay port. Set to enable headless/web mode.</td></tr>
     <tr><td>db</td><td>—</td><td>PostgreSQL connection string, e.g. <code>postgresql://localhost/nuzlocke</code>.</td></tr>
     <tr><td>allow_injections</td><td>true</td><td>Enable injection API endpoints.</td></tr>

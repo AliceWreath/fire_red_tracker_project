@@ -311,7 +311,7 @@ function renderSlot(slot) {
 function render(slots) {
     const root = document.getElementById('slots');
     if (!slots || slots.length === 0) {
-        root.innerHTML = '<div style="color:#555;padding:20px">Waiting for tracker connection…</div>';
+        root.innerHTML = '<div style="color:#555;padding:20px">Waiting for game data…</div>';
         return;
     }
     root.innerHTML = slots.map(renderSlot).join('');

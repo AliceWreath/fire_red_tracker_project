@@ -153,13 +153,13 @@ html, body {
         <div class="cmd-grid">
             <div class="cmd-card">
                 <div class="cmd-card-title">End Run</div>
-                <div class="cmd-card-desc">Ends the current active nuzlocke run for all connected trackers. Records a final timestamp and closes the run in the database.</div>
+                <div class="cmd-card-desc">Ends the current active nuzlocke run for all active slots. Records a final timestamp and closes the run in the database.</div>
                 <button class="btn btn-danger" onclick="sendCommand('end_run', this)">End Run</button>
                 <div class="result-msg" id="res-end_run"></div>
             </div>
             <div class="cmd-card">
                 <div class="cmd-card-title">New Run</div>
-                <div class="cmd-card-desc">Starts a new nuzlocke run for all connected trackers. Creates a fresh run record in the database linked to the current player name.</div>
+                <div class="cmd-card-desc">Starts a new nuzlocke run for all active slots. Creates a fresh run record in the database linked to the current player name.</div>
                 <button class="btn btn-success" onclick="sendCommand('new_run', this)">New Run</button>
                 <div class="result-msg" id="res-new_run"></div>
             </div>
@@ -185,7 +185,7 @@ async function loadState() {
 function renderSlots(slots) {
     const list = document.getElementById('slot-list');
     if (!slots || slots.length === 0) {
-        list.innerHTML = '<div class="no-slots">No trackers connected.</div>';
+        list.innerHTML = '<div class="no-slots">No active slots.</div>';
         return;
     }
     list.innerHTML = '';

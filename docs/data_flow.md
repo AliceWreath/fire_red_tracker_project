@@ -2,6 +2,10 @@
 
 ## End-to-End: RetroArch → Overlay
 
+The aggregator polls each RetroArch instance directly (direct mode). No tracker binary
+is involved in the aggregator path. The standalone tracker binary is an independent tool
+that reads the same EWRAM data but writes to a separate local database.
+
 ```
 RetroArch (GBA core)
   │
@@ -10,7 +14,7 @@ RetroArch (GBA core)
   │  Response: "READ_CORE_MEMORY 0x02000000 de ad be ef ..."
   │
   ▼
-fire_red_memory::read_chunk()
+fire_red_memory::read_chunk()  [per-slot, runs inside the aggregator]
   • Sends UDP command; retries up to MAX_RETRIES=5 (backoff: 50ms × retry)
   • Validates response header token and address match
   • Rejects chunks with malformed hex
@@ -19,11 +23,13 @@ fire_red_memory::read_chunk()
     as soon as it completes (IWRAM ~16 ms, EWRAM ~64 ms at 16 concurrent)
   • Sliding-window semaphore keeps exactly MAX_CONCURRENT_CHUNKS=16 in
     flight at all times — new chunk dispatched the moment any slot frees
+  • Contexts are per-slot (MemoryContext / PartyContext / TrainerContext):
+    multiple concurrent slots do NOT share EWRAM buffers
   │
-  │  ArcSwap<Vec<u8>>  (lock-free snapshot swap)
+  │  ArcSwap<Vec<u8>>  (lock-free snapshot swap, per-slot)
   │
   ▼
-Game-polling thread (100 ms)
+Game-polling thread (100 ms)  [per-slot, runs inside the aggregator]
   │
   ├─ map_state_from_ewram()
   │    reads EWRAM[0x02031DBC - 0x02000000 .. +2]
@@ -87,87 +93,26 @@ Game-polling thread (100 ms)
   │
   └─ check_for_run_over() → wipe detected
        enc_tracker.mark_wipe()
-       thread_wipe_signal.store(true)
        last_badge_mask = None
 
   │
   │  Arc<Mutex<Vec<Pokemon>>> + Arc<Mutex<WildPokemonHeader>>
+  │  (all in-process — no TCP, no serialisation)
   │
   ▼
-handle_client()  [tracker, Connected mode]
-  Writer loop (100 ms):
-    builds GameState {
-      party, encounters, player_name, badge_state
-    }
-    serialises → bincode → 4-byte-BE-length + body
-    sends over TCP
+Injection commands (HTTP → game loop, in-process)
+  HTTP POST /api/slot/:i/give_item
+    → game::give_item(ewram_snapshot, item_id, quantity)
+         locate items pocket via SaveBlock1 ptr + security key
+         compute_give_item_write() → (addr, encoded_bytes)
+    → WRITE_CORE_MEMORY addr bytes → RetroArch UDP :55355
 
-  Reader thread:
-    receives ClientMessage (bincode, length-prefixed)
-    │
-    ├─ RequestTextures(species_ids)
-    │    for each species: build_sprite_data(rom, id, shiny)
-    │      decompress LZ77 → RGBA pixels
-    │      zlib-compress → SpriteData.pixels
-    │    sends ServerMessage::Textures(Vec<SpriteData>)
-    │
-    ├─ EndRun
-    │    fire_red_database::end_run()
-    │      UPDATE runs SET ended_at = now WHERE id = ?
-    │      delete_meta("active_run_id")
-    │    run_changed.store(true, Release)
-    │    sends ServerMessage::RunChanged(None)
-    │
-    ├─ NewRun
-    │    fire_red_database::new_run("Unknown")
-    │      INSERT INTO runs → returns id
-    │      set_meta("active_run_id", id)
-    │    run_changed.store(true, Release)
-    │    sends ServerMessage::RunChanged(Some(id))
-    │
-    ├─ GiveItem { item_id, quantity }
-    │    game::give_item(ewram, item_id, quantity)
-    │      locate items pocket via SaveBlock1 ptr + security key
-    │      compute_give_item_write() → (addr, encoded_bytes)
-    │    WRITE_CORE_MEMORY addr bytes → RetroArch UDP :55355
-    │
-    ├─ TakeItem { item_id, quantity }  → game::take_item() → UDP
-    ├─ MakeShiny { party_position }    → game::make_shiny() → UDP
-    ├─ ChangeSpecies { party_position, new_species }
-    │                                   → game::change_species() → UDP
-    ├─ ChangeAbility { party_position, ability_slot }
-    │                                   → game::change_ability() → UDP
-    └─ ChangeGender { party_position, target_gender }
-                                        → game::change_gender() → UDP
-
-  │
-  │  TCP
-  │
-  ▼
-handle_tracker_connection()  [aggregator]
-  Reader loop:
-    receives ServerMessage::State(gs)
-      → *slot.state.lock() = Some(gs)
-      → *slot.label.lock() = gs.player_name
-
-    receives ServerMessage::Textures(sprites)
-      for each sprite:
-        decompress pixels (zlib → RGBA)
-        encode_png → Vec<u8>
-        slot.sprite_cache.insert((species, shiny), png)
-        push PendingTexture to slot.pending_textures
-
-    receives ServerMessage::RunChanged(_)
-      → slot.run_changed.store(true, Release)
-         (triggers DbReader.mark_dirty() on next broadcast tick)
-
-  Writer thread (50 ms):
-    drains slot.command_queue
-      → sends ClientMessage::EndRun / NewRun / GiveItem / TakeItem /
-               MakeShiny / ChangeSpecies / ChangeAbility / ChangeGender
-               to tracker over TCP
-    drains slot.texture_request_queue
-      → dedup species ids → sends ClientMessage::RequestTextures
+  Other injection variants follow the same pattern:
+    TakeItem / MakeShiny / ChangeSpecies / ChangeAbility /
+    ChangeGender / ChangeNature / ChangeNickname / ChangeHeldItem /
+    CureStatus / RestoreHp / RestorePp / SetFriendship / ChangeMove /
+    SetIvs / SetEvs / SetPpUps / RevivePokemon / HealParty /
+    UndoLastCommand (replays LAST_UNDO buffer)
 
   │
   │  SharedSlots  (in-process, Arc<Mutex<...>>)
@@ -175,12 +120,12 @@ handle_tracker_connection()  [aggregator]
   ▼
 BroadcastLoop (100 ms)  [aggregator, web mode]
   For each slot:
-    snapshot state = slot.state.lock().clone()
-    snapshot label = slot.label.lock().clone()
+    snapshot state from slot's game-loop shared state
     run_changed? → db.mark_dirty()
     db.sync_player(player_name) → resolves run_id from DB
     collect sprites for party + encounters
-      missing species → push to slot.texture_request_queue
+      missing species → build_sprite_data(rom, id, shiny)
+        decompress LZ77 → RGBA pixels → PNG → base64 data URI
 
     build SlotDto {
       label, connected, db_connected, active_run_id,
@@ -206,20 +151,21 @@ overlay.html / focused.html  (browser / OBS browser source)
     → no separate HTTP requests needed
   Run controls only visible when ?manage in URL
   sendCmd("end_run" / "new_run") → WS message
-    → WebState::handle_socket() → push to ALL slot command_queues
+    → WebState::handle_socket() → push to slot command_queue (mpsc)
+    → game-polling thread processes command on next tick
 ```
 
 ## Database Write Path
 
 ```
-Game-polling thread
+Game-polling thread (per-slot, inside the aggregator)
     │
     ├── mark_dead(DeadPokemon)
     │     DB.lock() → INSERT INTO dead_pokemon (run_id, player_name, ...)
     │     ON CONFLICT (run_id, personality) DO NOTHING
     │
     ├── mark_caught(CaughtPokemon)
-    │     DB.lock() → INSERT INTO dead_pokemon (run_id, player_name, ...)
+    │     DB.lock() → INSERT INTO caught_pokemon (run_id, player_name, ...)
     │     ON CONFLICT (run_id, personality) DO NOTHING
     │
     ├── record_encounter(Encounter)
@@ -231,13 +177,15 @@ Game-polling thread
           DB.lock() → UPDATE encounters SET caught = TRUE
           WHERE run_id=$1 AND player_name=$2 AND map_group=$3 AND map_name=$4
 
-Network reader thread (triggered by web command)
+Web command handler (triggered by REST API / WebSocket command)
     │
     ├── end_run()
+    │     → ClientMessage::EndRun → mpsc → game-polling thread
     │     DB.lock() → UPDATE runs SET ended_at = now() WHERE id = ?
     │     delete_meta("active_run_id")
     │
-    └── new_run("Unknown")
+    └── new_run(player_name)
+          → ClientMessage::NewRun → mpsc → game-polling thread
           DB.lock() → INSERT INTO runs → get id
           set_meta("active_run_id", id)
           returns new run id
@@ -299,24 +247,17 @@ RGBA pixel buffer (Vec<u8>, width × height × 4)
 ## Run Change Flow
 
 ```
-Web browser (with ?manage)
-    │  WS message: { "cmd": "end_run" }
+Web browser (REST API or WS message)
+    │  POST /api/command/end_run  — or —  WS: { "cmd": "end_run" }
     ▼
-axum WebSocket handler
-    push ClientMessage::EndRun to ALL slot command_queues
+axum handler
+    push ClientMessage::EndRun to ALL slot command queues (mpsc)
     │
-    ▼  (each slot's writer thread, next 50ms tick)
-    sends ClientMessage::EndRun over TCP to tracker
-    │
-    ▼
-tracker reader thread
+    ▼  (game-polling thread drains command queue on next tick)
     fire_red_database::end_run()
-    run_changed.store(true, Release)
-    sends ServerMessage::RunChanged(None) back
-    │
-    ▼
-aggregator reader loop
-    run_changed.store(true, Release)
+    UPDATE runs SET ended_at = now WHERE id = ?
+    delete_meta("active_run_id")
+    run_changed flag set (AtomicBool)
     │
     ▼ (next BroadcastLoop tick)
     slot.run_changed.swap(false, AcqRel) → true
@@ -479,7 +420,7 @@ GET /api/run/:id/export?format=csv   (pre-existing endpoint, now linked from /db
     on the /db page — no new server handler, just surfaced in the UI
 ```
 
-## Injection Commands Flow (v0.9.x)
+## Injection Commands Flow
 
 ```
 HTTP POST /api/slot/:index/give_item  (or take_item / make_shiny / etc.)
@@ -487,20 +428,13 @@ HTTP POST /api/slot/:index/give_item  (or take_item / make_shiny / etc.)
     web handler validates body fields
     if state.allow_injections == false → 403 Forbidden (early return)
     push ClientMessage::GiveItem { item_id, quantity }
-      to slot.command_queue  (Arc<Mutex<VecDeque<ClientMessage>>>)
+      to slot.command_queue  (mpsc channel into the game-polling thread)
     return 200 OK
     │
-    │  (next aggregator writer thread tick, 50 ms)
+    │  (game-polling thread drains command queue on next tick, ≤100 ms)
     ▼
-handle_tracker_connection() writer thread
-    drain slot.command_queue
-    serialise ClientMessage::GiveItem → bincode → length-prefixed TCP frame
-    send to tracker
-    │
-    │  TCP
-    ▼
-handle_client() tracker reader thread
-    deserialise ClientMessage::GiveItem { item_id, quantity }
+game-polling thread (per-slot, inside the aggregator)
+    receive ClientMessage::GiveItem { item_id, quantity }
     game::give_item(ewram_snapshot, item_id, quantity)
       read SaveBlock1 ptr from IWRAM
       locate items pocket base address
@@ -511,7 +445,7 @@ handle_client() tracker reader thread
     │
     ▼ (next memory thread tick, 100 ms)
     fill_party_list() reads updated EWRAM
-    ServerMessage::State pushed to aggregator → WS broadcast → overlay updated
+    state updated in MonitorSlot → WS broadcast → overlay updated
 
 Injection event toast path:
     game::give_item() returns InjectionEvent { at, kind, label }
