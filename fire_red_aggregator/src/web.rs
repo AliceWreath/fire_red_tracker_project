@@ -1592,6 +1592,7 @@ const ENCOUNTER_TABLE_HTML: &str = include_str!("encounter_table.html");
 const MONEY_HTML: &str = include_str!("money.html");
 const PLAYTIME_HTML: &str = include_str!("playtime.html");
 const GOALS_HTML: &str = include_str!("goals.html");
+const GOALS_MANAGE_HTML: &str = include_str!("goals_manage.html");
 const VS_LEADER_HTML: &str = include_str!("vs_leader.html");
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -5220,6 +5221,35 @@ async fn serve_vs_leader_overlay(
     Html(apply_page_with_theme(VS_LEADER_HTML, state.testing, theme))
 }
 
+/// `GET /api/run/:id/goals` — list all goals for a run.
+async fn api_list_run_goals(
+    State(state): State<WebState>,
+    Extension(user): Extension<User>,
+    Path(run_id): Path<u32>,
+) -> axum::Json<serde_json::Value> {
+    let conn = require_db!(state);
+    let uid = user.id;
+    let rid = run_id;
+    let can = tokio::task::spawn_blocking(move || {
+        fire_red_database::user_can_access_run(rid, uid)
+    })
+    .await
+    .unwrap_or(Ok(false))
+    .unwrap_or(false);
+    if !can {
+        return axum::Json(serde_json::json!({ "error": "access denied" }));
+    }
+    let goals = tokio::task::spawn_blocking(move || {
+        fire_red_database::list_goals_for_run(&conn, run_id)
+    })
+    .await
+    .unwrap_or_default();
+    let goals_json: Vec<_> = goals.into_iter().map(|g| serde_json::json!({
+        "id": g.id, "text": g.text, "completed": g.completed
+    })).collect();
+    axum::Json(serde_json::json!({ "goals": goals_json }))
+}
+
 /// `POST /api/goal` — create a new run goal.
 ///
 /// Body: `{"run_id": <u32>, "text": "<string>"}`
@@ -5333,6 +5363,58 @@ async fn api_delete_goal(
         Ok(true) => axum::Json(serde_json::json!({ "ok": true })),
         _ => axum::Json(serde_json::json!({ "error": "goal not found" })),
     }
+}
+
+/// `PATCH /api/goal/:id` — set the completed flag to any value.
+///
+/// Body: `{"completed": <bool>}`  — use `true` to complete, `false` to un-complete.
+async fn api_set_goal_completed(
+    State(state): State<WebState>,
+    Extension(user): Extension<User>,
+    Path(goal_id): Path<i32>,
+    axum::Json(body): axum::Json<serde_json::Value>,
+) -> axum::Json<serde_json::Value> {
+    let completed = match body["completed"].as_bool() {
+        Some(v) => v,
+        None => return axum::Json(serde_json::json!({ "error": "missing completed bool" })),
+    };
+    let conn = require_db!(state);
+    let uid = user.id;
+    let conn_clone = conn.clone();
+    let gid = goal_id;
+    let run_id = tokio::task::spawn_blocking(move || {
+        fire_red_database::get_run_id_for_goal(&conn_clone, gid)
+    })
+    .await
+    .unwrap_or(None);
+    let Some(rid) = run_id else {
+        return axum::Json(serde_json::json!({ "error": "goal not found" }));
+    };
+    let can = tokio::task::spawn_blocking(move || {
+        fire_red_database::user_can_access_run(rid, uid)
+    })
+    .await
+    .unwrap_or(Ok(false))
+    .unwrap_or(false);
+    if !can {
+        return axum::Json(serde_json::json!({ "error": "access denied" }));
+    }
+    let result = tokio::task::spawn_blocking(move || {
+        fire_red_database::set_goal_completed(&conn, goal_id, completed)
+    })
+    .await;
+    match result {
+        Ok(true) => axum::Json(serde_json::json!({ "ok": true })),
+        _ => axum::Json(serde_json::json!({ "error": "goal not found or update failed" })),
+    }
+}
+
+/// `GET /:index/goals/manage` — interactive goal management page for a specific slot.
+async fn serve_goals_manage(
+    State(state): State<WebState>,
+    Path(_index): Path<usize>,
+) -> Html<String> {
+    Html(apply_page(GOALS_MANAGE_HTML, state.testing))
 }
 
 // ---------------------------------------------------------------------------
@@ -6075,9 +6157,11 @@ fn build_router(web_state: WebState) -> Router {
         .route("/:index/playtime", get(serve_playtime_overlay))
         .route("/:index/goals", get(serve_goals_overlay))
         .route("/:index/vs_leader", get(serve_vs_leader_overlay))
+        .route("/:index/goals/manage", get(serve_goals_manage))
+        .route("/api/run/:id/goals", get(api_list_run_goals))
         .route("/api/goal", post(api_post_goal))
         .route("/api/goal/:id/complete", patch(api_complete_goal))
-        .route("/api/goal/:id", delete(api_delete_goal))
+        .route("/api/goal/:id", patch(api_set_goal_completed).delete(api_delete_goal))
         .route("/api/slot/:index/command/:cmd", post(api_slot_command))
         .route("/about", get(serve_about))
         .route("/guide", get(serve_guide_page))
@@ -8309,6 +8393,7 @@ input:focus{outline:none;border-color:#e94560}
     <a href="/timeline">Timeline</a>
     <a href="/species">Species</a>
     <a href="/trainers">Trainers</a>
+    <a href="/0/goals/manage" data-slot>Goals</a>
   </div>
   <div class="sidebar-group">
     <div class="sidebar-group-label">OBS Browser Sources</div>
@@ -8321,8 +8406,7 @@ input:focus{outline:none;border-color:#e94560}
     <a href="/0/encounter_table">Enc. Table</a>
     <a href="/0/money">Money</a>
     <a href="/0/playtime">Playtime</a>
-    <a href="/0/goals">Goals</a>
-    <a href="/0/vs_leader">vs Leader</a>
+    <a href="/0/goals" data-slot>Goals (OBS)</a>
   </div>
   <div class="sidebar-group">
     <div class="sidebar-group-label">Admin</div>

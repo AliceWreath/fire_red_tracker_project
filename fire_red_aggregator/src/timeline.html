@@ -148,9 +148,14 @@ select {
 function navToPage(sel){var p=sel.value;sel.value='';if(!p)return;var sp=new URLSearchParams(window.location.search);var r=parseInt(sp.get('run')||'0')||0;if(!r){var m=window.location.pathname.match(/\/run\/(\d+)\//);if(m)r=parseInt(m[1]);}window.location.href=p==='stats'?(r?'/run/'+r+'/stats':'/history'):('/'+p+(r?'?run='+r:''));}
 const runParam = new URLSearchParams(location.search).get('run');
 
+function authHeaders() {
+    const tok = localStorage.getItem('frt_session');
+    return tok ? { 'Authorization': 'Bearer ' + tok } : {};
+}
+
 async function loadRuns() {
     try {
-        const r = await fetch('/api/runs');
+        const r = await fetch('/api/runs', { headers: authHeaders() });
         if (!r.ok) return;
         const runs = await r.json();
         const sel  = document.getElementById('run-select');
@@ -195,7 +200,7 @@ async function loadTimeline() {
     ld.style.display  = '';
 
     try {
-        const r = await fetch('/api/run/' + id + '/events');
+        const r = await fetch('/api/run/' + id + '/events', { headers: authHeaders() });
         ld.style.display = 'none';
         if (!r.ok) {
             err.textContent = 'Failed to load events (HTTP ' + r.status + ')';

@@ -3026,6 +3026,19 @@ pub fn complete_goal(conn_str: &str, goal_id: i32) -> bool {
         .unwrap_or(false)
 }
 
+/// Sets the `completed` flag on `goal_id` to `completed`.  Returns `true` if a row was updated.
+pub fn set_goal_completed(conn_str: &str, goal_id: i32, completed: bool) -> bool {
+    let conn_str = normalize_conn_str(conn_str);
+    let Ok(mut client) = Client::connect(&conn_str, NoTls) else { return false };
+    client
+        .execute(
+            "UPDATE run_goals SET completed = $2 WHERE id = $1",
+            &[&goal_id, &completed],
+        )
+        .map(|n| n > 0)
+        .unwrap_or(false)
+}
+
 /// Deletes the goal with `goal_id`.  Returns `true` if a row was deleted.
 pub fn delete_goal(conn_str: &str, goal_id: i32) -> bool {
     let conn_str = normalize_conn_str(conn_str);

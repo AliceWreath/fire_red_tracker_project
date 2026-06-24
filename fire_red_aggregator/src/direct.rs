@@ -79,22 +79,40 @@ impl DirectConnector {
     ///
     /// Returns `true` if the host was found and disconnected, `false` if it
     /// was not in the active set.
+    ///
+    /// After 20 minutes the disconnected slot's cached ROM bytes are freed.
+    /// If the user reconnects before the timer fires, the new slot has its own
+    /// `rom_bytes` Arc so the eviction only clears the old (already-unused) buffer.
     pub fn disconnect(&self, host: &str, port: u16) -> bool {
         let key = format!("{}:{}", host, port);
         // Signal the slot's shutdown flag BEFORE removing from `known`.
         // This closes the race where a concurrent connect() sees the key absent
         // but finds shutdown=false on the old slot — without this ordering it
         // would fall into the else-branch and push a duplicate slot entry.
+        let mut evict_rom: Option<Arc<Mutex<Vec<u8>>>> = None;
         {
             let lock = self.slots.lock_or_recover();
             for slot in lock.iter() {
                 if slot.direct_host.as_deref() == Some(key.as_str()) {
                     slot.shutdown.store(true, std::sync::atomic::Ordering::Release);
+                    evict_rom = Some(slot.rom_bytes.clone());
                     break;
                 }
             }
         }
-        self.known.lock_or_recover().remove(&key)
+        let removed = self.known.lock_or_recover().remove(&key);
+        if let Some(rom_bytes) = evict_rom {
+            let log_key = key.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_secs(20 * 60));
+                let mut buf = rom_bytes.lock_or_recover();
+                if !buf.is_empty() {
+                    *buf = Vec::new();
+                    tracing::info!("ROM cache evicted for {} after 20-minute disconnect timeout", log_key);
+                }
+            });
+        }
+        removed
     }
 }
 

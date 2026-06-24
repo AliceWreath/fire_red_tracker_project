@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Goals — FireRed Nuzlocke</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body {
+    background: #0f0f0f;
+    font-family: 'Segoe UI', Tahoma, sans-serif;
+    color: #e0e0e0;
+    min-height: 100vh;
+}
+#root { max-width: 680px; margin: 0 auto; padding: 16px; }
+
+.page-header {
+    display: flex; align-items: center; gap: 12px;
+    padding-bottom: 12px;
+    border-bottom: 1px solid rgba(255,255,255,0.1);
+    margin-bottom: 16px;
+}
+.page-title { font-size: 20px; font-weight: bold; color: #fff; }
+.run-label { font-size: 13px; color: #778; margin-left: 4px; }
+.nav-links { margin-left: auto; display: flex; gap: 8px; }
+.nav-link {
+    font-size: 12px; font-weight: 600; padding: 4px 12px;
+    background: #1a1a2e; border: 1px solid #334; border-radius: 5px;
+    color: #8899cc; text-decoration: none;
+}
+.nav-link:hover { background: #22223e; color: #aabbdd; }
+
+.add-row {
+    display: flex; gap: 8px; margin-bottom: 16px;
+}
+.add-input {
+    flex: 1; background: #111; border: 1px solid #333; border-radius: 6px;
+    color: #e0e0e0; font-size: 14px; padding: 8px 12px; outline: none;
+}
+.add-input:focus { border-color: #7090e0; }
+.add-input::placeholder { color: #555; }
+.add-btn {
+    font-size: 13px; font-weight: 700; padding: 8px 18px;
+    background: #1a3a1a; border: 1px solid #2a6a2a; border-radius: 6px;
+    color: #aaffaa; cursor: pointer; white-space: nowrap;
+}
+.add-btn:hover { background: #224a22; }
+.add-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+.goals-list { display: flex; flex-direction: column; gap: 6px; }
+
+.goal-item {
+    display: flex; align-items: center; gap: 10px;
+    background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.07);
+    border-radius: 7px; padding: 10px 12px;
+    transition: background 0.1s;
+}
+.goal-item:hover { background: rgba(255,255,255,0.05); }
+
+.goal-cb {
+    width: 18px; height: 18px; border-radius: 4px; flex-shrink: 0;
+    border: 2px solid #446; background: transparent; cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+    transition: background 0.12s, border-color 0.12s;
+}
+.goal-cb:hover { border-color: #7090e0; }
+.goal-cb.done { background: #40b860; border-color: #40b860; }
+.goal-cb.done::after { content: '✓'; font-size: 12px; color: #fff; font-weight: 900; }
+
+.goal-text {
+    flex: 1; font-size: 14px; color: #dde; line-height: 1.4; cursor: pointer;
+    word-break: break-word;
+}
+.goal-text.done { color: #668; text-decoration: line-through; }
+
+.del-btn {
+    font-size: 18px; color: #445; background: none; border: none;
+    cursor: pointer; padding: 2px 6px; border-radius: 4px; flex-shrink: 0;
+    line-height: 1;
+}
+.del-btn:hover { color: #e08080; background: rgba(160,40,40,0.2); }
+
+.empty { font-size: 13px; color: #556; font-style: italic; padding: 12px 0; }
+.no-run { font-size: 13px; color: #664; padding: 12px 0; }
+
+.status-msg {
+    font-size: 12px; padding: 6px 10px; border-radius: 5px;
+    margin-top: 10px; display: none;
+}
+.status-msg.ok  { background: rgba(40,80,40,0.4); border: 1px solid #2a6a2a; color: #aaffaa; display: block; }
+.status-msg.err { background: rgba(80,30,30,0.4); border: 1px solid #5a2a2a; color: #ffaaaa; display: block; }
+</style>
+</head>
+<body>
+<div id="root">
+    <div class="page-header">
+        <div>
+            <div class="page-title">Run Goals</div>
+            <div class="run-label" id="run-label">Loading…</div>
+        </div>
+        <div class="nav-links">
+            <a class="nav-link" id="overlay-link" href="#">OBS Overlay</a>
+            <a class="nav-link" href="/dashboard">Dashboard</a>
+        </div>
+    </div>
+
+    <div class="add-row">
+        <input class="add-input" id="goal-input" type="text" placeholder="Add a new goal…" maxlength="200"
+               onkeydown="if(event.key==='Enter')addGoal()">
+        <button class="add-btn" id="add-btn" onclick="addGoal()">Add Goal</button>
+    </div>
+
+    <div class="goals-list" id="goals-list">
+        <div class="empty">Loading…</div>
+    </div>
+
+    <div class="status-msg" id="status-msg"></div>
+</div>
+
+<script>
+const pathParts = window.location.pathname.split('/').filter(Boolean);
+const slotIndex = parseInt(pathParts[0]);
+
+document.getElementById('overlay-link').href = '/' + slotIndex + '/goals';
+
+let runId = null;
+
+async function init() {
+    const res = await fetch('/api/state').catch(() => null);
+    const listEl = document.getElementById('goals-list');
+    if (!res || !res.ok) {
+        listEl.innerHTML = '<div class="empty">Could not connect to server.</div>';
+        document.getElementById('run-label').textContent = 'unavailable';
+        return;
+    }
+    const slots = await res.json().catch(() => []);
+    const slot = Array.isArray(slots) ? slots[slotIndex] : null;
+    const activeRunId = slot && slot.active_run_id;
+
+    if (!activeRunId) {
+        listEl.innerHTML = '<div class="no-run">No active run on slot ' + slotIndex + '. Start a run to manage goals.</div>';
+        document.getElementById('run-label').textContent = 'no active run';
+        document.getElementById('add-btn').disabled = true;
+        document.getElementById('goal-input').disabled = true;
+        return;
+    }
+
+    runId = activeRunId;
+    const playerName = slot && slot.player_name ? slot.player_name : '';
+    document.getElementById('run-label').textContent =
+        'Run #' + runId + (playerName ? ' — ' + playerName : '') + ' · slot ' + slotIndex;
+
+    await loadGoals();
+}
+
+async function loadGoals() {
+    if (!runId) return;
+    const res = await fetch('/api/run/' + runId + '/goals').catch(() => null);
+    const listEl = document.getElementById('goals-list');
+    if (!res || !res.ok) {
+        listEl.innerHTML = '<div class="empty">Failed to load goals.</div>';
+        return;
+    }
+    const data = await res.json();
+    renderGoals(data.goals || []);
+}
+
+function renderGoals(goals) {
+    const listEl = document.getElementById('goals-list');
+    listEl.innerHTML = '';
+    if (goals.length === 0) {
+        listEl.innerHTML = '<div class="empty">No goals yet — add one above.</div>';
+        return;
+    }
+    for (const g of goals) {
+        const item = document.createElement('div');
+        item.className = 'goal-item';
+
+        const cb = document.createElement('div');
+        cb.className = 'goal-cb' + (g.completed ? ' done' : '');
+        cb.title = g.completed ? 'Mark incomplete' : 'Mark complete';
+        cb.onclick = () => toggleGoal(g.id, !g.completed);
+
+        const text = document.createElement('div');
+        text.className = 'goal-text' + (g.completed ? ' done' : '');
+        text.textContent = g.text;
+        text.onclick = () => toggleGoal(g.id, !g.completed);
+
+        const del = document.createElement('button');
+        del.className = 'del-btn';
+        del.title = 'Delete goal';
+        del.textContent = '×';
+        del.onclick = () => deleteGoal(g.id);
+
+        item.appendChild(cb);
+        item.appendChild(text);
+        item.appendChild(del);
+        listEl.appendChild(item);
+    }
+}
+
+async function addGoal() {
+    const input = document.getElementById('goal-input');
+    const text = input.value.trim();
+    if (!text || !runId) return;
+    const btn = document.getElementById('add-btn');
+    btn.disabled = true;
+    const res = await fetch('/api/goal', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ run_id: runId, text }),
+    }).catch(() => null);
+    btn.disabled = false;
+    if (!res || !res.ok) { showStatus('Request failed.', 'err'); return; }
+    const data = await res.json();
+    if (data.error) { showStatus(data.error, 'err'); return; }
+    input.value = '';
+    input.focus();
+    await loadGoals();
+}
+
+async function toggleGoal(goalId, completed) {
+    const res = await fetch('/api/goal/' + goalId, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ completed }),
+    }).catch(() => null);
+    if (!res || !res.ok) { showStatus('Update failed.', 'err'); return; }
+    const data = await res.json();
+    if (data.error) { showStatus(data.error, 'err'); return; }
+    await loadGoals();
+}
+
+async function deleteGoal(goalId) {
+    const res = await fetch('/api/goal/' + goalId, { method: 'DELETE' }).catch(() => null);
+    if (!res || !res.ok) { showStatus('Delete failed.', 'err'); return; }
+    const data = await res.json();
+    if (data.error) { showStatus(data.error, 'err'); return; }
+    await loadGoals();
+}
+
+function showStatus(msg, cls) {
+    const el = document.getElementById('status-msg');
+    el.textContent = msg;
+    el.className = 'status-msg ' + cls;
+    setTimeout(() => { el.className = 'status-msg'; }, 4000);
+}
+
+init();
+</script>
+</body>
+</html>
