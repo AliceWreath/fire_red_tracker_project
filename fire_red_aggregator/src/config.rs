@@ -265,20 +265,16 @@ pub fn default_config_path() -> PathBuf {
 // Load / save
 // ---------------------------------------------------------------------------
 
-pub fn load_or_prompt(path: &PathBuf) -> AggregatorConfig {
+pub fn load_or_prompt(path: &PathBuf) -> Result<AggregatorConfig, String> {
     if path.exists() {
-        let content = std::fs::read_to_string(path).unwrap_or_else(|e| {
-            tracing::error!("Failed to read config file {}: {}", path.display(), e);
-            std::process::exit(1);
-        });
-        toml::from_str(&content).unwrap_or_else(|e| {
-            tracing::error!("Failed to parse config file {}: {}", path.display(), e);
-            std::process::exit(1);
-        })
+        let content = std::fs::read_to_string(path)
+            .map_err(|e| format!("Failed to read config file {}: {}", path.display(), e))?;
+        toml::from_str(&content)
+            .map_err(|e| format!("Failed to parse config file {}: {}", path.display(), e))
     } else {
         let config = show_setup_dialog();
         save_config(&config, path);
-        config
+        Ok(config)
     }
 }
 
@@ -662,16 +658,12 @@ fn run_setup_window(existing: Option<&AggregatorConfig>) -> AggregatorConfig {
 
 /// Open the config editor window, pre-filled with the existing config if the
 /// file exists, then save the result. Called by `--config-editor`.
-pub fn run_config_editor(path: &PathBuf) {
+pub fn run_config_editor(path: &PathBuf) -> Result<(), String> {
     let existing: Option<AggregatorConfig> = if path.exists() {
-        let content = std::fs::read_to_string(path).unwrap_or_else(|e| {
-            tracing::error!("Failed to read config file {}: {}", path.display(), e);
-            std::process::exit(1);
-        });
-        Some(toml::from_str(&content).unwrap_or_else(|e| {
-            tracing::error!("Failed to parse config file {}: {}", path.display(), e);
-            std::process::exit(1);
-        }))
+        let content = std::fs::read_to_string(path)
+            .map_err(|e| format!("Failed to read config file {}: {}", path.display(), e))?;
+        Some(toml::from_str(&content)
+            .map_err(|e| format!("Failed to parse config file {}: {}", path.display(), e))?)
     } else {
         None
     };
@@ -681,4 +673,5 @@ pub fn run_config_editor(path: &PathBuf) {
         None => show_setup_dialog(),
     };
     save_config(&new_cfg, path);
+    Ok(())
 }

@@ -31,6 +31,7 @@ use fire_red_states::LockOrRecover;
 use std::collections::HashSet;
 use std::io::{BufRead, BufReader, Write};
 use std::net::TcpStream;
+use std::sync::Arc as StdArc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -96,42 +97,54 @@ fn run_session(
     db_conn: Option<&str>,
     user_id: Option<u32>,
 ) -> Result<(), String> {
-    let stream = TcpStream::connect("irc.chat.twitch.tv:6667")
+    // Connect over TLS on the recommended secure port (6697).
+    let tcp = TcpStream::connect("irc.chat.twitch.tv:6697")
         .map_err(|e| format!("TCP connect: {e}"))?;
-    stream
-        .set_read_timeout(Some(Duration::from_secs(300)))
-        .ok();
+    tcp.set_read_timeout(Some(Duration::from_secs(300))).ok();
 
-    let mut write_half = stream.try_clone().map_err(|e| format!("clone stream: {e}"))?;
-    let reader = BufReader::new(stream);
+    let mut root_store = rustls::RootCertStore::empty();
+    root_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+    let tls_cfg = StdArc::new(
+        rustls::ClientConfig::builder()
+            .with_root_certificates(root_store)
+            .with_no_client_auth(),
+    );
+    let server_name: rustls::pki_types::ServerName<'static> =
+        "irc.chat.twitch.tv".try_into().map_err(|e| format!("TLS server name: {e}"))?;
+    let tls_conn = rustls::ClientConnection::new(tls_cfg, server_name)
+        .map_err(|e| format!("TLS connect: {e}"))?;
+    let mut reader = BufReader::new(rustls::StreamOwned::new(tls_conn, tcp));
 
     // Authenticate and join channel.
     let channel = format!("#{}", config.channel.trim_start_matches('#'));
-    irc_send(&mut write_half, &format!("PASS {}", config.token))?;
-    irc_send(&mut write_half, &format!("NICK {}", config.nick))?;
-    irc_send(&mut write_half, &format!("JOIN {channel}"))?;
+    irc_send(reader.get_mut(), &format!("PASS {}", config.token))?;
+    irc_send(reader.get_mut(), &format!("NICK {}", config.nick))?;
+    irc_send(reader.get_mut(), &format!("JOIN {channel}"))?;
 
     tracing::info!("Twitch IRC bot joined {channel} as {}.", config.nick);
 
-    for line in reader.lines() {
-        let line = line.map_err(|e| format!("read: {e}"))?;
-        let line = line.trim_end_matches('\r');
+    let mut line = String::new();
+    loop {
+        line.clear();
+        let n = reader.read_line(&mut line).map_err(|e| format!("read: {e}"))?;
+        if n == 0 {
+            return Ok(()); // server closed connection cleanly
+        }
+        let line_str = line.trim_end_matches(['\r', '\n']);
 
-        if line.starts_with("PING") {
+        if line_str.starts_with("PING") {
             // PING :tmi.twitch.tv  →  PONG :tmi.twitch.tv
-            let target = line.trim_start_matches("PING").trim();
-            irc_send(&mut write_half, &format!("PONG {target}"))?;
+            let target = line_str.trim_start_matches("PING").trim();
+            irc_send(reader.get_mut(), &format!("PONG {target}"))?;
             continue;
         }
 
         // Parse: `:nick!user@host PRIVMSG #channel :!command`
         let slot_idx = resolve_slot(config.slot, slots, user_id);
-        if let Some(reply) = handle_privmsg(line, &channel, slot_idx, slots, db_conn) {
-            irc_send(&mut write_half, &format!("PRIVMSG {channel} :{reply}"))?;
+        if let Some(reply) = handle_privmsg(line_str, &channel, slot_idx, slots, db_conn) {
+            irc_send(reader.get_mut(), &format!("PRIVMSG {channel} :{reply}"))?;
         }
     }
-
-    Ok(())
 }
 
 fn irc_send(w: &mut impl Write, msg: &str) -> Result<(), String> {
@@ -428,9 +441,9 @@ fn cmd_bag(slot_idx: usize, slots: &SharedSlots) -> String {
         return "Bag is empty.".to_string();
     }
     let out = parts.join(" | ");
-    // Twitch chat has a ~500-character limit
+    // Twitch chat has a ~500-character limit; truncate at a char boundary.
     if out.len() > 450 {
-        format!("{}…", &out[..449])
+        format!("{}…", &out[..out.floor_char_boundary(449)])
     } else {
         out
     }
@@ -541,7 +554,7 @@ fn cmd_encounter(slot_idx: usize, slots: &SharedSlots) -> String {
     };
     let result = format!("{zone_str}: {}", parts.join(", "));
     if result.len() > 450 {
-        format!("{}…", &result[..449])
+        format!("{}…", &result[..result.floor_char_boundary(449)])
     } else {
         result
     }
@@ -666,7 +679,7 @@ fn cmd_box(slot_idx: usize, slots: &SharedSlots, cmd: &str) -> String {
     }
     let result = format!("Box {}: {}", n + 1, in_box.join(", "));
     if result.len() > 450 {
-        format!("{}…", &result[..449])
+        format!("{}…", &result[..result.floor_char_boundary(449)])
     } else {
         result
     }

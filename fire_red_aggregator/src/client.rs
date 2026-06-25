@@ -123,6 +123,9 @@ pub struct MonitorSlot {
     /// Signals the game loop, sprite loader, and bridge threads for this slot
     /// to exit.  Set by `DirectConnector::disconnect`.
     pub shutdown: Arc<AtomicBool>,
+    /// Database run ID this slot is tracking.  Set at slot construction time
+    /// in direct mode; used to locate the ROM cache directory.
+    pub run_id: Option<u32>,
 }
 
 impl MonitorSlot {
@@ -136,11 +139,13 @@ impl MonitorSlot {
     /// * `addr`        - Display address string (e.g. `"direct:<host>"`).
     /// * `db_path`     - Optional path to this player's SQLite nuzlocke database.
     /// * `direct_host` - `Some("host:port")` for the RetroArch instance to poll; `None` if unset.
+    /// * `run_id`      - Database run ID this slot is tracking; `None` when DB is disabled.
     pub fn new(
         index: usize,
         addr: String,
         db_path: Option<String>,
         direct_host: Option<String>,
+        run_id: Option<u32>,
     ) -> Self {
         let db = db_path
             .as_deref()
@@ -165,6 +170,7 @@ impl MonitorSlot {
             rom_identity: Arc::new(Mutex::new(String::new())),
             game_encounters: Arc::new(Mutex::new(None)),
             shutdown: Arc::new(AtomicBool::new(false)),
+            run_id,
         }
     }
 }

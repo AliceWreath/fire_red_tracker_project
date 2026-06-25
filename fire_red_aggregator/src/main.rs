@@ -133,6 +133,8 @@ fn main() {
         )
         .init();
 
+    tracing::info!("fire_red_aggregator v{}", env!("CARGO_PKG_VERSION"));
+
     let cli = Cli::parse();
 
     if cli.update {
@@ -147,7 +149,10 @@ fn main() {
         .unwrap_or_else(config::default_config_path);
 
     if cli.config_editor {
-        config::run_config_editor(&config_path);
+        if let Err(e) = config::run_config_editor(&config_path) {
+            eprintln!("Error: {e}");
+            std::process::exit(1);
+        }
         return;
     }
 
@@ -156,7 +161,10 @@ fn main() {
         return;
     }
 
-    let cfg = config::load_or_prompt(&config_path);
+    let cfg = config::load_or_prompt(&config_path).unwrap_or_else(|e| {
+        eprintln!("Error: {e}");
+        std::process::exit(1);
+    });
     let cfg_ref = cfg.clone();
 
     // test section: applied on top of base config, below explicit CLI flags.
@@ -240,10 +248,19 @@ fn main() {
         None
     };
 
+    // Global stop flags for the integration threads spawned below.
+    // Must outlive the blocking call at the end of main so the threads can
+    // be signalled if a graceful-shutdown path is ever added.
+    let mut _global_stop_flags: Vec<Arc<AtomicBool>> = Vec::new();
+
     // Twitch IRC bot — runs in both GUI and headless modes.
     if let Some(twitch_cfg) = cfg_ref.twitch.clone() {
-        twitch::spawn(twitch_cfg.clone(), shared_slots.clone(), db.clone(), None, Arc::new(AtomicBool::new(false)));
-        eventsub::spawn(twitch_cfg, shared_slots.clone(), None, Arc::new(AtomicBool::new(false)));
+        let twitch_stop   = Arc::new(AtomicBool::new(false));
+        let eventsub_stop = Arc::new(AtomicBool::new(false));
+        twitch::spawn(twitch_cfg.clone(), shared_slots.clone(), db.clone(), None, twitch_stop.clone());
+        eventsub::spawn(twitch_cfg, shared_slots.clone(), None, eventsub_stop.clone());
+        _global_stop_flags.push(twitch_stop);
+        _global_stop_flags.push(eventsub_stop);
     }
 
     // LiveSplit One bridge (aggregator side).
@@ -257,17 +274,23 @@ fn main() {
 
     // YouTube Live chat bot.
     if let Some(yt_cfg) = cfg_ref.youtube_chat.clone() {
-        youtube_chat::spawn(yt_cfg, shared_slots.clone(), db.clone(), None, Arc::new(AtomicBool::new(false)));
+        let yt_stop = Arc::new(AtomicBool::new(false));
+        youtube_chat::spawn(yt_cfg, shared_slots.clone(), db.clone(), None, yt_stop.clone());
+        _global_stop_flags.push(yt_stop);
     }
 
     // Discord persistent live embed.
     if let Some(embed_cfg) = cfg_ref.discord_live_embed.clone() {
-        discord_live::spawn_live_embed(embed_cfg, shared_slots.clone(), None, Arc::new(AtomicBool::new(false)));
+        let embed_stop = Arc::new(AtomicBool::new(false));
+        discord_live::spawn_live_embed(embed_cfg, shared_slots.clone(), None, embed_stop.clone());
+        _global_stop_flags.push(embed_stop);
     }
 
     // Discord run thread.
     if let Some(thread_cfg) = cfg_ref.discord_run_thread.clone() {
-        discord_live::spawn_run_thread(thread_cfg, shared_slots.clone(), None, Arc::new(AtomicBool::new(false)));
+        let thread_stop = Arc::new(AtomicBool::new(false));
+        discord_live::spawn_run_thread(thread_cfg, shared_slots.clone(), None, thread_stop.clone());
+        _global_stop_flags.push(thread_stop);
     }
 
     // Discord slash commands — register at startup if configured.

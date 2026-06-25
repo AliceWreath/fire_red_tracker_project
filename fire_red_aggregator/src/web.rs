@@ -1728,8 +1728,15 @@ async fn serve_db_json(
 
 async fn clear_db(
     State(state): State<WebState>,
+    Extension(user): Extension<User>,
     Query(params): Query<std::collections::HashMap<String, String>>,
 ) -> impl IntoResponse {
+    if user.id != 1 {
+        return (
+            StatusCode::FORBIDDEN,
+            "only the server owner can clear the database".to_string(),
+        );
+    }
     if params.get("confirm").map(String::as_str) != Some("true") {
         return (
             StatusCode::BAD_REQUEST,
@@ -2036,18 +2043,20 @@ async fn handle_socket(
     show: Option<String>,
     user_id: u32,
 ) {
-    // Pre-fetch the set of run IDs this user can access once at connect time
-    // so we can filter every broadcast tick without hitting the DB.
-    let accessible: HashSet<u32> =
+    let is_owner = user_id == 1;
+
+    // Fetch accessible run IDs at connect time; refreshed every 30 s in the
+    // broadcast loop so invite changes take effect without reconnecting.
+    let mut accessible: HashSet<u32> =
         tokio::task::spawn_blocking(move || fire_red_database::get_accessible_run_ids(user_id))
             .await
             .unwrap_or(Ok(HashSet::new()))
             .unwrap_or_default();
+    let mut accessible_refreshed = std::time::Instant::now();
 
-    // Filter helper: replaces inaccessible slots with null (preserving array
-    // positions so /:index/ overlay URLs remain stable), then applies the
-    // show-filter on top.
-    let filter_json = |raw: &str| -> String {
+    // Filter helper: takes an explicit accessible set so the closure can be
+    // called with the periodically-refreshed set rather than a captured snapshot.
+    let filter_json = |raw: &str, acc: &HashSet<u32>| -> String {
         let arr: serde_json::Value =
             serde_json::from_str(raw).unwrap_or(serde_json::Value::Array(vec![]));
         let user_slots: Vec<serde_json::Value> = arr
@@ -2056,8 +2065,9 @@ async fn handle_socket(
             .unwrap_or_default()
             .into_iter()
             .map(|s| match s.get("active_run_id").and_then(|v| v.as_u64()) {
-                None => s,
-                Some(rid) if accessible.contains(&(rid as u32)) => s,
+                None if is_owner => s,
+                None => serde_json::Value::Null,
+                Some(rid) if acc.contains(&(rid as u32)) => s,
                 _ => serde_json::Value::Null,
             })
             .collect();
@@ -2075,7 +2085,7 @@ async fn handle_socket(
     {
         let current = rx.borrow_and_update().clone();
         if !current.is_empty() {
-            let msg = filter_json(&current);
+            let msg = filter_json(&current, &accessible);
             if ws_tx
                 .send(axum::extract::ws::Message::Text(msg))
                 .await
@@ -2087,14 +2097,9 @@ async fn handle_socket(
     }
 
     // Forward incoming browser commands only to slots accessible by this user.
+    // Reuse the initial accessible snapshot — no second DB round-trip needed.
     let live_slots_cmd = live_slots.clone();
-    let accessible_cmd = {
-        // Re-fetch accessible run IDs for the command-forwarding closure.
-        tokio::task::spawn_blocking(move || fire_red_database::get_accessible_run_ids(user_id))
-            .await
-            .unwrap_or(Ok(HashSet::new()))
-            .unwrap_or_default()
-    };
+    let accessible_cmd = accessible.clone();
     tokio::spawn(async move {
         while let Some(Ok(axum::extract::ws::Message::Text(text))) = ws_rx.next().await {
             if let Ok(val) = serde_json::from_str::<serde_json::Value>(&text) {
@@ -2125,8 +2130,17 @@ async fn handle_socket(
         if rx.changed().await.is_err() {
             break;
         }
+        // Refresh the accessible-run set every 30 s so invite changes
+        // mid-session take effect without disconnecting the client.
+        if accessible_refreshed.elapsed() >= std::time::Duration::from_secs(30) {
+            accessible = tokio::task::spawn_blocking(move || fire_red_database::get_accessible_run_ids(user_id))
+                .await
+                .unwrap_or(Ok(HashSet::new()))
+                .unwrap_or_default();
+            accessible_refreshed = std::time::Instant::now();
+        }
         let raw = rx.borrow_and_update().clone();
-        let msg = filter_json(&raw);
+        let msg = filter_json(&raw, &accessible);
         if ws_tx
             .send(axum::extract::ws::Message::Text(msg))
             .await
@@ -3079,7 +3093,13 @@ async fn api_change_nickname(
         }
     };
     let nickname = match body["nickname"].as_str() {
-        Some(s) if !s.is_empty() => s.to_string(),
+        Some(s) if !s.is_empty() && s.chars().count() <= 10 => s.to_string(),
+        Some(s) if s.chars().count() > 10 => {
+            return (
+                StatusCode::BAD_REQUEST,
+                "nickname must be 10 characters or fewer (Gen III buffer limit)".to_string(),
+            );
+        }
         _ => {
             return (
                 StatusCode::BAD_REQUEST,
@@ -3487,7 +3507,8 @@ async fn api_change_move(
         _ => return (StatusCode::BAD_REQUEST, "slot must be 0–3".to_string()),
     };
     let move_id = match body["move_id"].as_u64().and_then(|v| u16::try_from(v).ok()) {
-        Some(v) => v,
+        Some(v) if v == 0 || v <= 354 => v,
+        Some(_) => return (StatusCode::BAD_REQUEST, "move_id must be 0 (clear) or 1–354".to_string()),
         None => return (StatusCode::BAD_REQUEST, "move_id must be a u16".to_string()),
     };
     slot.command_queue
@@ -4047,11 +4068,11 @@ async fn api_learn_move(
         }
     };
     let move_id = match body["move_id"].as_u64().and_then(|v| u16::try_from(v).ok()) {
-        Some(v) if v > 0 => v,
+        Some(v) if v > 0 && v <= 354 => v,
         _ => {
             return (
                 StatusCode::BAD_REQUEST,
-                "move_id must be a non-zero u16".to_string(),
+                "move_id must be 1–354".to_string(),
             );
         }
     };
@@ -4494,8 +4515,20 @@ async fn api_catch_rate(
         "greatball"   => (15, "greatball"),   // 1.5 × 10
         "safariball"  => (15, "safariball"),
         "netball"     => (30, "netball"),     // 3.0 × 10
-        "nestball"    => (10, "nestball"),    // simplified to 1.0
-        "repeatball"  => (30, "repeatball"),  // 3.0 × 10
+        "nestball" => {
+            // (41 - level) / 10, minimum 1×; only beneficial below level 31.
+            let mult = if let Some(lv) = parse_u16("level") {
+                ((41u32.saturating_sub(lv as u32)) / 10).max(1)
+            } else {
+                1
+            };
+            (mult * 10, "nestball")
+        }
+        "repeatball" => {
+            // 3× only if the species is already registered in the player's Pokédex.
+            let already_caught = params.get("has_caught").map(|v| v == "true").unwrap_or(false);
+            if already_caught { (30, "repeatball") } else { (10, "repeatball") }
+        }
         "timerball"   => (40, "timerball"),   // max 4.0 × 10
         "diveball"    => (35, "diveball"),    // 3.5 × 10
         "premierball" => (10, "premierball"),
@@ -4948,12 +4981,12 @@ async fn api_slot_ev_progress(
                 "sp_defense": ev.sp_defense_ev,
                 "total":      total,
                 "remaining":  remaining_total,
-                "hp_capped":         ev.hp_ev >= 252,
-                "attack_capped":     ev.attack_ev >= 252,
-                "defense_capped":    ev.defense_ev >= 252,
-                "speed_capped":      ev.speed_ev >= 252,
-                "sp_attack_capped":  ev.sp_attack_ev >= 252,
-                "sp_defense_capped": ev.sp_defense_ev >= 252,
+                "hp_capped":         ev.hp_ev >= 255,
+                "attack_capped":     ev.attack_ev >= 255,
+                "defense_capped":    ev.defense_ev >= 255,
+                "speed_capped":      ev.speed_ev >= 255,
+                "sp_attack_capped":  ev.sp_attack_ev >= 255,
+                "sp_defense_capped": ev.sp_defense_ev >= 255,
                 "fully_trained": total >= 510,
             })
         })
@@ -5081,8 +5114,9 @@ async fn api_refresh_rom(
     let sprite_cache     = slot.sprite_cache.clone();
     let game_encounters  = slot.game_encounters.clone();
 
+    let run_id = slot.run_id;
     let result = tokio::task::spawn_blocking(move || {
-        crate::rom_fetch::force_fetch_rom(&host, port)
+        crate::rom_fetch::force_fetch_rom(&host, port, run_id)
             .and_then(|path| std::fs::read(&path).map_err(|e| e.to_string()))
     })
     .await;
@@ -5140,9 +5174,18 @@ async fn api_refresh_rom(
 
 async fn api_db_query(
     State(state): State<WebState>,
+    Extension(user): Extension<User>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     axum::Json(body): axum::Json<serde_json::Value>,
 ) -> axum::Json<serde_json::Value> {
+    // Owner-only: user ID 1 is the server owner.
+    if user.id != 1 {
+        return axum::Json(
+            serde_json::json!({ "error": "Forbidden: only the server owner can execute arbitrary SQL" }),
+        );
+    }
+    // Loopback guard retained as defence-in-depth, but note that it is bypassed
+    // when the server runs behind a reverse proxy (ConnectInfo sees proxy address).
     if !addr.ip().is_loopback() {
         return axum::Json(
             serde_json::json!({ "error": "Forbidden: endpoint only available on localhost" }),
@@ -6210,6 +6253,7 @@ fn build_router(web_state: WebState) -> Router {
         .route("/api/login", post(api_login))
         .route("/api/logout", post(api_logout))
         .route("/api/me", get(api_me))
+        .route("/api/me/token", get(api_me_token))
         .route("/api/me/dashboard", get(api_me_dashboard))
         .route("/api/me/active_run", get(api_me_active_run).put(api_me_set_active_run))
         .route("/api/me/integrations", get(api_get_integrations))
@@ -6669,26 +6713,24 @@ const TOKEN_KEY='frt_session';
 const CLIENT_IP='__CLIENT_IP__';
 const DIRECT_PORT=DEFAULT_PORT;
 const DIRECT_ACTIVE=DIRECT_MODE_ACTIVE;
-let SESSION=localStorage.getItem(TOKEN_KEY)||null;
+let SESSION=null;
 let ME=null;
 let ALL_RUNS=[];
 let MY_STATUSES={};// run_id (string) → 'owner'|'accepted'|'pending_invite'|'pending_request'
 
 function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
 function fmtDate(iso){if(!iso)return'—';try{return new Date(iso).toLocaleDateString();}catch{return iso;}}
-function authHdr(){return SESSION?{'Authorization':'Bearer '+SESSION}:{};}
+function authHdr(){return {};}
 function openRunPage(runId,sel){
   const p=sel.value;sel.value='';if(!p)return;
   const url=p==='stats'?'/run/'+runId+'/stats':'/'+p+'?run='+runId;
-  const tok=localStorage.getItem(TOKEN_KEY);
-  if(tok)fetch('/api/me/active_run',{method:'PUT',headers:{'Content-Type':'application/json','Authorization':'Bearer '+tok},body:JSON.stringify({run_id:runId})}).catch(()=>{});
+  fetch('/api/me/active_run',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({run_id:runId})}).catch(()=>{});
   window.open(url,'_blank');
 }
 
 async function init(){
-  if(!SESSION){window.location.href='/';return;}
-  const r=await fetch('/api/me',{headers:authHdr()}).catch(()=>null);
-  if(!r||!r.ok){SESSION=null;localStorage.removeItem(TOKEN_KEY);window.location.href='/';return;}
+  const r=await fetch('/api/me').catch(()=>null);
+  if(!r||!r.ok){window.location.href='/';return;}
   ME=await r.json();
   document.getElementById('user-pill').textContent='● '+ME.username;
   document.getElementById('user-pill').style.display='';
@@ -7558,7 +7600,7 @@ fn extract_query_token(uri: &axum::http::Uri) -> Option<String> {
 
 /// Routes that do not require a valid session.
 fn is_public_route(path: &str, method: &axum::http::Method) -> bool {
-    matches!(path, "/" | "/register" | "/interactions" | "/api/webhook/donation")
+    matches!(path, "/" | "/register" | "/interactions" | "/api/webhook/donation" | "/api/catch_rate")
         || path == "/api/login"
         || path.starts_with("/share/")
         // POST /api/users = register endpoint
@@ -7716,8 +7758,9 @@ async fn slot_access_middleware(
 /// `/1/alerts` (which index into the array by position) still work correctly
 /// when multiple users share the same server.
 ///
-/// A slot with no `active_run_id` is kept as-is (accessible to all
-/// authenticated users, e.g. slots not yet linked to a run).
+/// A slot with no `active_run_id` is nulled out for regular users.
+/// Only the server owner (user ID 1) sees unlinked slots so they can
+/// diagnose connection issues without exposing another player's live state.
 async fn filter_slots_for_user(json: &str, user_id: u32) -> String {
     let arr: serde_json::Value =
         serde_json::from_str(json).unwrap_or(serde_json::Value::Array(vec![]));
@@ -7733,11 +7776,14 @@ async fn filter_slots_for_user(json: &str, user_id: u32) -> String {
             .unwrap_or_default();
 
     // Replace inaccessible slots with null (preserve position).
+    // Unlinked slots (no active_run_id) are visible to the server owner only.
+    let is_owner = user_id == 1;
     let filtered: Vec<serde_json::Value> = slots
         .into_iter()
         .map(|slot| {
             match slot.get("active_run_id").and_then(|v| v.as_u64()) {
-                None => slot,                                           // unlinked → keep
+                None if is_owner => slot,                               // unlinked → owner only
+                None => serde_json::Value::Null,                       // unlinked → hidden
                 Some(rid) if accessible.contains(&(rid as u32)) => slot, // owned → keep
                 _ => serde_json::Value::Null,                          // forbidden → null
             }
@@ -7750,6 +7796,12 @@ async fn filter_slots_for_user(json: &str, user_id: u32) -> String {
 
 #[derive(serde::Deserialize)]
 struct RegisterBody {
+    username: String,
+    password: String,
+}
+
+#[derive(serde::Deserialize)]
+struct LoginBody {
     username: String,
     password: String,
 }
@@ -7828,7 +7880,7 @@ async fn api_list_users(Extension(user): Extension<User>) -> impl IntoResponse {
 /// sets an `HttpOnly` `frt_token` cookie so browser page-loads are authenticated
 /// automatically. Returns `401` on bad credentials.
 async fn api_login(
-    axum::Json(body): axum::Json<RegisterBody>,
+    axum::Json(body): axum::Json<LoginBody>,
 ) -> axum::response::Response {
     use axum::response::IntoResponse;
     let username_for_log = body.username.clone();
@@ -7939,6 +7991,26 @@ async fn api_me(
         Err(_) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             axum::Json(serde_json::json!({ "error": "Task panicked" })),
+        ),
+    }
+}
+
+/// `GET /api/me/token` — return the caller's raw session token.
+///
+/// The token lives in an `HttpOnly` cookie so JavaScript can't read it directly.
+/// This endpoint echoes it back as `{ "token": "…" }` so the dashboard can
+/// display and copy it for use with the `?token=` OBS URL parameter.
+async fn api_me_token(
+    headers: axum::http::HeaderMap,
+) -> impl IntoResponse {
+    match extract_bearer(&headers) {
+        Some(token) => (
+            StatusCode::OK,
+            axum::Json(serde_json::json!({ "token": token })),
+        ),
+        None => (
+            StatusCode::UNAUTHORIZED,
+            axum::Json(serde_json::json!({ "error": "no session token" })),
         ),
     }
 }
@@ -8210,10 +8282,10 @@ input:focus{outline:none;border-color:#e94560}
 </div>
 
 <script>
-const TOKEN_KEY='frt_session';
-let SESSION=localStorage.getItem(TOKEN_KEY)||null;
+// Session token is kept in-memory only — the HttpOnly frt_token cookie
+// handles persistent authentication so tokens never touch localStorage.
+let SESSION=null;
 
-function authHdr(){return SESSION?{'Authorization':'Bearer '+SESSION}:{};}
 function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
 function mobileTarget(){
   const mobile=/Android|iPhone|iPad|iPod/i.test(navigator.userAgent)||window.innerWidth<768;
@@ -8221,12 +8293,10 @@ function mobileTarget(){
 }
 
 async function init(){
-  if(!SESSION){return;}
-  const r=await fetch('/api/me',{headers:authHdr()}).catch(()=>null);
+  // Cookie is sent automatically on same-origin requests; no explicit header needed.
+  const r=await fetch('/api/me').catch(()=>null);
   if(r&&r.ok){
     window.location.href=mobileTarget();
-  }else{
-    SESSION=null;localStorage.removeItem(TOKEN_KEY);
   }
 }
 
@@ -8247,7 +8317,6 @@ async function doLogin(){
   const d=await r.json();
   if(r.ok){
     SESSION=d.token;
-    localStorage.setItem(TOKEN_KEY,SESSION);
     window.location.href=mobileTarget();
   }else{
     msg.className='msg err';msg.textContent=d.error||'Login failed.';
@@ -8255,8 +8324,8 @@ async function doLogin(){
 }
 
 async function doLogout(){
-  await fetch('/api/logout',{method:'POST',headers:authHdr()}).catch(()=>null);
-  SESSION=null;localStorage.removeItem(TOKEN_KEY);
+  await fetch('/api/logout',{method:'POST'}).catch(()=>null);
+  SESSION=null;
   document.getElementById('loggedin-wrap').style.display='none';
   document.getElementById('login-wrap').style.display='';
   document.getElementById('upass').value='';
@@ -8490,17 +8559,16 @@ const TOKEN_KEY='frt_session';
 const CLIENT_IP='__CLIENT_IP__';
 const DIRECT_PORT=DEFAULT_PORT;
 const DIRECT_ACTIVE=DIRECT_MODE_ACTIVE;
-let SESSION=localStorage.getItem(TOKEN_KEY)||null;
+let SESSION=null;
 let MODAL_RUN_ID=null;
 
 function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
 function fmtDate(iso){if(!iso)return'—';try{return new Date(iso).toLocaleDateString();}catch{return iso;}}
-function authHdr(){return SESSION?{'Authorization':'Bearer '+SESSION}:{};}
+function authHdr(){return {};}
 function openRunPage(runId,sel){
   const p=sel.value;sel.value='';if(!p)return;
   const url=p==='stats'?'/run/'+runId+'/stats':'/'+p+'?run='+runId;
-  const tok=localStorage.getItem(TOKEN_KEY);
-  if(tok)fetch('/api/me/active_run',{method:'PUT',headers:{'Content-Type':'application/json','Authorization':'Bearer '+tok},body:JSON.stringify({run_id:runId})}).catch(()=>{});
+  fetch('/api/me/active_run',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({run_id:runId})}).catch(()=>{});
   window.open(url,'_blank');
 }
 
@@ -8517,8 +8585,7 @@ async function quickConnect(runId){
 }
 
 async function doLogout(){
-  await fetch('/api/logout',{method:'POST',headers:authHdr()}).catch(()=>null);
-  SESSION=null;localStorage.removeItem(TOKEN_KEY);
+  await fetch('/api/logout',{method:'POST'}).catch(()=>null);
   window.location.href='/';
 }
 
@@ -8553,14 +8620,17 @@ function updateSidebarSlot(slot){
 }
 
 async function init(){
-  if(!SESSION){window.location.href='/join';return;}
   if(!localStorage.getItem('desktop_mode')&&(/Android|iPhone|iPad|iPod/i.test(navigator.userAgent)||window.innerWidth<768)){
     window.location.href='/mobile';return;
   }
-  const r=await fetch('/api/me',{headers:authHdr()}).catch(()=>null);
-  if(!r||!r.ok){window.location.href='/join';return;}
-  const me=await r.json();
+  const [meR,tokR]=await Promise.all([
+    fetch('/api/me').catch(()=>null),
+    fetch('/api/me/token').catch(()=>null),
+  ]);
+  if(!meR||!meR.ok){window.location.href='/join';return;}
+  const me=await meR.json();
   document.getElementById('page-title').textContent='Dashboard — '+esc(me.username);
+  if(tokR&&tokR.ok){const t=await tokR.json();SESSION=t.token||null;}
   loadDashboard();
 }
 
@@ -8986,6 +9056,7 @@ td:first-child{font-family:monospace;color:#7de;white-space:nowrap}
   <a href="#overview">Overview</a>
   <a href="#auth">Authentication</a>
   <a href="#api">REST API</a>
+  <a href="#injections">Injections</a>
   <a href="#websocket">WebSocket Overlay</a>
   <a href="#obs">OBS Integration</a>
   <a href="#twitch">Twitch Bot</a>
@@ -9014,7 +9085,10 @@ td:first-child{font-family:monospace;color:#7de;white-space:nowrap}
 <h2 id="auth">Authentication</h2>
 <p>Create an account at <code>/register</code> and log in at <code>/</code>. The server returns a session token on login.</p>
 <h3>Browser</h3>
-<p>The login page stores the token in <code>localStorage</code> as <code>frt_session</code> and sends it as a <code>Bearer</code> header on every API call. No extra setup needed.</p>
+<p>After login, the server sets an HttpOnly session cookie (<code>frt_token</code>) which is sent automatically on every page and API request. No extra client-side setup needed.</p>
+<p>To use the raw token value (e.g. for OBS overlay <code>?token=</code> URLs), fetch it after login:</p>
+<pre><code>curl -b cookies.txt http://localhost:9090/api/me/token
+# → {"token":"eyJ…"}</code></pre>
 <h3>API / curl</h3>
 <pre><code># Log in and capture the token
 TOKEN=$(curl -s -X POST http://localhost:9090/api/login \
@@ -9039,6 +9113,7 @@ curl -H "Authorization: Bearer $TOKEN" http://localhost:9090/api/me</code></pre>
     <tr><td>POST /api/logout</td><td>Invalidates the current session token.</td></tr>
     <tr><td>POST /api/register</td><td>Body: <code>{"username","password"}</code>. Creates a new account.</td></tr>
     <tr><td>GET /api/me</td><td>Returns the current user's profile.</td></tr>
+    <tr><td>GET /api/me/token</td><td>Returns the raw session token value as JSON (useful for scripts and OBS URL parameters).</td></tr>
     <tr><td>GET /api/me/dashboard</td><td>Stats, open runs, current party, pending invites.</td></tr>
     <tr><td>GET /api/me/integrations</td><td>List all saved integration configs for the current user.</td></tr>
     <tr><td>PUT /api/me/integrations/:kind</td><td>Save or update an integration config (<code>twitch</code>, <code>youtube</code>, <code>discord_embed</code>, <code>discord_thread</code>, <code>obs</code>). Restarts the thread.</td></tr>
@@ -9065,6 +9140,7 @@ curl -H "Authorization: Bearer $TOKEN" http://localhost:9090/api/me</code></pre>
   <tbody>
     <tr><td>GET /api/state</td><td>Full live state for all slots (party, run metadata, flags).</td></tr>
     <tr><td>GET /api/slot/:index/odds</td><td>Encounter odds for the current area.</td></tr>
+    <tr><td>GET /api/slot/:index/bag</td><td>Current bag contents split into pockets: <code>items</code>, <code>key_items</code>, <code>balls</code>, <code>tms</code>. Each entry has <code>item_id</code> and <code>quantity</code>.</td></tr>
     <tr><td>POST /api/slot/:index/command/:cmd</td><td>Fire a slot command: <code>heal_all</code>, <code>new_run</code>, <code>end_run</code>, <code>reset_area</code>.</td></tr>
     <tr><td>POST /api/slot/:index/undo</td><td>Undo the last injection command on this slot.</td></tr>
   </tbody>
@@ -9076,7 +9152,7 @@ curl -H "Authorization: Bearer $TOKEN" http://localhost:9090/api/me</code></pre>
   <thead><tr><th>Path</th><th>Body</th><th>Effect</th></tr></thead>
   <tbody>
     <tr><td>POST /api/slot/:i/give_item</td><td><code>{"item_id":&lt;u16&gt;,"quantity":&lt;u16 1–99&gt;}</code></td><td>Add items to the bag items pocket.</td></tr>
-    <tr><td>POST /api/slot/:i/take_item</td><td><code>{"item_id":&lt;u16&gt;,"quantity":&lt;u16&gt;}</code></td><td>Remove items from the bag.</td></tr>
+    <tr><td>POST /api/slot/:i/take_item</td><td><code>{"item_id":&lt;u16&gt;,"quantity":&lt;u16 1–99&gt;}</code></td><td>Remove items from the bag. If the quantity exceeds what's held, the slot is fully removed.</td></tr>
     <tr><td>POST /api/slot/:i/make_shiny</td><td><code>{"party_position":&lt;u8 0–5&gt;}</code></td><td>Patch OT Secret ID so the Gen III shiny formula is satisfied. Preserves nature, ability, gender, and IVs.</td></tr>
     <tr><td>POST /api/slot/:i/change_species</td><td><code>{"party_position":&lt;u8 0–5&gt;,"new_species":&lt;u16 1–386&gt;}</code></td><td>Rewrite species in the Growth substructure; recalculates checksum.</td></tr>
     <tr><td>POST /api/slot/:i/change_ability</td><td><code>{"party_position":&lt;u8 0–5&gt;,"ability_slot":&lt;u8 0 or 1&gt;}</code></td><td>Toggle primary vs. secondary ability.</td></tr>
@@ -9090,9 +9166,16 @@ curl -H "Authorization: Bearer $TOKEN" http://localhost:9090/api/me</code></pre>
     <tr><td>POST /api/slot/:i/set_friendship</td><td><code>{"party_position":&lt;u8 0–5&gt;,"friendship":&lt;u8 0–255&gt;}</code></td><td>Set the friendship byte.</td></tr>
     <tr><td>POST /api/slot/:i/change_move</td><td><code>{"party_position":&lt;u8 0–5&gt;,"slot":&lt;u8 0–3&gt;,"move_id":&lt;u16&gt;}</code></td><td>Replace a move slot. <code>move_id=0</code> clears the slot.</td></tr>
     <tr><td>POST /api/slot/:i/set_ivs</td><td><code>{"party_position":&lt;u8 0–5&gt;,"hp":…,"atk":…,"def":…,"spd":…,"spa":…,"spdef":…}</code></td><td>Set all six IVs (each clamped to 31).</td></tr>
+    <tr><td>POST /api/slot/:i/increase_ivs</td><td><code>{"party_position":&lt;u8 0–5&gt;,"hp":…,"atk":…,"def":…,"spd":…,"spa":…,"spdef":…}</code></td><td>Add to each IV; each stat is clamped at 31.</td></tr>
     <tr><td>POST /api/slot/:i/set_evs</td><td><code>{"party_position":&lt;u8 0–5&gt;,"hp":…,"atk":…,"def":…,"spd":…,"spa":…,"spdef":…}</code></td><td>Set all six EVs (0–255 each).</td></tr>
+    <tr><td>POST /api/slot/:i/increase_evs</td><td><code>{"party_position":&lt;u8 0–5&gt;,"hp":…,"atk":…,"def":…,"spd":…,"spa":…,"spdef":…}</code></td><td>Add to each EV; each stat is clamped at 255.</td></tr>
+    <tr><td>POST /api/slot/:i/set_exp</td><td><code>{"party_position":&lt;u8 0–5&gt;,"exp":&lt;u32&gt;}</code></td><td>Write raw experience points into the Growth substructure. Level byte is not changed.</td></tr>
+    <tr><td>POST /api/slot/:i/set_level</td><td><code>{"party_position":&lt;u8 0–5&gt;,"level":&lt;u8 1–100&gt;}</code></td><td>Write level byte and set experience to the Gen III minimum for that level.</td></tr>
+    <tr><td>POST /api/slot/:i/learn_move</td><td><code>{"party_position":&lt;u8 0–5&gt;,"move_id":&lt;u16&gt;}</code></td><td>Write the move into the first empty move slot. No-op if the Pokémon already knows it or all four slots are full.</td></tr>
+    <tr><td>POST /api/slot/:i/forget_move</td><td><code>{"party_position":&lt;u8 0–5&gt;,"slot":&lt;u8 0–3&gt;}</code></td><td>Clear a move slot and compact remaining moves upward.</td></tr>
+    <tr><td>POST /api/slot/:i/set_pokerus</td><td><code>{"party_position":&lt;u8 0–5&gt;}</code></td><td>Write a Pokérus infection byte (strain 1, 4 days remaining).</td></tr>
     <tr><td>POST /api/slot/:i/set_pp_ups</td><td><code>{"party_position":&lt;u8 0–5&gt;,"pp0":…,"pp1":…,"pp2":…,"pp3":…}</code></td><td>Set PP-Up bonus for all four moves (0–3 each).</td></tr>
-    <tr><td>POST /api/slot/:i/revive_pokemon</td><td><code>{"party_position":&lt;u8 0–5&gt;,"personality":&lt;u32&gt;}</code></td><td>Look up a dead Pokémon by personality and write it into the specified slot (HP=1, status=0).</td></tr>
+    <tr><td>POST /api/slot/:i/revive_pokemon</td><td><code>{"party_position":&lt;u8 0–5&gt;,"personality":&lt;u32&gt;}</code></td><td>Look up a dead Pokémon in the run's graveyard by its personality value and write it into the party slot (HP=1, status=0). Get the personality from <code>GET /api/run/:id</code> → <code>dead[].personality</code>.</td></tr>
     <tr><td>POST /api/slot/:i/heal_party</td><td><em>no body</em></td><td>Restore HP and cure status for all six party slots in one pass.</td></tr>
     <tr><td>POST /api/slot/:i/undo</td><td><em>no body</em></td><td>Revert the most recent injection by replaying pre-write EWRAM bytes.</td></tr>
   </tbody>
@@ -9102,10 +9185,148 @@ curl -H "Authorization: Bearer $TOKEN" http://localhost:9090/api/me</code></pre>
 <table>
   <thead><tr><th>Method &amp; Path</th><th>Description</th></tr></thead>
   <tbody>
-    <tr><td>POST /api/batch</td><td>Run multiple injection commands in one request.</td></tr>
+    <tr><td>POST /api/batch</td><td>Run multiple injection commands across any slots in one request. See <a href="#injections">Using the Injection API</a>.</td></tr>
     <tr><td>GET /api/presets</td><td>List saved injection presets.</td></tr>
     <tr><td>POST /api/presets</td><td>Save a new preset.</td></tr>
     <tr><td>DELETE /api/presets/:id</td><td>Delete a preset.</td></tr>
+  </tbody>
+</table>
+
+<!-- ── Injection API deep-dive ───────────────────────────────────────────── -->
+<h2 id="injections">Using the Injection API</h2>
+<p>Injection commands write directly to the GBA's EWRAM via RetroArch's <code>WRITE_CORE_MEMORY</code> network command. They are <strong>asynchronous</strong>: each endpoint validates the request and enqueues the write, returning <code>200</code> immediately. The write is applied on the next poll cycle (~100 ms). Do not send a second command until the first has taken effect if ordering matters.</p>
+<div class="warn">Injections are only available while a slot is connected and <code>allow_injections = true</code> in config (the default). All injection endpoints return <code>403</code> when injections are disabled.</div>
+
+<h3>Getting a token for scripts</h3>
+<pre><code># Step 1 — log in and save the cookie jar
+curl -s -c cookies.txt -X POST http://localhost:9090/api/login \
+  -H 'Content-Type: application/json' \
+  -d '{"username":"alice","password":"secret"}'
+
+# Step 2 — retrieve the raw token value
+TOKEN=$(curl -s -b cookies.txt http://localhost:9090/api/me/token | jq -r .token)
+
+# Step 3 — use it on injection calls
+curl -s -H "Authorization: Bearer $TOKEN" \
+  -X POST http://localhost:9090/api/slot/0/heal_party</code></pre>
+
+<h3>Give and take items</h3>
+<p>Items are identified by their Generation III internal item ID. Use <code>GET /api/slot/:index/bag</code> to see the IDs of items currently in the bag, or consult the table below for common items.</p>
+<pre><code># Give 5 Rare Candies to slot 0
+curl -s -H "Authorization: Bearer $TOKEN" \
+  -X POST http://localhost:9090/api/slot/0/give_item \
+  -H 'Content-Type: application/json' \
+  -d '{"item_id": 44, "quantity": 5}'
+
+# Take 10 Poké Balls from slot 0
+curl -s -H "Authorization: Bearer $TOKEN" \
+  -X POST http://localhost:9090/api/slot/0/take_item \
+  -H 'Content-Type: application/json' \
+  -d '{"item_id": 4, "quantity": 10}'</code></pre>
+
+<p><strong>give_item</strong> always adds to the <em>items pocket</em> — it cannot add to key items, Pokéballs, or TMs. <strong>take_item</strong> searches all pockets. Quantity must be 1–99 for both; <code>give_item</code> will reject a request if there is no room left in the pocket (max 30 unique item types).</p>
+
+<h3>Common item IDs (FireRed/LeafGreen)</h3>
+<table>
+  <thead><tr><th>ID</th><th>Item</th><th>ID</th><th>Item</th></tr></thead>
+  <tbody>
+    <tr><td>1</td><td>Master Ball</td><td>24</td><td>Revive</td></tr>
+    <tr><td>2</td><td>Ultra Ball</td><td>25</td><td>Max Revive</td></tr>
+    <tr><td>3</td><td>Great Ball</td><td>34</td><td>Ether</td></tr>
+    <tr><td>4</td><td>Poké Ball</td><td>35</td><td>Max Ether</td></tr>
+    <tr><td>6</td><td>Net Ball</td><td>36</td><td>Elixir</td></tr>
+    <tr><td>8</td><td>Nest Ball</td><td>37</td><td>Max Elixir</td></tr>
+    <tr><td>9</td><td>Repeat Ball</td><td>44</td><td>Rare Candy</td></tr>
+    <tr><td>10</td><td>Timer Ball</td><td>45</td><td>PP Up</td></tr>
+    <tr><td>13</td><td>Potion</td><td>46</td><td>Zinc</td></tr>
+    <tr><td>19</td><td>Full Restore</td><td>47</td><td>Carbos</td></tr>
+    <tr><td>20</td><td>Max Potion</td><td>48</td><td>Calcium</td></tr>
+    <tr><td>21</td><td>Hyper Potion</td><td>49</td><td>Protein</td></tr>
+    <tr><td>22</td><td>Super Potion</td><td>50</td><td>Iron</td></tr>
+    <tr><td>23</td><td>Full Heal</td><td>51</td><td>HP Up</td></tr>
+  </tbody>
+</table>
+<div class="note">Item IDs are read from your ROM at startup, so they are correct for vanilla FireRed/LeafGreen and most ROM hacks that keep the standard item table. Use <code>GET /api/slot/:index/bag</code> to confirm IDs for any item already in the bag.</div>
+
+<h3>Modifying a Pokémon</h3>
+<pre><code># Set slot 0, party position 0 (lead) to level 50
+curl -s -H "Authorization: Bearer $TOKEN" \
+  -X POST http://localhost:9090/api/slot/0/set_level \
+  -H 'Content-Type: application/json' \
+  -d '{"party_position": 0, "level": 50}'
+
+# Give the lead Pokémon max IVs in all stats
+curl -s -H "Authorization: Bearer $TOKEN" \
+  -X POST http://localhost:9090/api/slot/0/set_ivs \
+  -H 'Content-Type: application/json' \
+  -d '{"party_position": 0, "hp": 31, "atk": 31, "def": 31, "spd": 31, "spa": 31, "spdef": 31}'
+
+# Teach the lead Pokémon Surf (move_id 57)
+curl -s -H "Authorization: Bearer $TOKEN" \
+  -X POST http://localhost:9090/api/slot/0/learn_move \
+  -H 'Content-Type: application/json' \
+  -d '{"party_position": 0, "move_id": 57}'</code></pre>
+
+<h3>Reviving a dead Pokémon</h3>
+<p>First, get the dead Pokémon's <code>personality</code> value from the run's graveyard:</p>
+<pre><code>curl -s -H "Authorization: Bearer $TOKEN" http://localhost:9090/api/run/1 | jq '.dead[] | {nickname, personality}'</code></pre>
+<p>Then revive it into a party slot (e.g. slot 2 in the party):</p>
+<pre><code>curl -s -H "Authorization: Bearer $TOKEN" \
+  -X POST http://localhost:9090/api/slot/0/revive_pokemon \
+  -H 'Content-Type: application/json' \
+  -d '{"party_position": 2, "personality": 3141592653}'</code></pre>
+
+<h3>Undoing a command</h3>
+<p>Each slot stores a snapshot of the EWRAM bytes that were about to be overwritten by the last injection. To restore them:</p>
+<pre><code>curl -s -H "Authorization: Bearer $TOKEN" \
+  -X POST http://localhost:9090/api/slot/0/undo</code></pre>
+<p>Undo only covers the immediately preceding command. Calling undo twice in a row undoes the undo.</p>
+
+<h3>Batch injection</h3>
+<p><code>POST /api/batch</code> accepts a JSON array of <code>{"slot": &lt;index&gt;, "message": &lt;ClientMessage&gt;}</code> objects. All items are validated before any command is enqueued — if one entry fails, none are applied.</p>
+<p>The <code>message</code> field uses serde's <strong>externally tagged enum</strong> format: a single-key object where the key is the variant name and the value is the fields object (or <code>null</code> for fieldless variants like <code>HealParty</code>).</p>
+<pre><code># Give 3 Rare Candies to slot 0 AND heal slot 1's party, atomically
+curl -s -H "Authorization: Bearer $TOKEN" \
+  -X POST http://localhost:9090/api/batch \
+  -H 'Content-Type: application/json' \
+  -d '[
+    {"slot": 0, "message": {"GiveItem": {"item_id": 44, "quantity": 3}}},
+    {"slot": 1, "message": {"HealParty": null}},
+    {"slot": 0, "message": {"SetLevel": {"party_position": 0, "level": 50}}}
+  ]'
+# → {"queued": 3}</code></pre>
+
+<h4>ClientMessage variant names for batch</h4>
+<table>
+  <thead><tr><th>Variant (key)</th><th>Fields</th></tr></thead>
+  <tbody>
+    <tr><td>GiveItem</td><td><code>item_id</code>, <code>quantity</code></td></tr>
+    <tr><td>TakeItem</td><td><code>item_id</code>, <code>quantity</code></td></tr>
+    <tr><td>MakeShiny</td><td><code>party_position</code></td></tr>
+    <tr><td>ChangeSpecies</td><td><code>party_position</code>, <code>new_species</code></td></tr>
+    <tr><td>ChangeAbility</td><td><code>party_position</code>, <code>ability_slot</code></td></tr>
+    <tr><td>ChangeGender</td><td><code>party_position</code>, <code>target_gender</code></td></tr>
+    <tr><td>ChangeNickname</td><td><code>party_position</code>, <code>nickname</code></td></tr>
+    <tr><td>ChangeHeldItem</td><td><code>party_position</code>, <code>item_id</code></td></tr>
+    <tr><td>CureStatus</td><td><code>party_position</code></td></tr>
+    <tr><td>ChangeNature</td><td><code>party_position</code>, <code>target_nature</code></td></tr>
+    <tr><td>RestorePp</td><td><code>party_position</code></td></tr>
+    <tr><td>SetFriendship</td><td><code>party_position</code>, <code>friendship</code></td></tr>
+    <tr><td>ChangeMove</td><td><code>party_position</code>, <code>slot</code>, <code>move_id</code></td></tr>
+    <tr><td>SetIvs</td><td><code>party_position</code>, <code>hp</code>, <code>atk</code>, <code>def</code>, <code>spd</code>, <code>spa</code>, <code>spdef</code></td></tr>
+    <tr><td>IncreaseIvs</td><td><code>party_position</code>, <code>hp</code>, <code>atk</code>, <code>def</code>, <code>spd</code>, <code>spa</code>, <code>spdef</code></td></tr>
+    <tr><td>SetEvs</td><td><code>party_position</code>, <code>hp</code>, <code>atk</code>, <code>def</code>, <code>spd</code>, <code>spa</code>, <code>spdef</code></td></tr>
+    <tr><td>IncreaseEvs</td><td><code>party_position</code>, <code>hp</code>, <code>atk</code>, <code>def</code>, <code>spd</code>, <code>spa</code>, <code>spdef</code></td></tr>
+    <tr><td>RestoreHp</td><td><code>party_position</code></td></tr>
+    <tr><td>HealParty</td><td><em>null</em></td></tr>
+    <tr><td>SetExp</td><td><code>party_position</code>, <code>exp</code></td></tr>
+    <tr><td>SetLevel</td><td><code>party_position</code>, <code>level</code></td></tr>
+    <tr><td>LearnMove</td><td><code>party_position</code>, <code>move_id</code></td></tr>
+    <tr><td>ForgetMove</td><td><code>party_position</code>, <code>slot</code></td></tr>
+    <tr><td>SetPokerus</td><td><code>party_position</code></td></tr>
+    <tr><td>SetPpUps</td><td><code>party_position</code>, <code>pp0</code>, <code>pp1</code>, <code>pp2</code>, <code>pp3</code></td></tr>
+    <tr><td>RevivePokemon</td><td><code>party_position</code>, <code>personality</code></td></tr>
+    <tr><td>UndoLastCommand</td><td><em>null</em></td></tr>
   </tbody>
 </table>
 
@@ -9129,6 +9350,7 @@ curl -H "Authorization: Bearer $TOKEN" http://localhost:9090/api/me</code></pre>
   <thead><tr><th>URL</th><th>Content</th></tr></thead>
   <tbody>
     <tr><td>/:index/party</td><td>Live party (sprites, levels, HP)</td></tr>
+    <tr><td>/:index/items</td><td>Bag item viewer — all four pockets with item names and quantities</td></tr>
     <tr><td>/:index/routes</td><td>Route encounter table with caught/dead markers</td></tr>
     <tr><td>/:index/encounters</td><td>Focused encounter list</td></tr>
     <tr><td>/:index/caught</td><td>All caught Pokémon</td></tr>
@@ -9644,10 +9866,9 @@ a{color:#5090e0;text-decoration:none}
 </nav>
 
 <script>
-const TOKEN_KEY='frt_session';
-let SESSION=localStorage.getItem(TOKEN_KEY)||null;
+let SESSION=null;
 
-function authHdr(){return SESSION?{'Authorization':'Bearer '+SESSION}:{};}
+function authHdr(){return {};}
 function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
 function fmtDate(s){if(!s)return'—';try{return new Date(s).toLocaleDateString();}catch{return s;}}
 
@@ -9664,8 +9885,7 @@ function enableDesktop(){
 }
 
 async function doLogout(){
-  await fetch('/api/logout',{method:'POST',headers:authHdr()}).catch(()=>null);
-  SESSION=null;localStorage.removeItem(TOKEN_KEY);
+  await fetch('/api/logout',{method:'POST'}).catch(()=>null);
   window.location.href='/';
 }
 
@@ -9758,9 +9978,8 @@ async function loadRuns(){
 }
 
 async function init(){
-  if(!SESSION){window.location.href='/';return;}
-  const r=await fetch('/api/me',{headers:authHdr()}).catch(()=>null);
-  if(!r||!r.ok){SESSION=null;localStorage.removeItem(TOKEN_KEY);window.location.href='/';return;}
+  const r=await fetch('/api/me').catch(()=>null);
+  if(!r||!r.ok){window.location.href='/';return;}
   const me=await r.json();
   document.getElementById('header-sub').textContent=me.username;
   document.getElementById('settings-user').textContent=me.username;

@@ -1532,9 +1532,14 @@ pub fn end_run_by_id(run_id: u32, user_id: u32) -> Result<(), String> {
     ).map_err(|e| format!("DB error: {e}"))?
     .ok_or_else(|| "run not found".to_string())?;
     let owner_id: Option<i32> = row.get(0);
-    // Allow if the run belongs to the caller, or if the run has no owner
-    // (created before the user-account system was introduced).
-    if owner_id.is_some_and(|oid| oid != user_id as i32) {
+    // Allow only if the run's owner matches the caller.
+    // Ownerless runs (created before the auth system) require server owner (user 1).
+    let caller = user_id as i32;
+    let allowed = match owner_id {
+        Some(oid) => oid == caller,
+        None => caller == 1,
+    };
+    if !allowed {
         return Err("you do not own this run".to_string());
     }
     let already_ended: Option<i64> = row.get(1);
@@ -3149,7 +3154,13 @@ impl DbReader {
     }
 
     /// Returns the active run ID if the tracked run has not been ended, else `None`.
+    ///
+    /// `forced_run_id` is always considered active (it was explicitly resumed,
+    /// so `is_active` may not yet be set if `sync_player` hasn't been called).
     pub fn active_run_id(&self) -> Option<u32> {
+        if let Some(id) = *self.forced_run_id.lock_or_recover() {
+            return Some(id);
+        }
         if self.is_active.load(std::sync::atomic::Ordering::SeqCst) {
             *self.run_id.lock_or_recover()
         } else {

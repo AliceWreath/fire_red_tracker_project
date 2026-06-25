@@ -103,8 +103,8 @@ impl DirectConnector {
         let removed = self.known.lock_or_recover().remove(&key);
         if let Some(rom_bytes) = evict_rom {
             let log_key = key.clone();
-            std::thread::spawn(move || {
-                std::thread::sleep(Duration::from_secs(20 * 60));
+            tokio::task::spawn(async move {
+                tokio::time::sleep(Duration::from_secs(20 * 60)).await;
                 let mut buf = rom_bytes.lock_or_recover();
                 if !buf.is_empty() {
                     *buf = Vec::new();
@@ -286,9 +286,14 @@ fn try_add_host(
         };
 
         // Resolve ROM — use the configured path or fetch from RetroArch.
+        // Cache: runs/<run_id>/<host>_<port>/rom.gba (or connections/<host>_<port>/rom.gba)
         let resolved_rom = match rom_path {
             Some(ref p) => p.clone(),
-            None => match crate::rom_fetch::fetch_or_load_rom(&host, retroarch_port) {
+            None => match crate::rom_fetch::fetch_or_load_rom(
+                &host,
+                retroarch_port,
+                slot_run_id,
+            ) {
                 Ok(path) => path.to_string_lossy().into_owned(),
                 Err(e) => {
                     tracing::error!(
@@ -321,6 +326,7 @@ fn try_add_host(
                     format!("direct:{}", host),
                     db.clone(),
                     Some(key.clone()),
+                    slot_run_id,
                 ));
                 lock[idx] = s.clone();
                 (s, idx)
@@ -331,6 +337,7 @@ fn try_add_host(
                     format!("direct:{}", host),
                     db.clone(),
                     Some(key.clone()),
+                    slot_run_id,
                 ));
                 lock.push(s.clone());
                 (s, idx)
@@ -378,7 +385,13 @@ fn try_add_host(
 
         // Seed the shared ROM bytes so the sprite loader and the refresh API
         // both operate on the same buffer.
-        let initial_rom = std::fs::read(&rom_path_for_sprites).unwrap_or_default();
+        let initial_rom = match std::fs::read(&rom_path_for_sprites) {
+            Ok(bytes) => bytes,
+            Err(e) => {
+                tracing::warn!("Direct mode: could not read ROM at {}: {}", rom_path_for_sprites, e);
+                Vec::new()
+            }
+        };
         *slot.rom_identity.lock_or_recover() = rom_identity_from_bytes(&initial_rom);
         *slot.rom_bytes.lock_or_recover() = initial_rom;
 

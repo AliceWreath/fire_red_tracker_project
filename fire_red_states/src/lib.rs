@@ -1,7 +1,9 @@
-//! Shared message types for the tracker ↔ aggregator API.
+//! Shared message types used internally by the tracker and aggregator.
 //!
-//! [`ServerMessage`] flows from tracker → aggregator (game state, sprites, box data).
-//! [`ClientMessage`] flows from aggregator → tracker (commands, texture requests).
+//! [`ClientMessage`] is dispatched from the aggregator web layer to the per-slot
+//! game-polling thread via mpsc, and is also used directly by the standalone tracker.
+//! [`ServerMessage`] is a legacy type retained for bincode index stability;
+//! it is not sent over any network connection in the current architecture.
 
 /// The highest valid National Pokédex number in FireRed (Generation III cap).
 ///
@@ -263,7 +265,8 @@ pub enum ClientMessage {
                                // Append new variants here only.
 }
 
-/// Messages sent from the server to connected clients.
+/// Legacy server-to-client message type. Retained for bincode index stability; not
+/// transmitted over any active network connection in the current architecture.
 ///
 /// # IMPORTANT — bincode variant ordering
 /// Same constraint as [`ClientMessage`].  Current stable indices:

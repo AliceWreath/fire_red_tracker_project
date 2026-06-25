@@ -4,8 +4,20 @@
 //! space and is readable via the same UDP network-command interface used for
 //! EWRAM polling.  This lets the aggregator run in direct mode with no ROM
 //! file on the server machine: it reads the ROM from RetroArch once, caches
-//! it under `~/.cache/fire_red_aggregator/`, and reuses the cached copy on
-//! every subsequent launch.
+//! it, and reuses the cached copy on every subsequent launch.
+//!
+//! # Cache layout
+//!
+//! ```text
+//! ~/.cache/fire_red_aggregator/
+//!   runs/<run_id>/<host>_<port>/<title>_<code>_<version>.gba   — with a DB run
+//!   connections/<host>_<port>/<title>_<code>_<version>.gba      — no DB run
+//! ```
+//!
+//! The host:port pair is used as the connection-level key (not a slot index)
+//! because it is stable across reconnects for the same device and is always
+//! unique between different devices, even when the aggregator reuses a slot
+//! index for a reconnecting host.
 //!
 //! # Download strategy
 //!
@@ -51,50 +63,41 @@ const MAX_PASSES: usize = 8;
 // Public API
 // ---------------------------------------------------------------------------
 
-/// Delete the cached ROM for `host:port` and re-download it from RetroArch.
+/// Delete the cached ROM for `host:port` / `run_id` and re-download it from RetroArch.
 ///
-/// Connects to RetroArch to read the ROM header (to identify the cache file),
-/// removes the existing cache file, then performs a full fresh download.
-/// Blocks until the download completes.
+/// Removes any `.gba` file in the per-connection cache directory, then
+/// performs a full fresh download.  Blocks until the download completes.
 ///
 /// Returns the path of the newly written cache file, or an error string.
-pub fn force_fetch_rom(host: &str, port: u16) -> Result<PathBuf, String> {
-    let socket = connect_socket(host, port)?;
-    let header = read_retry(&socket, ROM_BASE, 256).ok_or_else(|| {
-        format!(
-            "force refresh: could not read ROM header from {}:{} — \
-             is the game loaded and are network commands enabled?",
-            host, port
-        )
-    })?;
-
-    let title = std::str::from_utf8(&header[0xA0..0xAC])
-        .unwrap_or("")
-        .trim_end_matches('\0')
-        .trim()
-        .to_string();
-    let code = std::str::from_utf8(&header[0xAC..0xB0])
-        .unwrap_or("????")
-        .trim_end_matches('\0')
-        .to_string();
-    let version = header[0xBC];
-
-    let cache = cache_path(&title, &code, version)?;
-    if cache.exists() {
-        std::fs::remove_file(&cache)
-            .map_err(|e| format!("force refresh: cannot delete cached ROM: {}", e))?;
-        tracing::info!("ROM force-refresh: deleted cached ROM at {}", cache.display());
+pub fn force_fetch_rom(host: &str, port: u16, run_id: Option<u32>) -> Result<PathBuf, String> {
+    let dir = conn_dir(host, port, run_id)?;
+    if dir.exists() {
+        if let Ok(entries) = std::fs::read_dir(&dir) {
+            for entry in entries.flatten() {
+                let p = entry.path();
+                if p.extension().and_then(|e| e.to_str()) == Some("gba") {
+                    if let Err(e) = std::fs::remove_file(&p) {
+                        return Err(format!("force refresh: cannot delete cached ROM: {}", e));
+                    }
+                    tracing::info!("ROM force-refresh: deleted cached ROM at {}", p.display());
+                }
+            }
+        }
     }
 
     // fetch_or_load_rom will see no cache and do a full download.
-    fetch_or_load_rom(host, port)
+    fetch_or_load_rom(host, port, run_id)
 }
 
 /// Return a path to the ROM for `host:port`, downloading and caching it if needed.
 ///
+/// The cache file lives at:
+/// - `runs/<run_id>/<host>_<port>/<title>_<code>_<version>.gba` when a DB run is active
+/// - `connections/<host>_<port>/<title>_<code>_<version>.gba` when there is no DB run
+///
 /// Blocks until the ROM is available (either from cache or freshly downloaded).
 /// Returns an error string if RetroArch is unreachable or the download fails.
-pub fn fetch_or_load_rom(host: &str, port: u16) -> Result<PathBuf, String> {
+pub fn fetch_or_load_rom(host: &str, port: u16, run_id: Option<u32>) -> Result<PathBuf, String> {
     let socket = connect_socket(host, port)?;
 
     // Read probe A: first 4 KiB of the GBA ROM (header + ARM startup code).
@@ -131,11 +134,17 @@ pub fn fetch_or_load_rom(host: &str, port: u16) -> Result<PathBuf, String> {
     let version = probe_a[0xBC];
 
     tracing::info!(
-        "ROM fetch: identified \"{}\" ({}) v{} at {}",
-        title, code, version, host
+        "ROM fetch: identified \"{}\" ({}) v{} at {}:{}",
+        title, code, version, host, port
     );
 
-    let cache = cache_path(&title, &code, version)?;
+    let safe_title: String = title
+        .chars()
+        .map(|c| if c.is_alphanumeric() { c } else { '_' })
+        .collect();
+    let safe_title = safe_title.trim_matches('_').to_string();
+    let filename = format!("{}_{}_{}.gba", safe_title, code, version);
+    let cache = conn_dir(host, port, run_id)?.join(&filename);
     if cache.exists() {
         // Validate the cached file against both probes.  Probe A checks the
         // startup code; probe B (trainer-data region) catches data-only ROM
@@ -184,11 +193,25 @@ pub fn fetch_or_load_rom(host: &str, port: u16) -> Result<PathBuf, String> {
 
     let rom = download_pipelined(&socket)?;
 
-    // Persist to cache.
-    if let Some(dir) = cache.parent() {
-        std::fs::create_dir_all(dir)
-            .map_err(|e| format!("ROM fetch: cannot create cache dir: {}", e))?;
+    // Verify GBA header complement checksum (byte 0xBD).
+    // Valid if: sum(ROM[0xA0..=0xBD]) + 0x19 == 0 (mod 256).
+    if rom.len() > 0xBD {
+        let chk: u8 = rom[0xA0..=0xBD]
+            .iter()
+            .fold(0u8, |acc, &b| acc.wrapping_add(b))
+            .wrapping_add(0x19);
+        if chk != 0 {
+            return Err(format!(
+                "ROM fetch: GBA header checksum invalid (got 0x{:02X}) — \
+                 download may be corrupt or RetroArch did not supply the ROM correctly",
+                rom[0xBD]
+            ));
+        }
     }
+
+    // Persist to cache.
+    std::fs::create_dir_all(conn_dir(host, port, run_id)?)
+        .map_err(|e| format!("ROM fetch: cannot create cache dir: {}", e))?;
     std::fs::write(&cache, &rom)
         .map_err(|e| format!("ROM fetch: cannot write cache file: {}", e))?;
 
@@ -313,17 +336,22 @@ fn download_pipelined(socket: &UdpSocket) -> Result<Vec<u8>, String> {
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Build the cache file path for a ROM identified by title/code/version.
-fn cache_path(title: &str, code: &str, version: u8) -> Result<PathBuf, String> {
-    let safe: String = title
+/// Build the per-connection cache directory for `host:port` / `run_id`.
+///
+/// Layout:
+/// - `<cache_dir>/runs/<run_id>/<host>_<port>/`  when run_id is Some
+/// - `<cache_dir>/connections/<host>_<port>/`     when run_id is None
+fn conn_dir(host: &str, port: u16, run_id: Option<u32>) -> Result<PathBuf, String> {
+    let safe_host: String = host
         .chars()
-        .map(|c| if c.is_alphanumeric() { c } else { '_' })
+        .map(|c| if c.is_alphanumeric() || c == '-' { c } else { '_' })
         .collect();
-    let safe = safe.trim_matches('_').to_string();
-    let filename = format!("{}_{}_{}.gba", safe, code, version);
-
-    let dir = cache_dir();
-    Ok(dir.join(filename))
+    let dir_name = format!("{}_{}", safe_host, port);
+    let base = cache_dir();
+    Ok(match run_id {
+        Some(id) => base.join("runs").join(id.to_string()).join(&dir_name),
+        None => base.join("connections").join(&dir_name),
+    })
 }
 
 fn cache_dir() -> PathBuf {

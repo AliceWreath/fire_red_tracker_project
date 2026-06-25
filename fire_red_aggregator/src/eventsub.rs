@@ -61,13 +61,25 @@ pub fn spawn(config: TwitchConfig, slots: SharedSlots, user_id: Option<u32>, sto
         .name("twitch-eventsub".into())
         .spawn(move || {
             let mut delay = Duration::from_secs(2);
+            let mut next_url: Option<String> = None;
+            // Dedup ring buffer: tracks recent message_ids across reconnects so
+            // replayed notifications on reconnect are not dispatched twice.
+            let mut seen_ids: std::collections::VecDeque<String> = std::collections::VecDeque::new();
             loop {
                 if stop.load(Ordering::Relaxed) { return; }
-                match run_session(&config, &slots, user_id) {
-                    Ok(()) => {
+                let url = next_url.take().unwrap_or_else(|| EVENTSUB_URL.to_string());
+                match run_session(&config, &slots, user_id, &url, &mut seen_ids) {
+                    Ok(None) => {
                         tracing::info!(
                             "Twitch EventSub session ended; reconnecting immediately."
                         );
+                        delay = Duration::from_secs(2);
+                    }
+                    Ok(Some(reconnect_url)) => {
+                        tracing::info!(
+                            "Twitch EventSub session_reconnect → {reconnect_url}; switching immediately."
+                        );
+                        next_url = Some(reconnect_url);
                         delay = Duration::from_secs(2);
                     }
                     Err(e) => {
@@ -91,9 +103,12 @@ pub fn spawn(config: TwitchConfig, slots: SharedSlots, user_id: Option<u32>, sto
 // Session
 // ---------------------------------------------------------------------------
 
-fn run_session(config: &TwitchConfig, slots: &SharedSlots, user_id: Option<u32>) -> Result<(), String> {
-    let (mut ws, _) = tungstenite::connect(EVENTSUB_URL)
-        .map_err(|e| format!("WS connect to {EVENTSUB_URL}: {e}"))?;
+/// Returns `Ok(None)` on a clean disconnect (outer loop reconnects to `EVENTSUB_URL`).
+/// Returns `Ok(Some(url))` when Twitch sends `session_reconnect` — the caller
+/// must reconnect to that URL within 30 seconds per the EventSub spec.
+fn run_session(config: &TwitchConfig, slots: &SharedSlots, user_id: Option<u32>, connect_url: &str, seen_ids: &mut std::collections::VecDeque<String>) -> Result<Option<String>, String> {
+    let (mut ws, _) = tungstenite::connect(connect_url)
+        .map_err(|e| format!("WS connect to {connect_url}: {e}"))?;
 
     tracing::info!("Twitch EventSub WebSocket connected.");
 
@@ -106,7 +121,7 @@ fn run_session(config: &TwitchConfig, slots: &SharedSlots, user_id: Option<u32>)
                 let _ = ws.send(Message::Pong(data));
                 continue;
             }
-            Message::Close(_) => return Err("WS closed before welcome".into()),
+            Message::Close(_) => return Err("WS closed before session_welcome".into()),
             _ => continue,
         };
 
@@ -175,7 +190,7 @@ fn run_session(config: &TwitchConfig, slots: &SharedSlots, user_id: Option<u32>)
                 let _ = ws.send(Message::Pong(data));
                 continue;
             }
-            Message::Close(_) => return Err("WS connection closed by server".into()),
+            Message::Close(_) => return Ok(None),
             _ => continue,
         };
 
@@ -189,23 +204,32 @@ fn run_session(config: &TwitchConfig, slots: &SharedSlots, user_id: Option<u32>)
 
         match val["metadata"]["message_type"].as_str() {
             Some("notification") => {
+                // Deduplicate by message_id across reconnects.
+                let msg_id = val["metadata"]["message_id"].as_str().unwrap_or_default().to_string();
+                if !msg_id.is_empty() {
+                    if seen_ids.contains(&msg_id) {
+                        tracing::debug!("EventSub: skipping duplicate message_id {msg_id}");
+                        continue;
+                    }
+                    seen_ids.push_back(msg_id);
+                    if seen_ids.len() > 50 {
+                        seen_ids.pop_front();
+                    }
+                }
                 handle_notification(&val, config, slots, user_id);
             }
             Some("session_keepalive") => {
                 tracing::trace!("EventSub keepalive received.");
             }
             Some("session_reconnect") => {
-                // Twitch wants us to connect to a new URL before closing this one.
-                // We return Ok(()) so the outer loop reconnects with the new URL.
+                // Twitch requires connecting to the new URL before the old session
+                // closes (within 30 s).  Return the URL so the outer loop can
+                // connect to it immediately without backoff.
                 let new_url = val["payload"]["session"]["reconnect_url"]
                     .as_str()
                     .unwrap_or(EVENTSUB_URL)
                     .to_string();
-                tracing::info!("Twitch EventSub session_reconnect → {new_url}");
-                // Store the reconnect URL for the next iteration via a small hack:
-                // the config is Arc'd so we can't mutate it. We just reconnect to
-                // the default URL — Twitch will re-send the reconnect if needed.
-                return Ok(());
+                return Ok(Some(new_url));
             }
             Some("revocation") => {
                 let reason = val["payload"]["subscription"]["status"]

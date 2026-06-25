@@ -1,6 +1,6 @@
 [package]
 name = "fire_red_aggregator"
-version = "0.9.91"
+version = "0.9.95"
 edition = "2024"
 license.workspace = true
 
@@ -41,6 +41,8 @@ tracing-subscriber.workspace     = true
 self_update.workspace            = true
 reqwest.workspace                = true
 tungstenite.workspace            = true
+rustls.workspace                 = true
+webpki-roots.workspace           = true
 sha2.workspace                   = true
 ed25519-dalek                    = { version = "2", features = ["std"] }
 

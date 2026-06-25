@@ -209,8 +209,10 @@ fn create_discord_thread(
     name: &str,
 ) -> Option<u64> {
     let url = format!("{DISCORD_API}/channels/{channel_id}/threads");
+    // Discord limits thread names to 100 characters (code points, not bytes).
+    let truncated_name: String = name.chars().take(100).collect();
     let body = serde_json::json!({
-        "name":                   &name[..name.len().min(100)],
+        "name":                   truncated_name,
         "auto_archive_duration":  10080,  // 7 days
         "type":                   11,     // PUBLIC_THREAD
     });
