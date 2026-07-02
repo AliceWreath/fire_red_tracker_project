@@ -743,7 +743,7 @@ pub fn initialize_noop() {
 /// `initialize` has already been called.
 /// Increment this whenever a new migration or data-repair statement is added.
 /// `initialize` skips all SQL when the DB already records this version.
-const SCHEMA_VERSION: &str = "28";
+const SCHEMA_VERSION: &str = "29";
 
 pub fn initialize(connection_string: &str) -> Result<(), String> {
     // Accept bare `host/dbname` strings — prepend the scheme so callers don't have to.
@@ -1209,6 +1209,17 @@ pub fn initialize(connection_string: &str) -> Result<(), String> {
 
         -- Migration v28: run owner can pin each player to a display column.
         ALTER TABLE runs ADD COLUMN IF NOT EXISTS slot_index INTEGER;
+
+        -- Migration v29: per-player display column, replacing v28's run-wide
+        -- column above. A shared soul-link run has multiple physical
+        -- connections tagged by player_name, so the pin must be keyed by
+        -- (run_id, player_name), not just run_id.
+        CREATE TABLE IF NOT EXISTS run_player_slots (
+            run_id      INTEGER NOT NULL REFERENCES runs(id),
+            player_name TEXT    NOT NULL,
+            slot_index  INTEGER NOT NULL,
+            PRIMARY KEY (run_id, player_name)
+        );
     ").map_err(|e| format!("Failed to create database schema: {e}"))?;
 
     // Record the schema version so future startups can skip all migrations.
@@ -3469,16 +3480,20 @@ impl DbReader {
         }
     }
 
-    /// Returns the pinned display-column index for the current run, or `None`.
-    pub fn query_slot_index(&self) -> Option<u8> {
+    /// Returns the pinned display-column index for `player_name` within the
+    /// current run, or `None` if that player has no pin recorded.
+    pub fn query_player_slot_index(&self, player_name: &str) -> Option<u8> {
         let run_id = self.get_run_id()? as i32;
         let row = self
             .client
             .lock_or_recover()
-            .query_opt("SELECT slot_index FROM runs WHERE id = $1", &[&run_id])
+            .query_opt(
+                "SELECT slot_index FROM run_player_slots WHERE run_id = $1 AND player_name = $2",
+                &[&run_id, &player_name],
+            )
             .ok()??;
-        let v: Option<i32> = row.get(0);
-        v.and_then(|n| u8::try_from(n).ok())
+        let v: i32 = row.get(0);
+        u8::try_from(v).ok()
     }
 
     /// Returns all soul-link overrides for the current run as a JSON array.
@@ -6010,28 +6025,40 @@ pub fn set_run_rules(conn_str: &str, run_id: u32, patch: &serde_json::Value) -> 
 }
 
 // ---------------------------------------------------------------------------
-// Slot-index (display column order) for a run
+// Per-player slot index (display column order) for a run
 // ---------------------------------------------------------------------------
+//
+// A soul-link/co-op run can have several physical connections sharing one
+// `runs` row (see `DbReader::sync_player`'s "all connected trackers share a
+// single run" note), each tagged by its own `player_name`. So the pinned
+// display column has to be keyed by (run_id, player_name), not just run_id —
+// otherwise pinning one player's column edits the same row the other player
+// reads from. `slot_index` is 1-indexed (1 = leftmost column) throughout.
 
-/// Returns the pinned display-column index (1 = leftmost) for the given run,
-/// or `None` if no preference has been set.
-pub fn get_run_slot_index(conn_str: &str, run_id: u32) -> Option<u8> {
-    let mut client = Client::connect(conn_str, NoTls).ok()?;
-    let row = client
-        .query_opt("SELECT slot_index FROM runs WHERE id = $1", &[&(run_id as i32)])
-        .ok()??;
-    let v: Option<i32> = row.get(0);
-    v.and_then(|n| u8::try_from(n).ok())
+/// Returns every pinned (player_name, slot_index) pair recorded for a run.
+pub fn get_run_player_slots(conn_str: &str, run_id: u32) -> Vec<(String, u8)> {
+    let Ok(mut client) = Client::connect(conn_str, NoTls) else { return vec![] };
+    let Ok(rows) = client.query(
+        "SELECT player_name, slot_index FROM run_player_slots WHERE run_id = $1",
+        &[&(run_id as i32)],
+    ) else { return vec![] };
+    rows.iter()
+        .filter_map(|row| {
+            let idx: i32 = row.get(1);
+            u8::try_from(idx).ok().map(|idx| (row.get::<_, String>(0), idx))
+        })
+        .collect()
 }
 
-/// Set (or clear) the display-column index for a run.
+/// Set (or clear) the display-column index for one player within a run.
 ///
 /// `owner_id` must match the run's `user_id`; returns an error string otherwise.
-/// Pass `slot_index = None` to remove the preference.
-pub fn set_run_slot_index(
+/// Pass `slot_index = None` to remove the pin (falls back to auto-ordering).
+pub fn set_run_player_slot_index(
     conn_str: &str,
     run_id: u32,
     owner_id: u32,
+    player_name: &str,
     slot_index: Option<u8>,
 ) -> Result<(), String> {
     let mut client =
@@ -6047,10 +6074,22 @@ pub fn set_run_slot_index(
         return Err("only the run owner can set the slot index".to_string());
     }
 
-    let val: Option<i32> = slot_index.map(|v| v as i32);
-    client
-        .execute("UPDATE runs SET slot_index = $1 WHERE id = $2", &[&val, &rid])
-        .map_err(|e| format!("DB update failed: {e}"))?;
+    match slot_index {
+        Some(idx) => {
+            client.execute(
+                "INSERT INTO run_player_slots (run_id, player_name, slot_index)
+                 VALUES ($1, $2, $3)
+                 ON CONFLICT (run_id, player_name) DO UPDATE SET slot_index = EXCLUDED.slot_index",
+                &[&rid, &player_name, &(idx as i32)],
+            ).map_err(|e| format!("DB update failed: {e}"))?;
+        }
+        None => {
+            client.execute(
+                "DELETE FROM run_player_slots WHERE run_id = $1 AND player_name = $2",
+                &[&rid, &player_name],
+            ).map_err(|e| format!("DB update failed: {e}"))?;
+        }
+    }
     Ok(())
 }
 
@@ -7344,19 +7383,6 @@ pub fn link_run_to_user(run_id: u32, user_id: u32) -> Result<(), String> {
     state.client.execute(
         "UPDATE runs SET user_id = $1 WHERE id = $2 AND user_id IS NULL",
         &[&(user_id as i32), &(run_id as i32)],
-    ).map_err(|e| format!("DB error: {e}"))?;
-    Ok(())
-}
-
-/// Pin a newly-created run to display slot 0 so the owner is always the
-/// leftmost column.  No ownership check — only call this immediately after
-/// creating a run that the caller already owns.
-pub fn assign_owner_slot_zero(run_id: u32) -> Result<(), String> {
-    let Some(db) = db() else { return Ok(()) };
-    let mut state = db.lock_or_recover();
-    state.client.execute(
-        "UPDATE runs SET slot_index = 0 WHERE id = $1",
-        &[&(run_id as i32)],
     ).map_err(|e| format!("DB error: {e}"))?;
     Ok(())
 }

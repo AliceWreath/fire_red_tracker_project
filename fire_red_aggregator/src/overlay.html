@@ -280,6 +280,8 @@ const RUN_PARAM  = parseInt(new URLSearchParams(window.location.search).get('run
 const SHOW_BOX    = SHOW_PARAM === 'box';
 const SHOW_DEAD   = SHOW_PARAM === 'dead';
 const SHOW_CAUGHT = SHOW_PARAM === 'caught';
+const TOKEN       = new URLSearchParams(window.location.search).get('token');
+function authHeaders() { return TOKEN ? { 'Authorization': 'Bearer ' + TOKEN } : {}; }
 
 let ws;
 let reconnectDelay = 1000;
@@ -302,7 +304,7 @@ function sendCmd(cmd, slot) {
 function assignSlot(slot) {
     if (slot.active_run_id == null) return;
     const current = slot.pinned_slot_index != null ? String(slot.pinned_slot_index) : '';
-    const input = prompt('Display column for this player (1 = leftmost). Leave blank to auto-order:', current);
+    const input = prompt('Display column for ' + slot.label + ' (1 = leftmost). Leave blank to auto-order:', current);
     if (input === null) return;
     const trimmed = input.trim();
     const value = trimmed === '' ? null : parseInt(trimmed, 10);
@@ -310,20 +312,67 @@ function assignSlot(slot) {
         alert('Enter a whole number of 1 or greater, or leave it blank to clear.');
         return;
     }
-    fetch('/api/run/' + slot.active_run_id + '/slot_index', {
+    fetch('/api/run/' + slot.active_run_id + '/player_slots', {
         method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ slot_index: value }),
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
+        body: JSON.stringify({ player_name: slot.label, slot_index: value }),
     })
         .then(r => r.json().then(d => ({ ok: r.ok, d })))
-        .then(({ ok, d }) => { if (!ok) alert('Could not assign slot: ' + (d.error || 'unknown error')); })
+        .then(({ ok, d }) => {
+            if (!ok) alert('Could not assign slot: ' + (d.error || 'unknown error'));
+            else loadRunPlayerSlots();
+        })
         .catch(() => alert('Could not assign slot: network error'));
 }
+
+// When viewing a single run (?run=<id>), every player's pinned column is
+// fetched from the DB (not just the ones currently connected) so a player
+// who assigned themselves a column but hasn't reconnected yet still reserves
+// their spot instead of the layout collapsing around them.
+let RUN_PLAYER_SLOTS = {}; // player_name -> slot_index (1-indexed)
+function loadRunPlayerSlots() {
+    if (!RUN_PARAM) return;
+    fetch('/api/run/' + RUN_PARAM + '/player_slots', { headers: authHeaders() })
+        .then(r => r.ok ? r.json() : null)
+        .then(d => {
+            if (!d) return;
+            const map = {};
+            for (const p of d.players || []) map[p.player_name] = p.slot_index;
+            RUN_PLAYER_SLOTS = map;
+        })
+        .catch(() => {});
+}
+loadRunPlayerSlots();
+if (RUN_PARAM) setInterval(loadRunPlayerSlots, 10000);
 
 // Per-slot JSON cache: only rebuild a column element when its data changes.
 // This prevents root.innerHTML = '' on every tick, which caused visible flicker
 // and discarded CSS transitions on the party sprites.
 const slotCache = [];
+
+// Builds a dense, positional column layout for a single run: every player
+// with a pinned slot_index (live or not) reserves that exact column, gaps
+// between pinned columns render as "waiting for connection" placeholders,
+// and unpinned live players are appended after the highest pinned column.
+function buildRunColumns(visible) {
+    let maxSlot = 0;
+    for (const s of visible) if (s.pinned_slot_index) maxSlot = Math.max(maxSlot, s.pinned_slot_index);
+    for (const name in RUN_PLAYER_SLOTS) maxSlot = Math.max(maxSlot, RUN_PLAYER_SLOTS[name]);
+
+    const columns = new Array(maxSlot).fill(null);
+    const unpinned = [];
+    for (const s of visible) {
+        if (s.pinned_slot_index) columns[s.pinned_slot_index - 1] = { live: s };
+        else unpinned.push(s);
+    }
+    // Fill placeholders for known-but-not-currently-connected players.
+    for (const name in RUN_PLAYER_SLOTS) {
+        const idx = RUN_PLAYER_SLOTS[name] - 1;
+        if (!columns[idx]) columns[idx] = { placeholder: name };
+    }
+    for (const s of unpinned) columns.push({ live: s });
+    return columns;
+}
 
 function render(slots) {
     const root = document.getElementById('root');
@@ -332,15 +381,18 @@ function render(slots) {
         ? slots.filter(s => s.active_run_id === RUN_PARAM)
         : slots;
 
-    // Drop extra columns when a slot disconnects or run filter reduces count
-    while (root.children.length > visible.length) root.removeChild(root.lastChild);
+    const columns = RUN_PARAM ? buildRunColumns(visible) : visible.map(s => ({ live: s }));
 
-    for (let i = 0; i < visible.length; i++) {
-        const json = JSON.stringify(visible[i]);
+    // Drop extra columns when a slot disconnects or run filter reduces count
+    while (root.children.length > columns.length) root.removeChild(root.lastChild);
+
+    for (let i = 0; i < columns.length; i++) {
+        const entry = columns[i] || {};
+        const json = entry.live ? JSON.stringify(entry.live) : 'empty:' + (entry.placeholder || '');
         if (slotCache[i] === json && root.children[i]) continue;
         slotCache[i] = json;
 
-        const col = buildCol(visible[i], i);
+        const col = entry.live ? buildCol(entry.live, i) : buildEmptyCol(i + 1, entry.placeholder);
         if (root.children[i]) {
             root.replaceChild(col, root.children[i]);
         } else {
@@ -348,10 +400,19 @@ function render(slots) {
         }
     }
 
-    if (RUN_PARAM && visible.length === 0 && root.children.length === 0) {
+    if (RUN_PARAM && columns.length === 0 && root.children.length === 0) {
         const msg = el('div', 'disconnected', 'Run #' + RUN_PARAM + ' is not active on any connected slot.');
         root.appendChild(msg);
     }
+}
+
+function buildEmptyCol(slotNumber, playerName) {
+    const col = el('div', 'col');
+    const hd = el('div', 'heading');
+    hd.appendChild(document.createTextNode(playerName || ('Slot ' + slotNumber)));
+    col.appendChild(hd);
+    col.appendChild(el('div', 'disconnected', 'Waiting for connection…'));
+    return col;
 }
 
 function buildCol(slot, slotIndex) {

@@ -1039,7 +1039,7 @@ impl BroadcastLoop {
                 self.caches[i].caught = db.list_caught(label);
                 self.caches[i].encounters = db.list_encounters(label);
                 self.caches[i].prev_encounters = db.list_prev_run_encounters(label);
-                self.caches[i].slot_index = db.query_slot_index();
+                self.caches[i].slot_index = db.query_player_slot_index(label);
                 self.caches[i].last_refresh = now;
                 // Overrides are run-wide; load once from the first slot that has a DB.
                 // The map is cleared on run_id change below, so this stays consistent.
@@ -5692,39 +5692,48 @@ async fn api_patch_run_rules(
 }
 
 // ---------------------------------------------------------------------------
-// Slot index (display column order) — GET/PATCH /api/run/:id/slot_index
+// Per-player slot index (display column order) — GET/PATCH /api/run/:id/player_slots
 // ---------------------------------------------------------------------------
 
-/// `GET /api/run/:id/slot_index` — return the pinned display column for this run.
+/// `GET /api/run/:id/player_slots` — pinned display columns for every player
+/// in this run.
 ///
-/// Response: `{ "run_id": N, "slot_index": N|null }`.
-async fn api_get_run_slot_index(
+/// Response: `{ "run_id": N, "players": [{ "player_name": "Alice", "slot_index": 1 }, ...] }`.
+async fn api_get_run_player_slots(
     State(state): State<WebState>,
     Path(run_id): Path<u32>,
 ) -> axum::Json<serde_json::Value> {
     let conn = require_db!(state);
-    let result =
-        tokio::task::spawn_blocking(move || fire_red_database::get_run_slot_index(&conn, run_id))
-            .await
-            .unwrap_or(None);
-    axum::Json(serde_json::json!({ "run_id": run_id, "slot_index": result }))
+    let result = tokio::task::spawn_blocking(move || {
+        fire_red_database::get_run_player_slots(&conn, run_id)
+    })
+    .await
+    .unwrap_or_default();
+    let players: Vec<serde_json::Value> = result
+        .into_iter()
+        .map(|(player_name, slot_index)| {
+            serde_json::json!({ "player_name": player_name, "slot_index": slot_index })
+        })
+        .collect();
+    axum::Json(serde_json::json!({ "run_id": run_id, "players": players }))
 }
 
 #[derive(serde::Deserialize)]
-struct SlotIndexBody {
+struct PlayerSlotIndexBody {
+    player_name: String,
     slot_index: Option<u8>,
 }
 
-/// `PATCH /api/run/:id/slot_index` — pin this run to a display column.
+/// `PATCH /api/run/:id/player_slots` — pin one player's column within this run.
 ///
-/// Caller must be the run owner. Body: `{ "slot_index": 1 }` (1 = leftmost
-/// column) or `{ "slot_index": null }` to clear. The new ordering is reflected
-/// in the WebSocket feed within ~1 second.
-async fn api_patch_run_slot_index(
+/// Caller must be the run owner. Body: `{ "player_name": "Alice", "slot_index": 1 }`
+/// (1 = leftmost column) or `{ "player_name": "Alice", "slot_index": null }` to
+/// clear. The new ordering is reflected in the WebSocket feed within ~1 second.
+async fn api_patch_run_player_slots(
     State(state): State<WebState>,
     headers: axum::http::HeaderMap,
     Path(run_id): Path<u32>,
-    axum::Json(body): axum::Json<SlotIndexBody>,
+    axum::Json(body): axum::Json<PlayerSlotIndexBody>,
 ) -> (StatusCode, axum::Json<serde_json::Value>) {
     let conn = match state.db_conn {
         Some(s) => s,
@@ -5740,18 +5749,23 @@ async fn api_patch_run_slot_index(
             axum::Json(serde_json::json!({ "error": "authentication required" })),
         ),
     };
+    let player_name = body.player_name.clone();
     let result = tokio::task::spawn_blocking(move || -> Result<(), (StatusCode, String)> {
         let user = fire_red_database::validate_session(&token)
             .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?
             .ok_or_else(|| (StatusCode::UNAUTHORIZED, "session expired or invalid".to_string()))?;
-        fire_red_database::set_run_slot_index(&conn, run_id, user.id, body.slot_index)
+        fire_red_database::set_run_player_slot_index(&conn, run_id, user.id, &player_name, body.slot_index)
             .map_err(|e| (StatusCode::FORBIDDEN, e))
     })
     .await;
     match result {
         Ok(Ok(())) => (
             StatusCode::OK,
-            axum::Json(serde_json::json!({ "run_id": run_id, "slot_index": body.slot_index })),
+            axum::Json(serde_json::json!({
+                "run_id": run_id,
+                "player_name": body.player_name,
+                "slot_index": body.slot_index,
+            })),
         ),
         Ok(Err((status, e))) => (status, axum::Json(serde_json::json!({ "error": e }))),
         Err(_) => (
@@ -6231,7 +6245,7 @@ fn build_router(web_state: WebState) -> Router {
         // Challenge rules
         .route("/api/run/:id/rules", get(api_get_run_rules).patch(api_patch_run_rules))
         // Display column order
-        .route("/api/run/:id/slot_index", get(api_get_run_slot_index).patch(api_patch_run_slot_index))
+        .route("/api/run/:id/player_slots", get(api_get_run_player_slots).patch(api_patch_run_player_slots))
         // Per-section CSV exports
         .route("/api/run/:id/encounters.csv", get(api_run_encounters_csv))
         .route("/api/run/:id/deaths.csv", get(api_run_deaths_csv))
