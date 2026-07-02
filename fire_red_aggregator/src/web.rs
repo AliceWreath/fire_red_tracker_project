@@ -6297,15 +6297,22 @@ fn build_router(web_state: WebState) -> Router {
         .route("/:index/dex", get(serve_dex_overlay))
         .route("/:index/typechart", get(serve_typechart_overlay))
         // ── Middleware stack (last added = outermost = runs first) ──────────
-        // 3. Slot access: check ownership before any request to /api/slot/:idx/…
+        // 4. Slot access: check ownership before any request to /api/slot/:idx/…
         .layer(axum::middleware::from_fn_with_state(
             web_state.clone(),
             slot_access_middleware,
         ))
-        // 2. Run access: check user_can_access_run for /api/run/:id/… routes
+        // 3. Run access: check user_can_access_run for /api/run/:id/… routes
         .layer(axum::middleware::from_fn(run_access_middleware))
-        // 1. Auth wall: require a valid session for all non-public routes
+        // 2. Auth wall: require a valid session for all non-public routes
         .layer(axum::middleware::from_fn(auth_middleware))
+        // 1. Display-slot rewrite: translate /<n>/… page URLs from a pinned
+        //    display slot to the physical live-slot index, before auth/access
+        //    checks or routing see the path. Runs first since it's outermost.
+        .layer(axum::middleware::from_fn_with_state(
+            web_state.clone(),
+            slot_display_index_middleware,
+        ))
         .with_state(web_state)
 }
 
@@ -7718,6 +7725,56 @@ async fn run_access_middleware(
                 .header(header::CONTENT_TYPE, "application/json")
                 .body(axum::body::Body::from(r#"{"error":"access denied"}"#))
                 .unwrap();
+        }
+    }
+
+    next.run(request).await
+}
+
+/// Rewrites the numeric prefix of `/<n>/<rest>` page routes (party, hp,
+/// routes, deaths, etc.) from a display slot (as assigned via the /overlay
+/// corner button — 1-indexed, so URL index `n` means pinned slot `n + 1`) to
+/// whichever physical live-slot index currently holds that pin, if any.
+///
+/// Falls back to treating `<n>` as a raw physical slot index unchanged when
+/// no live slot is pinned to it, so URLs/OBS scenes built before any slot was
+/// ever assigned keep working exactly as before.
+async fn slot_display_index_middleware(
+    State(state): State<WebState>,
+    mut request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    let uri = request.uri().clone();
+    let parsed = uri.path().strip_prefix('/').and_then(|rest| {
+        let slash = rest.find('/')?;
+        let requested: usize = rest[..slash].parse().ok()?;
+        let wanted = u8::try_from(requested + 1).ok()?;
+        Some((requested, wanted, rest[slash..].to_string()))
+    });
+
+    if let Some((requested, wanted, tail)) = parsed {
+        let slots = state.live_slots.clone();
+        let resolved = tokio::task::spawn_blocking(move || {
+            let slots = slots.lock_or_recover();
+            slots.iter().position(|slot| {
+                let label = slot.label.lock_or_recover().clone();
+                slot.db.as_ref().and_then(|db| db.query_player_slot_index(&label)) == Some(wanted)
+            })
+        })
+        .await
+        .unwrap_or(None);
+
+        if let Some(resolved) = resolved
+            && resolved != requested
+        {
+            let new_path = format!("/{resolved}{tail}");
+            let rebuilt = match uri.query() {
+                Some(q) => format!("{new_path}?{q}"),
+                None => new_path,
+            };
+            if let Ok(new_uri) = rebuilt.parse::<axum::http::Uri>() {
+                *request.uri_mut() = new_uri;
+            }
         }
     }
 
