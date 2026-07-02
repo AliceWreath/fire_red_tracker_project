@@ -68,7 +68,8 @@ h2 {
 <h2>🔗 Soul Link Pairs</h2>
 <div id="root"></div>
 <script>
-const WS_URL = 'ws://' + location.host + '/ws?show=soullink';
+const _wsTok = new URLSearchParams(location.search).get('token');
+const WS_URL = 'ws://' + location.host + '/ws?show=soullink' + (_wsTok ? '&token=' + encodeURIComponent(_wsTok) : '');
 
 function hpColor(pct) {
     if (pct > 0.5) return '#40cc40';

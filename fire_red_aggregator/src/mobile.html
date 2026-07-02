@@ -152,7 +152,7 @@ const playerIndex = parseInt(params.get('player') || '0');
 let ws;
 let reconnectDelay = 1000;
 function connect() {
-    ws = new WebSocket('ws://' + location.host + '/ws');
+    ws = new WebSocket('ws://' + location.host + '/ws' + (params.get('token') ? '?token=' + encodeURIComponent(params.get('token')) : ''));
     ws.onopen    = () => { reconnectDelay = 1000; };
     ws.onmessage = e => render(JSON.parse(e.data));
     ws.onclose   = () => {

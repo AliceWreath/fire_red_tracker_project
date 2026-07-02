@@ -111,7 +111,7 @@ function handleState(slots) {
 let ws;
 let reconnectDelay = 1000;
 function connect() {
-    ws = new WebSocket('ws://' + location.host + '/ws?show=counter');
+    ws = new WebSocket('ws://' + location.host + '/ws?show=counter' + (_params.get('token') ? '&token=' + encodeURIComponent(_params.get('token')) : ''));
     ws.onopen    = () => { reconnectDelay = 1000; };
     ws.onmessage = e => handleState(JSON.parse(e.data));
     ws.onclose   = () => { setTimeout(connect, reconnectDelay); reconnectDelay = Math.min(reconnectDelay * 2, 30000); };

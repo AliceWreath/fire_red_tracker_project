@@ -272,7 +272,7 @@ function render(slots) {
 let ws;
 let reconnectDelay = 1000;
 function connect() {
-    ws = new WebSocket('ws://' + location.host + '/ws');
+    ws = new WebSocket('ws://' + location.host + '/ws' + (params.get('token') ? '?token=' + encodeURIComponent(params.get('token')) : ''));
     ws.onopen    = () => { reconnectDelay = 1000; };
     ws.onmessage = e => render(JSON.parse(e.data));
     ws.onclose   = () => { setTimeout(connect, reconnectDelay); reconnectDelay = Math.min(reconnectDelay * 2, 30000); };

@@ -206,6 +206,7 @@ const section = parts[1]; // 'party' or 'encounters'
 
 const READONLY  = !new URLSearchParams(window.location.search).has('manage');
 const RUN_PARAM = parseInt(new URLSearchParams(window.location.search).get('run') || '0') || null;
+const WS_TOKEN  = new URLSearchParams(window.location.search).get('token');
 
 // --- XP to next level helpers ---
 function expForLevel(growthRate, n) {
@@ -237,7 +238,7 @@ function expToNext(growthRate, level, exp) {
 let ws;
 let reconnectDelay = 1000;
 function connect() {
-    ws = new WebSocket('ws://' + location.host + '/ws');
+    ws = new WebSocket('ws://' + location.host + '/ws' + (WS_TOKEN ? '?token=' + encodeURIComponent(WS_TOKEN) : ''));
     ws.onopen    = () => { reconnectDelay = 1000; };
     ws.onmessage = e => render(JSON.parse(e.data));
     ws.onclose   = () => { setTimeout(connect, reconnectDelay); reconnectDelay = Math.min(reconnectDelay * 2, 30000); };
