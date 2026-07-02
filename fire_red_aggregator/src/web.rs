@@ -102,6 +102,10 @@ struct SlotDto {
     goals: Vec<GoalDto>,
     /// Upcoming gym leader's full party read from ROM (randomizer-aware).
     leader_party: Vec<LeaderPartyMonDto>,
+    /// Owner-pinned display column for this slot's active run (1 = leftmost),
+    /// or `None` if unpinned (falls back to in-game player position). Lets the
+    /// overview page show/edit the override via `PATCH /api/run/:id/slot_index`.
+    pinned_slot_index: Option<u8>,
 }
 
 #[derive(serde::Serialize, Clone)]
@@ -1520,6 +1524,7 @@ impl BroadcastLoop {
                     play_time_seconds,
                     goals,
                     leader_party,
+                    pinned_slot_index: self.caches[i].slot_index,
                 }
             })
             .collect();

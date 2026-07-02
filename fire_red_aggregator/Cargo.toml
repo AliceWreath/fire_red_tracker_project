@@ -1,6 +1,6 @@
 [package]
 name = "fire_red_aggregator"
-version = "0.9.95"
+version = "0.9.96"
 edition = "2024"
 license.workspace = true
 

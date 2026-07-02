@@ -188,6 +188,8 @@ html, body {
 .run-btn.end:hover { background: #b02828; }
 .run-btn.new  { background: #1a6b1a; }
 .run-btn.new:hover  { background: #228b22; }
+.run-btn.slot { background: #2a4a7a; }
+.run-btn.slot:hover { background: #345d99; }
 .gender-m { color: #64a0ff; font-size: 12px; font-weight: bold; }
 .gender-f { color: #ff82b4; font-size: 12px; font-weight: bold; }
 .nat-up   { color: #ff99cc; }
@@ -295,6 +297,27 @@ function sendCmd(cmd, slot) {
         ws.send(JSON.stringify({ cmd, slot }));
 }
 
+function assignSlot(slot) {
+    if (slot.active_run_id == null) return;
+    const current = slot.pinned_slot_index != null ? String(slot.pinned_slot_index) : '';
+    const input = prompt('Display column for this player (1 = leftmost). Leave blank to auto-order:', current);
+    if (input === null) return;
+    const trimmed = input.trim();
+    const value = trimmed === '' ? null : parseInt(trimmed, 10);
+    if (value !== null && (!Number.isInteger(value) || value < 1 || value > 255)) {
+        alert('Enter a whole number of 1 or greater, or leave it blank to clear.');
+        return;
+    }
+    fetch('/api/run/' + slot.active_run_id + '/slot_index', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ slot_index: value }),
+    })
+        .then(r => r.json().then(d => ({ ok: r.ok, d })))
+        .then(({ ok, d }) => { if (!ok) alert('Could not assign slot: ' + (d.error || 'unknown error')); })
+        .catch(() => alert('Could not assign slot: network error'));
+}
+
 // Per-slot JSON cache: only rebuild a column element when its data changes.
 // This prevents root.innerHTML = '' on every tick, which caused visible flicker
 // and discarded CSS transitions on the party sprites.
@@ -358,6 +381,16 @@ function buildCol(slot, slotIndex) {
         };
         controls.appendChild(endBtn);
         controls.appendChild(newBtn);
+
+        // Owner-only: pin this player to a display column, overriding the
+        // default ordering (which otherwise puts the run owner in slot 0).
+        const slotBtn = el('button', 'run-btn slot',
+            slot.pinned_slot_index != null ? ('Slot ' + slot.pinned_slot_index) : 'Slot: Auto');
+        slotBtn.disabled = slot.active_run_id == null;
+        slotBtn.title = 'Assign this player to a display column (1 = leftmost). Overrides the default ordering.';
+        slotBtn.onclick = () => assignSlot(slot);
+        controls.appendChild(slotBtn);
+
         hd.appendChild(controls);
     }
 
