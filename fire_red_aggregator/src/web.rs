@@ -7731,28 +7731,49 @@ async fn run_access_middleware(
     next.run(request).await
 }
 
-/// Rewrites the numeric prefix of `/<n>/<rest>` page routes (party, hp,
-/// routes, deaths, etc.) from a display slot (as assigned via the /overlay
-/// corner button — 1-indexed, so URL index `n` means pinned slot `n + 1`) to
-/// whichever physical live-slot index currently holds that pin, if any.
+/// Rewrites the numeric index of `/<n>/<rest>` page routes (party, hp,
+/// routes, deaths, etc.) and `/api/slot/<n>[/<rest>]` API routes from a
+/// display slot (as assigned via the /overlay corner button — 1-indexed, so
+/// URL index `n` means pinned slot `n + 1`) to whichever physical live-slot
+/// index currently holds that pin, if any.
 ///
 /// Falls back to treating `<n>` as a raw physical slot index unchanged when
-/// no live slot is pinned to it, so URLs/OBS scenes built before any slot was
-/// ever assigned keep working exactly as before.
+/// no live slot is pinned to it, so URLs/OBS scenes/Stream Deck buttons built
+/// before any slot was ever assigned keep working exactly as before. Runs
+/// before `slot_access_middleware`, so ownership checks there see the
+/// already-resolved physical index.
 async fn slot_display_index_middleware(
     State(state): State<WebState>,
     mut request: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> axum::response::Response {
     let uri = request.uri().clone();
-    let parsed = uri.path().strip_prefix('/').and_then(|rest| {
-        let slash = rest.find('/')?;
-        let requested: usize = rest[..slash].parse().ok()?;
-        let wanted = u8::try_from(requested + 1).ok()?;
-        Some((requested, wanted, rest[slash..].to_string()))
-    });
+    let path = uri.path();
 
-    if let Some((requested, wanted, tail)) = parsed {
+    // Either "/<n>/<rest>" (page routes) or "/api/slot/<n>[/<rest>]" (API routes).
+    let parsed = if let Some(rest) = path.strip_prefix("/api/slot/") {
+        let (num_str, tail) = match rest.find('/') {
+            Some(slash) => (&rest[..slash], rest[slash..].to_string()),
+            None => (rest, String::new()),
+        };
+        num_str
+            .parse::<usize>()
+            .ok()
+            .and_then(|requested| {
+                u8::try_from(requested + 1)
+                    .ok()
+                    .map(|wanted| ("/api/slot/", requested, wanted, tail))
+            })
+    } else {
+        path.strip_prefix('/').and_then(|rest| {
+            let slash = rest.find('/')?;
+            let requested: usize = rest[..slash].parse().ok()?;
+            let wanted = u8::try_from(requested + 1).ok()?;
+            Some(("/", requested, wanted, rest[slash..].to_string()))
+        })
+    };
+
+    if let Some((prefix, requested, wanted, tail)) = parsed {
         let slots = state.live_slots.clone();
         let resolved = tokio::task::spawn_blocking(move || {
             let slots = slots.lock_or_recover();
@@ -7767,7 +7788,7 @@ async fn slot_display_index_middleware(
         if let Some(resolved) = resolved
             && resolved != requested
         {
-            let new_path = format!("/{resolved}{tail}");
+            let new_path = format!("{prefix}{resolved}{tail}");
             let rebuilt = match uri.query() {
                 Some(q) => format!("{new_path}?{q}"),
                 None => new_path,
