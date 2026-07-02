@@ -284,7 +284,9 @@ const SHOW_CAUGHT = SHOW_PARAM === 'caught';
 let ws;
 let reconnectDelay = 1000;
 function connect() {
-    const wsPath = SHOW_PARAM ? '/ws?show=' + encodeURIComponent(SHOW_PARAM) : '/ws';
+    let wsPath = SHOW_PARAM ? '/ws?show=' + encodeURIComponent(SHOW_PARAM) : '/ws';
+    const wsTok = new URLSearchParams(window.location.search).get('token');
+    if (wsTok) wsPath += (wsPath.includes('?') ? '&' : '?') + 'token=' + encodeURIComponent(wsTok);
     ws = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + wsPath);
     ws.onopen    = () => { reconnectDelay = 1000; };
     ws.onmessage = e => render(JSON.parse(e.data));

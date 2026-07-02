@@ -7348,6 +7348,19 @@ pub fn link_run_to_user(run_id: u32, user_id: u32) -> Result<(), String> {
     Ok(())
 }
 
+/// Pin a newly-created run to display slot 0 so the owner is always the
+/// leftmost column.  No ownership check — only call this immediately after
+/// creating a run that the caller already owns.
+pub fn assign_owner_slot_zero(run_id: u32) -> Result<(), String> {
+    let Some(db) = db() else { return Ok(()) };
+    let mut state = db.lock_or_recover();
+    state.client.execute(
+        "UPDATE runs SET slot_index = 0 WHERE id = $1",
+        &[&(run_id as i32)],
+    ).map_err(|e| format!("DB error: {e}"))?;
+    Ok(())
+}
+
 /// Create a new run for a direct-mode slot **without** touching the global
 /// `DbState.run_id`.  The caller must then call [`set_thread_run_id`] on the
 /// game-loop thread so DB writes from that thread go to this run.

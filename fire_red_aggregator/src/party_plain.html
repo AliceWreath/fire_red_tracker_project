@@ -110,7 +110,7 @@ const playerIndex = parseInt(parts[0]) || 0;
 let ws;
 let reconnectDelay = 1000;
 function connect() {
-    ws = new WebSocket('ws://' + location.host + '/ws');
+    ws = new WebSocket('ws://' + location.host + '/ws' + (new URLSearchParams(location.search).get('token') ? '?token=' + encodeURIComponent(new URLSearchParams(location.search).get('token')) : ''));
     ws.onopen    = () => { reconnectDelay = 1000; };
     ws.onmessage = e => render(JSON.parse(e.data));
     ws.onclose   = () => { setTimeout(connect, reconnectDelay); reconnectDelay = Math.min(reconnectDelay * 2, 30000); };

@@ -251,6 +251,9 @@ fn try_add_host(
                                 if let Err(e) = fire_red_database::link_run_to_user(id, uid) {
                                     tracing::warn!("Direct mode: could not link run #{} to user {}: {}", id, uid, e);
                                 }
+                                if let Err(e) = fire_red_database::assign_owner_slot_zero(id) {
+                                    tracing::warn!("Direct mode: could not pin run #{} to slot 0: {}", id, e);
+                                }
                             }
                             Some(id)
                         }
@@ -271,6 +274,7 @@ fn try_add_host(
                             let new_id = fire_red_database::create_run_for_slot("Unknown").ok();
                             if let (Some(new_id), Some(uid)) = (new_id, user_id) {
                                 let _ = fire_red_database::link_run_to_user(new_id, uid);
+                                let _ = fire_red_database::assign_owner_slot_zero(new_id);
                             }
                             new_id
                         }

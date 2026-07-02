@@ -319,7 +319,8 @@ function render(slots) {
 
 (function() {
     const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-    const ws = new WebSocket(`${proto}://${location.host}/ws?show=types`);
+    const _wsTok = new URLSearchParams(location.search).get('token');
+    const ws = new WebSocket(`${proto}://${location.host}/ws?show=types` + (_wsTok ? '&token=' + encodeURIComponent(_wsTok) : ''));
     ws.onmessage = e => {
         try { render(JSON.parse(e.data)); } catch {}
     };

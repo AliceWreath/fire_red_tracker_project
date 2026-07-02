@@ -110,6 +110,7 @@ html, body {
 (function(){if(!new URLSearchParams(window.location.search).has('run')){var t=localStorage.getItem('frt_session');if(t){fetch('/api/me/active_run',{headers:{'Authorization':'Bearer '+t}}).then(function(r){return r.ok?r.json():null;}).then(function(d){if(d&&d.run_id){var sp=new URLSearchParams(window.location.search);sp.set('run',d.run_id);window.location.replace(window.location.pathname+'?'+sp.toString());}}).catch(function(){});}}})();
 function navToPage(sel){var p=sel.value;sel.value='';if(!p)return;var sp=new URLSearchParams(window.location.search);var r=parseInt(sp.get('run')||'0')||0;if(!r){var m=window.location.pathname.match(/\/run\/(\d+)\//);if(m)r=parseInt(m[1]);}window.location.href=p==='stats'?(r?'/run/'+r+'/stats':'/history'):('/'+p+(r?'?run='+r:''));}
 const BASE = location.origin;
+const WS_TOK = new URLSearchParams(location.search).get('token');
 let currentRunId = null;
 
 function runIdFromUrl() {
@@ -126,7 +127,7 @@ document.getElementById('run-select').addEventListener('change', e => {
 function loadShiny() {
     if (!currentRunId) return;
     document.getElementById('content').innerHTML = '<div class="loading">Loading…</div>';
-    fetch('/api/run/' + currentRunId + '/shiny')
+    fetch('/api/run/' + currentRunId + '/shiny', WS_TOK ? { headers: { 'Authorization': 'Bearer ' + WS_TOK } } : {})
         .then(r => r.json())
         .then(renderShiny)
         .catch(e => {
@@ -238,7 +239,7 @@ fetch('/db.json',_dbTok?{headers:{'Authorization':'Bearer '+_dbTok}}:{}).then(r 
     loadShiny();
 }).catch(() => {
     // Fallback: try WS
-    const ws = new WebSocket('ws://' + location.host + '/ws');
+    const ws = new WebSocket('ws://' + location.host + '/ws' + (WS_TOK ? '?token=' + encodeURIComponent(WS_TOK) : ''));
     ws.onmessage = e => {
         const slots = JSON.parse(e.data);
         ws.close();
