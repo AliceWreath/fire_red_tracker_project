@@ -61,8 +61,9 @@ tr:hover td { background: rgba(255,255,255,0.03); }
   </div>
   <div id="content"><div class="loading">Loading…</div></div>
 </div>
+<script src="/static/overlay.js"></script>
 <script>
-(function(){if(!new URLSearchParams(window.location.search).has('run')){var t=localStorage.getItem('frt_session');if(t){fetch('/api/me/active_run',{headers:{'Authorization':'Bearer '+t}}).then(function(r){return r.ok?r.json():null;}).then(function(d){if(d&&d.run_id){var sp=new URLSearchParams(window.location.search);sp.set('run',d.run_id);window.location.replace(window.location.pathname+'?'+sp.toString());}}).catch(function(){});}}})();
+FRT.ensureRunParam();
 function navToPage(sel){var p=sel.value;sel.value='';if(!p)return;var sp=new URLSearchParams(window.location.search);var r=parseInt(sp.get('run')||'0')||0;if(!r){var m=window.location.pathname.match(/\/run\/(\d+)\//);if(m)r=parseInt(m[1]);}window.location.href=p==='stats'?(r?'/run/'+r+'/stats':'/history'):('/'+p+(r?'?run='+r:''));}
 const API_BASE = location.origin;
 

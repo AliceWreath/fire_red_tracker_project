@@ -87,6 +87,7 @@ html, body {
   <div class="bt-name"  id="bt-name"></div>
   <div class="bt-count" id="bt-count"></div>
 </div>
+<script src="/static/overlay.js"></script>
 <script>
 // Player slot index — path takes priority (/0/alerts), falls back to ?slot=N.
 // When neither is given, defer to the first non-null slot in the live array
@@ -349,15 +350,7 @@ function handleState(slots) {
     }
 }
 
-let ws;
-let reconnectDelay = 1000;
-function connect() {
-    ws = new WebSocket('ws://' + location.host + '/ws' + (_params.get('token') ? '?token=' + encodeURIComponent(_params.get('token')) : ''));
-    ws.onopen    = () => { reconnectDelay = 1000; };
-    ws.onmessage = e => handleState(JSON.parse(e.data));
-    ws.onclose   = () => { setTimeout(connect, reconnectDelay); reconnectDelay = Math.min(reconnectDelay * 2, 30000); };
-}
-connect();
+FRT.connectWS(null, handleState);
 </script>
 </body>
 </html>

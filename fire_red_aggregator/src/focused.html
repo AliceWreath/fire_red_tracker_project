@@ -196,8 +196,9 @@ html[data-theme=minimal] .mon-sprite,html[data-theme=minimal] .enc-sprite,html[d
 <body>
 <div id="version-badge">v__VERSION__</div>
 <div id="root"></div>
+<script src="/static/overlay.js"></script>
 <script>
-(function(){if(!new URLSearchParams(window.location.search).has('run')){var t=localStorage.getItem('frt_session');if(t){fetch('/api/me/active_run',{headers:{'Authorization':'Bearer '+t}}).then(function(r){return r.ok?r.json():null;}).then(function(d){if(d&&d.run_id){var sp=new URLSearchParams(window.location.search);sp.set('run',d.run_id);window.location.replace(window.location.pathname+'?'+sp.toString());}}).catch(function(){});}}})();
+FRT.ensureRunParam();
 (function(){const t=new URLSearchParams(window.location.search).get('theme');if(t==='light'||t==='minimal'||t==='dark')document.documentElement.dataset.theme=t;}());
 // Parse /{playerIndex}/{section} from the URL path
 const parts = window.location.pathname.split('/').filter(Boolean);
@@ -206,7 +207,6 @@ const section = parts[1]; // 'party' or 'encounters'
 
 const READONLY  = !new URLSearchParams(window.location.search).has('manage');
 const RUN_PARAM = parseInt(new URLSearchParams(window.location.search).get('run') || '0') || null;
-const WS_TOKEN  = new URLSearchParams(window.location.search).get('token');
 
 // --- XP to next level helpers ---
 function expForLevel(growthRate, n) {
@@ -235,19 +235,10 @@ function expToNext(growthRate, level, exp) {
     return expForLevel(growthRate, level + 1) - exp;
 }
 
-let ws;
-let reconnectDelay = 1000;
-function connect() {
-    ws = new WebSocket('ws://' + location.host + '/ws' + (WS_TOKEN ? '?token=' + encodeURIComponent(WS_TOKEN) : ''));
-    ws.onopen    = () => { reconnectDelay = 1000; };
-    ws.onmessage = e => render(JSON.parse(e.data));
-    ws.onclose   = () => { setTimeout(connect, reconnectDelay); reconnectDelay = Math.min(reconnectDelay * 2, 30000); };
-}
-connect();
+const wsConn = FRT.connectWS(null, render);
 
 function sendCmd(cmd) {
-    if (!READONLY && ws && ws.readyState === WebSocket.OPEN)
-        ws.send(JSON.stringify({ cmd, slot: playerIndex }));
+    if (!READONLY) wsConn.send({ cmd, slot: playerIndex });
 }
 
 function render(slots) {

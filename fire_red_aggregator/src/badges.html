@@ -56,6 +56,7 @@ html[data-theme=light] #count { color: #555; }
   <div id="count">0 / 8</div>
   <div id="disconnected">disconnected</div>
 </div>
+<script src="/static/overlay.js"></script>
 <script>
 const _pathParts  = window.location.pathname.split('/').filter(Boolean);
 const _pathIndex  = parseInt(_pathParts[0]);
@@ -91,15 +92,7 @@ function handleState(slots) {
     countEl.textContent = earned + ' / ' + badges.length;
 }
 
-let ws;
-let reconnectDelay = 1000;
-function connect() {
-    ws = new WebSocket('ws://' + location.host + '/ws?show=badges' + (_params.get('token') ? '&token=' + encodeURIComponent(_params.get('token')) : ''));
-    ws.onopen    = () => { reconnectDelay = 1000; };
-    ws.onmessage = e => handleState(JSON.parse(e.data));
-    ws.onclose   = () => { setTimeout(connect, reconnectDelay); reconnectDelay = Math.min(reconnectDelay * 2, 30000); };
-}
-connect();
+FRT.connectWS('badges', handleState);
 </script>
 </body>
 </html>

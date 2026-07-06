@@ -128,6 +128,7 @@ html, body {
 
 /* Type colour palette */
 </style>
+<script src="/static/overlay.js"></script>
 <script>
 const TYPE_NAMES = ["Normal","Fighting","Flying","Poison","Ground","Rock","Bug","Ghost","Steel",
                     "Fire","Water","Grass","Electric","Psychic","Ice","Dragon","Dark"];
@@ -317,17 +318,7 @@ function render(slots) {
     root.innerHTML = slots.map(renderSlot).join('');
 }
 
-(function() {
-    const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-    const _wsTok = new URLSearchParams(location.search).get('token');
-    const ws = new WebSocket(`${proto}://${location.host}/ws?show=types` + (_wsTok ? '&token=' + encodeURIComponent(_wsTok) : ''));
-    ws.onmessage = e => {
-        try { render(JSON.parse(e.data)); } catch {}
-    };
-    ws.onclose = () => {
-        setTimeout(() => location.reload(), 3000);
-    };
-})();
+FRT.connectWS('types', s => { try { render(s); } catch {} });
 </script>
 </head>
 <body>

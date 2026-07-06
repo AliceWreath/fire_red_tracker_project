@@ -330,7 +330,7 @@ mod tests {
     #[test]
     fn is_public_route_matrix() {
         use axum::http::Method;
-        for path in ["/", "/register", "/api/login", "/api/catch_rate", "/share/abc123"] {
+        for path in ["/", "/register", "/api/login", "/api/catch_rate", "/share/abc123", "/static/overlay.js"] {
             assert!(is_public_route(path, &Method::GET), "{path} should be public");
         }
         assert!(is_public_route("/api/users", &Method::POST), "register endpoint is public");

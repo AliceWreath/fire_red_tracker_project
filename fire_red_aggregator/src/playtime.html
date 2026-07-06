@@ -63,6 +63,7 @@ html[data-theme=light] .discrepancy { color: #c00; }
   <div class="discrepancy" id="disc" style="display:none"></div>
   <div id="disconnected">disconnected</div>
 </div>
+<script src="/static/overlay.js"></script>
 <script>
 const _pathParts  = window.location.pathname.split('/').filter(Boolean);
 const _pathIndex  = parseInt(_pathParts[0]);
@@ -152,19 +153,7 @@ function handleState(slots) {
     }
 }
 
-let ws;
-let reconnectDelay = 1000;
-function connect() {
-    ws = new WebSocket('ws://' + location.host + '/ws?show=playtime' + (_params.get('token') ? '&token=' + encodeURIComponent(_params.get('token')) : ''));
-    ws.onopen    = () => { reconnectDelay = 1000; };
-    ws.onmessage = e => handleState(JSON.parse(e.data));
-    ws.onclose   = () => {
-        stopWallClock();
-        setTimeout(connect, reconnectDelay);
-        reconnectDelay = Math.min(reconnectDelay * 2, 30000);
-    };
-}
-connect();
+FRT.connectWS('playtime', handleState, stopWallClock);
 </script>
 </body>
 </html>

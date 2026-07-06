@@ -67,9 +67,8 @@ h2 {
 <body>
 <h2>🔗 Soul Link Pairs</h2>
 <div id="root"></div>
+<script src="/static/overlay.js"></script>
 <script>
-const _wsTok = new URLSearchParams(location.search).get('token');
-const WS_URL = 'ws://' + location.host + '/ws?show=soullink' + (_wsTok ? '&token=' + encodeURIComponent(_wsTok) : '');
 
 function hpColor(pct) {
     if (pct > 0.5) return '#40cc40';
@@ -194,15 +193,7 @@ function esc(s) {
     return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 }
 
-let ws;
-let reconnectDelay = 1000;
-function connect() {
-    ws = new WebSocket(WS_URL);
-    ws.onopen    = () => { reconnectDelay = 1000; };
-    ws.onmessage = e => renderPairs(JSON.parse(e.data));
-    ws.onclose   = () => { setTimeout(connect, reconnectDelay); reconnectDelay = Math.min(reconnectDelay * 2, 30000); };
-}
-connect();
+FRT.connectWS('soullink', renderPairs);
 </script>
 </body>
 </html>

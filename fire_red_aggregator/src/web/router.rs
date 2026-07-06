@@ -9,6 +9,7 @@ use super::*;
 pub(crate) fn build_router(web_state: WebState) -> Router {
     Router::new()
         .route("/", get(serve_login_page))
+        .route("/static/overlay.js", get(serve_overlay_js))
         .route("/overlay", get(serve_html))
         .route("/ws", get(ws_handler))
         .route("/db", get(serve_db_viewer))

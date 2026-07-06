@@ -114,11 +114,10 @@ tr:hover td { background: rgba(255,255,255,0.03); }
   </div>
   <div id="content"><div class="loading">Loading…</div></div>
 </div>
+<script src="/static/overlay.js"></script>
 <script>
-(function(){if(!new URLSearchParams(window.location.search).has('run')){var t=localStorage.getItem('frt_session');if(t){fetch('/api/me/active_run',{headers:{'Authorization':'Bearer '+t}}).then(function(r){return r.ok?r.json():null;}).then(function(d){if(d&&d.run_id){var sp=new URLSearchParams(window.location.search);sp.set('run',d.run_id);window.location.replace(window.location.pathname+'?'+sp.toString());}}).catch(function(){});}}})();
+FRT.ensureRunParam();
 function navToPage(sel){var p=sel.value;sel.value='';if(!p)return;var sp=new URLSearchParams(window.location.search);var r=parseInt(sp.get('run')||'0')||0;if(!r){var m=window.location.pathname.match(/\/run\/(\d+)\//);if(m)r=parseInt(m[1]);}window.location.href=p==='stats'?(r?'/run/'+r+'/stats':'/history'):('/'+p+(r?'?run='+r:''));}
-const _wsTok = new URLSearchParams(location.search).get('token');
-const WS_BASE = 'ws://' + location.host + '/ws' + (_wsTok ? '?token=' + encodeURIComponent(_wsTok) : '');
 const API_BASE = location.origin;
 
 // Pull run ID from URL path (/run/:id/stats) or query string (?run=N)
@@ -135,8 +134,7 @@ let slotData = [];
 function populateSelector(slots) {
     slotData = slots;
     // Fetch all run IDs from DB viewer JSON if possible
-    const _dbTok=localStorage.getItem('frt_session');
-    fetch('/db.json',_dbTok?{headers:{'Authorization':'Bearer '+_dbTok}}:{}).then(r => r.json()).then(db => {
+        FRT.authFetch('/db.json').then(r => r.json()).then(db => {
         if (!db.runs) return;
         const sel = document.getElementById('run-select');
         const prev = sel.value;
@@ -177,7 +175,7 @@ document.getElementById('run-select').addEventListener('change', e => {
 function loadStats() {
     if (!currentRunId) return;
     document.getElementById('content').innerHTML = '<div class="loading">Loading…</div>';
-    fetch('/api/run/' + currentRunId + '/stats', _wsTok ? { headers: { 'Authorization': 'Bearer ' + _wsTok } } : {})
+    FRT.authFetch('/api/run/' + currentRunId + '/stats')
         .then(r => r.json())
         .then(renderStats)
         .catch(e => {
@@ -277,18 +275,7 @@ function esc(s) {
 }
 
 // Connect to WS to discover runs
-let ws;
-let reconnectDelay = 1000;
-function connect() {
-    ws = new WebSocket(WS_BASE);
-    ws.onopen = () => { reconnectDelay = 1000; };
-    ws.onmessage = e => {
-        const slots = JSON.parse(e.data);
-        populateSelector(slots);
-    };
-    ws.onclose = () => { setTimeout(connect, reconnectDelay); reconnectDelay = Math.min(reconnectDelay * 2, 30000); };
-}
-connect();
+FRT.connectWS(null, populateSelector);
 
 if (currentRunId) loadStats();
 </script>

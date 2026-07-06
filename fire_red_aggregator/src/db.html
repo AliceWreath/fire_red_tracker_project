@@ -159,6 +159,7 @@ td.run-id { color: #5090e0; font-weight: 600; }
     <div id="content"></div>
 </div>
 
+<script src="/static/overlay.js"></script>
 <script>
 const TABLES = {
     runs: {
@@ -252,8 +253,7 @@ async function clearAll() {
 async function loadData() {
     document.getElementById('status').textContent = 'Loading...';
     try {
-        const _tok=localStorage.getItem('frt_session');
-        const res = await fetch('/db.json',_tok?{headers:{'Authorization':'Bearer '+_tok}}:{});
+        const res = await FRT.authFetch('/db.json');
         data = await res.json();
         if (data.error) throw new Error(data.error);
         document.getElementById('status').textContent =

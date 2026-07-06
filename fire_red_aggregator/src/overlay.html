@@ -271,8 +271,9 @@ html[data-theme=minimal] .mon-sprite,html[data-theme=minimal] .enc-sprite,html[d
 <body>
 <div id="version-badge">v__VERSION__</div>
 <div id="root"></div>
+<script src="/static/overlay.js"></script>
 <script>
-(function(){if(!new URLSearchParams(window.location.search).has('run')){var t=localStorage.getItem('frt_session');if(t){fetch('/api/me/active_run',{headers:{'Authorization':'Bearer '+t}}).then(function(r){return r.ok?r.json():null;}).then(function(d){if(d&&d.run_id){var sp=new URLSearchParams(window.location.search);sp.set('run',d.run_id);window.location.replace(window.location.pathname+'?'+sp.toString());}}).catch(function(){});}}})();
+FRT.ensureRunParam();
 (function(){const t=new URLSearchParams(window.location.search).get('theme');if(t==='light'||t==='minimal'||t==='dark')document.documentElement.dataset.theme=t;}());
 const READONLY   = !new URLSearchParams(window.location.search).has('manage');
 const SHOW_PARAM = new URLSearchParams(window.location.search).get('show');
@@ -280,25 +281,12 @@ const RUN_PARAM  = parseInt(new URLSearchParams(window.location.search).get('run
 const SHOW_BOX    = SHOW_PARAM === 'box';
 const SHOW_DEAD   = SHOW_PARAM === 'dead';
 const SHOW_CAUGHT = SHOW_PARAM === 'caught';
-const TOKEN       = new URLSearchParams(window.location.search).get('token');
-function authHeaders() { return TOKEN ? { 'Authorization': 'Bearer ' + TOKEN } : {}; }
+const authHeaders = FRT.authHeaders;
 
-let ws;
-let reconnectDelay = 1000;
-function connect() {
-    let wsPath = SHOW_PARAM ? '/ws?show=' + encodeURIComponent(SHOW_PARAM) : '/ws';
-    const wsTok = new URLSearchParams(window.location.search).get('token');
-    if (wsTok) wsPath += (wsPath.includes('?') ? '&' : '?') + 'token=' + encodeURIComponent(wsTok);
-    ws = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + wsPath);
-    ws.onopen    = () => { reconnectDelay = 1000; };
-    ws.onmessage = e => render(JSON.parse(e.data));
-    ws.onclose   = () => { setTimeout(connect, reconnectDelay); reconnectDelay = Math.min(reconnectDelay * 2, 30000); };
-}
-connect();
+const wsConn = FRT.connectWS(SHOW_PARAM || null, render);
 
 function sendCmd(cmd, slot) {
-    if (!READONLY && ws && ws.readyState === WebSocket.OPEN)
-        ws.send(JSON.stringify({ cmd, slot }));
+    if (!READONLY) wsConn.send({ cmd, slot });
 }
 
 function assignSlot(slot) {

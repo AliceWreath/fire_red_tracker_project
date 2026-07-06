@@ -72,6 +72,7 @@ html[data-theme=light] #player { color: #555; }
   <div id="player"></div>
   <div id="disconnected">disconnected</div>
 </div>
+<script src="/static/overlay.js"></script>
 <script>
 const _pathParts  = window.location.pathname.split('/').filter(Boolean);
 const _pathIndex  = parseInt(_pathParts[0]);
@@ -108,15 +109,7 @@ function handleState(slots) {
     playerEl.textContent = slot.label || '';
 }
 
-let ws;
-let reconnectDelay = 1000;
-function connect() {
-    ws = new WebSocket('ws://' + location.host + '/ws?show=counter' + (_params.get('token') ? '&token=' + encodeURIComponent(_params.get('token')) : ''));
-    ws.onopen    = () => { reconnectDelay = 1000; };
-    ws.onmessage = e => handleState(JSON.parse(e.data));
-    ws.onclose   = () => { setTimeout(connect, reconnectDelay); reconnectDelay = Math.min(reconnectDelay * 2, 30000); };
-}
-connect();
+FRT.connectWS('counter', handleState);
 </script>
 </body>
 </html>

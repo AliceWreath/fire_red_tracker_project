@@ -428,6 +428,19 @@ pub(crate) fn gen3_char(b: u8) -> char {
 
 pub(crate) const DEX_HTML: &str = include_str!("../dex.html");
 pub(crate) const TYPECHART_HTML: &str = include_str!("../typechart.html");
+pub(crate) const OVERLAY_JS: &str = include_str!("../overlay.js");
+
+/// Shared client-side runtime loaded by every overlay/stat page.
+/// `no-cache` so OBS browser sources pick up changes on the next load.
+pub(crate) async fn serve_overlay_js() -> impl IntoResponse {
+    (
+        [
+            (header::CONTENT_TYPE, "application/javascript; charset=utf-8"),
+            (header::CACHE_CONTROL, "no-cache"),
+        ],
+        OVERLAY_JS,
+    )
+}
 
 pub(crate) async fn serve_dex_overlay(
     State(state): State<WebState>,

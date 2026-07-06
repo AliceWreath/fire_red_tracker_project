@@ -120,6 +120,7 @@ html[data-theme=light] .section-empty { color: #999; }
   <div id="game-clear" style="display:none">Champion Defeated!</div>
   <div id="disconnected">disconnected</div>
 </div>
+<script src="/static/overlay.js"></script>
 <script>
 const _pathParts  = window.location.pathname.split('/').filter(Boolean);
 const _pathIndex  = parseInt(_pathParts[0]);
@@ -246,15 +247,7 @@ function handleState(slots) {
     }
 }
 
-let ws;
-let reconnectDelay = 1000;
-function connect() {
-    ws = new WebSocket('ws://' + location.host + '/ws?show=nextgym' + (_params.get('token') ? '&token=' + encodeURIComponent(_params.get('token')) : ''));
-    ws.onopen    = () => { reconnectDelay = 1000; };
-    ws.onmessage = e => handleState(JSON.parse(e.data));
-    ws.onclose   = () => { setTimeout(connect, reconnectDelay); reconnectDelay = Math.min(reconnectDelay * 2, 30000); };
-}
-connect();
+FRT.connectWS('nextgym', handleState);
 </script>
 </body>
 </html>

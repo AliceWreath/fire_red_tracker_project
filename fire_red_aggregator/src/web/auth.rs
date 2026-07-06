@@ -51,7 +51,9 @@ pub(crate) fn extract_query_token(uri: &axum::http::Uri) -> Option<String> {
 
 /// Routes that do not require a valid session.
 pub(crate) fn is_public_route(path: &str, method: &axum::http::Method) -> bool {
-    matches!(path, "/" | "/register" | "/interactions" | "/api/webhook/donation" | "/api/catch_rate")
+    // /static/overlay.js: shared page runtime; <script src> requests carry no
+    // token, and the file contains only code, never data.
+    matches!(path, "/" | "/register" | "/interactions" | "/api/webhook/donation" | "/api/catch_rate" | "/static/overlay.js")
         || path == "/api/login"
         || path.starts_with("/share/")
         // POST /api/users = register endpoint
