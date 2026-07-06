@@ -1,7 +1,7 @@
 use fire_red_states::LockOrRecover;
 use postgres::{Client, NoTls};
 use sha2::{Digest, Sha256};
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 
@@ -660,6 +660,19 @@ impl DbState {
     fn effective_run_id(&self) -> Option<u32> {
         THREAD_RUN_ID.with(|c| c.get()).or(self.run_id)
     }
+
+    /// Returns the player name for the current call context.
+    ///
+    /// Mirrors [`Self::effective_run_id`]: direct-mode slots each run their game
+    /// loop on a dedicated thread and set `THREAD_CURRENT_PLAYER` to their own
+    /// name via `set_thread_player_name`. That per-thread override takes
+    /// precedence over the global `current_player` so multiple slots sharing one
+    /// process don't clobber each other's player-name tag on every DB write.
+    fn effective_player_name(&self) -> String {
+        THREAD_CURRENT_PLAYER
+            .with(|c| c.borrow().clone())
+            .unwrap_or_else(|| self.current_player.clone())
+    }
 }
 
 // Per-thread run ID override used by direct-mode game-loop threads.
@@ -706,6 +719,52 @@ impl Drop for ThreadRunIdGuard {
 pub fn set_thread_run_id_scoped(run_id: u32) -> ThreadRunIdGuard {
     THREAD_RUN_ID.with(|c| c.set(Some(run_id)));
     ThreadRunIdGuard
+}
+
+// Per-thread player-name override used by direct-mode game-loop threads.
+// Set via set_thread_player_name at thread startup; cleared by clear_thread_player_name.
+thread_local! {
+    static THREAD_CURRENT_PLAYER: RefCell<Option<String>> = const { RefCell::new(None) };
+}
+
+/// Override the active player name for the current thread, and (like
+/// [`set_player_name`]) persist it as the global fallback and update the run
+/// row if it still holds the placeholder 'Unknown'.
+///
+/// Call this once a direct-mode game-loop thread discovers its trainer name,
+/// so that all DB writes from that thread are tagged with the right player,
+/// independent of whatever other threads are doing to the global
+/// `DbState.current_player`. Without this, two concurrent per-host threads
+/// sharing one process would race to overwrite each other's player-name tag,
+/// causing every write from both threads to be tagged with whichever thread
+/// won last.
+pub fn set_thread_player_name(name: &str) {
+    THREAD_CURRENT_PLAYER.with(|c| *c.borrow_mut() = Some(name.to_string()));
+    set_player_name(name);
+}
+
+/// Clear the per-thread player name override set by [`set_thread_player_name`].
+pub fn clear_thread_player_name() {
+    THREAD_CURRENT_PLAYER.with(|c| *c.borrow_mut() = None);
+}
+
+/// RAII guard returned by [`set_thread_player_name_scoped`].
+/// Clears the thread-local player name when dropped so it cannot leak to the
+/// next task scheduled on the same OS thread.
+pub struct ThreadPlayerNameGuard;
+
+impl Drop for ThreadPlayerNameGuard {
+    fn drop(&mut self) {
+        THREAD_CURRENT_PLAYER.with(|c| *c.borrow_mut() = None);
+    }
+}
+
+/// Override the active player name for the current thread and return a guard
+/// that clears it automatically when dropped.
+pub fn set_thread_player_name_scoped(name: &str) -> ThreadPlayerNameGuard {
+    THREAD_CURRENT_PLAYER.with(|c| *c.borrow_mut() = Some(name.to_string()));
+    set_player_name(name);
+    ThreadPlayerNameGuard
 }
 
 static DB: OnceLock<Option<Mutex<DbState>>> = OnceLock::new();
@@ -1476,6 +1535,12 @@ pub fn get_or_create_run(player_name: &str) -> Result<u32, String> {
 ///
 /// Stores the name in-process for tagging all subsequent DB writes, and updates
 /// the run row if it still holds the placeholder 'Unknown'.
+///
+/// This sets the *global* fallback only. In direct mode, where multiple
+/// game-loop threads may share one process (e.g. two players in a soul-link
+/// run), each thread must call [`set_thread_player_name`] instead so its
+/// writes are tagged with its own name rather than racing with other threads
+/// over this global value.
 pub fn set_player_name(name: &str) {
     let Some(db) = db() else { return };
     let mut state = db.lock_or_recover();
@@ -1611,7 +1676,7 @@ pub fn mark_dead(pokemon: DeadPokemon) -> Result<bool, postgres::Error> {
         Some(id) => id,
         None => return Ok(false),
     };
-    let player = pg_safe(&state.current_player);
+    let player = pg_safe(&state.effective_player_name());
     let ot_name = pg_safe(&pokemon.ot_name);
     let nickname = pg_safe(&pokemon.nickname);
     let spec_name = pg_safe(&pokemon.species_name);
@@ -2344,7 +2409,7 @@ pub fn record_event(event: EventKind<'_>) -> Result<(), postgres::Error> {
         Some(id) => id,
         None => return Ok(()),
     };
-    let player = state.current_player.clone();
+    let player = state.effective_player_name();
     let occurred_at = unix_now() as i64;
     let (event_type, species_name, nickname, old_nickname, level) = event.row_parts();
     state.client.execute(
@@ -2376,7 +2441,7 @@ pub fn record_trainer_defeat(defeat: TrainerDefeat) -> Result<bool, postgres::Er
         Some(id) => id,
         None => return Ok(false),
     };
-    let player = pg_safe(&state.current_player);
+    let player = pg_safe(&state.effective_player_name());
     let n = state.client.execute(
         "INSERT INTO trainer_battles (run_id, player_name, flag_index, trainer_name, location, defeated_at)
          VALUES ($1, $2, $3, $4, $5, $6)
@@ -2439,7 +2504,7 @@ pub fn mark_caught(pokemon: CaughtPokemon) -> bool {
         Some(id) => id,
         None => return false,
     };
-    let player = pg_safe(&state.current_player);
+    let player = pg_safe(&state.effective_player_name());
     let nickname = pg_safe(&pokemon.nickname);
     let spec_name = pg_safe(&pokemon.species_name);
     match state.client.execute(
@@ -2590,7 +2655,7 @@ pub fn list_caught() -> Vec<CaughtPokemon> {
         Some(id) => id,
         None => return vec![],
     };
-    let player = state.current_player.clone();
+    let player = state.effective_player_name();
     query_caught(&mut state.client, active, &player)
 }
 
@@ -2612,7 +2677,7 @@ pub fn record_encounter(encounter: Encounter) -> Result<bool, postgres::Error> {
         Some(id) => id,
         None => return Ok(false),
     };
-    let player = pg_safe(&state.current_player);
+    let player = pg_safe(&state.effective_player_name());
     let spec_name = pg_safe(&encounter.species_name);
     let rows = state.client.execute(
         "INSERT INTO encounters (
@@ -2642,7 +2707,7 @@ pub fn set_encounter_caught(map_group: u8, map_name: u8) {
         Some(id) => id,
         None => return,
     };
-    let player = state.current_player.clone();
+    let player = state.effective_player_name();
     if let Err(e) = state.client.execute(
         "UPDATE encounters SET caught = TRUE
          WHERE run_id = $1 AND player_name = $2 AND map_group = $3 AND map_name = $4",
@@ -2675,7 +2740,7 @@ pub fn record_catch_attempt(
         Some(id) => id,
         None => return,
     };
-    let player = pg_safe(&state.current_player);
+    let player = pg_safe(&state.effective_player_name());
     let spec = pg_safe(species_name);
     let area_s = pg_safe(area);
     if let Err(e) = state.client.execute(
@@ -2703,7 +2768,7 @@ pub fn open_area_visit(map_group: u8, map_name: u8, area_name: &str, entered_at:
     let db = db()?;
     let mut state = db.lock_or_recover();
     let active = state.effective_run_id()? as i32;
-    let player = pg_safe(&state.current_player);
+    let player = pg_safe(&state.effective_player_name());
     let area_s = pg_safe(area_name);
     state
         .client
@@ -2771,7 +2836,7 @@ pub fn species_caught_by_self(species: u16) -> bool {
         Some(id) => id,
         None => return false,
     };
-    let player = state.current_player.clone();
+    let player = state.effective_player_name();
     state
         .client
         .query_one(
@@ -2792,7 +2857,7 @@ pub fn species_encountered(species: u16) -> bool {
         Some(id) => id,
         None => return false,
     };
-    let player = state.current_player.clone();
+    let player = state.effective_player_name();
     state
         .client
         .query_one(
@@ -2840,7 +2905,7 @@ pub fn has_encounter_for_any_floor(floors: &[(u8, u8)]) -> bool {
         Some(id) => id,
         None => return false,
     };
-    let player = state.current_player.clone();
+    let player = state.effective_player_name();
 
     // Build a single EXISTS query with one OR-clause per floor so we only
     // issue one round-trip instead of N while holding the DB mutex.
@@ -2889,7 +2954,7 @@ pub fn has_encounter(map_group: u8, map_name: u8) -> bool {
         Some(id) => id,
         None => return false,
     };
-    let player = state.current_player.clone();
+    let player = state.effective_player_name();
     state
         .client
         .query_one(
@@ -2914,7 +2979,7 @@ pub fn list_encounters() -> Vec<Encounter> {
         Some(id) => id,
         None => return vec![],
     };
-    let player = state.current_player.clone();
+    let player = state.effective_player_name();
     state.client
         .query(
             "SELECT player_name, map_group, map_name, species, species_name, level, caught, encountered_at, is_shiny

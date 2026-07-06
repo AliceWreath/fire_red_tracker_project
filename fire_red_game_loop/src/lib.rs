@@ -364,7 +364,7 @@ pub fn spawn_game_loop(
         let mut player_name_set = {
             let name = get_trainer_name();
             if !name.trim().is_empty() {
-                fire_red_database::set_player_name(&name);
+                fire_red_database::set_thread_player_name(&name);
                 *thread_player_name.lock_or_recover() = name;
                 true
             } else {
@@ -419,7 +419,7 @@ pub fn spawn_game_loop(
                         );
                     }
                     last_player_name = name.clone();
-                    fire_red_database::set_player_name(&name);
+                    fire_red_database::set_thread_player_name(&name);
                     *thread_player_name.lock_or_recover() = name;
                     player_name_set = true;
                     enc_tracker.seed_from_db();
