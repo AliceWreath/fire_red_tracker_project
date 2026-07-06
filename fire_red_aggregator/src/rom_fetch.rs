@@ -71,16 +71,16 @@ const MAX_PASSES: usize = 8;
 /// Returns the path of the newly written cache file, or an error string.
 pub fn force_fetch_rom(host: &str, port: u16, run_id: Option<u32>) -> Result<PathBuf, String> {
     let dir = conn_dir(host, port, run_id)?;
-    if dir.exists() {
-        if let Ok(entries) = std::fs::read_dir(&dir) {
-            for entry in entries.flatten() {
-                let p = entry.path();
-                if p.extension().and_then(|e| e.to_str()) == Some("gba") {
-                    if let Err(e) = std::fs::remove_file(&p) {
-                        return Err(format!("force refresh: cannot delete cached ROM: {}", e));
-                    }
-                    tracing::info!("ROM force-refresh: deleted cached ROM at {}", p.display());
+    if dir.exists()
+        && let Ok(entries) = std::fs::read_dir(&dir)
+    {
+        for entry in entries.flatten() {
+            let p = entry.path();
+            if p.extension().and_then(|e| e.to_str()) == Some("gba") {
+                if let Err(e) = std::fs::remove_file(&p) {
+                    return Err(format!("force refresh: cannot delete cached ROM: {}", e));
                 }
+                tracing::info!("ROM force-refresh: deleted cached ROM at {}", p.display());
             }
         }
     }

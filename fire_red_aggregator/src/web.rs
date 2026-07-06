@@ -191,8 +191,12 @@ mod tests {
         }
     }
 
+    // The auth wall (v0.9.70) protects every non-public route: API and WS
+    // requests without a session get 401 JSON, page requests get a 303
+    // redirect to the landing page.
+
     #[tokio::test]
-    async fn api_state_empty_slots_returns_ok() {
+    async fn api_state_unauthenticated_returns_401_json() {
         use axum::body::Body;
         use axum::http::{Request, StatusCode};
         use tower::ServiceExt;
@@ -208,15 +212,16 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
         let body = axum::body::to_bytes(response.into_body(), 1024)
             .await
             .unwrap();
-        assert_eq!(&body[..], b"[]");
+        let v: serde_json::Value = serde_json::from_slice(&body).expect("body must be JSON");
+        assert!(v.get("error").is_some(), "expected error field");
     }
 
     #[tokio::test]
-    async fn api_slot_out_of_range_returns_404() {
+    async fn api_slot_unauthenticated_returns_401() {
         use axum::body::Body;
         use axum::http::{Request, StatusCode};
         use tower::ServiceExt;
@@ -232,7 +237,27 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn ws_unauthenticated_returns_401() {
+        use axum::body::Body;
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt;
+
+        let app = build_router(empty_web_state());
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/ws")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
 
     #[tokio::test]
@@ -256,9 +281,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn serve_about_returns_ok() {
+    async fn page_unauthenticated_redirects_to_landing() {
         use axum::body::Body;
-        use axum::http::{Request, StatusCode};
+        use axum::http::{Request, StatusCode, header};
         use tower::ServiceExt;
 
         let app = build_router(empty_web_state());
@@ -272,11 +297,16 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.status(), StatusCode::SEE_OTHER);
+        assert_eq!(
+            response.headers().get(header::LOCATION).unwrap(),
+            "/",
+            "unauthenticated page request should redirect to the landing page"
+        );
     }
 
     #[tokio::test]
-    async fn api_runs_no_db_returns_error_json() {
+    async fn api_runs_unauthenticated_returns_401() {
         use axum::body::Body;
         use axum::http::{Request, StatusCode};
         use tower::ServiceExt;
@@ -292,12 +322,55 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(response.status(), StatusCode::OK);
-        let body = axum::body::to_bytes(response.into_body(), 4096)
-            .await
-            .unwrap();
-        let v: serde_json::Value = serde_json::from_slice(&body).expect("body must be JSON");
-        assert!(v.get("error").is_some(), "expected error field when no DB");
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    // ── Auth helper unit tests ───────────────────────────────────────────────
+
+    #[test]
+    fn is_public_route_matrix() {
+        use axum::http::Method;
+        for path in ["/", "/register", "/api/login", "/api/catch_rate", "/share/abc123"] {
+            assert!(is_public_route(path, &Method::GET), "{path} should be public");
+        }
+        assert!(is_public_route("/api/users", &Method::POST), "register endpoint is public");
+        for path in ["/api/state", "/api/runs", "/api/users", "/dashboard", "/ws", "/about"] {
+            assert!(!is_public_route(path, &Method::GET), "{path} should require auth");
+        }
+    }
+
+    #[test]
+    fn extract_bearer_all_sources() {
+        use axum::http::{HeaderMap, HeaderValue};
+
+        let mut h = HeaderMap::new();
+        h.insert("Authorization", HeaderValue::from_static("Bearer tok-a"));
+        assert_eq!(extract_bearer(&h).as_deref(), Some("tok-a"));
+
+        let mut h = HeaderMap::new();
+        h.insert("X-Session-Token", HeaderValue::from_static("tok-b"));
+        assert_eq!(extract_bearer(&h).as_deref(), Some("tok-b"));
+
+        let mut h = HeaderMap::new();
+        h.insert(
+            header::COOKIE,
+            HeaderValue::from_static("other=1; frt_token=tok-c; more=2"),
+        );
+        assert_eq!(extract_bearer(&h).as_deref(), Some("tok-c"));
+
+        assert_eq!(extract_bearer(&HeaderMap::new()), None);
+    }
+
+    #[test]
+    fn extract_query_token_parses_uri() {
+        let uri: axum::http::Uri = "/1/hp?theme=dark&token=tok-q".parse().unwrap();
+        assert_eq!(extract_query_token(&uri).as_deref(), Some("tok-q"));
+
+        let uri: axum::http::Uri = "/1/hp?token=".parse().unwrap();
+        assert_eq!(extract_query_token(&uri), None, "empty token is ignored");
+
+        let uri: axum::http::Uri = "/1/hp".parse().unwrap();
+        assert_eq!(extract_query_token(&uri), None);
     }
 
     #[tokio::test]

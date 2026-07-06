@@ -171,12 +171,12 @@ pub(crate) async fn api_slot_ev_progress(
                 "sp_defense": ev.sp_defense_ev,
                 "total":      total,
                 "remaining":  remaining_total,
-                "hp_capped":         ev.hp_ev >= 255,
-                "attack_capped":     ev.attack_ev >= 255,
-                "defense_capped":    ev.defense_ev >= 255,
-                "speed_capped":      ev.speed_ev >= 255,
-                "sp_attack_capped":  ev.sp_attack_ev >= 255,
-                "sp_defense_capped": ev.sp_defense_ev >= 255,
+                "hp_capped":         ev.hp_ev == 255,
+                "attack_capped":     ev.attack_ev == 255,
+                "defense_capped":    ev.defense_ev == 255,
+                "speed_capped":      ev.speed_ev == 255,
+                "sp_attack_capped":  ev.sp_attack_ev == 255,
+                "sp_defense_capped": ev.sp_defense_ev == 255,
                 "fully_trained": total >= 510,
             })
         })

@@ -12,10 +12,10 @@ pub(crate) async fn serve_db_json(
     };
     let token = extract_bearer(&headers).map(|s| s.to_string());
     let result = tokio::task::spawn_blocking(move || {
-        if let Some(tok) = token {
-            if let Ok(Some(user)) = fire_red_database::validate_session(&tok) {
-                return fire_red_database::dump_for_user(&conn, user.id);
-            }
+        if let Some(tok) = token
+            && let Ok(Some(user)) = fire_red_database::validate_session(&tok)
+        {
+            return fire_red_database::dump_for_user(&conn, user.id);
         }
         fire_red_database::dump_all(&conn)
     }).await;

@@ -459,7 +459,7 @@ fn count_valid_leader_spots(rom: &[u8], start: usize) -> usize {
             }
             let lvl = rom[po + 1];
             let spc = u16::from_le_bytes([rom[po + 2], rom[po + 3]]);
-            lvl >= 1 && lvl <= 100 && spc >= 1 && spc <= 386
+            (1..=100).contains(&lvl) && (1..=386).contains(&spc)
         })
         .count()
 }
