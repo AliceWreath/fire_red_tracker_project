@@ -56,6 +56,7 @@ mod discord_interactions;
 mod dto;
 mod integrations;
 mod pages;
+mod rate_limit;
 mod router;
 mod run_admin;
 mod site_pages;

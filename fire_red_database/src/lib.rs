@@ -802,7 +802,7 @@ pub fn initialize_noop() {
 /// `initialize` has already been called.
 /// Increment this whenever a new migration or data-repair statement is added.
 /// `initialize` skips all SQL when the DB already records this version.
-const SCHEMA_VERSION: &str = "29";
+const SCHEMA_VERSION: &str = "30";
 
 pub fn initialize(connection_string: &str) -> Result<(), String> {
     // Accept bare `host/dbname` strings — prepend the scheme so callers don't have to.
@@ -1279,6 +1279,11 @@ pub fn initialize(connection_string: &str) -> Result<(), String> {
             slot_index  INTEGER NOT NULL,
             PRIMARY KEY (run_id, player_name)
         );
+
+        -- Migration v30: record where each session was created from, so the
+        -- dashboard session manager can show recognizable entries.
+        ALTER TABLE sessions ADD COLUMN IF NOT EXISTS ip TEXT;
+        ALTER TABLE sessions ADD COLUMN IF NOT EXISTS user_agent TEXT;
     ").map_err(|e| format!("Failed to create database schema: {e}"))?;
 
     // Record the schema version so future startups can skip all migrations.
@@ -7290,6 +7295,16 @@ pub fn list_users() -> Result<Vec<User>, String> {
 ///
 /// Tokens expire after 30 days. Old expired sessions are pruned on each call.
 pub fn create_session(user_id: u32) -> Result<String, String> {
+    create_session_with_client_info(user_id, None, None)
+}
+
+/// Like [`create_session`], but records the client IP and User-Agent on the
+/// session row so the dashboard session manager can show recognizable entries.
+pub fn create_session_with_client_info(
+    user_id: u32,
+    ip: Option<&str>,
+    user_agent: Option<&str>,
+) -> Result<String, String> {
     let Some(db) = db() else {
         return Err("database not initialised".to_string());
     };
@@ -7320,11 +7335,91 @@ pub fn create_session(user_id: u32) -> Result<String, String> {
     let now = unix_now() as i64;
     let expires = now + SESSION_TTL_SECS as i64;
     state.client.execute(
-        "INSERT INTO sessions (token, user_id, created_at, expires_at) VALUES ($1, $2, $3, $4)",
-        &[&token, &(user_id as i32), &now, &expires],
+        "INSERT INTO sessions (token, user_id, created_at, expires_at, ip, user_agent)
+         VALUES ($1, $2, $3, $4, $5, $6)",
+        &[&token, &(user_id as i32), &now, &expires, &ip, &user_agent],
     ).map_err(|e| format!("DB error: {e}"))?;
 
     Ok(token)
+}
+
+/// One row of [`list_sessions_for_user`]. Only a token prefix is exposed —
+/// enough to identify a session for revocation, never enough to hijack it.
+#[derive(Debug, Clone)]
+pub struct SessionInfo {
+    /// First 12 hex chars of the 64-char token; the revocation handle.
+    pub token_prefix: String,
+    pub created_at: u64,
+    pub expires_at: u64,
+    pub ip: Option<String>,
+    pub user_agent: Option<String>,
+    /// True when this row is the session making the request.
+    pub current: bool,
+}
+
+/// Number of leading token characters exposed as the session handle.
+/// 12 hex chars identify a session uniquely while leaving 52 hidden chars
+/// (208 bits) so the handle is useless for authentication.
+const SESSION_PREFIX_LEN: usize = 12;
+
+/// Lists the active (non-expired) sessions belonging to `user_id`, newest
+/// first. `current_token` marks which returned row is the caller's own.
+pub fn list_sessions_for_user(
+    user_id: u32,
+    current_token: &str,
+) -> Result<Vec<SessionInfo>, String> {
+    let Some(db) = db() else { return Ok(Vec::new()) };
+    let mut state = db.lock_or_recover();
+    let rows = state.client.query(
+        "SELECT token, created_at, expires_at, ip, user_agent
+         FROM sessions
+         WHERE user_id = $1 AND expires_at > $2
+         ORDER BY created_at DESC",
+        &[&(user_id as i32), &(unix_now() as i64)],
+    ).map_err(|e| format!("DB error: {e}"))?;
+    Ok(rows.iter().map(|r| {
+        let token: String = r.get(0);
+        SessionInfo {
+            token_prefix: token.chars().take(SESSION_PREFIX_LEN).collect(),
+            created_at: r.get::<_, i64>(1) as u64,
+            expires_at: r.get::<_, i64>(2) as u64,
+            ip: r.get(3),
+            user_agent: r.get(4),
+            current: token == current_token,
+        }
+    }).collect())
+}
+
+/// Revokes one of `user_id`'s own sessions by its 12-char token prefix.
+///
+/// The prefix must be exactly [`SESSION_PREFIX_LEN`] lowercase hex chars
+/// (as returned by [`list_sessions_for_user`]); anything else is rejected
+/// before touching the database. Returns `true` if a session was deleted.
+pub fn delete_session_by_prefix(user_id: u32, prefix: &str) -> Result<bool, String> {
+    if prefix.len() != SESSION_PREFIX_LEN
+        || !prefix.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
+    {
+        return Err("invalid session prefix".to_string());
+    }
+    let Some(db) = db() else { return Ok(false) };
+    let mut state = db.lock_or_recover();
+    // The prefix is validated hex, so it cannot contain LIKE wildcards.
+    let n = state.client.execute(
+        "DELETE FROM sessions WHERE user_id = $1 AND token LIKE $2 || '%'",
+        &[&(user_id as i32), &prefix],
+    ).map_err(|e| format!("DB error: {e}"))?;
+    Ok(n > 0)
+}
+
+/// Revokes every session belonging to `user_id` except `current_token`
+/// ("sign out everywhere else"). Returns the number of sessions revoked.
+pub fn delete_other_sessions(user_id: u32, current_token: &str) -> Result<u64, String> {
+    let Some(db) = db() else { return Ok(0) };
+    let mut state = db.lock_or_recover();
+    state.client.execute(
+        "DELETE FROM sessions WHERE user_id = $1 AND token <> $2",
+        &[&(user_id as i32), &current_token],
+    ).map_err(|e| format!("DB error: {e}"))
 }
 
 /// Validate a session token. Returns the associated `User` if the token is
@@ -8077,5 +8172,33 @@ mod thread_local_tests {
         })
         .join()
         .unwrap();
+    }
+}
+
+#[cfg(test)]
+mod session_tests {
+    use super::*;
+
+    // The DB OnceLock is never initialized in the test process, so a prefix
+    // that passes validation returns Ok(false) after the early db() check —
+    // these tests exercise only the validation layer.
+
+    #[test]
+    fn delete_session_by_prefix_accepts_valid_prefix() {
+        assert_eq!(delete_session_by_prefix(1, "0123456789ab"), Ok(false));
+    }
+
+    #[test]
+    fn delete_session_by_prefix_rejects_bad_input() {
+        // Wrong length.
+        assert!(delete_session_by_prefix(1, "0123").is_err());
+        assert!(delete_session_by_prefix(1, "0123456789abc").is_err());
+        assert!(delete_session_by_prefix(1, "").is_err());
+        // LIKE wildcards and non-hex characters.
+        assert!(delete_session_by_prefix(1, "0123456789a%").is_err());
+        assert!(delete_session_by_prefix(1, "0123456789a_").is_err());
+        assert!(delete_session_by_prefix(1, "0123456789ag").is_err());
+        // Tokens are lowercase hex; uppercase would never match a session.
+        assert!(delete_session_by_prefix(1, "0123456789AB").is_err());
     }
 }

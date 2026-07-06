@@ -1,6 +1,32 @@
 //! User auth helpers, handlers, and access-control middleware.
 
+use super::rate_limit::RateLimiter;
 use super::*;
+use std::sync::LazyLock;
+
+/// Login throttle: 5 *failed* attempts per IP per 5 minutes. Successful
+/// logins clear the counter, so legitimate users are never locked out by
+/// their own typos.
+static LOGIN_LIMITER: LazyLock<RateLimiter> =
+    LazyLock::new(|| RateLimiter::new(Duration::from_secs(300), 5));
+
+/// Registration throttle: 5 account-creation attempts per IP per hour,
+/// successful or not, to stop bulk account spam.
+static REGISTER_LIMITER: LazyLock<RateLimiter> =
+    LazyLock::new(|| RateLimiter::new(Duration::from_secs(3600), 5));
+
+/// Builds the shared `429 Too Many Requests` JSON response.
+fn too_many_requests(retry_after_secs: u64) -> axum::response::Response {
+    (
+        StatusCode::TOO_MANY_REQUESTS,
+        [(header::RETRY_AFTER, retry_after_secs.to_string())],
+        axum::Json(serde_json::json!({
+            "error": "too many attempts, slow down",
+            "retry_after_secs": retry_after_secs,
+        })),
+    )
+        .into_response()
+}
 
 // ---------------------------------------------------------------------------
 // User auth helpers + handlers
@@ -334,10 +360,18 @@ pub(crate) struct LoginBody {
 ///
 /// Body: `{ "username": "...", "password": "..." }` (password ≥ 8 chars)
 /// Returns: `{ "id": N, "username": "..." }` or `{ "error": "..." }` with
-/// `409 Conflict` when the username is already taken.
+/// `409 Conflict` when the username is already taken and `429` after 5
+/// registration attempts from the same IP within an hour.
 pub(crate) async fn api_register_user(
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
     axum::Json(body): axum::Json<RegisterBody>,
-) -> impl IntoResponse {
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    if let Err(retry_after) = REGISTER_LIMITER.check(addr.ip()) {
+        tracing::warn!(ip = %addr.ip(), retry_after, "POST /api/users → 429 (rate limited)");
+        return too_many_requests(retry_after);
+    }
+    REGISTER_LIMITER.record(addr.ip());
     let result = tokio::task::spawn_blocking(move || {
         fire_red_database::create_user(&body.username, &body.password)
     }).await;
@@ -349,19 +383,19 @@ pub(crate) async fn api_register_user(
                 "username": user.username,
                 "created_at": user.created_at,
             })),
-        ),
+        ).into_response(),
         Ok(Err(e)) if e.contains("already taken") => (
             StatusCode::CONFLICT,
             axum::Json(serde_json::json!({ "error": e })),
-        ),
+        ).into_response(),
         Ok(Err(e)) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             axum::Json(serde_json::json!({ "error": e })),
-        ),
+        ).into_response(),
         Err(_) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             axum::Json(serde_json::json!({ "error": "Task panicked" })),
-        ),
+        ).into_response(),
     }
 }
 
@@ -402,17 +436,33 @@ pub(crate) async fn api_list_users(Extension(user): Extension<User>) -> impl Int
 /// Body: `{ "username": "...", "password": "..." }`
 /// Returns: `{ "token": "...", "user": { "id": N, "username": "..." } }` and
 /// sets an `HttpOnly` `frt_token` cookie so browser page-loads are authenticated
-/// automatically. Returns `401` on bad credentials.
+/// automatically. Returns `401` on bad credentials and `429` after 5 failed
+/// attempts from the same IP within 5 minutes (checked before any bcrypt work).
 pub(crate) async fn api_login(
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: axum::http::HeaderMap,
     axum::Json(body): axum::Json<LoginBody>,
 ) -> axum::response::Response {
     use axum::response::IntoResponse;
+    if let Err(retry_after) = LOGIN_LIMITER.check(addr.ip()) {
+        tracing::warn!(ip = %addr.ip(), retry_after, "POST /api/login → 429 (rate limited)");
+        return too_many_requests(retry_after);
+    }
     let username_for_log = body.username.clone();
+    let client_ip = addr.ip().to_string();
+    let user_agent = headers
+        .get(header::USER_AGENT)
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.chars().take(200).collect::<String>());
     let result = tokio::task::spawn_blocking(move || -> Result<Option<(fire_red_database::User, String)>, String> {
         let user = fire_red_database::authenticate_user(&body.username, &body.password)?;
         match user {
             Some(u) => {
-                let token = fire_red_database::create_session(u.id)?;
+                let token = fire_red_database::create_session_with_client_info(
+                    u.id,
+                    Some(&client_ip),
+                    user_agent.as_deref(),
+                )?;
                 Ok(Some((u, token)))
             }
             None => Ok(None),
@@ -420,6 +470,7 @@ pub(crate) async fn api_login(
     }).await;
     match result {
         Ok(Ok(Some((user, token)))) => {
+            LOGIN_LIMITER.clear(addr.ip());
             let cookie = format!(
                 "frt_token={}; HttpOnly; Path=/; SameSite=Lax; Max-Age=2592000",
                 token
@@ -434,7 +485,8 @@ pub(crate) async fn api_login(
             ).into_response()
         }
         Ok(Ok(None)) => {
-            tracing::warn!(username = %username_for_log, "POST /api/login → 401");
+            LOGIN_LIMITER.record(addr.ip());
+            tracing::warn!(username = %username_for_log, ip = %addr.ip(), "POST /api/login → 401");
             (
                 StatusCode::UNAUTHORIZED,
                 axum::Json(serde_json::json!({ "error": "invalid username or password" })),
@@ -476,6 +528,78 @@ pub(crate) async fn api_logout(
         StatusCode::OK,
         [(header::SET_COOKIE, "frt_token=; HttpOnly; Path=/; SameSite=Lax; Max-Age=0")],
     )
+}
+
+/// `GET /api/me/sessions` — list the caller's active sessions.
+///
+/// Returns `{ "sessions": [{ "token_prefix", "created_at", "expires_at",
+/// "ip", "user_agent", "current" }, ...] }`, newest first. Only a 12-char
+/// token prefix is exposed; it serves as the revocation handle for
+/// `DELETE /api/me/sessions/:prefix`.
+pub(crate) async fn api_my_sessions(
+    Extension(user): Extension<User>,
+    uri: axum::http::Uri,
+    headers: axum::http::HeaderMap,
+) -> axum::Json<serde_json::Value> {
+    let current = extract_query_token(&uri)
+        .or_else(|| extract_bearer(&headers))
+        .unwrap_or_default();
+    let result = tokio::task::spawn_blocking(move || {
+        fire_red_database::list_sessions_for_user(user.id, &current)
+    }).await;
+    match result {
+        Ok(Ok(sessions)) => {
+            let arr: Vec<_> = sessions.iter().map(|s| serde_json::json!({
+                "token_prefix": s.token_prefix,
+                "created_at": s.created_at,
+                "expires_at": s.expires_at,
+                "ip": s.ip,
+                "user_agent": s.user_agent,
+                "current": s.current,
+            })).collect();
+            axum::Json(serde_json::json!({ "sessions": arr }))
+        }
+        Ok(Err(e)) => axum::Json(serde_json::json!({ "error": e })),
+        Err(_) => axum::Json(serde_json::json!({ "error": "Task panicked" })),
+    }
+}
+
+/// `DELETE /api/me/sessions/:prefix` — revoke one of the caller's sessions
+/// by the 12-char token prefix from `GET /api/me/sessions`. Revoking the
+/// current session is allowed and acts as a logout.
+pub(crate) async fn api_revoke_session(
+    Extension(user): Extension<User>,
+    Path(prefix): Path<String>,
+) -> axum::Json<serde_json::Value> {
+    let result = tokio::task::spawn_blocking(move || {
+        fire_red_database::delete_session_by_prefix(user.id, &prefix)
+    }).await;
+    match result {
+        Ok(Ok(true)) => axum::Json(serde_json::json!({ "revoked": true })),
+        Ok(Ok(false)) => axum::Json(serde_json::json!({ "revoked": false, "error": "no such session" })),
+        Ok(Err(e)) => axum::Json(serde_json::json!({ "error": e })),
+        Err(_) => axum::Json(serde_json::json!({ "error": "Task panicked" })),
+    }
+}
+
+/// `POST /api/me/sessions/revoke_others` — revoke every session of the
+/// caller's except the one making this request ("sign out everywhere else").
+pub(crate) async fn api_revoke_other_sessions(
+    Extension(user): Extension<User>,
+    uri: axum::http::Uri,
+    headers: axum::http::HeaderMap,
+) -> axum::Json<serde_json::Value> {
+    let Some(current) = extract_query_token(&uri).or_else(|| extract_bearer(&headers)) else {
+        return axum::Json(serde_json::json!({ "error": "no session token provided" }));
+    };
+    let result = tokio::task::spawn_blocking(move || {
+        fire_red_database::delete_other_sessions(user.id, &current)
+    }).await;
+    match result {
+        Ok(Ok(n)) => axum::Json(serde_json::json!({ "revoked": n })),
+        Ok(Err(e)) => axum::Json(serde_json::json!({ "error": e })),
+        Err(_) => axum::Json(serde_json::json!({ "error": "Task panicked" })),
+    }
 }
 
 /// `GET /api/me` — return the currently authenticated user.

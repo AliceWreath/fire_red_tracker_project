@@ -195,6 +195,16 @@ input:focus{outline:none;border-color:#e94560}
   <div class="token-copied" id="token-copied">Copied to clipboard</div>
 </div>
 
+<!-- ── Active sessions ─────────────────────────────────────────────── -->
+<div class="section">
+  <div class="section-title" style="display:flex;align-items:center;justify-content:space-between">
+    <span>Active Sessions</span>
+    <button class="btn btn-danger btn-sm" onclick="revokeOtherSessions()">Sign out everywhere else</button>
+  </div>
+  <p style="font-size:.82rem;color:#888;text-wrap:pretty">Every device or browser signed in to your account. Revoke any session you don't recognize.</p>
+  <div id="sessions-list" class="loading" style="margin-top:.6rem">Loading…</div>
+</div>
+
 </div><!-- /container -->
 </div><!-- /main -->
 
@@ -290,6 +300,48 @@ async function init(){
   document.getElementById('page-title').textContent='Dashboard — '+esc(me.username);
   if(tokR&&tokR.ok){const t=await tokR.json();SESSION=t.token||null;}
   loadDashboard();
+  loadSessions();
+}
+
+async function loadSessions(){
+  const el=document.getElementById('sessions-list');
+  const r=await fetch('/api/me/sessions').catch(()=>null);
+  if(!r||!r.ok){el.textContent='Could not load sessions.';return;}
+  const d=await r.json().catch(()=>({}));
+  const list=d.sessions||[];
+  if(!list.length){el.innerHTML='<div class="empty">No active sessions.</div>';return;}
+  let html='<table><tr><th>Signed in</th><th>From</th><th>Device</th><th>Expires</th><th></th></tr>';
+  for(const s of list){
+    const created=new Date(s.created_at*1000).toLocaleString();
+    const expires=new Date(s.expires_at*1000).toLocaleDateString();
+    const ua=s.user_agent?esc(s.user_agent.length>60?s.user_agent.slice(0,60)+'…':s.user_agent):'—';
+    html+='<tr><td>'+esc(created)+(s.current?' <span class="badge-owner">this session</span>':'')+'</td>'
+      +'<td style="font-variant-numeric:tabular-nums">'+esc(s.ip||'—')+'</td>'
+      +'<td style="color:#888;font-size:.78rem">'+ua+'</td>'
+      +'<td>'+esc(expires)+'</td>'
+      +'<td class="td-actions"><button class="btn btn-danger btn-xs" onclick="revokeSession(\''+esc(s.token_prefix)+'\','+(s.current?'true':'false')+')">Revoke</button></td></tr>';
+  }
+  el.className='';
+  el.innerHTML=html+'</table>';
+}
+
+async function revokeSession(prefix,isCurrent){
+  if(isCurrent&&!confirm('This is your current session — revoking it signs you out. Continue?'))return;
+  const r=await fetch('/api/me/sessions/'+prefix,{method:'DELETE'}).catch(()=>null);
+  if(!r){alert('Network error.');return;}
+  const d=await r.json().catch(()=>({}));
+  if(d.error){alert(d.error);return;}
+  if(isCurrent){window.location.href='/';return;}
+  loadSessions();
+}
+
+async function revokeOtherSessions(){
+  if(!confirm('Sign out every other device and browser?'))return;
+  const r=await fetch('/api/me/sessions/revoke_others',{method:'POST'}).catch(()=>null);
+  if(!r){alert('Network error.');return;}
+  const d=await r.json().catch(()=>({}));
+  if(d.error){alert(d.error);return;}
+  loadSessions();
 }
 
 async function loadDashboard(){
@@ -767,8 +819,11 @@ curl -H "Authorization: Bearer $TOKEN" http://localhost:9090/api/me</code></pre>
 <table>
   <thead><tr><th>Method &amp; Path</th><th>Description</th></tr></thead>
   <tbody>
-    <tr><td>POST /api/login</td><td>Body: <code>{"username","password"}</code>. Returns <code>{"token","user"}</code>.</td></tr>
+    <tr><td>POST /api/login</td><td>Body: <code>{"username","password"}</code>. Returns <code>{"token","user"}</code>. Rate limited: 5 failed attempts per IP per 5 minutes &rarr; <code>429</code> with <code>Retry-After</code>.</td></tr>
     <tr><td>POST /api/logout</td><td>Invalidates the current session token.</td></tr>
+    <tr><td>GET /api/me/sessions</td><td>Lists your active sessions (creation time, IP, device, 12-char <code>token_prefix</code> handle).</td></tr>
+    <tr><td>DELETE /api/me/sessions/:prefix</td><td>Revokes one session by its <code>token_prefix</code>.</td></tr>
+    <tr><td>POST /api/me/sessions/revoke_others</td><td>Revokes every session except the one making the request.</td></tr>
     <tr><td>POST /api/register</td><td>Body: <code>{"username","password"}</code>. Creates a new account.</td></tr>
     <tr><td>GET /api/me</td><td>Returns the current user's profile.</td></tr>
     <tr><td>GET /api/me/token</td><td>Returns the raw session token value as JSON (useful for scripts and OBS URL parameters).</td></tr>
