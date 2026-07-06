@@ -481,12 +481,12 @@ mod tests {
     #[test]
     fn tiles_data_too_short_returns_error() {
         // 1x1 tile requires 32 bytes; 31 is not enough.
-        assert!(decode_4bpp_tiles(&vec![0u8; 31], 1, 1).is_err());
+        assert!(decode_4bpp_tiles(&[0u8; 31], 1, 1).is_err());
     }
 
     #[test]
     fn tiles_all_zeros_produce_all_zero_indices() {
-        let pixels = decode_4bpp_tiles(&vec![0u8; 32], 1, 1).unwrap();
+        let pixels = decode_4bpp_tiles(&[0u8; 32], 1, 1).unwrap();
         assert_eq!(pixels.len(), 64);
         assert!(pixels.iter().all(|&p| p == 0));
     }
@@ -559,13 +559,13 @@ mod tests {
 
     #[test]
     fn palette_too_short_returns_error() {
-        assert!(decode_palette(&vec![0u8; 31], 0).is_err());
+        assert!(decode_palette(&[0u8; 31], 0).is_err());
     }
 
     #[test]
     fn palette_too_short_with_offset_returns_error() {
         // 33 bytes but offset=2 → only 31 bytes available for the palette.
-        assert!(decode_palette(&vec![0u8; 33], 2).is_err());
+        assert!(decode_palette(&[0u8; 33], 2).is_err());
     }
 
     #[test]
@@ -580,7 +580,7 @@ mod tests {
 
     #[test]
     fn palette_non_zero_indices_get_full_alpha() {
-        let pal = decode_palette(&vec![0u8; 32], 0).unwrap();
+        let pal = decode_palette(&[0u8; 32], 0).unwrap();
         for entry in &pal[1..] {
             assert_eq!(entry[3], 255);
         }
@@ -589,7 +589,7 @@ mod tests {
     #[test]
     fn palette_black_entry_decodes_to_zeros() {
         // 0x0000 → R=0, G=0, B=0. Index 0 also gets A=0 (transparent).
-        let pal = decode_palette(&vec![0u8; 32], 0).unwrap();
+        let pal = decode_palette(&[0u8; 32], 0).unwrap();
         assert_eq!(pal[0], [0, 0, 0, 0]);
     }
 

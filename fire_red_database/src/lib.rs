@@ -7959,3 +7959,123 @@ pub fn get_my_run_requests_json(conn_str: &str, owner_id: u32) -> serde_json::Va
     }).collect();
     serde_json::json!({ "requests": requests })
 }
+
+// ---------------------------------------------------------------------------
+// Thread-local override tests
+// ---------------------------------------------------------------------------
+
+// These run without a live Postgres connection: the DB OnceLock is never
+// initialized in the test process, so set_player_name / set_thread_player_name
+// return early after updating the thread-local, which is exactly the state
+// under test. Each test's assertions are confined to threads it owns, so the
+// per-thread state cannot race with other tests.
+#[cfg(test)]
+mod thread_local_tests {
+    use super::*;
+
+    fn thread_run_id() -> Option<u32> {
+        THREAD_RUN_ID.with(|c| c.get())
+    }
+
+    fn thread_player() -> Option<String> {
+        THREAD_CURRENT_PLAYER.with(|c| c.borrow().clone())
+    }
+
+    #[test]
+    fn set_and_clear_thread_run_id() {
+        std::thread::spawn(|| {
+            assert_eq!(thread_run_id(), None);
+            set_thread_run_id(42);
+            assert_eq!(thread_run_id(), Some(42));
+            clear_thread_run_id();
+            assert_eq!(thread_run_id(), None);
+        })
+        .join()
+        .unwrap();
+    }
+
+    #[test]
+    fn thread_run_id_guard_clears_on_drop() {
+        std::thread::spawn(|| {
+            {
+                let _guard = set_thread_run_id_scoped(7);
+                assert_eq!(thread_run_id(), Some(7));
+            }
+            assert_eq!(thread_run_id(), None);
+        })
+        .join()
+        .unwrap();
+    }
+
+    #[test]
+    fn set_and_clear_thread_player_name() {
+        std::thread::spawn(|| {
+            assert_eq!(thread_player(), None);
+            set_thread_player_name("RED");
+            assert_eq!(thread_player(), Some("RED".to_string()));
+            clear_thread_player_name();
+            assert_eq!(thread_player(), None);
+        })
+        .join()
+        .unwrap();
+    }
+
+    #[test]
+    fn thread_player_name_guard_clears_on_drop() {
+        std::thread::spawn(|| {
+            {
+                let _guard = set_thread_player_name_scoped("MISTY");
+                assert_eq!(thread_player(), Some("MISTY".to_string()));
+            }
+            assert_eq!(thread_player(), None);
+        })
+        .join()
+        .unwrap();
+    }
+
+    /// The bug fixed in v0.9.102: two direct-mode game-loop threads sharing
+    /// one process must each keep their own player name — the second thread's
+    /// assignment must not leak into the first thread's writes.
+    #[test]
+    fn thread_player_names_are_isolated_between_threads() {
+        let t1 = std::thread::spawn(|| {
+            set_thread_player_name("RED");
+            // Give the other thread time to set its own name.
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            thread_player()
+        });
+        let t2 = std::thread::spawn(|| {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            set_thread_player_name("LEAF");
+            thread_player()
+        });
+        assert_eq!(t1.join().unwrap(), Some("RED".to_string()));
+        assert_eq!(t2.join().unwrap(), Some("LEAF".to_string()));
+    }
+
+    #[test]
+    fn thread_run_ids_are_isolated_between_threads() {
+        let t1 = std::thread::spawn(|| {
+            set_thread_run_id(1);
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            thread_run_id()
+        });
+        let t2 = std::thread::spawn(|| {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            set_thread_run_id(2);
+            thread_run_id()
+        });
+        assert_eq!(t1.join().unwrap(), Some(1));
+        assert_eq!(t2.join().unwrap(), Some(2));
+    }
+
+    #[test]
+    fn overrides_start_unset_on_new_threads() {
+        std::thread::spawn(|| {
+            assert_eq!(thread_run_id(), None);
+            assert_eq!(thread_player(), None);
+        })
+        .join()
+        .unwrap();
+    }
+}

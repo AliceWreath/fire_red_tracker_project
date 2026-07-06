@@ -281,3 +281,220 @@ pub fn find_wild_headers(rom: &[u8]) -> Option<usize> {
 
     None
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const ROM_BASE: u32 = 0x0800_0000;
+
+    /// Filler byte for synthetic ROMs. 0x01 everywhere means any candidate
+    /// header has non-zero padding and any candidate pointer reads as
+    /// 0x01010101 (outside the ROM address range), so filler regions can
+    /// never validate as a table.
+    const FILLER: u8 = 0x01;
+
+    fn write_ptr(rom: &mut [u8], offset: usize, ptr: u32) {
+        rom[offset..offset + 4].copy_from_slice(&ptr.to_le_bytes());
+    }
+
+    /// Writes one 20-byte wild encounter header with all four table pointers
+    /// pointing at the start of ROM (a valid GBA ROM pointer).
+    fn write_wild_header(rom: &mut [u8], offset: usize, group: u8, map: u8) {
+        rom[offset] = group;
+        rom[offset + 1] = map;
+        rom[offset + 2] = 0;
+        rom[offset + 3] = 0;
+        for i in 0..4 {
+            write_ptr(rom, offset + 4 + i * 4, ROM_BASE);
+        }
+    }
+
+    /// Builds a ROM containing `count` valid headers at `table_start`,
+    /// followed by the 0xFF end-of-table sentinel.
+    fn rom_with_wild_table(table_start: usize, count: usize) -> Vec<u8> {
+        let mut rom = vec![FILLER; table_start + (count + 1) * HEADER_SIZE + 64];
+        for n in 0..count {
+            write_wild_header(&mut rom, table_start + n * HEADER_SIZE, (n / 8) as u8, (n % 8) as u8);
+        }
+        rom[table_start + count * HEADER_SIZE] = 0xFF; // sentinel
+        rom
+    }
+
+    // ── rom_ptr_to_offset ────────────────────────────────────────────────
+
+    #[test]
+    fn rom_ptr_to_offset_maps_bus_address() {
+        assert_eq!(rom_ptr_to_offset(0x0800_0000), Some(0));
+        assert_eq!(rom_ptr_to_offset(0x0812_3456), Some(0x12_3456));
+        assert_eq!(rom_ptr_to_offset(0x09FF_FFFF), Some(0x01FF_FFFF));
+    }
+
+    #[test]
+    fn rom_ptr_to_offset_rejects_null_and_out_of_range() {
+        assert_eq!(rom_ptr_to_offset(0), None);
+        assert_eq!(rom_ptr_to_offset(0x07FF_FFFF), None);
+        assert_eq!(rom_ptr_to_offset(0x0A00_0000), None);
+        assert_eq!(rom_ptr_to_offset(0x0200_0000), None); // EWRAM, not ROM
+    }
+
+    // ── looks_like_header ────────────────────────────────────────────────
+
+    #[test]
+    fn looks_like_header_accepts_valid_header() {
+        let mut rom = vec![FILLER; 64];
+        write_wild_header(&mut rom, 0, 3, 40);
+        assert!(looks_like_header(&rom, 0));
+    }
+
+    #[test]
+    fn looks_like_header_accepts_null_table_pointers() {
+        let mut rom = vec![FILLER; 64];
+        write_wild_header(&mut rom, 0, 3, 40);
+        write_ptr(&mut rom, 4, 0); // grass = null (no encounters of that type)
+        assert!(looks_like_header(&rom, 0));
+    }
+
+    #[test]
+    fn looks_like_header_rejects_nonzero_padding() {
+        let mut rom = vec![FILLER; 64];
+        write_wild_header(&mut rom, 0, 3, 40);
+        rom[2] = 1;
+        assert!(!looks_like_header(&rom, 0));
+    }
+
+    #[test]
+    fn looks_like_header_rejects_out_of_range_group_and_map() {
+        let mut rom = vec![FILLER; 64];
+        write_wild_header(&mut rom, 0, 51, 40); // group > 50
+        assert!(!looks_like_header(&rom, 0));
+        write_wild_header(&mut rom, 0, 3, 201); // map > 200
+        assert!(!looks_like_header(&rom, 0));
+    }
+
+    #[test]
+    fn looks_like_header_rejects_invalid_table_pointer() {
+        let mut rom = vec![FILLER; 64];
+        write_wild_header(&mut rom, 0, 3, 40);
+        write_ptr(&mut rom, 16, 0x0300_0000); // IWRAM address, not ROM
+        assert!(!looks_like_header(&rom, 0));
+    }
+
+    #[test]
+    fn looks_like_header_rejects_truncated_buffer() {
+        let mut rom = vec![FILLER; HEADER_SIZE];
+        write_wild_header(&mut rom, 0, 3, 40);
+        assert!(!looks_like_header(&rom[..HEADER_SIZE - 1], 0));
+    }
+
+    // ── find_wild_headers ────────────────────────────────────────────────
+
+    #[test]
+    fn find_wild_headers_locates_table() {
+        let rom = rom_with_wild_table(0x80, 60);
+        assert_eq!(find_wild_headers(&rom), Some(0x80));
+    }
+
+    #[test]
+    fn find_wild_headers_rejects_table_of_50_or_fewer_entries() {
+        // validate_table requires strictly more than 50 headers before the
+        // sentinel, so a 50-entry table must be treated as a false positive.
+        let rom = rom_with_wild_table(0x80, 50);
+        assert_eq!(find_wild_headers(&rom), None);
+    }
+
+    #[test]
+    fn find_wild_headers_accepts_table_of_51_entries() {
+        let rom = rom_with_wild_table(0x80, 51);
+        assert_eq!(find_wild_headers(&rom), Some(0x80));
+    }
+
+    #[test]
+    fn find_wild_headers_rejects_table_without_sentinel() {
+        let mut rom = rom_with_wild_table(0x80, 60);
+        let sentinel = 0x80 + 60 * HEADER_SIZE;
+        rom[sentinel] = FILLER; // corrupt the 0xFF terminator
+        assert_eq!(find_wild_headers(&rom), None);
+    }
+
+    #[test]
+    fn find_wild_headers_rejects_corrupt_entry_mid_table() {
+        let mut rom = rom_with_wild_table(0x80, 60);
+        rom[0x80 + 30 * HEADER_SIZE + 2] = 1; // non-zero padding in entry 30
+        assert_eq!(find_wild_headers(&rom), None);
+    }
+
+    #[test]
+    fn find_wild_headers_empty_rom_returns_none() {
+        assert_eq!(find_wild_headers(&[]), None);
+        assert_eq!(find_wild_headers(&vec![FILLER; 4096]), None);
+    }
+
+    // ── find_map_groups_table ────────────────────────────────────────────
+
+    const GROUPS_TABLE: usize = 0x100;
+    const GROUP_ARRAYS: usize = 0x200;
+    const MAP_HEADERS: usize = 0x400;
+
+    /// Builds a ROM containing a valid gMapGroupsAndMaps structure:
+    /// 4 groups of 8 maps, every map pointing at a valid MapHeader whose
+    /// first three pointers are non-null and whose connections pointer is 0.
+    fn rom_with_map_groups() -> Vec<u8> {
+        let mut rom = vec![FILLER; 0x1000];
+        for group in 0..4usize {
+            let group_array = GROUP_ARRAYS + group * 0x40;
+            write_ptr(&mut rom, GROUPS_TABLE + group * 4, ROM_BASE + group_array as u32);
+            for map in 0..8usize {
+                let header = MAP_HEADERS + (group * 8 + map) * 0x20;
+                write_ptr(&mut rom, group_array + map * 4, ROM_BASE + header as u32);
+                write_ptr(&mut rom, header, ROM_BASE + 0x800); // footer
+                write_ptr(&mut rom, header + 4, ROM_BASE + 0x800); // events
+                write_ptr(&mut rom, header + 8, ROM_BASE + 0x800); // scripts
+                write_ptr(&mut rom, header + 12, 0); // connections may be null
+            }
+        }
+        rom
+    }
+
+    #[test]
+    fn find_map_groups_table_locates_table() {
+        let rom = rom_with_map_groups();
+        let pairs = [(0u8, 1u8), (2, 3)];
+        assert_eq!(find_map_groups_table(&rom, &pairs), Some(GROUPS_TABLE));
+    }
+
+    #[test]
+    fn find_map_groups_table_requires_known_pairs() {
+        let rom = rom_with_map_groups();
+        assert_eq!(find_map_groups_table(&rom, &[]), None);
+    }
+
+    #[test]
+    fn find_map_groups_table_rejects_when_headers_invalid() {
+        let mut rom = rom_with_map_groups();
+        // Corrupt the footer pointer of every MapHeader so no candidate can
+        // pass level-3 validation anywhere in the ROM.
+        for n in 0..32usize {
+            write_ptr(&mut rom, MAP_HEADERS + n * 0x20, 0);
+        }
+        assert_eq!(find_map_groups_table(&rom, &[(0, 1), (2, 3)]), None);
+    }
+
+    #[test]
+    fn find_map_groups_table_rejects_pair_outside_table() {
+        let rom = rom_with_map_groups();
+        // Group 40 reads filler bytes as its group-array pointer, which is
+        // not a valid ROM pointer, so validation must fail for this pair.
+        assert_eq!(find_map_groups_table(&rom, &[(0, 1), (40, 0)]), None);
+    }
+
+    #[test]
+    fn find_map_groups_table_empty_rom_returns_none() {
+        assert_eq!(find_map_groups_table(&[], &[(0, 1)]), None);
+        assert_eq!(find_map_groups_table(&vec![FILLER; 4096], &[(0, 1)]), None);
+    }
+}

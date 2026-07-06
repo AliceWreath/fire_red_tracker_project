@@ -124,3 +124,69 @@ impl PlayerData {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A realistic 19-byte SaveBlock2 prefix: name "RED" (GBA encoding:
+    /// R=0xCC, E=0xBF, D=0xBE) terminated by 0xFF and padded with 0xFF as the
+    /// game does, female, warp flags 0x02, TID 12345 / SID 0xDEAD,
+    /// play time 123:45:59 + 33 v-blanks.
+    fn sample_buffer() -> [u8; PLAYER_DATA_SIZE] {
+        [
+            0xCC, 0xBF, 0xBE, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, // trainer name
+            0x01, // gender: female
+            0x02, // special save warp flags
+            0x39, 0x30, 0xAD, 0xDE, // TID 12345 (0x3039), SID 0xDEAD
+            0x7B, 0x00, // hours = 123
+            45,   // minutes
+            59,   // seconds
+            33,   // v-blanks
+        ]
+    }
+
+    #[test]
+    fn from_bytes_decodes_trainer_name() {
+        let data = PlayerData::from_bytes(&sample_buffer()).unwrap();
+        assert_eq!(data.trainer_name_string, "RED");
+        assert_eq!(data.trainer_name, [0xCC, 0xBF, 0xBE, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]);
+    }
+
+    #[test]
+    fn from_bytes_decodes_scalar_fields() {
+        let data = PlayerData::from_bytes(&sample_buffer()).unwrap();
+        assert_eq!(data.trainer_gender, 1);
+        assert_eq!(data.special_save_warp_flags, 0x02);
+        assert_eq!(data.player_trainer_id, [0x39, 0x30, 0xAD, 0xDE]);
+        assert_eq!(data.player_time_hours, 123);
+        assert_eq!(data.player_time_minutes, 45);
+        assert_eq!(data.player_time_seconds, 59);
+        assert_eq!(data.player_time_v_blanks, 33);
+    }
+
+    #[test]
+    fn from_bytes_full_length_name_uses_all_seven_chars() {
+        let mut buf = sample_buffer();
+        // "MISTYAB": M=0xC7, I=0xC3, S=0xCD, T=0xCE, Y=0xD3, A=0xBB, B=0xBC
+        buf[..8].copy_from_slice(&[0xC7, 0xC3, 0xCD, 0xCE, 0xD3, 0xBB, 0xBC, 0xFF]);
+        let data = PlayerData::from_bytes(&buf).unwrap();
+        assert_eq!(data.trainer_name_string, "MISTYAB");
+    }
+
+    #[test]
+    fn from_bytes_rejects_short_buffer() {
+        let buf = sample_buffer();
+        assert_eq!(PlayerData::from_bytes(&buf[..PLAYER_DATA_SIZE - 1]), None);
+        assert_eq!(PlayerData::from_bytes(&[]), None);
+    }
+
+    #[test]
+    fn from_bytes_accepts_oversized_buffer() {
+        let mut buf = sample_buffer().to_vec();
+        buf.extend_from_slice(&[0xAA; 32]); // trailing SaveBlock2 bytes
+        let data = PlayerData::from_bytes(&buf).unwrap();
+        assert_eq!(data.trainer_name_string, "RED");
+        assert_eq!(data.player_time_hours, 123);
+    }
+}

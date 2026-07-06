@@ -57,3 +57,24 @@ pub fn fill_name_repo(names: Vec<String>) {
 pub fn get_name_repo() -> &'static [String] {
     NAME_REPO.get().expect("Name repo not initialized.")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The repo is a process-wide OnceLock, so first-fill and re-fill
+    /// behaviour must be verified inside a single sequential test.
+    #[test]
+    fn fill_once_then_subsequent_fills_are_ignored() {
+        fill_name_repo(vec!["_".into(), "Bulbasaur".into(), "Ivysaur".into()]);
+        let repo = get_name_repo();
+        assert_eq!(repo.len(), 3);
+        assert_eq!(repo[1], "Bulbasaur");
+
+        // A second fill must preserve the original data.
+        fill_name_repo(vec!["overwritten".into()]);
+        let repo = get_name_repo();
+        assert_eq!(repo.len(), 3);
+        assert_eq!(repo[2], "Ivysaur");
+    }
+}

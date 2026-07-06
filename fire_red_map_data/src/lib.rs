@@ -808,3 +808,168 @@ impl CurrentMapGroupAndName {
 pub fn generate_follow_ptr_command(ptr: c_uint, len: size_t) -> String {
     format!("READ_CORE_MEMORY {:08X} {}\n", ptr, len)
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Builds a 28-byte map header at `offset` inside a padded buffer so the
+    /// offset-based reads are exercised, not just offset 0.
+    fn sample_header_bytes(offset: usize) -> Vec<u8> {
+        let mut buf = vec![0xEEu8; offset];
+        buf.extend_from_slice(&0x0834_5678u32.to_le_bytes()); // footer ptr
+        buf.extend_from_slice(&0x0812_0000u32.to_le_bytes()); // events ptr
+        buf.extend_from_slice(&0x0800_0010u32.to_le_bytes()); // scripts ptr
+        buf.extend_from_slice(&0u32.to_le_bytes()); // connections ptr (none)
+        buf.extend_from_slice(&0x012Cu16.to_le_bytes()); // music_id = 300
+        buf.extend_from_slice(&[
+            0x2A, // footer_id
+            0x01, // footer_id_cont
+            88,   // name_index
+            1,    // cave_type
+            2,    // weather_type
+            3,    // trainer_battle_background_override
+            1,    // allow_bicycle
+            0b0000_0110, // flags: escape + running, no map name banner
+            4,    // floor_number
+            5,    // battle_background_override
+        ]);
+        buf
+    }
+
+    #[test]
+    fn map_header_fill_from_bytes_reads_all_fields() {
+        let buf = sample_header_bytes(0x40);
+        let h = MapHeader::fill_from_bytes(&buf, 0x40);
+        assert_eq!(h.footer_offset_ptr, 0x0834_5678);
+        assert_eq!(h.event_offset_ptr, 0x0812_0000);
+        assert_eq!(h.script_offset_ptr, 0x0800_0010);
+        assert_eq!(h.connections_offset_ptr, 0);
+        assert_eq!(h.music_id, 300);
+        assert_eq!(h.footer_id, 0x2A);
+        assert_eq!(h.footer_id_cont, 0x01);
+        assert_eq!(h.name_index, 88);
+        assert_eq!(h.cave_type, 1);
+        assert_eq!(h.weather_type, 2);
+        assert_eq!(h.trainer_battle_background_override, 3);
+        assert_eq!(h.allow_bicycle, 1);
+        assert_eq!(h.floor_number, 4);
+        assert_eq!(h.battle_background_override, 5);
+    }
+
+    #[test]
+    fn map_header_flag_bits_unpack_independently() {
+        let mut buf = sample_header_bytes(0);
+        for flags in 0..8u8 {
+            buf[25] = flags;
+            let h = MapHeader::fill_from_bytes(&buf, 0);
+            assert_eq!(h.allow_escape, flags & 4 != 0, "escape bit, flags={flags:03b}");
+            assert_eq!(h.allow_running, flags & 2 != 0, "running bit, flags={flags:03b}");
+            assert_eq!(h.show_map_name, flags & 1 != 0, "map-name bit, flags={flags:03b}");
+        }
+    }
+
+    #[test]
+    fn map_header_short_buffer_reads_zeroes_without_panicking() {
+        // read_* helpers return 0 out of bounds, so a truncated buffer must
+        // produce a zeroed header rather than a panic.
+        let h = MapHeader::fill_from_bytes(&[0xAB; 4], 0);
+        assert_eq!(h.footer_offset_ptr, 0xABAB_ABAB);
+        assert_eq!(h.event_offset_ptr, 0);
+        assert_eq!(h.music_id, 0);
+        assert!(!h.allow_escape && !h.allow_running && !h.show_map_name);
+    }
+}
+
+/// Byte-layout tests for the `retroarch-parser` structs. Run with
+/// `cargo test -p fire_red_map_data --features retroarch-parser`
+/// to verify the legacy parsers haven't bitrotted.
+#[cfg(all(test, feature = "retroarch-parser"))]
+mod retroarch_parser_tests {
+    use super::*;
+
+    #[test]
+    fn map_events_fill_from_bytes_reads_counts_and_pointers() {
+        let mut buf = vec![2u8, 4, 6, 8];
+        buf.extend_from_slice(&0x0811_1111u32.to_le_bytes());
+        buf.extend_from_slice(&0x0822_2222u32.to_le_bytes());
+        buf.extend_from_slice(&0x0833_3333u32.to_le_bytes());
+        buf.extend_from_slice(&0x0844_4444u32.to_le_bytes());
+        let e = MapEvents::fill_from_bytes(&buf, 0);
+        assert_eq!(e.object_event_count, 2);
+        assert_eq!(e.warp_count, 4);
+        assert_eq!(e.coord_event_count, 6);
+        assert_eq!(e.bg_event_count, 8);
+        assert_eq!(e.object_event_template_ptr, 0x0811_1111);
+        assert_eq!(e.warp_event_pointer, 0x0822_2222);
+        assert_eq!(e.coord_event_pointer, 0x0833_3333);
+        assert_eq!(e.bg_event_pointer, 0x0844_4444);
+    }
+
+    #[test]
+    fn warp_event_fill_from_bytes_reads_signed_coordinates() {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&(-3i16).to_le_bytes());
+        buf.extend_from_slice(&25i16.to_le_bytes());
+        buf.extend_from_slice(&[3, 1, 12, 4]);
+        let w = WarpEvent::fill_from_bytes(&buf, 0);
+        assert_eq!(w.x, -3);
+        assert_eq!(w.y, 25);
+        assert_eq!(w.elevation, 3);
+        assert_eq!(w.warp_id, 1);
+        assert_eq!(w.map_num, 12);
+        assert_eq!(w.map_group, 4);
+    }
+
+    #[test]
+    fn map_connection_fill_from_bytes_reads_unaligned_offset_field() {
+        let mut buf = vec![1u8]; // direction = north
+        buf.extend_from_slice(&0xDEAD_BEEFu32.to_le_bytes());
+        buf.extend_from_slice(&[3, 7]);
+        let c = MapConnection::fill_from_bytes(&buf, 0);
+        assert_eq!(c.direction, 1);
+        assert_eq!(c.offset, 0xDEAD_BEEF);
+        assert_eq!(c.map_group, 3);
+        assert_eq!(c.map_number, 7);
+    }
+
+    #[test]
+    fn object_event_template_fill_from_bytes_reads_all_fields() {
+        let mut buf = vec![5u8, 60, 0];
+        buf.extend_from_slice(&(-2i16).to_le_bytes()); // x
+        buf.extend_from_slice(&9i16.to_le_bytes()); // y
+        buf.extend_from_slice(&[3, 8]); // elevation, movement_type
+        buf.extend_from_slice(&2u16.to_le_bytes()); // movement_range_x
+        buf.extend_from_slice(&1u16.to_le_bytes()); // movement_range_y
+        buf.extend_from_slice(&3u16.to_le_bytes()); // trainer_type
+        buf.extend_from_slice(&4u16.to_le_bytes()); // trainer_range_berry_tree_id
+        buf.extend_from_slice(&0x0855_AA00u32.to_le_bytes()); // script_ptr
+        buf.extend_from_slice(&0x0123u16.to_le_bytes()); // flag_id
+        let t = ObjectEventTemplate::fill_from_bytes(&buf, 0);
+        assert_eq!(t.local_id, 5);
+        assert_eq!(t.graphics_id, 60);
+        assert_eq!(t.in_connection, 0);
+        assert_eq!(t.x, -2);
+        assert_eq!(t.y, 9);
+        assert_eq!(t.elevation, 3);
+        assert_eq!(t.movement_type, 8);
+        assert_eq!(t.movement_range_x, 2);
+        assert_eq!(t.movement_range_y, 1);
+        assert_eq!(t.trainer_type, 3);
+        assert_eq!(t.trainer_range_berry_tree_id, 4);
+        assert_eq!(t.script_ptr, 0x0855_AA00);
+        assert_eq!(t.flag_id, 0x0123);
+    }
+
+    #[test]
+    fn generate_follow_ptr_command_formats_address() {
+        assert_eq!(
+            generate_follow_ptr_command(0x0812_3456, 16),
+            "READ_CORE_MEMORY 08123456 16\n"
+        );
+    }
+}

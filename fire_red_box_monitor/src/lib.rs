@@ -470,3 +470,60 @@ pub fn scan_for_pokemon(known_personality: u32) {
 
     tracing::info!("Scan complete.");
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn mon(species: u16) -> BoxPokemon {
+        let mut p = BoxPokemon::default();
+        p.secure.growth.species = species;
+        p
+    }
+
+    /// The cache behind check_for_new_entry / sync_storage is a process-wide
+    /// global, so all steps run inside a single test to keep them sequential
+    /// (cargo runs separate #[test] fns concurrently in one process).
+    #[test]
+    fn storage_dedup_and_sync_lifecycle() {
+        // Start from a known-empty cache.
+        assert_eq!(sync_storage(&[]), -(get_storage_entries().len() as isize));
+        assert!(get_storage_entries().is_empty());
+
+        // Species 0 is the empty-slot sentinel and must never be inserted.
+        assert_eq!(check_for_new_entry(&mon(0)), None);
+        assert!(get_storage_entries().is_empty());
+
+        // First sighting of a species inserts; a duplicate is skipped.
+        assert_eq!(check_for_new_entry(&mon(25)), Some(()));
+        assert_eq!(check_for_new_entry(&mon(25)), None);
+        assert_eq!(check_for_new_entry(&mon(1)), Some(()));
+        assert_eq!(get_storage_entries().len(), 2);
+        assert_eq!(
+            get_storage_species_set(),
+            HashSet::from([25u16, 1]),
+        );
+
+        // Syncing against a list that no longer contains species 1 removes it
+        // and reports the net change in cache size.
+        assert_eq!(sync_storage(&[mon(25)]), -1);
+        assert_eq!(get_storage_species_set(), HashSet::from([25u16]));
+
+        // A removed species can be re-inserted afterwards.
+        assert_eq!(check_for_new_entry(&mon(1)), Some(()));
+        assert_eq!(get_storage_entries().len(), 2);
+
+        // Syncing an unchanged list is a no-op.
+        assert_eq!(sync_storage(&[mon(25), mon(1)]), 0);
+        assert_eq!(get_storage_entries().len(), 2);
+
+        // An empty list clears the cache entirely.
+        assert_eq!(sync_storage(&[]), -2);
+        assert!(get_storage_entries().is_empty());
+        assert!(get_storage_species_set().is_empty());
+    }
+}

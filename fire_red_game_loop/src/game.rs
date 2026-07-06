@@ -5946,7 +5946,7 @@ mod tests {
     #[test]
     fn restore_pp_empty_slot_returns_none() {
         let rom = vec![0u8; 1];
-        assert!(compute_restore_pp(&vec![0u8; 80], &rom, 0).is_none());
+        assert!(compute_restore_pp(&[0u8; 80], &rom, 0).is_none());
     }
 
     #[test]
@@ -6008,7 +6008,7 @@ mod tests {
 
     #[test]
     fn set_friendship_empty_slot_returns_none() {
-        assert!(compute_set_friendship(&vec![0u8; 80], 200).is_none());
+        assert!(compute_set_friendship(&[0u8; 80], 200).is_none());
     }
 
     #[test]
@@ -6051,7 +6051,7 @@ mod tests {
     #[test]
     fn change_move_empty_slot_returns_none() {
         let rom = vec![0u8; 1];
-        assert!(compute_change_move(&vec![0u8; 80], 0, 1, &rom, 0).is_none());
+        assert!(compute_change_move(&[0u8; 80], 0, 1, &rom, 0).is_none());
     }
 
     #[test]
@@ -6123,7 +6123,7 @@ mod tests {
 
     #[test]
     fn set_ivs_empty_slot_returns_none() {
-        assert!(compute_set_ivs(&vec![0u8; 80], 31, 31, 31, 31, 31, 31).is_none());
+        assert!(compute_set_ivs(&[0u8; 80], 31, 31, 31, 31, 31, 31).is_none());
     }
 
     #[test]
@@ -6225,7 +6225,7 @@ mod tests {
 
     #[test]
     fn set_evs_empty_slot_returns_none() {
-        assert!(compute_set_evs(&vec![0u8; 80], 1, 0, 0, 0, 0, 0).is_none());
+        assert!(compute_set_evs(&[0u8; 80], 1, 0, 0, 0, 0, 0).is_none());
     }
 
     #[test]
