@@ -824,6 +824,8 @@ impl AggregatorApp {
                     run_start_balls: s.run_start_balls_str.trim().parse().ok(),
                     direct_mode: s.direct_mode,
                     backup_dir: None,
+                    backup_interval_hours: None,
+                    backup_keep: None,
                     livesplit_host: None,
                     livesplit_port: 16834,
                     livesplit_split_on_badges: false,

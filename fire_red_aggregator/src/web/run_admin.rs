@@ -25,6 +25,37 @@ pub(crate) async fn serve_db_json(
     }))
 }
 
+/// `POST /api/backup` — write a full-database snapshot to `backup_dir` now
+/// (server-owner only). Same format and retention as the scheduled backups.
+pub(crate) async fn api_backup_now(
+    State(state): State<WebState>,
+    Extension(user): Extension<User>,
+) -> axum::Json<serde_json::Value> {
+    if user.id != 1 {
+        return axum::Json(
+            serde_json::json!({ "error": "only the server owner can trigger a backup" }),
+        );
+    }
+    let conn = require_db!(state);
+    let Some(dir) = state.backup_dir else {
+        return axum::Json(
+            serde_json::json!({ "error": "backup_dir is not configured" }),
+        );
+    };
+    let keep = state.backup_keep;
+    let result =
+        tokio::task::spawn_blocking(move || crate::backup::write_snapshot(&conn, &dir, keep))
+            .await;
+    match result {
+        Ok(Ok(path)) => {
+            tracing::info!("manual backup: wrote {}", path.display());
+            axum::Json(serde_json::json!({ "written": path.display().to_string() }))
+        }
+        Ok(Err(e)) => axum::Json(serde_json::json!({ "error": e })),
+        Err(_) => axum::Json(serde_json::json!({ "error": "Task panicked" })),
+    }
+}
+
 pub(crate) async fn clear_db(
     State(state): State<WebState>,
     Extension(user): Extension<User>,

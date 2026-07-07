@@ -4408,6 +4408,33 @@ pub fn export_run(conn_str: &str, run_id: u32) -> serde_json::Value {
     })
 }
 
+/// Returns a JSON snapshot of every run in the database, for scheduled
+/// backups. Each element of `runs` has the same shape as [`export_run`]'s
+/// output, so any single run can be restored through the existing
+/// `/api/run/import` path.
+///
+/// Opens its own connection so the live tracker connection is not blocked.
+pub fn export_all_runs(conn_str: &str) -> Result<serde_json::Value, String> {
+    let mut client =
+        Client::connect(conn_str, NoTls).map_err(|e| format!("DB connection failed: {e}"))?;
+    let ids: Vec<u32> = client
+        .query("SELECT id FROM runs ORDER BY id", &[])
+        .map_err(|e| format!("Query failed: {e}"))?
+        .iter()
+        .map(|r| r.get::<_, i32>(0) as u32)
+        .collect();
+    drop(client);
+
+    let runs: Vec<serde_json::Value> = ids.iter().map(|&id| export_run(conn_str, id)).collect();
+    Ok(serde_json::json!({
+        "format": "fire_red_tracker_backup",
+        "version": 1,
+        "created_at": unix_now(),
+        "run_count": runs.len(),
+        "runs": runs,
+    }))
+}
+
 /// Returns a CSV export of a single run: three sections separated by blank lines.
 ///
 /// Sections: `caught`, `dead`, `encounters`. Each section has a header row.

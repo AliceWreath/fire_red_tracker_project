@@ -185,6 +185,8 @@ pub(crate) fn build_router(web_state: WebState) -> Router {
         .route("/share/:token/state", get(api_share_state))
         // Config hot-reload
         .route("/api/config/reload", post(api_config_reload))
+        // Manual full-database backup (owner-only)
+        .route("/api/backup", post(api_backup_now))
         // Donation/alert trigger bridge
         .route("/api/webhook/donation", post(api_donation_webhook))
         // Savefile snapshot import
@@ -253,6 +255,7 @@ pub struct WebRunConfig {
     pub allow_injections: bool,
     pub connector: Option<Arc<crate::direct::DirectConnector>>,
     pub backup_dir: Option<String>,
+    pub backup_keep: usize,
     pub livesplit_split_on_badges: bool,
     pub discord_slash: Option<crate::config::DiscordSlashConfig>,
     /// Optional path to the TOML config file for config hot-reload support.
@@ -266,6 +269,7 @@ pub fn run(live_slots: SharedSlots, port: u16, cfg: WebRunConfig) {
         allow_injections,
         connector,
         backup_dir,
+        backup_keep,
         livesplit_split_on_badges,
         discord_slash,
         config_path,
@@ -311,6 +315,8 @@ pub fn run(live_slots: SharedSlots, port: u16, cfg: WebRunConfig) {
         testing,
         allow_injections,
         connector,
+        backup_dir,
+        backup_keep,
         discord_slash,
         config_path: config_path.map(Arc::new),
         user_active_run: Arc::new(Mutex::new(HashMap::new())),

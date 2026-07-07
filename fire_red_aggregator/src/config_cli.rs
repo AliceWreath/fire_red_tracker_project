@@ -276,6 +276,16 @@ pub fn run_config_editor_cli(path: &PathBuf) {
         "write run JSON backups here on game-clear; blank = disabled",
     );
 
+    let backup_interval_hours = prompt_opt_u64(
+        "Scheduled backup interval (hours)",
+        d.and_then(|c| c.backup_interval_hours).map(u64::from),
+    ).map(|v| v as u32);
+
+    let backup_keep = prompt_opt_u64(
+        "Scheduled backups to keep",
+        d.and_then(|c| c.backup_keep).map(u64::from),
+    ).map(|v| v as u32);
+
     // ── Direct Mode ────────────────────────────────────────────────────────
 
     section("Direct Mode");
@@ -674,6 +684,8 @@ pub fn run_config_editor_cli(path: &PathBuf) {
         run_start_balls,
         direct_mode,
         backup_dir,
+        backup_interval_hours,
+        backup_keep,
         livesplit_host,
         livesplit_port,
         livesplit_split_on_badges,

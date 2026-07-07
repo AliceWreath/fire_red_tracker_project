@@ -63,6 +63,15 @@ pub struct AggregatorConfig {
     /// first detected (optional). The file is named `run_<id>_<timestamp>.json`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub backup_dir: Option<String>,
+    /// Hours between scheduled full-database JSON backups written to
+    /// `backup_dir` as `db_backup_<timestamp>.json`. Unset or 0 = disabled.
+    /// Game-clear backups are unaffected.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backup_interval_hours: Option<u32>,
+    /// How many scheduled backup files to retain in `backup_dir`; older
+    /// `db_backup_*.json` files are deleted after each snapshot (default 10).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backup_keep: Option<u32>,
     /// LiveSplit One TCP host for the aggregator-side split bridge. Splits fire
     /// on badge events (when `livesplit_split_on_badges` is true) and on game
     /// clear (always, when this host is set).
@@ -588,6 +597,8 @@ impl eframe::App for SetupApp {
                         run_start_balls: self.run_start_balls_str.trim().parse().ok(),
                         direct_mode: self.direct_mode,
                         backup_dir: None,
+                        backup_interval_hours: None,
+                        backup_keep: None,
                         livesplit_host: None,
                         livesplit_port: 16834,
                         livesplit_split_on_badges: false,

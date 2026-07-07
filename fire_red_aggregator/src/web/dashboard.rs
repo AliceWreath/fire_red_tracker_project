@@ -844,6 +844,7 @@ curl -H "Authorization: Bearer $TOKEN" http://localhost:9090/api/me</code></pre>
     <tr><td>GET /api/run/:id/summary</td><td>Markdown export of the run.</td></tr>
     <tr><td>GET /api/run/:id/trainers</td><td>Trainer battle log for the run.</td></tr>
     <tr><td>POST /api/run/import</td><td>Import a previously exported run JSON.</td></tr>
+    <tr><td>POST /api/backup</td><td>Owner-only: write a full-database snapshot (every run) to <code>backup_dir</code> now, then prune to <code>backup_keep</code> files. Same format as the scheduled backups; each entry in <code>runs</code> is importable via <code>/api/run/import</code>.</td></tr>
   </tbody>
 </table>
 
@@ -1282,6 +1283,8 @@ discord_webhook_url = "https://discord.com/api/webhooks/…"</code></pre>
     <tr><td>allow_injections</td><td>true</td><td>Enable injection API endpoints.</td></tr>
     <tr><td>direct_mode</td><td>false</td><td>Enable /join page for on-demand connections.</td></tr>
     <tr><td>backup_dir</td><td>—</td><td>Directory for automatic run JSON backups on game clear.</td></tr>
+    <tr><td>backup_interval_hours</td><td>—</td><td>Hours between scheduled full-database backups written to <code>backup_dir</code> as <code>db_backup_&lt;ts&gt;.json</code>. Unset/0 = disabled.</td></tr>
+    <tr><td>backup_keep</td><td>10</td><td>How many scheduled backup files to retain; older ones are pruned after each snapshot.</td></tr>
     <tr><td>poll_ms</td><td>100</td><td>Game memory poll interval in ms (direct mode).</td></tr>
     <tr><td>rom_path</td><td>—</td><td>Path to the FireRed ROM (required for direct mode).</td></tr>
     <tr><td>retroarch_hosts</td><td>[]</td><td>List of RetroArch host IPs to poll directly.</td></tr>

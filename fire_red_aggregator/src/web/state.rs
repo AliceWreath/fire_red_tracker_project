@@ -1265,6 +1265,10 @@ pub(crate) struct WebState {
     pub(crate) testing: bool,
     pub(crate) allow_injections: bool,
     pub(crate) connector: Option<Arc<crate::direct::DirectConnector>>,
+    /// Directory for JSON backups; used by the manual POST /api/backup trigger.
+    pub(crate) backup_dir: Option<String>,
+    /// Retention count for scheduled/manual snapshots in `backup_dir`.
+    pub(crate) backup_keep: usize,
     pub(crate) discord_slash: Option<crate::config::DiscordSlashConfig>,
     /// Path to the TOML config file, used by the hot-reload endpoint.
     pub(crate) config_path: Option<Arc<String>>,

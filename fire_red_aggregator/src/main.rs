@@ -10,6 +10,7 @@
 //! ```
 
 mod app;
+mod backup;
 mod client;
 mod config;
 mod config_cli;
@@ -271,6 +272,20 @@ fn main() {
     }
 
     let backup_dir = cfg_ref.backup_dir.clone();
+    let backup_keep = cfg_ref
+        .backup_keep
+        .map(|k| k as usize)
+        .unwrap_or(backup::DEFAULT_KEEP);
+
+    // Scheduled full-database backups.
+    if let (Some(interval), Some(dir), Some(conn)) = (
+        cfg_ref.backup_interval_hours.filter(|&h| h > 0),
+        backup_dir.clone(),
+        db.clone(),
+    ) {
+        let backup_stop = backup::spawn_scheduled(conn, dir, interval, backup_keep);
+        _global_stop_flags.push(backup_stop);
+    }
 
     // YouTube Live chat bot.
     if let Some(yt_cfg) = cfg_ref.youtube_chat.clone() {
@@ -307,6 +322,7 @@ fn main() {
             allow_injections,
             connector: direct_connector,
             backup_dir,
+            backup_keep,
             livesplit_split_on_badges,
             discord_slash,
             config_path: Some(config_path.to_string_lossy().into_owned()),

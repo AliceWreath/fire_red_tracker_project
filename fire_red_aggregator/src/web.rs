@@ -185,6 +185,8 @@ mod tests {
             testing: true,
             allow_injections: false,
             connector: None,
+            backup_dir: None,
+            backup_keep: 10,
             discord_slash: None,
             config_path: None,
             user_active_run: Arc::new(Mutex::new(HashMap::new())),
