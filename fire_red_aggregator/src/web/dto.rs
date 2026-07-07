@@ -55,6 +55,9 @@ pub(crate) struct SlotDto {
     pub(crate) injection_events: Vec<serde_json::Value>,
     /// Current Pokédollar balance (decrypted from SaveBlock1).
     pub(crate) money: u32,
+    /// Live battle damage panel (every party member's moves vs the current
+    /// enemy); `None` outside battle. Rendered by /:index/damage_calc.
+    pub(crate) damage_panel: Option<fire_red_states::DamagePanel>,
     /// In-game save-file play time: hours component.
     pub(crate) play_time_hours: u16,
     /// In-game save-file play time: minutes component (0–59).

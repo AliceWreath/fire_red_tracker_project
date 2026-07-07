@@ -28,6 +28,7 @@ pub(crate) const SPECIES_HTML: &str = include_str!("../species.html");
 pub(crate) const DEATHS_HTML: &str = include_str!("../deaths.html");
 pub(crate) const ENCOUNTER_COUNT_HTML: &str = include_str!("../encounter_count.html");
 pub(crate) const HP_HTML: &str = include_str!("../hp.html");
+pub(crate) const DAMAGE_CALC_HTML: &str = include_str!("../damage_calc.html");
 pub(crate) const BADGES_HTML: &str = include_str!("../badges.html");
 pub(crate) const NEXT_GYM_HTML: &str = include_str!("../next_gym.html");
 pub(crate) const ENCOUNTER_TABLE_HTML: &str = include_str!("../encounter_table.html");
@@ -251,6 +252,14 @@ pub(crate) async fn serve_hp_overlay(
 ) -> Html<String> {
     let theme = params.get("theme").map(String::as_str);
     Html(apply_page_with_theme(HP_HTML, state.testing, theme))
+}
+
+pub(crate) async fn serve_damage_calc_overlay(
+    State(state): State<WebState>,
+    Query(params): Query<HashMap<String, String>>,
+) -> Html<String> {
+    let theme = params.get("theme").map(String::as_str);
+    Html(apply_page_with_theme(DAMAGE_CALC_HTML, state.testing, theme))
 }
 
 pub(crate) async fn serve_badges_overlay(

@@ -861,6 +861,28 @@ pub fn get_wild_enemy_pokemon() -> Option<Pokemon> {
     }
 }
 
+/// Reads `gEnemyParty[0]` regardless of owner: wild or trainer battle.
+///
+/// Unlike [`get_wild_enemy_pokemon`] this does not filter on OT ID, so it
+/// returns trainer-owned Pokémon too. The checksum in `Pokemon::from_bytes`
+/// still rejects empty slots and mid-write garbage. The second tuple element
+/// is `true` for trainer battles (enemy OT differs from the player's).
+pub fn get_enemy_pokemon_any() -> Option<(Pokemon, bool)> {
+    let ewram = fire_red_memory::get_ewram();
+    let rom = fire_red_rom_buffer::get_rom();
+    let offset = ENEMY_PARTY_ADDR - EWRAM_BASE;
+    if ewram.len() < offset + 100 {
+        return None;
+    }
+    let enemy = Pokemon::from_bytes(&ewram[offset..offset + 100], rom)?;
+    let player_ot = fire_red_party_monitor::get_party()
+        .and_then(|p| p.members.first().cloned())
+        .map(|m| m.box_mon.ot_id)
+        .filter(|&ot| ot != 0);
+    let is_trainer = player_ot.is_some_and(|ot| enemy.box_mon.ot_id != ot);
+    Some((enemy, is_trainer))
+}
+
 /// Reads personality, current HP, and max HP directly from the EWRAM snapshot
 /// of `gEnemyParty[0]`, bypassing checksum validation and OT-ID filtering.
 ///

@@ -358,6 +358,62 @@ pub struct SpriteData {
     pub height: u32,
 }
 
+/// One computed damage line for a single move against the current enemy.
+///
+/// Damage is the standard Gen III formula (level, power, final stats, STAB,
+/// type effectiveness, burn, 85–100% roll). Abilities other than Levitate,
+/// held items, screens, weather, and stat stages are not modeled.
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, Default)]
+pub struct DamageMove {
+    /// Move name (e.g. "Thunderbolt").
+    pub name: String,
+    /// Gen III internal type ID of the move (0 = Normal … 17 = Dark).
+    pub move_type: u8,
+    /// Base power from the ROM's `gBattleMoves` table. 0 for status moves;
+    /// 1 for variable-damage moves the calculator does not model.
+    pub power: u8,
+    /// Current PP remaining in this slot.
+    pub pp: u8,
+    /// Minimum damage (85% roll). 0 for status/unmodeled moves.
+    pub min: u16,
+    /// Maximum damage (100% roll).
+    pub max: u16,
+    /// Combined type effectiveness ×100 (0, 25, 50, 100, 200, 400).
+    pub effectiveness: u16,
+    /// True when the move type matches one of the attacker's types.
+    pub stab: bool,
+    /// True when `min` ≥ the enemy's *current* HP (guaranteed KO).
+    pub guaranteed_ko: bool,
+}
+
+/// Damage lines for one party member against the current enemy.
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, Default)]
+pub struct DamageAttacker {
+    pub nickname: String,
+    pub species_name: String,
+    pub level: u8,
+    pub hp: u16,
+    pub max_hp: u16,
+    /// One entry per equipped move slot (up to 4).
+    pub moves: Vec<DamageMove>,
+}
+
+/// Live battle damage panel: every party member's moves against the enemy
+/// currently in `gEnemyParty[0]`. `None`/absent when no battle is active.
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, Default)]
+pub struct DamagePanel {
+    pub enemy_species: String,
+    pub enemy_level: u8,
+    pub enemy_hp: u16,
+    pub enemy_max_hp: u16,
+    /// Gen III internal type IDs of the enemy.
+    pub enemy_type1: u8,
+    pub enemy_type2: u8,
+    /// False for wild battles (enemy OT matches the player's), true otherwise.
+    pub is_trainer: bool,
+    pub attackers: Vec<DamageAttacker>,
+}
+
 /// Shared game state transmitted between server and clients.
 ///
 /// Contains both the current player party and wild encounter data.
@@ -414,6 +470,11 @@ pub struct GameState {
     /// In-game save-file play time: seconds component (0–59).
     #[serde(default)]
     pub play_time_seconds: u8,
+
+    /// Live battle damage panel, present only while an enemy is loaded in
+    /// `gEnemyParty[0]`. Defaults to `None` for older senders.
+    #[serde(default)]
+    pub damage_panel: Option<DamagePanel>,
 }
 
 // ---------------------------------------------------------------------------

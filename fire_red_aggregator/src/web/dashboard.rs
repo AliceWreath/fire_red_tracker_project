@@ -128,6 +128,7 @@ input:focus{outline:none;border-color:#e94560}
     <a href="/0/deaths">Deaths</a>
     <a href="/0/encounter_count">Enc. Count</a>
     <a href="/0/hp">HP Bars</a>
+    <a href="/0/damage_calc">Damage Calc</a>
     <a href="/0/badges">Badges</a>
     <a href="/0/nextgym">Next Gym</a>
     <a href="/0/encounter_table">Enc. Table</a>
@@ -1070,6 +1071,7 @@ curl -s -H "Authorization: Bearer $TOKEN" \
     <tr><td>/:index/caught</td><td>All caught Pokémon</td></tr>
     <tr><td>/:index/dead</td><td>All dead Pokémon</td></tr>
     <tr><td>/:index/hp</td><td>HP bars for current party</td></tr>
+    <tr><td>/:index/damage_calc</td><td>Live battle damage calculator: each party member's moves vs the current enemy (Gen III formula, STAB, type chart, burn; items/abilities except Levitate not modeled)</td></tr>
     <tr><td>/:index/badges</td><td>Earned badge dot-bar</td></tr>
     <tr><td>/:index/deaths</td><td>Death counter</td></tr>
     <tr><td>/:index/encounter_count</td><td>Encounter counter for current area</td></tr>

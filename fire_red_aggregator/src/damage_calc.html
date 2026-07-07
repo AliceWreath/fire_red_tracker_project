@@ -1,0 +1,223 @@
+<!DOCTYPE html>
+<html>
+<!-- THEME_SLOT -->
+<head>
+<meta charset="utf-8">
+<title>Damage Calc</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body {
+    background: transparent;
+    font-family: 'Segoe UI', Tahoma, sans-serif;
+    color: #fff;
+    width: 100%; height: 100%;
+    display: flex; align-items: flex-start; justify-content: flex-start;
+    overflow: hidden;
+}
+#root {
+    padding: 10px 14px;
+    background: rgba(10, 10, 20, 0.88);
+    border: 1px solid rgba(80, 120, 200, 0.3);
+    border-radius: 10px;
+    min-width: 300px;
+    max-width: 420px;
+    box-shadow: 0 4px 20px rgba(0,0,0,0.7);
+}
+#enemy {
+    display: flex; align-items: baseline; gap: 6px;
+    font-size: 13px; font-weight: 700; color: #eef;
+    padding-bottom: 5px; margin-bottom: 6px;
+    border-bottom: 1px solid rgba(255,255,255,0.15);
+    flex-wrap: wrap;
+}
+#enemy .lv { font-size: 10px; color: #999; font-weight: 600; }
+#enemy .hp { font-size: 10px; color: #aaa; font-weight: 500; }
+#enemy .trainer-tag {
+    font-size: 8px; font-weight: bold; padding: 1px 4px; border-radius: 2px;
+    background: #7a3030; color: #ffd0d0;
+}
+#enemy .wild-tag {
+    font-size: 8px; font-weight: bold; padding: 1px 4px; border-radius: 2px;
+    background: #2f6a35; color: #c8f0c8;
+}
+.type-chip {
+    display: inline-block; font-size: 8px; font-weight: bold;
+    padding: 1px 5px; border-radius: 3px; color: #fff;
+    text-shadow: 0 1px 1px rgba(0,0,0,0.6);
+}
+.attacker { margin-bottom: 7px; }
+.attacker:last-child { margin-bottom: 0; }
+.attacker-name {
+    font-size: 11px; font-weight: 700; color: #cdf;
+    display: flex; gap: 5px; align-items: baseline;
+}
+.attacker-name .lv { font-size: 9px; color: #888; font-weight: 600; }
+.attacker-name.fainted { color: #c06060; text-decoration: line-through; }
+table { width: 100%; border-collapse: collapse; margin-top: 2px; }
+td {
+    font-size: 10px; padding: 1px 4px 1px 0; color: #ccc;
+    white-space: nowrap; vertical-align: middle;
+}
+td.move-name { width: 40%; overflow: hidden; text-overflow: ellipsis; max-width: 120px; }
+td.range { text-align: right; font-variant-numeric: tabular-nums; font-weight: 600; }
+td.pct { text-align: right; font-variant-numeric: tabular-nums; color: #999; width: 24%; }
+.eff-immune  { color: #777; }
+.eff-notvery { color: #d0a060; }
+.eff-super   { color: #70d070; font-weight: 700; }
+.eff-hyper   { color: #40e080; font-weight: 700; }
+.ko-tag {
+    font-size: 8px; font-weight: bold; padding: 0 3px; border-radius: 2px;
+    background: #2f6a35; color: #c8f0c8; margin-left: 3px;
+}
+.stab-dot { color: #8ac; font-size: 9px; margin-left: 2px; }
+#idle { font-size: 11px; color: #778; text-align: center; padding: 8px 4px; }
+#disconnected { display: none; font-size: 11px; color: #666; text-align: center; padding: 4px; }
+#footnote { font-size: 8px; color: #667; margin-top: 6px; text-align: right; }
+html[data-theme=light] #root {
+    background: rgba(235, 240, 255, 0.93);
+    border-color: rgba(60, 100, 200, 0.35);
+    color: #111;
+}
+html[data-theme=light] #enemy { color: #123; border-bottom-color: rgba(0,0,0,0.15); }
+html[data-theme=light] td { color: #223; }
+html[data-theme=light] .attacker-name { color: #235; }
+html[data-theme=light] #idle { color: #667; }
+</style>
+</head>
+<body>
+<div id="root">
+  <div id="content" style="display:none">
+    <div id="enemy"></div>
+    <div id="attackers"></div>
+    <div id="footnote">STAB + type chart + burn; items/abilities not modeled</div>
+  </div>
+  <div id="idle">No battle in progress</div>
+  <div id="disconnected">disconnected</div>
+</div>
+<script src="/static/overlay.js"></script>
+<script>
+const _pathParts  = window.location.pathname.split('/').filter(Boolean);
+const _pathIndex  = parseInt(_pathParts[0]);
+const _params     = new URLSearchParams(window.location.search);
+const _explicitIndex = !isNaN(_pathIndex) ? _pathIndex
+    : (_params.has('slot') ? parseInt(_params.get('slot')) : null);
+let playerIndex = _explicitIndex !== null ? _explicitIndex : 0;
+function resolvePlayerIndex(slots) {
+    if (_explicitIndex !== null) return;
+    const first = slots.findIndex(s => s && s.connected);
+    if (first !== -1) playerIndex = first;
+}
+
+// Gen III internal type IDs → name and chip colour.
+const TYPES = [
+    ['Normal','#9a9a7a'], ['Fighting','#b04030'], ['Flying','#9080e0'],
+    ['Poison','#903890'], ['Ground','#d0b055'], ['Rock','#a89038'],
+    ['Bug','#a0b020'], ['Ghost','#605890'], ['Steel','#a8a8c0'],
+    ['???','#68a090'], ['Fire','#e08030'], ['Water','#5878e0'],
+    ['Grass','#68a840'], ['Electric','#e8c030'], ['Psychic','#e05888'],
+    ['Ice','#88c8c8'], ['Dragon','#6838e0'], ['Dark','#604848'],
+];
+
+function el(tag, cls, text) {
+    const e = document.createElement(tag);
+    if (cls)  e.className = cls;
+    if (text !== undefined) e.textContent = text;
+    return e;
+}
+
+function typeChip(id) {
+    const [name, color] = TYPES[id] || ['?', '#666'];
+    const chip = el('span', 'type-chip', name);
+    chip.style.background = color;
+    return chip;
+}
+
+function effClass(eff) {
+    if (eff === 0)   return 'eff-immune';
+    if (eff < 100)   return 'eff-notvery';
+    if (eff > 200)   return 'eff-hyper';
+    if (eff > 100)   return 'eff-super';
+    return '';
+}
+
+function render(panel) {
+    const enemyEl = document.getElementById('enemy');
+    enemyEl.replaceChildren();
+    enemyEl.appendChild(el('span', null, panel.enemy_species));
+    enemyEl.appendChild(el('span', 'lv', 'Lv ' + panel.enemy_level));
+    enemyEl.appendChild(typeChip(panel.enemy_type1));
+    if (panel.enemy_type2 !== panel.enemy_type1) enemyEl.appendChild(typeChip(panel.enemy_type2));
+    enemyEl.appendChild(el('span', 'hp', panel.enemy_hp + '/' + panel.enemy_max_hp + ' HP'));
+    enemyEl.appendChild(el('span', panel.is_trainer ? 'trainer-tag' : 'wild-tag',
+                           panel.is_trainer ? 'TRAINER' : 'WILD'));
+
+    const attackersEl = document.getElementById('attackers');
+    attackersEl.replaceChildren();
+    for (const a of panel.attackers) {
+        const box = el('div', 'attacker');
+        const name = el('div', 'attacker-name' + (a.hp === 0 ? ' fainted' : ''));
+        name.appendChild(el('span', null, a.nickname || a.species_name));
+        name.appendChild(el('span', 'lv', 'Lv ' + a.level));
+        box.appendChild(name);
+
+        const table = el('table');
+        for (const m of a.moves) {
+            const tr = el('tr');
+            const nameTd = el('td', 'move-name');
+            nameTd.appendChild(el('span', effClass(m.effectiveness), m.name));
+            if (m.stab) nameTd.appendChild(el('span', 'stab-dot', '●'));
+            nameTd.appendChild(el('span', 'lv', ' ' + m.pp + 'pp'));
+            tr.appendChild(nameTd);
+
+            const rangeTd = el('td', 'range');
+            const pctTd = el('td', 'pct');
+            if (m.effectiveness === 0) {
+                rangeTd.appendChild(el('span', 'eff-immune', 'immune'));
+            } else if (m.max === 0) {
+                rangeTd.appendChild(el('span', 'eff-immune', '—'));
+            } else {
+                rangeTd.appendChild(el('span', effClass(m.effectiveness), m.min + '–' + m.max));
+                if (m.guaranteed_ko) rangeTd.appendChild(el('span', 'ko-tag', 'KO'));
+                const lo = Math.round(m.min * 100 / panel.enemy_max_hp);
+                const hi = Math.round(m.max * 100 / panel.enemy_max_hp);
+                pctTd.textContent = lo + '–' + hi + '%';
+            }
+            tr.appendChild(rangeTd);
+            tr.appendChild(pctTd);
+            table.appendChild(tr);
+        }
+        box.appendChild(table);
+        attackersEl.appendChild(box);
+    }
+}
+
+function handleState(slots) {
+    resolvePlayerIndex(slots);
+    const slot    = slots[playerIndex];
+    const content = document.getElementById('content');
+    const idleEl  = document.getElementById('idle');
+    const discEl  = document.getElementById('disconnected');
+
+    if (!slot || !slot.connected) {
+        content.style.display = 'none';
+        idleEl.style.display = 'none';
+        discEl.style.display = 'block';
+        return;
+    }
+    discEl.style.display = 'none';
+
+    const panel = slot.damage_panel;
+    if (!panel || !panel.attackers || panel.attackers.length === 0) {
+        content.style.display = 'none';
+        idleEl.style.display = 'block';
+        return;
+    }
+    idleEl.style.display = 'none';
+    content.style.display = 'block';
+    render(panel);
+}
+
+FRT.connectWS('damage_calc', handleState);
+</script>
+</body>
+</html>

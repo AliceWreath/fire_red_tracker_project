@@ -135,6 +135,16 @@ pub(crate) fn filter_slots_json(json: &str, show: &str) -> String {
             "db_encounters",
             "prev_run_encounters",
         ],
+        // damage_calc overlay only needs damage_panel (+ connected).
+        "damage_calc" => &[
+            "party",
+            "encounters",
+            "box_pokemon",
+            "dead",
+            "caught",
+            "db_encounters",
+            "prev_run_encounters",
+        ],
         // vs_leader overlay needs next_gym + leader_party + party types.
         "vs_leader" => &[
             "encounters",

@@ -1194,6 +1194,7 @@ impl BroadcastLoop {
                     .collect();
 
                 let money = state.as_ref().map_or(0, |gs| gs.money);
+                let damage_panel = state.as_ref().and_then(|gs| gs.damage_panel.clone());
                 let play_time_hours = state.as_ref().map_or(0, |gs| gs.play_time_hours);
                 let play_time_minutes = state.as_ref().map_or(0, |gs| gs.play_time_minutes);
                 let play_time_seconds = state.as_ref().map_or(0, |gs| gs.play_time_seconds);
@@ -1232,6 +1233,7 @@ impl BroadcastLoop {
                     game_cleared,
                     injection_events,
                     money,
+                    damage_panel,
                     play_time_hours,
                     play_time_minutes,
                     play_time_seconds,

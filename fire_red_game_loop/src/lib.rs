@@ -14,6 +14,7 @@
 //!    commands into `command_queue` to have them executed on the next tick.
 
 pub mod config;
+pub mod damage;
 pub mod discord;
 pub mod encounter;
 pub mod game;
@@ -105,6 +106,9 @@ pub struct GameLoopState {
     pub play_time: Arc<Mutex<(u16, u8, u8)>>,
     /// Cached current map (group_id, name_id), same reasoning as `badge_state`.
     pub current_map: Arc<Mutex<(u8, u8)>>,
+    /// Live battle damage panel, recomputed by the game-loop thread while an
+    /// enemy is loaded in `gEnemyParty[0]`; `None` outside battle.
+    pub damage_panel: Arc<Mutex<Option<fire_red_states::DamagePanel>>>,
 }
 
 impl GameLoopState {
@@ -126,6 +130,7 @@ impl GameLoopState {
             player_name: Arc::new(Mutex::new(String::new())),
             play_time: Arc::new(Mutex::new((0, 0, 0))),
             current_map: Arc::new(Mutex::new((0, 0))),
+            damage_panel: Arc::new(Mutex::new(None)),
         }
     }
 }
@@ -283,6 +288,7 @@ pub fn spawn_game_loop(
     let thread_player_name  = state.player_name.clone();
     let thread_play_time    = state.play_time.clone();
     let thread_current_map  = state.current_map.clone();
+    let thread_damage_panel = state.damage_panel.clone();
 
     std::thread::spawn(move || {
         fire_red_retroarch_interfacing::set_thread_addr(&cfg.retroarch_host, cfg.retroarch_port);
@@ -573,6 +579,19 @@ pub fn spawn_game_loop(
                 }
                 last_enemy_hp     = enemy_hp;
                 last_enemy_max_hp = enemy_max_hp;
+
+                // Live damage panel: recompute whenever a battle is active.
+                // Cheap (a few hundred integer ops), and party/enemy HP both
+                // change mid-battle, so per-tick keeps the overlay honest.
+                let panel = game::get_enemy_pokemon_any().map(|(enemy, is_trainer)| {
+                    let rom = fire_red_rom_buffer::get_rom();
+                    let move_addr = fire_red_rom_buffer::get_rom_addresses().move_data_addr;
+                    let party = thread_party.lock_or_recover().clone();
+                    damage::build_panel(&party, &enemy, is_trainer, rom, move_addr)
+                });
+                *thread_damage_panel.lock_or_recover() = panel;
+            } else if thread_damage_panel.lock_or_recover().is_some() {
+                *thread_damage_panel.lock_or_recover() = None;
             }
 
             if old_party_size != party_size {
@@ -701,6 +720,7 @@ pub fn assemble_game_state(
     let money = *state.money.lock_or_recover();
     let (play_time_hours, play_time_minutes, play_time_seconds) =
         *state.play_time.lock_or_recover();
+    let damage_panel = state.damage_panel.lock_or_recover().clone();
 
     GameState {
         party,
@@ -716,5 +736,6 @@ pub fn assemble_game_state(
         play_time_hours,
         play_time_minutes,
         play_time_seconds,
+        damage_panel,
     }
 }
