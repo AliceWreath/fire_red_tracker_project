@@ -89,6 +89,10 @@ impl SlotDbCache {
 // ---------------------------------------------------------------------------
 
 struct SettingsDraft {
+    /// The config being edited. Fields without a UI control (twitch,
+    /// backup_*, livesplit_*, discord_*, youtube_chat, trainer_table_rom_offset)
+    /// are preserved from here on save instead of being reset.
+    base: AggregatorConfig,
     db: String,
     db_enabled: bool,
     ws_port_str: String,
@@ -116,6 +120,7 @@ impl SettingsDraft {
             all_hosts.push(h.clone());
         }
         Self {
+            base: cfg.clone(),
             db: cfg
                 .db
                 .as_deref()
@@ -807,34 +812,24 @@ impl AggregatorApp {
                 } else {
                     Some(s.rom_path.trim().to_string())
                 };
-                let cfg = AggregatorConfig {
-                    db,
-                    ws_port: if s.ws_port_enabled { s.ws_port_str.trim().parse().ok() } else { None },
-                    default_test: s.default_test,
-                    test: s.test.clone(),
-                    allow_injections: s.allow_injections,
-                    twitch: None,
-                    retroarch_host: None,
-                    retroarch_hosts: hosts,
-                    retroarch_port: s.retroarch_port_str.trim().parse().unwrap_or(55355),
-                    rom_path: rom,
-                    poll_ms: s.poll_ms_str.trim().parse::<u64>().unwrap_or(100).clamp(20, 2000),
-                    dupes_clause: s.dupes_clause,
-                    allow_species_repeats: s.allow_species_repeats,
-                    run_start_balls: s.run_start_balls_str.trim().parse().ok(),
-                    direct_mode: s.direct_mode,
-                    backup_dir: None,
-                    backup_interval_hours: None,
-                    backup_keep: None,
-                    livesplit_host: None,
-                    livesplit_port: 16834,
-                    livesplit_split_on_badges: false,
-                    discord_slash: None,
-                    discord_live_embed: None,
-                    discord_run_thread: None,
-                    youtube_chat: None,
-                    trainer_table_rom_offset: None,
-                };
+                // Start from `base` so fields this dialog doesn't expose
+                // (twitch, backup_*, livesplit_*, discord_*, youtube_chat,
+                // trainer_table_rom_offset) survive a save unchanged.
+                let mut cfg = s.base.clone();
+                cfg.db = db;
+                cfg.ws_port = if s.ws_port_enabled { s.ws_port_str.trim().parse().ok() } else { None };
+                cfg.default_test = s.default_test;
+                cfg.test = s.test.clone();
+                cfg.allow_injections = s.allow_injections;
+                cfg.retroarch_host = None; // legacy field, merged into the list
+                cfg.retroarch_hosts = hosts;
+                cfg.retroarch_port = s.retroarch_port_str.trim().parse().unwrap_or(55355);
+                cfg.rom_path = rom;
+                cfg.poll_ms = s.poll_ms_str.trim().parse::<u64>().unwrap_or(100).clamp(20, 2000);
+                cfg.dupes_clause = s.dupes_clause;
+                cfg.allow_species_repeats = s.allow_species_repeats;
+                cfg.run_start_balls = s.run_start_balls_str.trim().parse().ok();
+                cfg.direct_mode = s.direct_mode;
                 save_config(&cfg, &self.config_path);
                 self.settings_open = false;
             }

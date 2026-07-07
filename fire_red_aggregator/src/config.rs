@@ -309,7 +309,19 @@ pub fn save_config(config: &AggregatorConfig, path: &PathBuf) {
 // First-run egui setup window
 // ---------------------------------------------------------------------------
 
+/// An `AggregatorConfig` with every field at its serde default — the same
+/// values an empty config file would produce. Used as the base for configs
+/// built by the setup/editor UIs so fields those UIs don't expose keep
+/// correct defaults instead of hardcoded ones.
+fn empty_config() -> AggregatorConfig {
+    toml::from_str("").expect("empty AggregatorConfig must deserialize via serde defaults")
+}
+
 struct SetupApp {
+    /// The config being edited. Fields without a UI control (twitch,
+    /// backup_*, livesplit_*, discord_*, youtube_chat, trainer_table_rom_offset)
+    /// are preserved from here on save instead of being reset.
+    base: AggregatorConfig,
     db: String,
     db_enabled: bool,
     ws_port_str: String,
@@ -334,6 +346,7 @@ struct SetupApp {
 impl SetupApp {
     fn new(result: Arc<Mutex<Option<AggregatorConfig>>>) -> Self {
         Self {
+            base: empty_config(),
             db: "localhost/nuzlocke".to_string(),
             db_enabled: false,
             ws_port_str: "9090".to_string(),
@@ -377,6 +390,7 @@ impl SetupApp {
             all_hosts.push(h.clone());
         }
         Self {
+            base: cfg.clone(),
             db,
             db_enabled,
             ws_port_str,
@@ -580,34 +594,25 @@ impl eframe::App for SetupApp {
                         Some(self.rom_path.trim().to_string())
                     };
 
-                    *self.result.lock().unwrap_or_else(|p| p.into_inner()) = Some(AggregatorConfig {
-                        db,
-                        ws_port,
-                        default_test: self.default_test,
-                        test: self.test.clone(),
-                        allow_injections: self.allow_injections,
-                        twitch: None,
-                        retroarch_host: None,
-                        retroarch_hosts: hosts,
-                        retroarch_port: port_parse.unwrap_or(55355),
-                        rom_path: rom,
-                        poll_ms: self.poll_ms_str.trim().parse::<u64>().unwrap_or(100).clamp(20, 2000),
-                        dupes_clause: self.dupes_clause,
-                        allow_species_repeats: self.allow_species_repeats,
-                        run_start_balls: self.run_start_balls_str.trim().parse().ok(),
-                        direct_mode: self.direct_mode,
-                        backup_dir: None,
-                        backup_interval_hours: None,
-                        backup_keep: None,
-                        livesplit_host: None,
-                        livesplit_port: 16834,
-                        livesplit_split_on_badges: false,
-                        discord_slash: None,
-                        discord_live_embed: None,
-                        discord_run_thread: None,
-                        youtube_chat: None,
-                        trainer_table_rom_offset: None,
-                    });
+                    // Start from `base` so fields this UI doesn't expose
+                    // (twitch, backup_*, livesplit_*, discord_*, youtube_chat,
+                    // trainer_table_rom_offset) survive a save unchanged.
+                    let mut cfg = self.base.clone();
+                    cfg.db = db;
+                    cfg.ws_port = ws_port;
+                    cfg.default_test = self.default_test;
+                    cfg.test = self.test.clone();
+                    cfg.allow_injections = self.allow_injections;
+                    cfg.retroarch_host = None; // legacy field, merged into the list
+                    cfg.retroarch_hosts = hosts;
+                    cfg.retroarch_port = port_parse.unwrap_or(55355);
+                    cfg.rom_path = rom;
+                    cfg.poll_ms = self.poll_ms_str.trim().parse::<u64>().unwrap_or(100).clamp(20, 2000);
+                    cfg.dupes_clause = self.dupes_clause;
+                    cfg.allow_species_repeats = self.allow_species_repeats;
+                    cfg.run_start_balls = self.run_start_balls_str.trim().parse().ok();
+                    cfg.direct_mode = self.direct_mode;
+                    *self.result.lock().unwrap_or_else(|p| p.into_inner()) = Some(cfg);
                     self.should_close = true;
                 }
 
@@ -685,4 +690,59 @@ pub fn run_config_editor(path: &PathBuf) -> Result<(), String> {
     };
     save_config(&new_cfg, path);
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn empty_config_has_serde_defaults() {
+        let cfg = empty_config();
+        assert_eq!(cfg.db, None);
+        assert_eq!(cfg.ws_port, None);
+        assert!(cfg.allow_injections, "allow_injections defaults to true");
+        assert_eq!(cfg.retroarch_port, 55355);
+        assert_eq!(cfg.poll_ms, 100);
+        assert_eq!(cfg.livesplit_port, 16834);
+        assert_eq!(cfg.backup_dir, None);
+        assert_eq!(cfg.backup_interval_hours, None);
+        assert_eq!(cfg.backup_keep, None);
+    }
+
+    /// Guards the editor-save fix: fields the settings UIs don't expose must
+    /// survive a parse → (edit) → serialize cycle instead of being reset.
+    #[test]
+    fn non_gui_fields_survive_toml_roundtrip() {
+        let toml_in = r#"
+            db = "postgresql://example/nuzlocke"
+            backup_dir = "/tmp/backups"
+            backup_interval_hours = 6
+            backup_keep = 4
+            livesplit_host = "127.0.0.1"
+            livesplit_split_on_badges = true
+            trainer_table_rom_offset = 0x23CAE0
+        "#;
+        let cfg: AggregatorConfig = toml::from_str(toml_in).unwrap();
+
+        // Simulate what the editors do on save: clone the base and overwrite
+        // only a GUI-exposed field.
+        let mut edited = cfg.clone();
+        edited.direct_mode = true;
+
+        let out = toml::to_string(&edited).unwrap();
+        let reparsed: AggregatorConfig = toml::from_str(&out).unwrap();
+        assert_eq!(reparsed.backup_dir.as_deref(), Some("/tmp/backups"));
+        assert_eq!(reparsed.backup_interval_hours, Some(6));
+        assert_eq!(reparsed.backup_keep, Some(4));
+        assert_eq!(reparsed.livesplit_host.as_deref(), Some("127.0.0.1"));
+        assert!(reparsed.livesplit_split_on_badges);
+        assert_eq!(reparsed.trainer_table_rom_offset, Some(0x23CAE0));
+        assert!(reparsed.direct_mode, "edited field applied");
+        assert_eq!(reparsed.db.as_deref(), Some("postgresql://example/nuzlocke"));
+    }
 }

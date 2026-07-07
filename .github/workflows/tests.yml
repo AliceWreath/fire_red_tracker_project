@@ -1,0 +1,48 @@
+name: Tests
+
+on:
+  push:
+    branches: [dev]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+# Note: no `cargo fmt --check` — the codebase deliberately uses aligned
+# assignments and other non-rustfmt layout, so fmt enforcement would require
+# reformatting every file.
+
+jobs:
+  test:
+    name: Clippy & Tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Cache cargo registry and build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-test-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-test-
+
+      - name: Clippy (deny warnings)
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Run tests
+        run: cargo test --workspace
+
+      # The legacy RetroArch string-buffer parsers are feature-gated; run
+      # their tests too so they don't bitrot (see fire_red_map_data).
+      - name: Run feature-gated tests
+        run: cargo test -p fire_red_map_data --features retroarch-parser
