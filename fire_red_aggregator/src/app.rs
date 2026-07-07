@@ -390,11 +390,11 @@ impl AggregatorApp {
                         .collect();
                     let dead_record = dead_records.get(&pokemon.box_mon.personality);
                     let is_soul_link_dead = soul_link_dead.contains(&pokemon.box_mon.personality);
-                    let gift_index = if pokemon.box_mon.secure.misc.met_location == 0 {
-                        gift_party_index(&gs.party, pokemon.box_mon.personality)
-                    } else {
-                        None
-                    };
+                    let location_index = party_location_index(
+                        &gs.party,
+                        pokemon.box_mon.secure.misc.met_location,
+                        pokemon.box_mon.personality,
+                    );
                     let level_cap = gs
                         .badge_state
                         .as_ref()
@@ -402,7 +402,7 @@ impl AggregatorApp {
                         .map(|g| g.max_level);
                     Self::draw_party_member(
                         ui,
-                        gift_index,
+                        location_index,
                         pokemon,
                         dead_record,
                         is_soul_link_dead,
@@ -458,7 +458,7 @@ impl AggregatorApp {
     #[allow(clippy::too_many_arguments)]
     fn draw_party_member(
         ui: &mut Ui,
-        gift_index: Option<usize>,
+        location_index: Option<usize>,
         pokemon: &Pokemon,
         dead_record: Option<&DeadPokemon>,
         soul_link_dead: bool,
@@ -481,23 +481,13 @@ impl AggregatorApp {
         };
         let dead = dead_record.is_some() || pokemon.hp == 0 || soul_link_dead;
 
-        // Soul-link annotation based on live party state.
-        // Gift Pokémon (met=0) are matched by their position among gifts in each
-        // player's party; all others match by met_location as usual.
+        // Soul-link annotation based on live party state: partners share a
+        // met_location and a position among that location's Pokémon, so
+        // multiple catches from one place (gifts, dupes runs) pair 1:1.
         for (other_label, other_state) in other_states {
             if let Some(gs) = other_state {
-                let partner = if met == 0 {
-                    gift_index.and_then(|idx| {
-                        gs.party
-                            .iter()
-                            .filter(|p| p.box_mon.secure.misc.met_location == 0)
-                            .nth(idx)
-                    })
-                } else {
-                    gs.party
-                        .iter()
-                        .find(|p| p.box_mon.secure.misc.met_location == met)
-                };
+                let partner = location_index
+                    .and_then(|idx| party_partner_at_location(&gs.party, met, idx));
                 if let Some(other_mon) = partner {
                     ui.label(
                         egui::RichText::new(format!(
@@ -1062,19 +1052,10 @@ impl eframe::App for AggregatorApp {
         // has hp == 0 in another slot's live game state. This makes the partner
         // show as dead instantly without waiting for the DB write.
         //
-        // Gift Pokémon (met_location = 0) are paired by caught_at order, matching
-        // the DB-kill path in soul_link_kill_candidates. Using party-slot order
-        // here instead would cause the live UI and the DB to disagree on which
-        // Pokémon is the partner.
-        //
-        // Pre-sort gifts per slot once so the inner j loop does not re-sort on
-        // every (dead_pokemon, j) combination.
-        let live_sorted_gifts: Vec<Vec<&CaughtPokemon>> = self
-            .db_caches
-            .iter()
-            .map(|c| sort_gifts_by_caught_at(&c.caught))
-            .collect();
-
+        // Pairs by (met_location, receipt index) over the caught cache — the
+        // same key soul_link_kill_candidates uses, so the live UI and the DB
+        // agree on which Pokémon is the partner. Falls back to party-order
+        // indexing for mons not yet in the cache.
         let mut live_soul_link_dead: Vec<HashSet<u32>> = vec![HashSet::new(); n];
         for i in 0..n {
             let Some(gs_i) = &states[i].1 else { continue };
@@ -1083,28 +1064,31 @@ impl eframe::App for AggregatorApp {
                     continue;
                 }
                 let met_i = pokemon_i.box_mon.secure.misc.met_location;
+                let personality_i = pokemon_i.box_mon.personality;
                 for j in 0..n {
                     if j == i {
                         continue;
                     }
-                    if met_i == 0 {
-                        // Gift Pokémon: pair by order of receipt (caught_at) — same
-                        // ordering used by soul_link_kill_candidates.
-                        let Some(idx) = live_sorted_gifts[i]
-                            .iter()
-                            .position(|c| c.personality == pokemon_i.box_mon.personality)
-                        else {
-                            continue;
-                        };
-                        if let Some(partner) = live_sorted_gifts[j].get(idx) {
+                    if let Some(idx) = location_receipt_index(
+                        &self.db_caches[i].caught,
+                        met_i,
+                        personality_i,
+                    ) {
+                        if let Some(partner) =
+                            partner_at_location(&self.db_caches[j].caught, met_i, idx)
+                            && partner.personality != personality_i
+                        {
                             live_soul_link_dead[j].insert(partner.personality);
                         }
                     } else {
                         let Some(gs_j) = &states[j].1 else { continue };
-                        for pokemon_j in &gs_j.party {
-                            if pokemon_j.box_mon.secure.misc.met_location == met_i {
-                                live_soul_link_dead[j].insert(pokemon_j.box_mon.personality);
-                            }
+                        if let Some(idx) =
+                            party_location_index(&gs_i.party, met_i, personality_i)
+                            && let Some(partner) =
+                                party_partner_at_location(&gs_j.party, met_i, idx)
+                            && partner.box_mon.personality != personality_i
+                        {
+                            live_soul_link_dead[j].insert(partner.box_mon.personality);
                         }
                     }
                 }
@@ -1207,31 +1191,75 @@ fn stat_row_job(
     job
 }
 
-/// Returns the position of `personality` among `met_location = 0` Pokémon in
-/// `party`, in party-slot order.
-fn gift_party_index(party: &[Pokemon], personality: u32) -> Option<usize> {
+/// Receipt index of `personality` among `caught` Pokémon sharing its
+/// `met_location`, ordered by `caught_at`.
+///
+/// Soul-link pairing key: two slots' Pokémon are partners when they share a
+/// `met_location` *and* a receipt index within it. For classic Nuzlocke rules
+/// (one catch per location) the index is always 0, so this matches plain
+/// met-location pairing; when a location yields several Pokémon — the Celadon
+/// Eevee plus a Game Corner prize, dupes-allowed runs, town grass in ROM
+/// hacks — receipt order disambiguates 1:1 instead of pairing everything to
+/// the first match. (`met_location == 0` used to be treated as a "gift"
+/// sentinel, but the byte is a raw Gen III MAPSEC where 0 means Hoenn — real
+/// FRLG gifts carry the map section they were received in.)
+pub(crate) fn location_receipt_index(
+    caught: &[CaughtPokemon],
+    met_location: u8,
+    personality: u32,
+) -> Option<usize> {
+    let mut at_location: Vec<&CaughtPokemon> = caught
+        .iter()
+        .filter(|c| c.met_location == met_location)
+        .collect();
+    at_location.sort_by_key(|c| c.caught_at);
+    at_location.iter().position(|c| c.personality == personality)
+}
+
+/// The `idx`-th Pokémon (receipt order) among `caught` at `met_location`.
+pub(crate) fn partner_at_location(
+    caught: &[CaughtPokemon],
+    met_location: u8,
+    idx: usize,
+) -> Option<&CaughtPokemon> {
+    let mut at_location: Vec<&CaughtPokemon> = caught
+        .iter()
+        .filter(|c| c.met_location == met_location)
+        .collect();
+    at_location.sort_by_key(|c| c.caught_at);
+    at_location.get(idx).copied()
+}
+
+/// Party-order analogue of [`location_receipt_index`] for live party data
+/// (party members carry no `caught_at`; slot order stands in for receipt
+/// order, which matches while both linked players keep pairs in their teams).
+pub(crate) fn party_location_index(
+    party: &[Pokemon],
+    met_location: u8,
+    personality: u32,
+) -> Option<usize> {
     party
         .iter()
-        .filter(|p| p.box_mon.secure.misc.met_location == 0)
+        .filter(|p| p.box_mon.secure.misc.met_location == met_location)
         .position(|p| p.box_mon.personality == personality)
 }
 
-/// Pre-sorts gift Pokémon (`met_location = 0`) from `caught` by receipt order
-/// (`caught_at`). Used to pair starters and gifts consistently across soul-link
-/// slots, both in the DB-propagation path and the live-detection path.
-pub(crate) fn sort_gifts_by_caught_at(caught: &[CaughtPokemon]) -> Vec<&CaughtPokemon> {
-    let mut gifts: Vec<&CaughtPokemon> = caught.iter().filter(|c| c.met_location == 0).collect();
-    gifts.sort_by_key(|c| c.caught_at);
-    gifts
+/// Party-order analogue of [`partner_at_location`].
+pub(crate) fn party_partner_at_location(
+    party: &[Pokemon],
+    met_location: u8,
+    idx: usize,
+) -> Option<&Pokemon> {
+    party
+        .iter()
+        .filter(|p| p.box_mon.secure.misc.met_location == met_location)
+        .nth(idx)
 }
 
 /// For every dead pokemon across slots, finds partners in other slots caught
-/// at the same `met_location` that are not yet dead and have not already been
-/// propagated this session.
-///
-/// Gift Pokémon (`met_location = 0`) are paired by order of receipt (`caught_at`)
-/// rather than by location, so the first gift caught by Player 1 links to the
-/// first gift caught by Player 2, etc. This ensures starters are soul-linked.
+/// at the same `met_location` and receipt index (see
+/// [`location_receipt_index`]) that are not yet dead and have not already
+/// been propagated this session.
 ///
 /// Returns `(slot_j, partner)` pairs; the caller is responsible for writing
 /// the DB record and updating `soul_link_propagated`.
@@ -1241,54 +1269,29 @@ fn soul_link_kill_candidates(
     already_propagated: &HashSet<(usize, u32)>,
 ) -> Vec<(usize, CaughtPokemon)> {
     let n = all_dead.len();
-
-    // Pre-sort gift Pokémon per slot once; uses the shared helper so ordering
-    // is identical to the live-detection and BroadcastLoop paths.
-    let sorted_gifts: Vec<Vec<&CaughtPokemon>> = caught_by_slot
-        .iter()
-        .map(|slot| sort_gifts_by_caught_at(slot))
-        .collect();
-
     let mut out = Vec::new();
     for i in 0..n {
         for &dead_p in all_dead[i].keys() {
-            let met_loc = caught_by_slot[i]
+            let Some(met_loc) = caught_by_slot[i]
                 .iter()
                 .find(|c| c.personality == dead_p)
                 .map(|c| c.met_location)
-                .unwrap_or(0);
-
-            if met_loc == 0 {
-                // Gift Pokémon: pair by order of receipt across slots.
-                let Some(gift_idx) = sorted_gifts[i].iter().position(|c| c.personality == dead_p)
-                else {
+            else {
+                continue;
+            };
+            let Some(idx) = location_receipt_index(caught_by_slot[i], met_loc, dead_p) else {
+                continue;
+            };
+            for j in 0..n {
+                if j == i {
                     continue;
-                };
-                for j in 0..n {
-                    if j == i {
-                        continue;
-                    }
-                    if let Some(p) = sorted_gifts[j].get(gift_idx).map(|c| (*c).clone())
-                        && !all_dead[j].contains_key(&p.personality)
-                        && !already_propagated.contains(&(j, p.personality))
-                    {
-                        out.push((j, p));
-                    }
                 }
-            } else {
-                for j in 0..n {
-                    if j == i {
-                        continue;
-                    }
-                    if let Some(p) = caught_by_slot[j]
-                        .iter()
-                        .find(|c| c.met_location == met_loc && c.personality != dead_p)
-                        .cloned()
-                        && !all_dead[j].contains_key(&p.personality)
-                        && !already_propagated.contains(&(j, p.personality))
-                    {
-                        out.push((j, p));
-                    }
+                if let Some(p) = partner_at_location(caught_by_slot[j], met_loc, idx).cloned()
+                    && p.personality != dead_p
+                    && !all_dead[j].contains_key(&p.personality)
+                    && !already_propagated.contains(&(j, p.personality))
+                {
+                    out.push((j, p));
                 }
             }
         }
@@ -1486,6 +1489,52 @@ mod tests {
         ];
         let propagated = HashSet::new();
         assert!(soul_link_kill_candidates(&all_dead, &slices(&caught), &propagated).is_empty());
+    }
+
+    #[test]
+    fn starters_with_real_mapsec_pair_by_receipt_index() {
+        // FRLG starters carry MAPSEC_PALLET_TOWN (raw 0x58), not 0. Both
+        // players' starters share the location and index 0 → paired.
+        let all_dead = vec![dead_map(&[1]), HashMap::new()];
+        let caught = vec![vec![stub_caught(1, 0x58)], vec![stub_caught(2, 0x58)]];
+        let propagated = HashSet::new();
+        let candidates = soul_link_kill_candidates(&all_dead, &slices(&caught), &propagated);
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].1.personality, 2);
+    }
+
+    #[test]
+    fn multiple_catches_at_one_location_pair_one_to_one() {
+        // Celadon City (0x5E) yields two Pokémon per player: the Eevee and a
+        // Game Corner prize. The SECOND Celadon mon dying must link to the
+        // partner's SECOND Celadon mon, not to their first.
+        let all_dead = vec![dead_map(&[4]), HashMap::new()];
+        let caught = vec![
+            vec![stub_caught_at(3, 0x5E, 10), stub_caught_at(4, 0x5E, 20)],
+            vec![stub_caught_at(6, 0x5E, 25), stub_caught_at(5, 0x5E, 15)], // reversed list order
+        ];
+        let propagated = HashSet::new();
+        let candidates = soul_link_kill_candidates(&all_dead, &slices(&caught), &propagated);
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].1.personality, 6, "second-received pairs with second-received");
+    }
+
+    #[test]
+    fn location_receipt_index_orders_by_caught_at_not_list_position() {
+        let caught = vec![
+            stub_caught_at(2, 0x65, 30),
+            stub_caught_at(1, 0x65, 10),
+            stub_caught_at(9, 0x66, 20), // different location — not counted
+        ];
+        assert_eq!(location_receipt_index(&caught, 0x65, 1), Some(0));
+        assert_eq!(location_receipt_index(&caught, 0x65, 2), Some(1));
+        assert_eq!(location_receipt_index(&caught, 0x65, 9), None, "wrong location");
+        assert_eq!(location_receipt_index(&caught, 0x66, 9), Some(0));
+        assert_eq!(
+            partner_at_location(&caught, 0x65, 1).map(|c| c.personality),
+            Some(2)
+        );
+        assert!(partner_at_location(&caught, 0x65, 2).is_none());
     }
 
     #[test]

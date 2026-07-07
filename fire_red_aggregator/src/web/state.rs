@@ -370,59 +370,43 @@ impl BroadcastLoop {
     ) -> Vec<HashSet<u32>> {
         let n = slots.len();
 
-        // Pre-sort gifts per slot once; reused by both the DB propagation loop
-        // and the live detection loop. Gift Pokémon (met_location = 0) are
-        // soul-linked by receipt order (caught_at) instead of by location —
-        // matching the pairing used in soul_link_kill_candidates and update().
-        let sorted_gifts: Vec<Vec<&CaughtPokemon>> = self
-            .caches
-            .iter()
-            .map(|c| sort_gifts_by_caught_at(&c.caught))
-            .collect();
+        // Pairing key: (met_location, receipt index within that location) —
+        // see crate::app::location_receipt_index. Matching the pairing used
+        // in soul_link_kill_candidates and draw_party_member.
 
         // DB soul-link death propagation
         for i in 0..n {
             let dead_personalities: Vec<u32> = all_dead[i].keys().copied().collect();
             for dead_p in dead_personalities {
-                let met_loc = self.caches[i]
+                let Some(met_loc) = self.caches[i]
                     .caught
                     .iter()
                     .find(|c| c.personality == dead_p)
                     .map(|c| c.met_location)
-                    .unwrap_or(0);
-
-                // For gift Pokémon (met_loc == 0) find the receipt-order index;
-                // for non-gifts the met_location itself is the pairing key.
-                let gift_idx: Option<usize> = if met_loc == 0 {
-                    sorted_gifts[i].iter().position(|c| c.personality == dead_p)
-                } else {
-                    None
-                };
-                if met_loc == 0 && gift_idx.is_none() {
+                else {
                     continue;
-                }
+                };
+                let Some(loc_idx) =
+                    crate::app::location_receipt_index(&self.caches[i].caught, met_loc, dead_p)
+                else {
+                    continue;
+                };
 
                 for j in 0..n {
                     if j == i {
                         continue;
                     }
                     // Check for a manual override first; fall back to automatic
-                    // met_location / receipt-order pairing if none is set.
+                    // (met_location, receipt-index) pairing if none is set.
                     let partner = if let Some(&override_p) = self.soul_link_overrides.get(&dead_p) {
                         self.caches[j]
                             .caught
                             .iter()
                             .find(|c| c.personality == override_p)
                             .cloned()
-                    } else if met_loc == 0 {
-                        gift_idx
-                            .and_then(|idx| sorted_gifts[j].get(idx))
-                            .map(|c| (*c).clone())
                     } else {
-                        self.caches[j]
-                            .caught
-                            .iter()
-                            .find(|c| c.met_location == met_loc && c.personality != dead_p)
+                        crate::app::partner_at_location(&self.caches[j].caught, met_loc, loc_idx)
+                            .filter(|c| c.personality != dead_p)
                             .cloned()
                     };
                     if let Some(p) = partner {
@@ -445,8 +429,9 @@ impl BroadcastLoop {
             }
         }
 
-        // Live soul-link dead detection — uses sorted_gifts built above so
-        // gift pairing is consistent with the DB propagation path.
+        // Live soul-link dead detection — pairs by (met_location, receipt
+        // index) over the caught cache, matching the DB propagation path, and
+        // falls back to party-order indexing when a mon isn't cached yet.
         let mut live_soul_link_dead: Vec<HashSet<u32>> = vec![HashSet::new(); n];
         for i in 0..n {
             let Some(gs_i) = &states[i].1 else { continue };
@@ -455,13 +440,13 @@ impl BroadcastLoop {
                     continue;
                 }
                 let met_i = p_i.box_mon.secure.misc.met_location;
+                let personality_i = p_i.box_mon.personality;
                 for j in 0..n {
                     if j == i {
                         continue;
                     }
-                    let personality_i = p_i.box_mon.personality;
                     if let Some(&override_p) = self.soul_link_overrides.get(&personality_i) {
-                        // Manual override supersedes met_location pairing — mirrors DB path.
+                        // Manual override supersedes automatic pairing — mirrors DB path.
                         let Some(gs_j) = &states[j].1 else { continue };
                         if let Some(partner) = gs_j
                             .party
@@ -470,23 +455,28 @@ impl BroadcastLoop {
                         {
                             live_soul_link_dead[j].insert(partner.box_mon.personality);
                         }
-                    } else if met_i == 0 {
-                        // Gift Pokémon: pair by receipt order — matches DB path.
-                        let Some(idx) = sorted_gifts[i]
-                            .iter()
-                            .position(|c| c.personality == personality_i)
-                        else {
-                            continue;
-                        };
-                        if let Some(partner) = sorted_gifts[j].get(idx) {
+                    } else if let Some(idx) = crate::app::location_receipt_index(
+                        &self.caches[i].caught,
+                        met_i,
+                        personality_i,
+                    ) {
+                        if let Some(partner) =
+                            crate::app::partner_at_location(&self.caches[j].caught, met_i, idx)
+                            && partner.personality != personality_i
+                        {
                             live_soul_link_dead[j].insert(partner.personality);
                         }
                     } else {
+                        // Not in the caught cache yet (fresh catch mid-refresh):
+                        // use party order as the receipt-order stand-in.
                         let Some(gs_j) = &states[j].1 else { continue };
-                        for p_j in &gs_j.party {
-                            if p_j.box_mon.secure.misc.met_location == met_i {
-                                live_soul_link_dead[j].insert(p_j.box_mon.personality);
-                            }
+                        if let Some(idx) =
+                            crate::app::party_location_index(&gs_i.party, met_i, personality_i)
+                            && let Some(partner) =
+                                crate::app::party_partner_at_location(&gs_j.party, met_i, idx)
+                            && partner.box_mon.personality != personality_i
+                        {
+                            live_soul_link_dead[j].insert(partner.box_mon.personality);
                         }
                     }
                 }

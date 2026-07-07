@@ -9,7 +9,6 @@
 //! Sprites are embedded directly in the JSON as base64 PNG data URIs, so no
 //! separate HTTP sprite endpoint or browser caching issues exist.
 
-use crate::app::sort_gifts_by_caught_at;
 use crate::client::{MonitorSlot, PngSpriteCache, SharedSlots, encode_png};
 use axum::{
     Extension, Router,
