@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html>
+<!-- THEME_SLOT -->
+<head>
+<meta charset="utf-8">
+<title>Ghost Pace</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body {
+    background: transparent;
+    font-family: 'Segoe UI', Tahoma, sans-serif;
+    color: #fff;
+    width: 100%; height: 100%;
+    display: flex; align-items: flex-start; justify-content: flex-start;
+    overflow: hidden;
+}
+#root {
+    padding: 10px 14px;
+    background: rgba(10, 10, 20, 0.88);
+    border: 1px solid rgba(80, 120, 200, 0.3);
+    border-radius: 10px;
+    min-width: 250px;
+    max-width: 360px;
+    box-shadow: 0 4px 20px rgba(0,0,0,0.7);
+}
+#title {
+    font-size: 10px; font-weight: 700; color: #8aa;
+    text-transform: uppercase; letter-spacing: .6px;
+    margin-bottom: 4px;
+}
+#delta {
+    font-size: 22px; font-weight: 800;
+    font-variant-numeric: tabular-nums;
+    line-height: 1.1;
+}
+#delta.ahead  { color: #5de05d; }
+#delta.behind { color: #ff6060; }
+#delta.even   { color: #ccc; }
+#milestone-line { font-size: 10px; color: #99a; margin-top: 2px; }
+#detail-line    { font-size: 10px; color: #778; margin-top: 1px; }
+#next-line {
+    font-size: 10px; color: #8aa; margin-top: 6px;
+    border-top: 1px solid rgba(255,255,255,0.12); padding-top: 5px;
+}
+table { width: 100%; border-collapse: collapse; margin-top: 6px; }
+td {
+    font-size: 9px; padding: 1px 4px 1px 0; color: #aab;
+    white-space: nowrap; font-variant-numeric: tabular-nums;
+}
+td.d-ahead  { color: #5de05d; text-align: right; }
+td.d-behind { color: #ff6060; text-align: right; }
+#idle { font-size: 11px; color: #778; text-align: center; padding: 6px 2px; }
+#disconnected { display: none; font-size: 11px; color: #666; text-align: center; padding: 4px; }
+html[data-theme=light] #root {
+    background: rgba(235, 240, 255, 0.93);
+    border-color: rgba(60, 100, 200, 0.35);
+    color: #111;
+}
+html[data-theme=light] #title { color: #567; }
+html[data-theme=light] #milestone-line { color: #556; }
+html[data-theme=light] td { color: #445; }
+html[data-theme=light] #idle { color: #667; }
+</style>
+</head>
+<body>
+<div id="root">
+  <div id="content" style="display:none">
+    <div id="title"></div>
+    <div id="delta"></div>
+    <div id="milestone-line"></div>
+    <div id="detail-line"></div>
+    <div id="next-line" style="display:none"></div>
+    <table id="splits"></table>
+  </div>
+  <div id="idle">Waiting for run data…</div>
+  <div id="disconnected">disconnected</div>
+</div>
+<script src="/static/overlay.js"></script>
+<script>
+const _pathParts  = window.location.pathname.split('/').filter(Boolean);
+const _pathIndex  = parseInt(_pathParts[0]);
+const _explicitIndex = !isNaN(_pathIndex) ? _pathIndex
+    : (FRT.params.has('slot') ? parseInt(FRT.params.get('slot')) : null);
+let playerIndex = _explicitIndex !== null ? _explicitIndex : 0;
+function resolvePlayerIndex(slots) {
+    if (_explicitIndex !== null) return;
+    const first = slots.findIndex(s => s && s.connected);
+    if (first !== -1) playerIndex = first;
+}
+
+function el(tag, cls, text) {
+    const e = document.createElement(tag);
+    if (cls)  e.className = cls;
+    if (text !== undefined) e.textContent = text;
+    return e;
+}
+
+function fmtDur(secs) {
+    secs = Math.abs(Math.round(secs));
+    const h = Math.floor(secs / 3600), m = Math.floor((secs % 3600) / 60);
+    if (h > 0) return h + 'h ' + String(m).padStart(2, '0') + 'm';
+    return m + 'm ' + String(secs % 60).padStart(2, '0') + 's';
+}
+
+// ── Ghost selection & comparison fetching ──────────────────────────────
+// ?ghost=<run_id> pins the ghost; otherwise the most recent *ended* run
+// that isn't the current one is picked automatically.
+let ghostId       = FRT.params.has('ghost') ? parseInt(FRT.params.get('ghost')) : null;
+const ghostPinned = ghostId !== null;
+let cmp           = null;     // last comparison payload
+let cmpForRun     = null;     // run_id the payload belongs to
+let lastBadges    = -1;
+let lastFetch     = 0;
+let fetching      = false;
+
+async function pickGhost(runId) {
+    const r = await FRT.authFetch('/api/runs').catch(() => null);
+    if (!r || !r.ok) return null;
+    const d = await r.json().catch(() => null);
+    const runs = Array.isArray(d) ? d : (d && d.runs) || [];
+    const ended = runs.filter(x => x.id !== runId && x.ended_at);
+    return ended.length ? ended[0].id : null;   // list is newest-first
+}
+
+async function refresh(runId, badgeCount) {
+    if (fetching) return;
+    const stale = cmpForRun !== runId
+        || badgeCount !== lastBadges
+        || Date.now() - lastFetch > 60000;
+    if (!stale) return;
+    fetching = true;
+    try {
+        if (!ghostPinned && (ghostId === null || cmpForRun !== runId)) {
+            ghostId = await pickGhost(runId);
+        }
+        if (ghostId === null || ghostId === runId) { cmp = null; cmpForRun = runId; return; }
+        const r = await FRT.authFetch('/api/run/' + runId + '/vs/' + ghostId).catch(() => null);
+        cmp = (r && r.ok) ? await r.json().catch(() => null) : null;
+        cmpForRun = runId;
+        lastBadges = badgeCount;
+        lastFetch = Date.now();
+    } finally {
+        fetching = false;
+    }
+}
+
+// ── Rendering ───────────────────────────────────────────────────────────
+function render() {
+    const content = document.getElementById('content');
+    const idleEl  = document.getElementById('idle');
+    if (!cmp || cmp.error || !Array.isArray(cmp.milestones)) {
+        content.style.display = 'none';
+        idleEl.style.display  = 'block';
+        idleEl.textContent    = ghostId === null
+            ? 'No finished run to race against yet'
+            : 'Waiting for comparison data…';
+        return;
+    }
+    idleEl.style.display  = 'none';
+    content.style.display = 'block';
+    document.getElementById('title').textContent = 'Pace vs run #' + cmp.ghost_id;
+
+    const shared = cmp.milestones.filter(m => m.current && m.ghost);
+    const deltaEl = document.getElementById('delta');
+    const mlEl    = document.getElementById('milestone-line');
+    const dtEl    = document.getElementById('detail-line');
+    const nextEl  = document.getElementById('next-line');
+    const splits  = document.getElementById('splits');
+    splits.replaceChildren();
+
+    if (shared.length === 0) {
+        deltaEl.className = 'even';
+        deltaEl.textContent = '—';
+        mlEl.textContent = 'No shared milestones yet';
+        dtEl.textContent = '';
+    } else {
+        const last  = shared[shared.length - 1];
+        const delta = last.current.elapsed_secs - last.ghost.elapsed_secs;
+        const cls   = delta < 0 ? 'ahead' : (delta > 0 ? 'behind' : 'even');
+        deltaEl.className = cls;
+        deltaEl.textContent = delta === 0 ? 'EVEN'
+            : fmtDur(delta) + (delta < 0 ? ' AHEAD' : ' BEHIND');
+        mlEl.textContent = 'at ' + last.badge_name;
+        dtEl.textContent = 'deaths ' + last.current.deaths + ' vs ' + last.ghost.deaths
+            + ' · avg Lv ' + last.current.avg_level.toFixed(1)
+            + ' vs ' + last.ghost.avg_level.toFixed(1);
+
+        for (const m of shared) {
+            const d  = m.current.elapsed_secs - m.ghost.elapsed_secs;
+            const tr = el('tr');
+            tr.appendChild(el('td', null, m.badge_name));
+            tr.appendChild(el('td', d <= 0 ? 'd-ahead' : 'd-behind',
+                (d <= 0 ? '−' : '+') + fmtDur(d)));
+            splits.appendChild(tr);
+        }
+    }
+
+    // The ghost's next milestone the current run hasn't reached yet.
+    const lastSharedIdx = shared.length ? shared[shared.length - 1].badge_index : -1;
+    const next = cmp.milestones.find(m => m.ghost && !m.current && m.badge_index > lastSharedIdx);
+    if (next) {
+        nextEl.style.display = '';
+        nextEl.textContent = 'Ghost reached ' + next.badge_name + ' at ' + next.ghost.elapsed_human;
+    } else {
+        nextEl.style.display = 'none';
+    }
+}
+
+function handleState(slots) {
+    resolvePlayerIndex(slots);
+    const slot   = slots[playerIndex];
+    const discEl = document.getElementById('disconnected');
+    if (!slot || !slot.connected) {
+        discEl.style.display = 'block';
+        return;
+    }
+    discEl.style.display = 'none';
+
+    const runId = slot.active_run_id;
+    if (!runId) {
+        cmp = null;
+        render();
+        return;
+    }
+    const badgeCount = (slot.badges || []).filter(Boolean).length;
+    refresh(runId, badgeCount).then(render);
+}
+
+FRT.connectWS('pace', handleState);
+</script>
+</body>
+</html>

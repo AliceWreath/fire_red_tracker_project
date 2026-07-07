@@ -135,6 +135,16 @@ pub(crate) fn filter_slots_json(json: &str, show: &str) -> String {
             "db_encounters",
             "prev_run_encounters",
         ],
+        // pace overlay only needs active_run_id, badges, and run_summary.
+        "pace" => &[
+            "party",
+            "encounters",
+            "box_pokemon",
+            "dead",
+            "caught",
+            "db_encounters",
+            "prev_run_encounters",
+        ],
         // damage_calc overlay only needs damage_panel (+ connected).
         "damage_calc" => &[
             "party",

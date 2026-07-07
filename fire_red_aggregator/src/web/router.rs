@@ -136,6 +136,7 @@ pub(crate) fn build_router(web_state: WebState) -> Router {
         .route("/:index/encounter_count", get(serve_encounter_count))
         .route("/:index/hp", get(serve_hp_overlay))
         .route("/:index/damage_calc", get(serve_damage_calc_overlay))
+        .route("/:index/pace", get(serve_pace_overlay))
         .route("/:index/badges", get(serve_badges_overlay))
         .route("/:index/nextgym", get(serve_next_gym_overlay))
         .route("/:index/encounter_table", get(serve_encounter_table_overlay))
