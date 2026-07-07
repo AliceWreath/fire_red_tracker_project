@@ -1089,11 +1089,10 @@ impl BroadcastLoop {
                         nature: cp.nature.clone(),
                         shiny: cp.is_shiny,
                         caught_at: fire_red_database::format_timestamp(cp.caught_at),
-                        met_location_name: if cp.location_name.is_empty() {
-                            fire_red_location_names::location_name(cp.met_location).to_string()
-                        } else {
-                            cp.location_name.clone()
-                        },
+                        met_location_name: display_met_location(
+                            &cp.location_name,
+                            cp.met_location,
+                        ),
                         gender: cp.gender,
                         iv_hp: cp.ivs.hp,
                         iv_atk: cp.ivs.attack,

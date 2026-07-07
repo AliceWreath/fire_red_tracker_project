@@ -165,7 +165,20 @@ fn rom_ptr_to_offset(ptr: u32) -> Option<usize> {
 /// A `MapHeader` is expected to begin with three non-null ROM pointers (footer,
 /// events, scripts) followed by a fourth that may be zero (connections).
 fn validate_map_groups_table(rom: &[u8], offset: usize, known_pairs: &[(u8, u8)]) -> bool {
-    for &(group, map) in known_pairs {
+    // A real table's map headers carry region-map-section IDs (byte 20).
+    // Structurally valid pointer webs that resolve every anchor to a header
+    // with name_index 0 are false positives (seen on vanilla FireRed, where
+    // such a candidate precedes the real gMapGroupsAndMaps in the ROM).
+    let mut any_nonzero_name_index = false;
+
+    // Always validate (group 0, map 0) in addition to the caller's anchors.
+    // Wild-encounter anchors never come from group 0, so without this a
+    // candidate 4 bytes before the real table validates too: its table[g]
+    // resolves to the real table[g-1], every one a genuine header array.
+    // table[0] of such a shifted candidate points into the preceding group's
+    // header data instead, which fails the pointer-chain check.
+    let implicit = [(0u8, 0u8)];
+    for &(group, map) in implicit.iter().chain(known_pairs) {
         // Level 1: table[group] → pointer to the group's map-header pointer array.
         let l1 = offset + group as usize * 4;
         if l1 + 4 > rom.len() {
@@ -203,8 +216,13 @@ fn validate_map_groups_table(rom: &[u8], offset: usize, known_pairs: &[(u8, u8)]
         {
             return false;
         }
+
+        // MapHeader byte 20 = regionMapSectionId (MAPSEC).
+        if map_offset + 20 < rom.len() && rom[map_offset + 20] != 0 {
+            any_nonzero_name_index = true;
+        }
     }
-    true
+    any_nonzero_name_index
 }
 
 /// Scans a FireRed ROM for the `gMapGroupsAndMaps` pointer table.
@@ -480,6 +498,17 @@ mod tests {
         // pass level-3 validation anywhere in the ROM.
         for n in 0..32usize {
             write_ptr(&mut rom, MAP_HEADERS + n * 0x20, 0);
+        }
+        assert_eq!(find_map_groups_table(&rom, &[(0, 1), (2, 3)]), None);
+    }
+
+    #[test]
+    fn find_map_groups_table_rejects_all_zero_name_indices() {
+        // A structurally valid pointer web whose headers all carry
+        // regionMapSectionId 0 is a false positive, not a real map table.
+        let mut rom = rom_with_map_groups();
+        for n in 0..32usize {
+            rom[MAP_HEADERS + n * 0x20 + 20] = 0;
         }
         assert_eq!(find_map_groups_table(&rom, &[(0, 1), (2, 3)]), None);
     }

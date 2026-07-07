@@ -290,6 +290,50 @@ pub fn map_state_from_ewram() -> Option<FireRedState> {
     })
 }
 
+/// True when a `location_name()` result identifies a concrete FRLG place.
+fn met_name_is_known(met: &str) -> bool {
+    !met.is_empty() && met != "Unknown Location" && met != "—" && met != "Hoenn"
+}
+
+/// Decides the location string recorded with a catch.
+///
+/// `area` is the (possibly finer-grained) name of the map the player is
+/// standing on; `met` is the name derived from the Pokémon's own
+/// `met_location` byte, which the game wrote at obtain time. The current map
+/// wins only while it agrees with the met location — a catch can be
+/// registered long after it happened (the starter is only written once run
+/// tracking begins, often on Route 1 or in Viridian City; a tracker started
+/// mid-game adopts the whole party wherever the player happens to stand),
+/// and in those cases the met location is the truth.
+pub(crate) fn pick_catch_location(area: &str, met: &str, map_group: u8, map_name: u8) -> String {
+    // The static fallback table writes "Pokemon"; MAPSEC names use "Pokémon".
+    let norm = |s: &str| s.to_lowercase().replace('é', "e");
+    if !area.is_empty() {
+        if !met_name_is_known(met) || norm(area).starts_with(&norm(met)) {
+            return area.to_string();
+        }
+        return met.to_string();
+    }
+    if met_name_is_known(met) {
+        return met.to_string();
+    }
+    format!("{map_group}\u{B7}{map_name}")
+}
+
+/// Resolves the location string for a newly recorded catch from the current
+/// map and the Pokémon's `met_location` byte. See [`pick_catch_location`].
+fn resolve_catch_location(met_location: u8) -> String {
+    let met = fire_red_location_names::location_name(met_location);
+    match map_state_from_ewram() {
+        Some(s) => {
+            let area = fire_red_loop::get_area_name_for(s.map_group_id, s.map_name_id);
+            pick_catch_location(area, met, s.map_group_id, s.map_name_id)
+        }
+        None if met_name_is_known(met) => met.to_string(),
+        None => String::new(),
+    }
+}
+
 /// Scans the current party for any Pokemon not yet in the caught log and records them.
 ///
 /// Called alongside `check_for_dead_pokemon` on every party refresh so that
@@ -354,16 +398,7 @@ pub fn check_for_new_pokemon(thread_party: &Arc<Mutex<Vec<Pokemon>>>) {
 
         let caught_at = fire_red_database::unix_now();
         let shiny_flag = is_shiny(personality, ot_id);
-        let location_name = map_state_from_ewram()
-            .map(|s| {
-                let n = fire_red_loop::get_area_name_for(s.map_group_id, s.map_name_id);
-                if n.is_empty() {
-                    format!("{}\u{B7}{}", s.map_group_id, s.map_name_id)
-                } else {
-                    n.to_string()
-                }
-            })
-            .unwrap_or_default();
+        let location_name = resolve_catch_location(misc.met_location);
 
         // Insert into the DB first. Only fire the event log and webhook when
         // mark_caught confirms the row was newly inserted — this prevents
@@ -7019,5 +7054,44 @@ mod tests {
         );
         let qty2 = u16::from_le_bytes([payload2[2], payload2[3]]) ^ key;
         println!("Rare Candy → slot {slot2} @ 0x{addr2:08X}  (new qty = {qty2})");
+    }
+}
+
+#[cfg(test)]
+mod catch_location_tests {
+    use super::pick_catch_location;
+
+    #[test]
+    fn agreeing_area_and_met_uses_finer_area_name() {
+        // Fresh catch on a dungeon floor: keep the floor-level name.
+        assert_eq!(pick_catch_location("Mt. Moon B2F", "Mt. Moon", 1, 3), "Mt. Moon B2F");
+        assert_eq!(pick_catch_location("Route 1", "Route 1", 3, 0x13), "Route 1");
+        // Accent difference between the static table and MAPSEC names.
+        assert_eq!(
+            pick_catch_location("Pokemon Mansion 1F", "Pokémon Mansion", 1, 0x3B),
+            "Pokemon Mansion 1F"
+        );
+    }
+
+    #[test]
+    fn late_registration_trusts_the_met_location() {
+        // The starter: obtained in Pallet Town, but only recorded once run
+        // tracking starts — often standing on Route 1 or in Viridian City.
+        assert_eq!(pick_catch_location("Route 1", "Pallet Town", 3, 0x13), "Pallet Town");
+        // Tracker started mid-game adopting the party on a later route.
+        assert_eq!(pick_catch_location("Route 10", "Mt. Moon", 3, 0x1C), "Mt. Moon");
+    }
+
+    #[test]
+    fn unnamed_current_map_falls_back_to_met_then_numbers() {
+        assert_eq!(pick_catch_location("", "Pallet Town", 4, 3), "Pallet Town");
+        assert_eq!(pick_catch_location("", "Unknown Location", 4, 3), "4\u{B7}3");
+        assert_eq!(pick_catch_location("", "—", 4, 3), "4\u{B7}3");
+    }
+
+    #[test]
+    fn unknown_met_never_overrides_a_named_area() {
+        assert_eq!(pick_catch_location("Route 5", "Unknown Location", 3, 0x17), "Route 5");
+        assert_eq!(pick_catch_location("Route 5", "Hoenn", 3, 0x17), "Route 5");
     }
 }

@@ -124,6 +124,30 @@ pub fn map_area_name(group: u8, map: u8) -> &'static str {
         (2, 0x21) => "Viapois Chamber",
         (2, 0x22) => "Dunsparce Tunnel",
 
+        // ── Group 3: towns and cities ──────────────────────────────────────
+        // Vanilla FireRed has no wild encounters in towns, but ROM hacks
+        // frequently add grass there, and catches/events can be recorded
+        // while standing in one — so these need names, not "3·N" fallbacks.
+        (3, 0x00) => "Pallet Town",
+        (3, 0x01) => "Viridian City",
+        (3, 0x02) => "Pewter City",
+        (3, 0x03) => "Cerulean City",
+        (3, 0x04) => "Lavender Town",
+        (3, 0x05) => "Vermilion City",
+        (3, 0x06) => "Celadon City",
+        (3, 0x07) => "Fuchsia City",
+        (3, 0x08) => "Cinnabar Island",
+        (3, 0x09) => "Indigo Plateau",
+        (3, 0x0A) => "Saffron City",
+        (3, 0x0B) => "Saffron City", // connection strip west of Silph Co.
+        (3, 0x0C) => "One Island",
+        (3, 0x0D) => "Two Island",
+        (3, 0x0E) => "Three Island",
+        (3, 0x0F) => "Four Island",
+        (3, 0x10) => "Five Island",
+        (3, 0x11) => "Seven Island", // FireRed orders Seven before Six
+        (3, 0x12) => "Six Island",
+
         // ── Group 3: Kanto outdoor routes ─────────────────────────────────
         (3, 0x13) => "Route 1",
         (3, 0x14) => "Route 2",
@@ -286,107 +310,130 @@ pub fn all_wild_areas() -> &'static [(u8, u8, &'static str)] {
     ]
 }
 
-/// Returns a human-readable name for a `met_location` byte (FireRed USA Rev 1).
+/// Returns a human-readable name for a raw Gen III map-section (MAPSEC) byte.
 ///
-/// Values 0x00–0x5C correspond to named locations (MAPSEC constants from the
-/// pret decomp).  0xFF is the "no section" sentinel used for interior maps that
-/// don't show a location banner; all other out-of-range values return
-/// `"Unknown Location"`.
+/// This is the value FireRed stores both in each map header's
+/// `regionMapSectionId` field and in a Pokémon's `met_location` byte. The
+/// Gen III numbering is shared across RSE and FRLG: 0x00–0x57 are Hoenn
+/// sections (a Pokémon traded from Ruby/Sapphire/Emerald), and the Kanto
+/// sections start at 0x58 = Pallet Town. Verified against the map headers of
+/// a vanilla FireRed USA Rev 1 ROM.
+///
+/// 0xFF is the "no section" sentinel used for interior maps that don't show
+/// a location banner; unassigned values return `"Unknown Location"`.
 pub fn location_name(loc: u8) -> &'static str {
     match loc {
-        0x00 => "Pallet Town",
-        0x01 => "Viridian City",
-        0x02 => "Pewter City",
-        0x03 => "Cerulean City",
-        0x04 => "Lavender Town",
-        0x05 => "Vermilion City",
-        0x06 => "Celadon City",
-        0x07 => "Fuchsia City",
-        0x08 => "Saffron City",
-        0x09 => "Cinnabar Island",
-        0x0A => "Indigo Plateau",
-        0x0B => "Viridian Forest",
-        0x0C => "Mt. Moon",
-        0x0D => "S.S. Anne",
-        0x0E => "Underground Path",
-        0x0F => "Underground Path",
-        0x10 => "Diglett's Cave",
-        0x11 => "Victory Road",
-        0x12 => "Rocket Hideout",
-        0x13 => "Silph Co.",
-        0x14 => "Pokémon Mansion",
-        0x15 => "Safari Zone",
-        0x16 => "Pokémon League",
-        0x17 => "Rock Tunnel",
-        0x18 => "Power Plant",
-        0x19 => "Seafoam Islands",
-        0x1A => "Pokémon Tower",
-        0x1B => "Cerulean Cave",
-        0x1C => "Mt. Ember",
-        0x1D => "Berry Forest",
-        0x1E => "Icefall Cave",
-        0x1F => "Lost Cave",
-        0x20 => "Pattern Bush",
-        0x21 => "Altering Cave",
-        0x22 => "Tanoby Ruins",
-        0x23 => "Monean Chamber",
-        0x24 => "Liptoo Chamber",
-        0x25 => "Weepth Chamber",
-        0x26 => "Dilford Chamber",
-        0x27 => "Scufib Chamber",
-        0x28 => "Rixy Chamber",
-        0x29 => "Viapois Chamber",
-        0x2A => "Three Isle Path",
-        0x2B => "Navel Rock",
-        0x2C => "Birth Island",
-        0x2D => "Route 1",
-        0x2E => "Route 2",
-        0x2F => "Route 3",
-        0x30 => "Route 4",
-        0x31 => "Route 5",
-        0x32 => "Route 6",
-        0x33 => "Route 7",
-        0x34 => "Route 8",
-        0x35 => "Route 9",
-        0x36 => "Route 10",
-        0x37 => "Route 11",
-        0x38 => "Route 12",
-        0x39 => "Route 13",
-        0x3A => "Route 14",
-        0x3B => "Route 15",
-        0x3C => "Route 16",
-        0x3D => "Route 17",
-        0x3E => "Route 18",
-        0x3F => "Route 19",
-        0x40 => "Route 20",
-        0x41 => "Route 21",
-        0x42 => "Route 22",
-        0x43 => "Route 23",
-        0x44 => "Route 24",
-        0x45 => "Route 25",
-        0x46 => "One Island",
-        0x47 => "Two Island",
-        0x48 => "Three Island",
-        0x49 => "Four Island",
-        0x4A => "Five Island",
-        0x4B => "Six Island",
-        0x4C => "Seven Island",
-        0x4D => "Treasure Beach",
-        0x4E => "Kindle Road",
-        0x4F => "Cape Brink",
-        0x50 => "Bond Bridge",
-        0x51 => "Three Isle Port",
-        0x52 => "Sevii Isle 6",
-        0x53 => "Sevii Isle 7",
-        0x54 => "Sevii Isle 8",
-        0x55 => "Sevii Isle 9",
-        0x56 => "Resort Gorgeous",
-        0x57 => "Water Path",
-        0x58 => "Ruin Valley",
-        0x59 => "Trainer Tower",
-        0x5A => "Canyon Entrance",
-        0x5B => "Sevault Canyon",
-        0x5C => "Tanoby Chambers",
+        // Hoenn sections (RSE) — seen on Pokémon traded from those games.
+        0x00..=0x57 => "Hoenn",
+        0x58 => "Pallet Town",
+        0x59 => "Viridian City",
+        0x5A => "Pewter City",
+        0x5B => "Cerulean City",
+        0x5C => "Lavender Town",
+        0x5D => "Vermilion City",
+        0x5E => "Celadon City",
+        0x5F => "Fuchsia City",
+        0x60 => "Cinnabar Island",
+        0x61 => "Indigo Plateau",
+        0x62 => "Saffron City",
+        0x63 => "Route 4",  // Route 4 Pokémon Center fly-dup section
+        0x64 => "Route 10", // Route 10 Pokémon Center fly-dup section
+        0x65 => "Route 1",
+        0x66 => "Route 2",
+        0x67 => "Route 3",
+        0x68 => "Route 4",
+        0x69 => "Route 5",
+        0x6A => "Route 6",
+        0x6B => "Route 7",
+        0x6C => "Route 8",
+        0x6D => "Route 9",
+        0x6E => "Route 10",
+        0x6F => "Route 11",
+        0x70 => "Route 12",
+        0x71 => "Route 13",
+        0x72 => "Route 14",
+        0x73 => "Route 15",
+        0x74 => "Route 16",
+        0x75 => "Route 17",
+        0x76 => "Route 18",
+        0x77 => "Route 19",
+        0x78 => "Route 20",
+        0x79 => "Route 21",
+        0x7A => "Route 22",
+        0x7B => "Route 23",
+        0x7C => "Route 24",
+        0x7D => "Route 25",
+        0x7E => "Viridian Forest",
+        0x7F => "Mt. Moon",
+        0x80 => "S.S. Anne",
+        0x81 => "Underground Path",
+        0x82 => "Underground Path",
+        0x83 => "Diglett's Cave",
+        0x84 => "Victory Road",
+        0x85 => "Rocket Hideout",
+        0x86 => "Silph Co.",
+        0x87 => "Pokémon Mansion",
+        0x88 => "Safari Zone",
+        0x89 => "Pokémon League",
+        0x8A => "Rock Tunnel",
+        0x8B => "Seafoam Islands",
+        0x8C => "Pokémon Tower",
+        0x8D => "Cerulean Cave",
+        0x8E => "Power Plant",
+        0x8F => "One Island",
+        0x90 => "Two Island",
+        0x91 => "Three Island",
+        0x92 => "Four Island",
+        0x93 => "Five Island",
+        0x94 => "Seven Island", // FireRed orders Seven before Six
+        0x95 => "Six Island",
+        0x96 => "Kindle Road",
+        0x97 => "Treasure Beach",
+        0x98 => "Cape Brink",
+        0x99 => "Bond Bridge",
+        0x9A => "Three Isle Port",
+        0x9B => "Sevii Isle 6",
+        0x9C => "Sevii Isle 7",
+        0x9D => "Sevii Isle 8",
+        0x9E => "Sevii Isle 9",
+        0x9F => "Resort Gorgeous",
+        0xA0 => "Water Labyrinth",
+        0xA1 => "Five Isle Meadow",
+        0xA2 => "Memorial Pillar",
+        0xA3 => "Outcast Island",
+        0xA4 => "Green Path",
+        0xA5 => "Water Path",
+        0xA6 => "Ruin Valley",
+        0xA7 => "Trainer Tower",
+        0xA8 => "Canyon Entrance",
+        0xA9 => "Sevault Canyon",
+        0xAA => "Tanoby Ruins",
+        0xAB => "Sevii Isle 22",
+        0xAC => "Sevii Isle 23",
+        0xAD => "Sevii Isle 24",
+        0xAE => "Navel Rock",
+        0xAF => "Mt. Ember",
+        0xB0 => "Berry Forest",
+        0xB1 => "Icefall Cave",
+        0xB2 => "Rocket Warehouse",
+        0xB3 => "Trainer Tower",
+        0xB4 => "Dotted Hole",
+        0xB5 => "Lost Cave",
+        0xB6 => "Pattern Bush",
+        0xB7 => "Altering Cave",
+        0xB8 => "Tanoby Chambers",
+        0xB9 => "Three Isle Path",
+        0xBA => "Tanoby Key",
+        0xBB => "Birth Island",
+        0xBC => "Monean Chamber",
+        0xBD => "Liptoo Chamber",
+        0xBE => "Weepth Chamber",
+        0xBF => "Dilford Chamber",
+        0xC0 => "Scufib Chamber",
+        0xC1 => "Rixy Chamber",
+        0xC2 => "Viapois Chamber",
+        0xC3 => "Ember Spa",
+        0xC4 => "Special Area",
         0xFF => "—", // MAPSEC_NONE: interior map, no banner shown
         _ => "Unknown Location",
     }
@@ -607,11 +654,33 @@ mod tests {
 
     #[test]
     fn pallet_town() {
-        assert_eq!(location_name(0x00), "Pallet Town");
+        // Kanto MAPSECs start at 0x58 in the shared Gen III numbering —
+        // this is the raw byte in both map headers and met_location.
+        assert_eq!(location_name(0x58), "Pallet Town");
     }
     #[test]
     fn viridian_city() {
-        assert_eq!(location_name(0x01), "Viridian City");
+        assert_eq!(location_name(0x59), "Viridian City");
+    }
+    #[test]
+    fn routes_follow_the_flydup_sections() {
+        assert_eq!(location_name(0x63), "Route 4"); // Pokémon Center fly-dup
+        assert_eq!(location_name(0x65), "Route 1");
+        assert_eq!(location_name(0x7D), "Route 25");
+    }
+    #[test]
+    fn dungeons_and_sevii() {
+        assert_eq!(location_name(0x7E), "Viridian Forest");
+        assert_eq!(location_name(0x8D), "Cerulean Cave");
+        assert_eq!(location_name(0x94), "Seven Island"); // Seven before Six
+        assert_eq!(location_name(0x95), "Six Island");
+        assert_eq!(location_name(0xB9), "Three Isle Path");
+        assert_eq!(location_name(0xC2), "Viapois Chamber");
+    }
+    #[test]
+    fn hoenn_sections_from_traded_mons() {
+        assert_eq!(location_name(0x00), "Hoenn");
+        assert_eq!(location_name(0x57), "Hoenn");
     }
     #[test]
     fn mapsec_none_returns_dash() {
@@ -620,6 +689,13 @@ mod tests {
     #[test]
     fn unknown_location() {
         assert_eq!(location_name(0xFE), "Unknown Location");
+    }
+    #[test]
+    fn towns_present_in_map_area_name() {
+        assert_eq!(map_area_name(3, 0x00), "Pallet Town");
+        assert_eq!(map_area_name(3, 0x0B), "Saffron City");
+        assert_eq!(map_area_name(3, 0x11), "Seven Island");
+        assert_eq!(map_area_name(3, 0x12), "Six Island");
     }
 
     // ── dungeon_floors ────────────────────────────────────────────────────────
