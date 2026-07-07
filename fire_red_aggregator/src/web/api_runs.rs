@@ -556,6 +556,31 @@ pub(crate) async fn api_run_battle_damage(
     axum::Json(result.unwrap_or_else(|_| serde_json::json!({ "error": "Task panicked" })))
 }
 
+/// `GET /api/run/:id/report` — self-contained HTML recap of a run (stats,
+/// badge splits, deaths, roster, luck, difficulty). Save-and-share friendly:
+/// no external resources, styled inline. Returns `404` when the run is not
+/// found. Access is scoped by the usual `/api/run/:id` middleware.
+pub(crate) async fn api_run_report(
+    State(state): State<WebState>,
+    Path(run_id): Path<u32>,
+) -> axum::response::Response {
+    let conn = match state.db_conn {
+        Some(s) => s,
+        None => {
+            return (StatusCode::SERVICE_UNAVAILABLE, "No database configured").into_response()
+        }
+    };
+    let result =
+        tokio::task::spawn_blocking(move || fire_red_database::run_report_html(&conn, run_id))
+            .await
+            .unwrap_or_else(|_| Err("Task panicked".to_string()));
+    match result {
+        Ok(html) => Html(html).into_response(),
+        Err(e) if e.contains("not found") => (StatusCode::NOT_FOUND, e).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+    }
+}
+
 /// `GET /api/run/:id/summary` — Markdown text recap for a completed (or in-progress) run.
 ///
 /// Append `?format=text` to receive `text/plain` (Markdown source directly); omit it to

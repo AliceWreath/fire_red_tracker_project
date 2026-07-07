@@ -843,6 +843,7 @@ curl -H "Authorization: Bearer $TOKEN" http://localhost:9090/api/me</code></pre>
     <tr><td>POST /api/run</td><td>Create a new run.</td></tr>
     <tr><td>GET /api/run/:id</td><td>Run details including caught, dead, party.</td></tr>
     <tr><td>GET /api/run/:id/summary</td><td>Markdown export of the run.</td></tr>
+    <tr><td>GET /api/run/:id/report</td><td>Self-contained HTML run recap (stats, badge splits, deaths, roster, difficulty) — save the page and share it as-is.</td></tr>
     <tr><td>GET /api/run/:id/trainers</td><td>Trainer battle log for the run.</td></tr>
     <tr><td>POST /api/run/import</td><td>Import a previously exported run JSON.</td></tr>
     <tr><td>POST /api/backup</td><td>Owner-only: write a full-database snapshot (every run) to <code>backup_dir</code> now, then prune to <code>backup_keep</code> files. Same format as the scheduled backups; each entry in <code>runs</code> is importable via <code>/api/run/import</code>.</td></tr>

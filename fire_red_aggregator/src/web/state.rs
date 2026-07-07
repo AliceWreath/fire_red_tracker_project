@@ -1089,7 +1089,7 @@ impl BroadcastLoop {
                         nature: cp.nature.clone(),
                         shiny: cp.is_shiny,
                         caught_at: fire_red_database::format_timestamp(cp.caught_at),
-                        met_location_name: display_met_location(
+                        met_location_name: fire_red_database::display_met_location(
                             &cp.location_name,
                             cp.met_location,
                         ),

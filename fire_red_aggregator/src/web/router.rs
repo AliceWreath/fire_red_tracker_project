@@ -117,6 +117,7 @@ pub(crate) fn build_router(web_state: WebState) -> Router {
         .route("/api/run/:id/enemy_hp_log", get(api_run_enemy_hp_log))
         .route("/api/run/:id/battle_damage", get(api_run_battle_damage))
         .route("/api/run/:id/summary", get(api_run_summary))
+        .route("/api/run/:id/report", get(api_run_report))
         .route(
             "/api/run/:id/event/:event_id/note",
             patch(api_set_event_note).delete(api_clear_event_note),
